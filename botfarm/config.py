@@ -31,15 +31,6 @@ linear:
   exclude_tags:
     - Human
 
-agent:
-  model: claude-sonnet-4-5-20250929
-  max_tokens_per_task: 1000000
-  max_cost_per_task_usd: 5.00
-
-usage:
-  daily_cost_limit_usd: 50.00
-  monthly_cost_limit_usd: 500.00
-
 database:
   path: ~/.botfarm/botfarm.db
 """
@@ -62,19 +53,6 @@ class LinearConfig:
 
 
 @dataclass
-class AgentConfig:
-    model: str = "claude-sonnet-4-5-20250929"
-    max_tokens_per_task: int = 1_000_000
-    max_cost_per_task_usd: float = 5.00
-
-
-@dataclass
-class UsageConfig:
-    daily_cost_limit_usd: float = 50.00
-    monthly_cost_limit_usd: float = 500.00
-
-
-@dataclass
 class DatabaseConfig:
     path: str = "~/.botfarm/botfarm.db"
 
@@ -84,8 +62,6 @@ class BotfarmConfig:
     projects: list[ProjectConfig]
     max_total_slots: int = 5
     linear: LinearConfig = field(default_factory=LinearConfig)
-    agent: AgentConfig = field(default_factory=AgentConfig)
-    usage: UsageConfig = field(default_factory=UsageConfig)
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
 
 
@@ -215,19 +191,6 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         exclude_tags=linear_data.get("exclude_tags", ["Human"]),
     )
 
-    agent_data = data.get("agent", {})
-    agent = AgentConfig(
-        model=agent_data.get("model", "claude-sonnet-4-5-20250929"),
-        max_tokens_per_task=agent_data.get("max_tokens_per_task", 1_000_000),
-        max_cost_per_task_usd=agent_data.get("max_cost_per_task_usd", 5.00),
-    )
-
-    usage_data = data.get("usage", {})
-    usage = UsageConfig(
-        daily_cost_limit_usd=usage_data.get("daily_cost_limit_usd", 50.00),
-        monthly_cost_limit_usd=usage_data.get("monthly_cost_limit_usd", 500.00),
-    )
-
     db_data = data.get("database", {})
     database = DatabaseConfig(
         path=db_data.get("path", "~/.botfarm/botfarm.db"),
@@ -237,8 +200,6 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         projects=projects,
         max_total_slots=data.get("max_total_slots", 5),
         linear=linear,
-        agent=agent,
-        usage=usage,
         database=database,
     )
 

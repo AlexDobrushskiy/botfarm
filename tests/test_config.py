@@ -252,15 +252,6 @@ def test_load_config_full(tmp_path, monkeypatch):
             "poll_interval_seconds": 60,
             "exclude_tags": ["Human", "Manual"],
         },
-        "agent": {
-            "model": "claude-opus-4-6",
-            "max_tokens_per_task": 500000,
-            "max_cost_per_task_usd": 10.0,
-        },
-        "usage": {
-            "daily_cost_limit_usd": 100.0,
-            "monthly_cost_limit_usd": 1000.0,
-        },
         "database": {
             "path": "~/.botfarm/custom.db",
         },
@@ -271,11 +262,6 @@ def test_load_config_full(tmp_path, monkeypatch):
     assert config.linear.api_key == "key123"
     assert config.linear.poll_interval_seconds == 60
     assert config.linear.exclude_tags == ["Human", "Manual"]
-    assert config.agent.model == "claude-opus-4-6"
-    assert config.agent.max_tokens_per_task == 500000
-    assert config.agent.max_cost_per_task_usd == 10.0
-    assert config.usage.daily_cost_limit_usd == 100.0
-    assert config.usage.monthly_cost_limit_usd == 1000.0
     assert config.database.path == "~/.botfarm/custom.db"
 
 
@@ -285,8 +271,6 @@ def test_load_config_defaults(tmp_path):
 
     assert config.linear.poll_interval_seconds == 120
     assert config.linear.exclude_tags == ["Human"]
-    assert config.agent.model == "claude-sonnet-4-5-20250929"
-    assert config.usage.daily_cost_limit_usd == 50.0
     assert config.database.path == "~/.botfarm/botfarm.db"
 
 
