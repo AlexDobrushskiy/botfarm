@@ -20,6 +20,7 @@ from botfarm.worker import (
     run_claude,
     run_pipeline,
     _extract_pr_url,
+    _recover_pr_url,
     _run_implement,
     _run_review,
     _run_fix,
@@ -607,6 +608,140 @@ class TestRunPipeline:
         # pr_checks is the 4th call (index 3)
         pr_checks_call = mock_exec.call_args_list[3]
         assert pr_checks_call.kwargs["pr_checks_timeout"] == 300
+
+
+# ---------------------------------------------------------------------------
+# run_pipeline — resume from stage tests
+# ---------------------------------------------------------------------------
+
+
+class TestRunPipelineResume:
+    @patch("botfarm.worker._recover_pr_url")
+    @patch("botfarm.worker._execute_stage")
+    def test_resume_from_review_skips_implement(
+        self, mock_exec, mock_recover, conn, task_id, tmp_path,
+    ):
+        """Resuming from 'review' should skip 'implement' and start at review."""
+        mock_recover.return_value = PR_URL
+        mock_exec.side_effect = [
+            _mock_stage_result("review"),
+            _mock_stage_result("fix"),
+            _mock_stage_result("pr_checks"),
+            _mock_stage_result("merge"),
+        ]
+        result = run_pipeline(
+            ticket_id="SMA-99",
+            task_id=task_id,
+            cwd=tmp_path,
+            conn=conn,
+            resume_from_stage="review",
+        )
+        assert result.success is True
+        assert result.stages_completed == list(STAGES)
+        assert result.pr_url == PR_URL
+
+        # Only 4 stage executions (review through merge)
+        assert mock_exec.call_count == 4
+        called_stages = [c[0][0] for c in mock_exec.call_args_list]
+        assert called_stages == ["review", "fix", "pr_checks", "merge"]
+
+    @patch("botfarm.worker._recover_pr_url")
+    @patch("botfarm.worker._execute_stage")
+    def test_resume_from_fix_skips_implement_and_review(
+        self, mock_exec, mock_recover, conn, task_id, tmp_path,
+    ):
+        """Resuming from 'fix' should skip implement and review."""
+        mock_recover.return_value = PR_URL
+        mock_exec.side_effect = [
+            _mock_stage_result("fix"),
+            _mock_stage_result("pr_checks"),
+            _mock_stage_result("merge"),
+        ]
+        result = run_pipeline(
+            ticket_id="SMA-99",
+            task_id=task_id,
+            cwd=tmp_path,
+            conn=conn,
+            resume_from_stage="fix",
+        )
+        assert result.success is True
+        assert mock_exec.call_count == 3
+
+    @patch("botfarm.worker._recover_pr_url")
+    @patch("botfarm.worker._execute_stage")
+    def test_resume_failure_at_resumed_stage(
+        self, mock_exec, mock_recover, conn, task_id, tmp_path,
+    ):
+        """If the resumed stage fails, pipeline should fail."""
+        mock_recover.return_value = PR_URL
+        mock_exec.return_value = _mock_stage_result("review", success=False)
+
+        result = run_pipeline(
+            ticket_id="SMA-99",
+            task_id=task_id,
+            cwd=tmp_path,
+            conn=conn,
+            resume_from_stage="review",
+        )
+        assert result.success is False
+        assert result.failure_stage == "review"
+
+    @patch("botfarm.worker._execute_stage")
+    def test_resume_from_implement_runs_all_stages(
+        self, mock_exec, conn, task_id, tmp_path,
+    ):
+        """Resuming from 'implement' should run all stages normally."""
+        mock_exec.side_effect = [
+            _mock_stage_result("implement", pr_url=PR_URL),
+            _mock_stage_result("review"),
+            _mock_stage_result("fix"),
+            _mock_stage_result("pr_checks"),
+            _mock_stage_result("merge"),
+        ]
+        result = run_pipeline(
+            ticket_id="SMA-99",
+            task_id=task_id,
+            cwd=tmp_path,
+            conn=conn,
+            resume_from_stage="implement",
+        )
+        assert result.success is True
+        assert mock_exec.call_count == 5
+
+
+# ---------------------------------------------------------------------------
+# _recover_pr_url
+# ---------------------------------------------------------------------------
+
+
+class TestRecoverPrUrl:
+    @patch("botfarm.worker.subprocess.run")
+    def test_recovers_url_from_gh(self, mock_run, conn, task_id, tmp_path):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["gh"],
+            returncode=0,
+            stdout="https://github.com/owner/repo/pull/42\n",
+            stderr="",
+        )
+        url = _recover_pr_url(conn, task_id, tmp_path)
+        assert url == "https://github.com/owner/repo/pull/42"
+
+    @patch("botfarm.worker.subprocess.run")
+    def test_returns_none_on_gh_failure(self, mock_run, conn, task_id, tmp_path):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["gh"],
+            returncode=1,
+            stdout="",
+            stderr="no PR found",
+        )
+        url = _recover_pr_url(conn, task_id, tmp_path)
+        assert url is None
+
+    @patch("botfarm.worker.subprocess.run")
+    def test_returns_none_on_exception(self, mock_run, conn, task_id, tmp_path):
+        mock_run.side_effect = FileNotFoundError("gh not found")
+        url = _recover_pr_url(conn, task_id, tmp_path)
+        assert url is None
 
 
 # ---------------------------------------------------------------------------

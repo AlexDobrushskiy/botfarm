@@ -28,7 +28,7 @@ from botfarm.config import BotfarmConfig, ProjectConfig
 from botfarm.db import init_db, insert_event, insert_task, update_task
 from botfarm.linear import LinearPoller, create_pollers
 from botfarm.slots import SlotManager, SlotState
-from botfarm.usage import UsagePoller
+from botfarm.usage import DEFAULT_PAUSE_5H_THRESHOLD, DEFAULT_PAUSE_7D_THRESHOLD, UsagePoller
 from botfarm.worker import PipelineResult, run_pipeline
 
 logger = logging.getLogger(__name__)
@@ -50,6 +50,7 @@ class _WorkerResult:
     success: bool
     failure_stage: str | None = None
     failure_reason: str | None = None
+    limit_hit: bool = False
 
 
 def _worker_entry(
@@ -63,12 +64,17 @@ def _worker_entry(
     db_path: str,
     result_queue: multiprocessing.Queue,
     max_turns: dict[str, int] | None,
+    resume_from_stage: str | None = None,
+    resume_session_id: str | None = None,
 ) -> None:
     """Entry point for a worker subprocess.
 
     This runs ``run_pipeline`` with its own DB connection. Results are
     communicated back to the supervisor via ``result_queue`` so only
     the supervisor writes to the shared state file.
+
+    When ``resume_from_stage`` is set, the pipeline skips stages that
+    were already completed and resumes from the specified stage.
     """
     # Ignore SIGINT so only the supervisor handles Ctrl-C
     signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -82,6 +88,8 @@ def _worker_entry(
             cwd=cwd,
             conn=conn,
             max_turns=max_turns,
+            resume_from_stage=resume_from_stage,
+            resume_session_id=resume_session_id,
         )
         if result.success:
             result_queue.put(_WorkerResult(
@@ -92,16 +100,25 @@ def _worker_entry(
                 project_name, slot_id, ticket_id,
             )
         else:
+            # Check if the failure looks like a limit hit
+            limit_hit = _check_limit_hit(result)
             result_queue.put(_WorkerResult(
                 project=project_name, slot_id=slot_id, success=False,
                 failure_stage=result.failure_stage,
                 failure_reason=result.failure_reason,
+                limit_hit=limit_hit,
             ))
-            logger.warning(
-                "Worker %s/%d pipeline failed at %s for %s: %s",
-                project_name, slot_id, result.failure_stage,
-                ticket_id, result.failure_reason,
-            )
+            if limit_hit:
+                logger.warning(
+                    "Worker %s/%d hit usage limit at stage %s for %s",
+                    project_name, slot_id, result.failure_stage, ticket_id,
+                )
+            else:
+                logger.warning(
+                    "Worker %s/%d pipeline failed at %s for %s: %s",
+                    project_name, slot_id, result.failure_stage,
+                    ticket_id, result.failure_reason,
+                )
     except Exception as exc:
         logger.exception(
             "Worker %s/%d crashed for %s", project_name, slot_id, ticket_id,
@@ -113,6 +130,23 @@ def _worker_entry(
         ))
     finally:
         conn.close()
+
+
+def _check_limit_hit(result: PipelineResult) -> bool:
+    """Heuristic: detect if a pipeline failure was caused by a usage limit.
+
+    Checks for subprocess non-zero exit (CalledProcessError mention) or
+    specific exit subtypes that indicate limit-related termination.
+    """
+    reason = (result.failure_reason or "").lower()
+    # Claude process killed or exited non-zero with limit-related signals
+    limit_indicators = [
+        "calledprocesserror",
+        "rate limit",
+        "usage limit",
+        "max_tokens_exceeded",
+    ]
+    return any(indicator in reason for indicator in limit_indicators)
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +264,7 @@ class Supervisor:
         for phase in (
             self._reconcile_workers,
             self._handle_finished_slots,
+            self._handle_paused_slots,
             self._poll_usage,
             self._poll_and_dispatch,
         ):
@@ -257,6 +292,8 @@ class Supervisor:
                 logger.info(
                     "Worker result: %s/%d completed", wr.project, wr.slot_id,
                 )
+            elif wr.limit_hit:
+                self._handle_limit_hit(wr)
             else:
                 reason = f"{wr.failure_stage}: {wr.failure_reason}"
                 self._slot_manager.mark_failed(
@@ -356,6 +393,173 @@ class Supervisor:
 
         self._slot_manager.free_slot(project, slot.slot_id)
         logger.info("Freed slot %s/%d after failure", project, slot.slot_id)
+
+    # ------------------------------------------------------------------
+    # Limit interruption handling
+    # ------------------------------------------------------------------
+
+    def _handle_limit_hit(self, wr: _WorkerResult) -> None:
+        """Handle a worker result that indicates a usage limit hit."""
+        slot = self._slot_manager.get_slot(wr.project, wr.slot_id)
+
+        # Compute resume_after from usage state
+        resume_after = self._compute_resume_after()
+
+        self._slot_manager.mark_paused_limit(
+            wr.project, wr.slot_id, resume_after=resume_after,
+        )
+
+        # Look up task_id for this ticket
+        task_id = self._find_task_id(slot.ticket_id) if slot else None
+
+        # Increment limit_interruptions counter
+        if task_id is not None:
+            self._increment_limit_interruptions(task_id)
+
+        insert_event(
+            self._conn,
+            task_id=task_id,
+            event_type="limit_hit",
+            detail=f"project={wr.project}, slot={wr.slot_id}, "
+            f"stage={wr.failure_stage}, resume_after={resume_after}",
+        )
+        self._conn.commit()
+
+        logger.warning(
+            "Worker %s/%d paused due to limit hit at stage %s, "
+            "resume_after=%s",
+            wr.project, wr.slot_id, wr.failure_stage, resume_after,
+        )
+
+    def _compute_resume_after(self) -> str | None:
+        """Compute the earliest time to resume based on usage resets + buffer.
+
+        Adds a 2-minute buffer to the resets_at time from the usage API.
+        """
+        from datetime import timedelta
+
+        state = self._usage_poller.state
+        BUFFER_SECONDS = 120
+
+        resets_at = state.resets_at_5h or state.resets_at_7d
+        if not resets_at:
+            return None
+
+        try:
+            reset_dt = datetime.fromisoformat(resets_at.replace("Z", "+00:00"))
+            resume_dt = reset_dt + timedelta(seconds=BUFFER_SECONDS)
+            return resume_dt.isoformat()
+        except (ValueError, TypeError):
+            return None
+
+    def _find_task_id(self, ticket_id: str | None) -> int | None:
+        """Look up the task_id for a ticket identifier."""
+        if not ticket_id:
+            return None
+        from botfarm.db import get_task_by_ticket
+        row = get_task_by_ticket(self._conn, ticket_id)
+        return row["id"] if row else None
+
+    def _increment_limit_interruptions(self, task_id: int) -> None:
+        """Increment the limit_interruptions counter on a task."""
+        from botfarm.db import get_task
+        task = get_task(self._conn, task_id)
+        if task:
+            current = task["limit_interruptions"]
+            update_task(self._conn, task_id, limit_interruptions=current + 1)
+
+    # ------------------------------------------------------------------
+    # Resume paused slots
+    # ------------------------------------------------------------------
+
+    def _handle_paused_slots(self) -> None:
+        """Check paused slots and resume them if their resume_after time has passed."""
+        now = datetime.now(timezone.utc)
+        paused = self._slot_manager.paused_limit_slots()
+
+        for slot in paused:
+            if not self._is_ready_to_resume(slot, now):
+                continue
+
+            # Re-check usage API to confirm limits have actually reset
+            thresholds = self._config.usage_limits
+            should_pause, _ = self._usage_poller.state.should_pause_with_thresholds(
+                five_hour_threshold=thresholds.pause_five_hour_threshold,
+                seven_day_threshold=thresholds.pause_seven_day_threshold,
+            )
+            if should_pause:
+                logger.debug(
+                    "Slot %s/%d ready to resume but usage still high — waiting",
+                    slot.project, slot.slot_id,
+                )
+                continue
+
+            self._resume_paused_worker(slot)
+
+    def _is_ready_to_resume(self, slot: SlotState, now: datetime) -> bool:
+        """Check if a paused slot's resume_after time has passed."""
+        if not slot.resume_after:
+            # No resume_after set — allow resume immediately
+            return True
+        try:
+            resume_dt = datetime.fromisoformat(
+                slot.resume_after.replace("Z", "+00:00"),
+            )
+            return now >= resume_dt
+        except (ValueError, TypeError):
+            return True
+
+    def _resume_paused_worker(self, slot: SlotState) -> None:
+        """Resume a paused slot by re-spawning the worker for the interrupted stage."""
+        project_name = slot.project
+        project_cfg = self._projects.get(project_name)
+        if not project_cfg:
+            logger.error("No project config for %s — cannot resume", project_name)
+            return
+
+        task_id = self._find_task_id(slot.ticket_id)
+
+        # Log the resume event
+        insert_event(
+            self._conn,
+            task_id=task_id,
+            event_type="limit_resumed",
+            detail=f"project={project_name}, slot={slot.slot_id}, "
+            f"stage={slot.stage}",
+        )
+        self._conn.commit()
+
+        # Resume the slot back to busy
+        self._slot_manager.resume_slot(project_name, slot.slot_id)
+
+        cwd = str(Path(project_cfg.base_dir).expanduser())
+
+        # Spawn a new worker that resumes from the interrupted stage
+        proc = multiprocessing.Process(
+            target=_worker_entry,
+            kwargs={
+                "ticket_id": slot.ticket_id,
+                "ticket_title": slot.ticket_title or "",
+                "task_id": task_id or 0,
+                "project_name": project_name,
+                "slot_id": slot.slot_id,
+                "cwd": cwd,
+                "db_path": self._db_path,
+                "result_queue": self._result_queue,
+                "max_turns": None,
+                "resume_from_stage": slot.stage,
+                "resume_session_id": slot.current_session_id,
+            },
+            daemon=False,
+        )
+        proc.start()
+        self._workers[(project_name, slot.slot_id)] = proc
+        self._slot_manager.set_pid(project_name, slot.slot_id, proc.pid)
+
+        logger.info(
+            "Resumed worker PID %d for %s in slot %s/%d at stage %s",
+            proc.pid, slot.ticket_id, project_name, slot.slot_id, slot.stage,
+        )
 
     # ------------------------------------------------------------------
     # Usage polling

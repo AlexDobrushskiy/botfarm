@@ -21,9 +21,11 @@ from botfarm.supervisor import (
     DEFAULT_LOG_DIR,
     Supervisor,
     _WorkerResult,
+    _check_limit_hit,
     _worker_entry,
     setup_logging,
 )
+from botfarm.worker import PipelineResult
 
 
 # ---------------------------------------------------------------------------
@@ -817,6 +819,359 @@ class TestSetupLogging:
             )
         finally:
             root.handlers = original_handlers
+
+
+# ---------------------------------------------------------------------------
+# _check_limit_hit
+# ---------------------------------------------------------------------------
+
+
+class TestCheckLimitHit:
+    def test_calledprocesserror_detected(self):
+        result = PipelineResult(
+            ticket_id="T-1", success=False, stages_completed=[],
+            failure_stage="implement",
+            failure_reason="CalledProcessError: exit code 1",
+        )
+        assert _check_limit_hit(result) is True
+
+    def test_rate_limit_detected(self):
+        result = PipelineResult(
+            ticket_id="T-1", success=False, stages_completed=[],
+            failure_stage="implement",
+            failure_reason="Claude was killed due to rate limit",
+        )
+        assert _check_limit_hit(result) is True
+
+    def test_usage_limit_detected(self):
+        result = PipelineResult(
+            ticket_id="T-1", success=False, stages_completed=[],
+            failure_stage="review",
+            failure_reason="Hit usage limit for this period",
+        )
+        assert _check_limit_hit(result) is True
+
+    def test_normal_failure_not_detected(self):
+        result = PipelineResult(
+            ticket_id="T-1", success=False, stages_completed=[],
+            failure_stage="implement",
+            failure_reason="PR URL not found in output",
+        )
+        assert _check_limit_hit(result) is False
+
+    def test_none_reason_not_detected(self):
+        result = PipelineResult(
+            ticket_id="T-1", success=False, stages_completed=[],
+            failure_stage="implement",
+            failure_reason=None,
+        )
+        assert _check_limit_hit(result) is False
+
+
+# ---------------------------------------------------------------------------
+# Limit hit handling
+# ---------------------------------------------------------------------------
+
+
+class TestLimitHitHandling:
+    def test_limit_hit_pauses_slot(self, supervisor):
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+
+        # Create a task in DB so _find_task_id works
+        task_id = insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        supervisor._result_queue.put(_WorkerResult(
+            project="test-project", slot_id=1, success=False,
+            failure_stage="implement", failure_reason="CalledProcessError",
+            limit_hit=True,
+        ))
+
+        supervisor._reconcile_workers()
+
+        assert sm.get_slot("test-project", 1).status == "paused_limit"
+        assert sm.get_slot("test-project", 1).interrupted_by_limit is True
+
+    def test_limit_hit_records_event(self, supervisor):
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        supervisor._result_queue.put(_WorkerResult(
+            project="test-project", slot_id=1, success=False,
+            failure_stage="implement", failure_reason="CalledProcessError",
+            limit_hit=True,
+        ))
+
+        supervisor._reconcile_workers()
+
+        events = get_events(supervisor._conn, event_type="limit_hit")
+        assert len(events) == 1
+        assert "implement" in events[0]["detail"]
+
+    def test_limit_hit_increments_counter(self, supervisor):
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        task_id = insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        supervisor._result_queue.put(_WorkerResult(
+            project="test-project", slot_id=1, success=False,
+            failure_stage="implement", failure_reason="CalledProcessError",
+            limit_hit=True,
+        ))
+
+        supervisor._reconcile_workers()
+
+        from botfarm.db import get_task
+        task = get_task(supervisor._conn, task_id)
+        assert task["limit_interruptions"] == 1
+
+    def test_limit_hit_computes_resume_after(self, supervisor):
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        # Set resets_at on usage state
+        supervisor._usage_poller._state.resets_at_5h = "2026-02-12T22:00:00Z"
+
+        supervisor._result_queue.put(_WorkerResult(
+            project="test-project", slot_id=1, success=False,
+            failure_stage="implement", failure_reason="CalledProcessError",
+            limit_hit=True,
+        ))
+
+        supervisor._reconcile_workers()
+
+        slot = sm.get_slot("test-project", 1)
+        assert slot.resume_after is not None
+        # Should be 2 minutes after resets_at
+        assert "22:02" in slot.resume_after
+
+
+# ---------------------------------------------------------------------------
+# Handle paused slots / resume
+# ---------------------------------------------------------------------------
+
+
+class TestHandlePausedSlots:
+    def test_resume_when_time_passed_and_usage_low(self, supervisor):
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.update_stage("test-project", 1, stage="implement", session_id="sess-1")
+        # Past resume_after time
+        sm.mark_paused_limit(
+            "test-project", 1,
+            resume_after="2020-01-01T00:00:00+00:00",
+        )
+
+        task_id = insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        # Usage is low
+        supervisor._usage_poller._state.utilization_5h = 0.10
+        supervisor._usage_poller._state.utilization_7d = 0.10
+
+        with patch("botfarm.supervisor.multiprocessing.Process") as MockProc:
+            mock_proc = MagicMock()
+            mock_proc.pid = 555
+            MockProc.return_value = mock_proc
+
+            supervisor._handle_paused_slots()
+
+            mock_proc.start.assert_called_once()
+
+        assert sm.get_slot("test-project", 1).status == "busy"
+
+    def test_no_resume_when_time_not_passed(self, supervisor):
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.update_stage("test-project", 1, stage="implement")
+        # Future resume_after time
+        sm.mark_paused_limit(
+            "test-project", 1,
+            resume_after="2099-01-01T00:00:00+00:00",
+        )
+
+        supervisor._handle_paused_slots()
+
+        assert sm.get_slot("test-project", 1).status == "paused_limit"
+
+    def test_no_resume_when_usage_still_high(self, supervisor):
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.update_stage("test-project", 1, stage="implement")
+        # Past resume_after time
+        sm.mark_paused_limit(
+            "test-project", 1,
+            resume_after="2020-01-01T00:00:00+00:00",
+        )
+
+        # Usage still high
+        supervisor._usage_poller._state.utilization_5h = 0.95
+
+        supervisor._handle_paused_slots()
+
+        assert sm.get_slot("test-project", 1).status == "paused_limit"
+
+    def test_resume_records_limit_resumed_event(self, supervisor):
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.update_stage("test-project", 1, stage="review")
+        sm.mark_paused_limit(
+            "test-project", 1,
+            resume_after="2020-01-01T00:00:00+00:00",
+        )
+
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        supervisor._usage_poller._state.utilization_5h = 0.10
+        supervisor._usage_poller._state.utilization_7d = 0.10
+
+        with patch("botfarm.supervisor.multiprocessing.Process") as MockProc:
+            mock_proc = MagicMock()
+            mock_proc.pid = 555
+            MockProc.return_value = mock_proc
+
+            supervisor._handle_paused_slots()
+
+        events = get_events(supervisor._conn, event_type="limit_resumed")
+        assert len(events) == 1
+        assert "review" in events[0]["detail"]
+
+    def test_resume_passes_stage_and_session_id(self, supervisor):
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.update_stage("test-project", 1, stage="review", session_id="sess-abc")
+        sm.mark_paused_limit(
+            "test-project", 1,
+            resume_after="2020-01-01T00:00:00+00:00",
+        )
+
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        supervisor._usage_poller._state.utilization_5h = 0.10
+        supervisor._usage_poller._state.utilization_7d = 0.10
+
+        with patch("botfarm.supervisor.multiprocessing.Process") as MockProc:
+            mock_proc = MagicMock()
+            mock_proc.pid = 555
+            MockProc.return_value = mock_proc
+
+            supervisor._handle_paused_slots()
+
+            # Check the kwargs passed to Process
+            call_kwargs = MockProc.call_args.kwargs["kwargs"]
+            assert call_kwargs["resume_from_stage"] == "review"
+            assert call_kwargs["resume_session_id"] == "sess-abc"
+
+    def test_resume_with_no_resume_after_resumes_immediately(self, supervisor):
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.update_stage("test-project", 1, stage="implement")
+        sm.mark_paused_limit("test-project", 1)  # No resume_after
+
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        supervisor._usage_poller._state.utilization_5h = 0.10
+        supervisor._usage_poller._state.utilization_7d = 0.10
+
+        with patch("botfarm.supervisor.multiprocessing.Process") as MockProc:
+            mock_proc = MagicMock()
+            mock_proc.pid = 555
+            MockProc.return_value = mock_proc
+
+            supervisor._handle_paused_slots()
+
+            mock_proc.start.assert_called_once()
+
+        assert sm.get_slot("test-project", 1).status == "busy"
+
+
+# ---------------------------------------------------------------------------
+# Tick includes paused slots phase
+# ---------------------------------------------------------------------------
+
+
+class TestTickWithPausedSlots:
+    def test_tick_calls_handle_paused_slots(self, supervisor):
+        with (
+            patch.object(supervisor, "_reconcile_workers"),
+            patch.object(supervisor, "_handle_finished_slots"),
+            patch.object(supervisor, "_handle_paused_slots") as mock_paused,
+            patch.object(supervisor, "_poll_usage"),
+            patch.object(supervisor, "_poll_and_dispatch"),
+        ):
+            supervisor._tick()
+            mock_paused.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
