@@ -16,6 +16,7 @@ from botfarm.config import (
     create_default_config,
     load_config,
 )
+from botfarm.db import get_task_history, init_db
 
 ENV_FILE_PATH = DEFAULT_CONFIG_DIR / ".env"
 
@@ -33,14 +34,24 @@ def _resolve_paths(
 
     cfg_path = config_path or DEFAULT_CONFIG_PATH
     if cfg_path.exists():
-        try:
-            config = load_config(cfg_path)
-            state_path = Path(config.state_file).expanduser()
-            db_path = Path(config.database.path).expanduser()
-        except (ConfigError, Exception):
-            pass
+        config = load_config(cfg_path)
+        state_path = Path(config.state_file).expanduser()
+        db_path = Path(config.database.path).expanduser()
 
     return state_path, db_path
+
+
+def _format_duration(total_seconds: int) -> str:
+    """Format a duration in seconds as a human-readable string (e.g. '2h30m', '5m30s', '45s')."""
+    if total_seconds < 0:
+        return "-"
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h{minutes:02d}m"
+    if minutes:
+        return f"{minutes}m{seconds:02d}s"
+    return f"{seconds}s"
 
 
 def _elapsed(started_at: str | None) -> str:
@@ -50,16 +61,7 @@ def _elapsed(started_at: str | None) -> str:
     try:
         start = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
         delta = datetime.now(timezone.utc) - start
-        total_seconds = int(delta.total_seconds())
-        if total_seconds < 0:
-            return "-"
-        hours, remainder = divmod(total_seconds, 3600)
-        minutes, seconds = divmod(remainder, 60)
-        if hours:
-            return f"{hours}h{minutes:02d}m"
-        if minutes:
-            return f"{minutes}m{seconds:02d}s"
-        return f"{seconds}s"
+        return _format_duration(int(delta.total_seconds()))
     except (ValueError, TypeError):
         return "-"
 
@@ -156,24 +158,14 @@ def history(config_path, limit, project, status_filter):
         return
 
     try:
-        conn = sqlite3.connect(str(db_path))
-        conn.row_factory = sqlite3.Row
+        conn = init_db(db_path)
     except sqlite3.Error as exc:
         raise click.ClickException(f"Failed to open database: {exc}") from exc
 
     try:
-        query = "SELECT * FROM tasks WHERE 1=1"
-        params: list[object] = []
-        if project is not None:
-            query += " AND project = ?"
-            params.append(project)
-        if status_filter is not None:
-            query += " AND status = ?"
-            params.append(status_filter)
-        query += " ORDER BY created_at DESC LIMIT ?"
-        params.append(limit)
-
-        rows = conn.execute(query, params).fetchall()
+        rows = get_task_history(
+            conn, limit=limit, project=project, status=status_filter
+        )
     except sqlite3.OperationalError as exc:
         raise click.ClickException(f"Database query failed: {exc}") from exc
     finally:
@@ -204,8 +196,8 @@ def history(config_path, limit, project, status_filter):
         else:
             status_display = status_val
 
-        cost = f"{row['cost_usd']:.2f}" if row["cost_usd"] else "-"
-        turns = str(row["turns"]) if row["turns"] else "-"
+        cost = f"{row['cost_usd']:.2f}" if row["cost_usd"] is not None else "-"
+        turns = str(row["turns"]) if row["turns"] is not None else "-"
 
         duration = "-"
         if row["started_at"] and row["completed_at"]:
@@ -216,16 +208,7 @@ def history(config_path, limit, project, status_filter):
                 end = datetime.fromisoformat(
                     row["completed_at"].replace("Z", "+00:00")
                 )
-                delta = end - start
-                total_secs = int(delta.total_seconds())
-                hours, remainder = divmod(total_secs, 3600)
-                minutes, secs = divmod(remainder, 60)
-                if hours:
-                    duration = f"{hours}h{minutes:02d}m"
-                elif minutes:
-                    duration = f"{minutes}m{secs:02d}s"
-                else:
-                    duration = f"{secs}s"
+                duration = _format_duration(int((end - start).total_seconds()))
             except (ValueError, TypeError):
                 pass
 
@@ -261,8 +244,7 @@ def limits(config_path):
         return
 
     try:
-        conn = sqlite3.connect(str(db_path))
-        conn.row_factory = sqlite3.Row
+        conn = init_db(db_path)
     except sqlite3.Error as exc:
         raise click.ClickException(f"Failed to open database: {exc}") from exc
 
@@ -306,6 +288,8 @@ def limits(config_path):
     if resets_at:
         table.add_row("Resets at", resets_at)
 
+    # TODO: threshold (0.9) is duplicated from supervisor dispatch logic — unify when
+    # the supervisor makes this configurable.
     paused = util_5h is not None and util_5h >= 0.9
     pause_color = "red" if paused else "green"
     pause_label = "YES" if paused else "no"

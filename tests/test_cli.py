@@ -416,8 +416,10 @@ class TestHistoryCommand:
         )
         result = runner.invoke(main, ["history", "-n", "2"])
         assert result.exit_code == 0
-        # Should show at most 2 rows; verify table is printed
         assert "Task History" in result.output
+        # Verify exactly 2 rows shown (ticket IDs SMA-100..104 inserted, only 2 returned)
+        shown = [f"SMA-{100 + i}" for i in range(5) if f"SMA-{100 + i}" in result.output]
+        assert len(shown) == 2
 
     def test_failed_task_shows_red(self, runner, db_file, monkeypatch):
         conn = sqlite3.connect(str(db_file))
