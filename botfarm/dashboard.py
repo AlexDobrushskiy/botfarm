@@ -49,22 +49,22 @@ def create_app(
 
     def _read_state() -> dict:
         """Read the supervisor state.json file."""
-        path = app.state.state_file
-        if not path.exists():
-            return {}
         try:
-            data = json.loads(path.read_text())
+            data = json.loads(app.state.state_file.read_text())
             return data if isinstance(data, dict) else {"slots": data}
         except (json.JSONDecodeError, OSError):
             return {}
 
     def _get_db() -> sqlite3.Connection | None:
-        """Open a read-only database connection."""
-        path = app.state.db_path
-        if not path.exists():
+        """Open a read-only database connection.
+
+        Note: the exists() check is intentional here — unlike file reads,
+        sqlite3.connect() creates the file if missing rather than raising.
+        """
+        if not app.state.db_path.exists():
             return None
         try:
-            conn = sqlite3.connect(str(path))
+            conn = sqlite3.connect(str(app.state.db_path))
             conn.row_factory = sqlite3.Row
             return conn
         except sqlite3.Error:
@@ -101,7 +101,7 @@ def create_app(
     # --- Routes ---
 
     @app.get("/", response_class=HTMLResponse)
-    async def index(request: Request):
+    def index(request: Request):
         state = _read_state()
         slots = state.get("slots", [])
         dispatch_paused = state.get("dispatch_paused", False)
@@ -117,7 +117,7 @@ def create_app(
         })
 
     @app.get("/partials/slots", response_class=HTMLResponse)
-    async def partial_slots(request: Request):
+    def partial_slots(request: Request):
         state = _read_state()
         slots = state.get("slots", [])
         dispatch_paused = state.get("dispatch_paused", False)
@@ -131,7 +131,7 @@ def create_app(
         })
 
     @app.get("/partials/usage", response_class=HTMLResponse)
-    async def partial_usage(request: Request):
+    def partial_usage(request: Request):
         state = _read_state()
         usage = state.get("usage", {})
         return templates.TemplateResponse("partials/usage.html", {
@@ -168,7 +168,7 @@ def create_app(
             return []
 
     @app.get("/history", response_class=HTMLResponse)
-    async def history_page(request: Request):
+    def history_page(request: Request):
         conn = _get_db()
         tasks = []
         if conn:
@@ -182,7 +182,7 @@ def create_app(
         })
 
     @app.get("/partials/history", response_class=HTMLResponse)
-    async def partial_history(request: Request):
+    def partial_history(request: Request):
         conn = _get_db()
         tasks = []
         if conn:
@@ -196,7 +196,7 @@ def create_app(
         })
 
     @app.get("/usage", response_class=HTMLResponse)
-    async def usage_page(request: Request):
+    def usage_page(request: Request):
         state = _read_state()
         usage = state.get("usage", {})
         snapshots = []
@@ -218,7 +218,7 @@ def create_app(
         })
 
     @app.get("/metrics", response_class=HTMLResponse)
-    async def metrics_page(request: Request):
+    def metrics_page(request: Request):
         conn = _get_db()
         metrics: dict = {
             "total_tasks": 0,
