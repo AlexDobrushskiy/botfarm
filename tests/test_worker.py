@@ -708,6 +708,19 @@ class TestRunPipelineResume:
         assert result.success is True
         assert mock_exec.call_count == 5
 
+    def test_resume_invalid_stage_fails(self, conn, task_id, tmp_path):
+        """Resuming from an unknown stage should fail immediately."""
+        result = run_pipeline(
+            ticket_id="SMA-99",
+            task_id=task_id,
+            cwd=tmp_path,
+            conn=conn,
+            resume_from_stage="implment",
+        )
+        assert result.success is False
+        assert result.failure_stage == "implment"
+        assert "Unknown resume stage" in result.failure_reason
+
 
 # ---------------------------------------------------------------------------
 # _recover_pr_url

@@ -135,13 +135,10 @@ def _worker_entry(
 def _check_limit_hit(result: PipelineResult) -> bool:
     """Heuristic: detect if a pipeline failure was caused by a usage limit.
 
-    Checks for subprocess non-zero exit (CalledProcessError mention) or
-    specific exit subtypes that indicate limit-related termination.
+    Matches specific limit-related strings in the failure reason.
     """
     reason = (result.failure_reason or "").lower()
-    # Claude process killed or exited non-zero with limit-related signals
     limit_indicators = [
-        "calledprocesserror",
         "rate limit",
         "usage limit",
         "max_tokens_exceeded",
@@ -441,6 +438,9 @@ class Supervisor:
         state = self._usage_poller.state
         BUFFER_SECONDS = 120
 
+        # Prefer the 5h window reset (shorter, more common). If only the 7d
+        # window is set we use that; if the 7d limit was actually hit and
+        # resets later, _handle_paused_slots re-checks usage before resuming.
         resets_at = state.resets_at_5h or state.resets_at_7d
         if not resets_at:
             return None
@@ -461,12 +461,9 @@ class Supervisor:
         return row["id"] if row else None
 
     def _increment_limit_interruptions(self, task_id: int) -> None:
-        """Increment the limit_interruptions counter on a task."""
-        from botfarm.db import get_task
-        task = get_task(self._conn, task_id)
-        if task:
-            current = task["limit_interruptions"]
-            update_task(self._conn, task_id, limit_interruptions=current + 1)
+        """Atomically increment the limit_interruptions counter on a task."""
+        from botfarm.db import increment_limit_interruptions
+        increment_limit_interruptions(self._conn, task_id)
 
     # ------------------------------------------------------------------
     # Resume paused slots

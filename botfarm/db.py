@@ -183,6 +183,14 @@ def update_task(
     conn.execute(f"UPDATE tasks SET {set_clause} WHERE id = ?", values)  # noqa: S608
 
 
+def increment_limit_interruptions(conn: sqlite3.Connection, task_id: int) -> None:
+    """Atomically increment the limit_interruptions counter on a task."""
+    conn.execute(
+        "UPDATE tasks SET limit_interruptions = limit_interruptions + 1 WHERE id = ?",
+        (task_id,),
+    )
+
+
 def get_task(conn: sqlite3.Connection, task_id: int) -> sqlite3.Row | None:
     """Fetch a single task by id."""
     return conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()

@@ -285,7 +285,7 @@ def run_pipeline(
     max_turns: dict[str, int] | None = None,
     pr_checks_timeout: int = 600,
     resume_from_stage: str | None = None,
-    resume_session_id: str | None = None,
+    resume_session_id: str | None = None,  # TODO: wire through to run_claude --resume
 ) -> PipelineResult:
     """Execute the full implement→review→fix→pr_checks→merge pipeline.
 
@@ -311,6 +311,13 @@ def run_pipeline(
     pipeline = PipelineResult(ticket_id=ticket_id, success=False, stages_completed=[])
 
     pr_url: str | None = None
+
+    # Validate resume_from_stage upfront
+    if resume_from_stage and resume_from_stage not in STAGES:
+        pipeline.failure_stage = resume_from_stage
+        pipeline.failure_reason = f"Unknown resume stage: {resume_from_stage}"
+        _record_failure(conn, task_id, pipeline)
+        return pipeline
 
     # When resuming, recover PR URL from existing stage_runs
     if resume_from_stage:

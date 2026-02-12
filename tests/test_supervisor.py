@@ -827,11 +827,20 @@ class TestSetupLogging:
 
 
 class TestCheckLimitHit:
-    def test_calledprocesserror_detected(self):
+    def test_calledprocesserror_alone_not_detected(self):
+        """CalledProcessError without limit-specific text is not a limit hit."""
         result = PipelineResult(
             ticket_id="T-1", success=False, stages_completed=[],
             failure_stage="implement",
             failure_reason="CalledProcessError: exit code 1",
+        )
+        assert _check_limit_hit(result) is False
+
+    def test_max_tokens_exceeded_detected(self):
+        result = PipelineResult(
+            ticket_id="T-1", success=False, stages_completed=[],
+            failure_stage="implement",
+            failure_reason="CalledProcessError: max_tokens_exceeded",
         )
         assert _check_limit_hit(result) is True
 
