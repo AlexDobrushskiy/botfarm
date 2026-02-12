@@ -419,7 +419,7 @@ class TestLinearPollerPoll:
             _make_issue(id="active-1", identifier="SMA-1"),
             _make_issue(id="new-1", identifier="SMA-2"),
         ]
-        candidates = poller.poll(active_ticket_ids={"active-1"})
+        candidates = poller.poll(active_ticket_ids={"SMA-1"})
         assert len(candidates) == 1
         assert candidates[0].identifier == "SMA-2"
 

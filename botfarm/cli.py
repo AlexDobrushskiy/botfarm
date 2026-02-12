@@ -4,7 +4,13 @@ import click
 from dotenv import load_dotenv
 
 from botfarm import __version__
-from botfarm.config import DEFAULT_CONFIG_DIR, DEFAULT_CONFIG_PATH, create_default_config
+from botfarm.config import (
+    DEFAULT_CONFIG_DIR,
+    DEFAULT_CONFIG_PATH,
+    ConfigError,
+    create_default_config,
+    load_config,
+)
 
 ENV_FILE_PATH = DEFAULT_CONFIG_DIR / ".env"
 
@@ -49,3 +55,33 @@ def init(path):
         return
     create_default_config(config_path)
     click.echo(f"Created default config at: {config_path}")
+
+
+@main.command()
+@click.option(
+    "--config",
+    "config_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="Path to config file (default: ~/.botfarm/config.yaml).",
+)
+@click.option(
+    "--log-dir",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Directory for log files (default: ~/.botfarm/logs/).",
+)
+def run(config_path, log_dir):
+    """Run the supervisor in foreground mode."""
+    from botfarm.supervisor import Supervisor, setup_logging
+
+    cfg_path = config_path or DEFAULT_CONFIG_PATH
+    try:
+        config = load_config(cfg_path)
+    except ConfigError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    setup_logging(log_dir=log_dir, console=True)
+
+    supervisor = Supervisor(config, log_dir=log_dir)
+    supervisor.run()

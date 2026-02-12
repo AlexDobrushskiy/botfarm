@@ -112,10 +112,20 @@ class TestTasks:
     def test_get_task_by_ticket_missing(self, conn):
         assert get_task_by_ticket(conn, "NOPE-999") is None
 
-    def test_unique_ticket_id(self, conn):
-        insert_task(conn, ticket_id="SMA-3", title="First", project="p", slot=1)
-        with pytest.raises(sqlite3.IntegrityError):
-            insert_task(conn, ticket_id="SMA-3", title="Dup", project="p", slot=2)
+    def test_duplicate_ticket_id_upserts(self, conn):
+        tid1 = insert_task(conn, ticket_id="SMA-3", title="First", project="p", slot=1)
+        update_task(conn, tid1, status="failed", failure_reason="old failure")
+        conn.commit()
+
+        # Re-inserting same ticket_id resets the row for retry
+        tid2 = insert_task(conn, ticket_id="SMA-3", title="Retry", project="p", slot=2)
+        assert tid2 == tid1  # Same row reused
+
+        row = get_task(conn, tid2)
+        assert row["title"] == "Retry"
+        assert row["slot"] == 2
+        assert row["status"] == "pending"
+        assert row["failure_reason"] is None
 
     def test_update_task(self, conn):
         tid = insert_task(

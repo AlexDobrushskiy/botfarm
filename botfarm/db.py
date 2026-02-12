@@ -112,15 +112,41 @@ def insert_task(
     slot: int,
     status: str = "pending",
 ) -> int:
-    """Insert a new task and return its id."""
+    """Insert a new task (or reset an existing one for retries) and return its id.
+
+    If a task with the same ticket_id already exists (e.g. a retry after
+    failure), the existing row is updated with fresh values instead of
+    raising an IntegrityError.
+    """
     cur = conn.execute(
         """
         INSERT INTO tasks (ticket_id, title, project, slot, status, created_at)
         VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(ticket_id) DO UPDATE SET
+            title = excluded.title,
+            project = excluded.project,
+            slot = excluded.slot,
+            status = excluded.status,
+            created_at = excluded.created_at,
+            started_at = NULL,
+            completed_at = NULL,
+            cost_usd = 0.0,
+            turns = 0,
+            review_iterations = 0,
+            comments = '',
+            limit_interruptions = 0,
+            failure_reason = NULL
         """,
         (ticket_id, title, project, slot, status, _now_iso()),
     )
-    return cur.lastrowid
+    # ON CONFLICT ... DO UPDATE sets lastrowid; for the update case we need
+    # to look up the existing id.
+    if cur.lastrowid:
+        return cur.lastrowid
+    row = conn.execute(
+        "SELECT id FROM tasks WHERE ticket_id = ?", (ticket_id,)
+    ).fetchone()
+    return row[0]
 
 
 def update_task(
