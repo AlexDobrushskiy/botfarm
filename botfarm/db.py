@@ -207,10 +207,24 @@ def get_task_history(
     conn: sqlite3.Connection,
     *,
     limit: int = 50,
+    offset: int = 0,
     project: str | None = None,
     status: str | None = None,
+    search: str | None = None,
+    sort_by: str = "created_at",
+    sort_dir: str = "DESC",
 ) -> list[sqlite3.Row]:
-    """Return recent tasks, newest first. Optionally filter by project/status."""
+    """Return recent tasks, newest first. Optionally filter by project/status/search."""
+    allowed_sort_cols = {
+        "ticket_id", "title", "project", "status", "cost_usd", "turns",
+        "review_iterations", "limit_interruptions", "created_at",
+        "started_at", "completed_at",
+    }
+    if sort_by not in allowed_sort_cols:
+        sort_by = "created_at"
+    if sort_dir.upper() not in ("ASC", "DESC"):
+        sort_dir = "DESC"
+
     query = "SELECT * FROM tasks WHERE 1=1"
     params: list[object] = []
     if project is not None:
@@ -219,9 +233,42 @@ def get_task_history(
     if status is not None:
         query += " AND status = ?"
         params.append(status)
-    query += " ORDER BY created_at DESC LIMIT ?"
-    params.append(limit)
+    if search is not None:
+        query += " AND (ticket_id LIKE ? OR title LIKE ?)"
+        like = f"%{search}%"
+        params.extend([like, like])
+    query += f" ORDER BY {sort_by} {sort_dir.upper()} LIMIT ? OFFSET ?"  # noqa: S608
+    params.extend([limit, offset])
     return conn.execute(query, params).fetchall()
+
+
+def count_tasks(
+    conn: sqlite3.Connection,
+    *,
+    project: str | None = None,
+    status: str | None = None,
+    search: str | None = None,
+) -> int:
+    """Count tasks matching the given filters."""
+    query = "SELECT COUNT(*) FROM tasks WHERE 1=1"
+    params: list[object] = []
+    if project is not None:
+        query += " AND project = ?"
+        params.append(project)
+    if status is not None:
+        query += " AND status = ?"
+        params.append(status)
+    if search is not None:
+        query += " AND (ticket_id LIKE ? OR title LIKE ?)"
+        like = f"%{search}%"
+        params.extend([like, like])
+    return conn.execute(query, params).fetchone()[0]
+
+
+def get_distinct_projects(conn: sqlite3.Connection) -> list[str]:
+    """Return distinct project names from tasks table."""
+    rows = conn.execute("SELECT DISTINCT project FROM tasks ORDER BY project").fetchall()
+    return [r[0] for r in rows]
 
 
 # ---------------------------------------------------------------------------

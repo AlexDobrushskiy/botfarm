@@ -9,7 +9,17 @@ from fastapi.testclient import TestClient
 
 from botfarm.config import DashboardConfig
 from botfarm.dashboard import create_app, start_dashboard
-from botfarm.db import init_db, insert_task, insert_usage_snapshot, update_task
+from botfarm.db import (
+    count_tasks,
+    get_distinct_projects,
+    get_task_history,
+    init_db,
+    insert_event,
+    insert_stage_run,
+    insert_task,
+    insert_usage_snapshot,
+    update_task,
+)
 
 
 @pytest.fixture()
@@ -97,7 +107,42 @@ def db_file(tmp_path):
         completed_at="2026-02-12T11:30:00+00:00",
         cost_usd=1.25,
         turns=42,
+        review_iterations=2,
     )
+    insert_stage_run(
+        conn,
+        task_id=task_id,
+        stage="implement",
+        iteration=1,
+        session_id="sess-abc123def456",
+        turns=30,
+        duration_seconds=3600.0,
+        cost_usd=0.75,
+    )
+    insert_stage_run(
+        conn,
+        task_id=task_id,
+        stage="review",
+        iteration=1,
+        turns=12,
+        duration_seconds=1800.0,
+        cost_usd=0.50,
+        exit_subtype="approved",
+    )
+    insert_event(conn, task_id=task_id, event_type="stage_started", detail="implement")
+    insert_event(conn, task_id=task_id, event_type="stage_completed", detail="implement")
+    insert_event(conn, task_id=task_id, event_type="pr_created", detail="https://github.com/org/repo/pull/1")
+
+    task_id2 = insert_task(
+        conn,
+        ticket_id="TST-2",
+        title="Add feature",
+        project="other-project",
+        slot=2,
+        status="failed",
+    )
+    update_task(conn, task_id2, failure_reason="Tests failed", cost_usd=0.50, turns=10)
+
     insert_usage_snapshot(
         conn,
         utilization_5h=0.45,
@@ -374,6 +419,42 @@ class TestHistoryPage:
         assert "completed" in body
         assert "1.25" in body
 
+    def test_contains_filter_form(self, client):
+        resp = client.get("/history")
+        body = resp.text
+        assert "history-filters" in body
+        assert "Search" in body
+        assert "Project" in body
+        assert "Status" in body
+
+    def test_contains_all_columns(self, client):
+        resp = client.get("/history")
+        body = resp.text
+        assert "Ticket" in body
+        assert "Title" in body
+        assert "Wall Time" in body
+        assert "Reviews" in body
+        assert "Limit Hits" in body
+
+    def test_project_dropdown_populated(self, client):
+        resp = client.get("/history")
+        body = resp.text
+        assert "my-project" in body
+        assert "other-project" in body
+
+    def test_task_rows_are_clickable(self, client):
+        resp = client.get("/history")
+        assert "/task/" in resp.text
+
+    def test_ticket_links_to_linear(self, state_file, db_file):
+        app = create_app(
+            state_file=state_file, db_path=db_file,
+            linear_workspace="my-team",
+        )
+        client = TestClient(app)
+        resp = client.get("/history")
+        assert "linear.app/my-team/issue/TST-1" in resp.text
+
     def test_history_no_db(self, state_file, tmp_path):
         app = create_app(
             state_file=state_file,
@@ -385,6 +466,96 @@ class TestHistoryPage:
         assert "No tasks found" in resp.text
 
 
+class TestHistoryFilters:
+    def test_filter_by_project(self, client):
+        resp = client.get("/history?project=my-project")
+        body = resp.text
+        assert "TST-1" in body
+        assert "TST-2" not in body
+
+    def test_filter_by_status(self, client):
+        resp = client.get("/history?status=failed")
+        body = resp.text
+        assert "TST-2" in body
+        assert "TST-1" not in body
+
+    def test_search_by_ticket_id(self, client):
+        resp = client.get("/history?search=TST-2")
+        body = resp.text
+        assert "TST-2" in body
+        assert "TST-1" not in body
+
+    def test_search_by_title(self, client):
+        resp = client.get("/history?search=Add feature")
+        body = resp.text
+        assert "TST-2" in body
+
+    def test_sort_by_cost_asc(self, client):
+        resp = client.get("/history?sort_by=cost_usd&sort_dir=ASC")
+        assert resp.status_code == 200
+        body = resp.text
+        # TST-2 ($0.50) should appear before TST-1 ($1.25)
+        assert body.index("TST-2") < body.index("TST-1")
+
+    def test_sort_by_cost_desc(self, client):
+        resp = client.get("/history?sort_by=cost_usd&sort_dir=DESC")
+        assert resp.status_code == 200
+        body = resp.text
+        assert body.index("TST-1") < body.index("TST-2")
+
+    def test_invalid_sort_column_defaults_gracefully(self, client):
+        resp = client.get("/history?sort_by=DROP TABLE&sort_dir=ASC")
+        assert resp.status_code == 200
+
+    def test_combined_filters(self, client):
+        resp = client.get("/history?project=other-project&status=failed")
+        body = resp.text
+        assert "TST-2" in body
+        assert "TST-1" not in body
+
+
+class TestHistoryPagination:
+    def test_pagination_info_shown(self, client):
+        resp = client.get("/history")
+        body = resp.text
+        assert "page 1 of 1" in body
+        assert "2 tasks found" in body
+
+    def test_page_param(self, client):
+        resp = client.get("/history?page=1")
+        assert resp.status_code == 200
+
+    def test_invalid_page_defaults_to_1(self, client):
+        resp = client.get("/history?page=abc")
+        assert resp.status_code == 200
+
+    def test_pagination_with_many_tasks(self, state_file, tmp_path):
+        """When there are more than 25 tasks, pagination links appear."""
+        path = tmp_path / "big.db"
+        conn = init_db(path)
+        for i in range(30):
+            insert_task(
+                conn,
+                ticket_id=f"BIG-{i}",
+                title=f"Task {i}",
+                project="bulk",
+                slot=1,
+            )
+        conn.commit()
+        conn.close()
+        app = create_app(state_file=state_file, db_path=path)
+        client = TestClient(app)
+        resp = client.get("/history")
+        body = resp.text
+        assert "page 1 of 2" in body
+        assert "Next" in body
+
+        resp2 = client.get("/history?page=2")
+        body2 = resp2.text
+        assert "page 2 of 2" in body2
+        assert "Prev" in body2
+
+
 class TestPartialHistory:
     def test_returns_200(self, client):
         resp = client.get("/partials/history")
@@ -393,6 +564,101 @@ class TestPartialHistory:
     def test_contains_task_data(self, client):
         resp = client.get("/partials/history")
         assert "TST-1" in resp.text
+
+    def test_partial_respects_filters(self, client):
+        resp = client.get("/partials/history?project=other-project")
+        body = resp.text
+        assert "TST-2" in body
+        assert "TST-1" not in body
+
+
+class TestTaskDetailPage:
+    def test_returns_200(self, client):
+        resp = client.get("/task/1")
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers["content-type"]
+
+    def test_contains_task_summary(self, client):
+        resp = client.get("/task/1")
+        body = resp.text
+        assert "TST-1" in body
+        assert "Fix bug" in body
+        assert "completed" in body
+        assert "1.25" in body
+        assert "my-project" in body
+
+    def test_contains_metric_cards(self, client):
+        resp = client.get("/task/1")
+        body = resp.text
+        assert "Wall Time" in body
+        assert "Cost" in body
+        assert "Turns" in body
+        assert "Review Iterations" in body
+
+    def test_contains_stage_runs(self, client):
+        resp = client.get("/task/1")
+        body = resp.text
+        assert "Stage Runs" in body
+        assert "implement" in body
+        assert "review" in body
+        assert "sess-abc123d" in body  # truncated session id
+        assert "approved" in body
+
+    def test_contains_event_log(self, client):
+        resp = client.get("/task/1")
+        body = resp.text
+        assert "Event Log" in body
+        assert "stage_started" in body
+        assert "stage_completed" in body
+        assert "pr_created" in body
+
+    def test_back_link(self, client):
+        resp = client.get("/task/1")
+        assert "Back to Task History" in resp.text
+
+    def test_ticket_links_to_linear(self, state_file, db_file):
+        app = create_app(
+            state_file=state_file, db_path=db_file,
+            linear_workspace="my-team",
+        )
+        client = TestClient(app)
+        resp = client.get("/task/1")
+        assert "linear.app/my-team/issue/TST-1" in resp.text
+
+    def test_task_not_found(self, client):
+        resp = client.get("/task/9999")
+        assert resp.status_code == 200
+        assert "Task not found" in resp.text
+
+    def test_task_detail_no_db(self, state_file, tmp_path):
+        app = create_app(
+            state_file=state_file,
+            db_path=tmp_path / "nonexistent.db",
+        )
+        client = TestClient(app)
+        resp = client.get("/task/1")
+        assert resp.status_code == 200
+        assert "Task not found" in resp.text
+
+    def test_failed_task_shows_failure_reason(self, client):
+        resp = client.get("/task/2")
+        body = resp.text
+        assert "TST-2" in body
+        assert "Tests failed" in body
+
+    def test_task_with_no_stages_or_events(self, state_file, tmp_path):
+        path = tmp_path / "sparse.db"
+        conn = init_db(path)
+        insert_task(conn, ticket_id="BARE-1", title="Bare task", project="p", slot=1)
+        conn.commit()
+        conn.close()
+        app = create_app(state_file=state_file, db_path=path)
+        client = TestClient(app)
+        resp = client.get("/task/1")
+        body = resp.text
+        assert "BARE-1" in body
+        assert "No stage runs recorded" in body
+        assert "No events recorded" in body
 
 
 # --- Usage Trends ---
@@ -429,7 +695,7 @@ class TestMetricsPage:
         assert "Total Tasks" in body
         assert "Completed" in body
         assert "Failed" in body
-        assert "$1.25" in body
+        assert "$1.75" in body
 
     def test_metrics_no_db(self, state_file, tmp_path):
         app = create_app(

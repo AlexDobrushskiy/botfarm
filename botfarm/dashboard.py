@@ -18,6 +18,14 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 from botfarm.config import DashboardConfig
+from botfarm.db import (
+    count_tasks,
+    get_distinct_projects,
+    get_events,
+    get_stage_runs,
+    get_task,
+    get_task_history,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -192,41 +200,156 @@ def create_app(
                     pass
         return tasks
 
-    def _fetch_tasks(conn: sqlite3.Connection) -> list[dict]:
+    PAGE_SIZE = 25
+
+    def _fetch_tasks_filtered(
+        conn: sqlite3.Connection,
+        *,
+        project: str | None = None,
+        status: str | None = None,
+        search: str | None = None,
+        sort_by: str = "created_at",
+        sort_dir: str = "DESC",
+        page: int = 1,
+    ) -> tuple[list[dict], int, int]:
+        """Fetch tasks with filters and pagination.
+
+        Returns (tasks, total_count, total_pages).
+        """
         try:
-            rows = conn.execute(
-                "SELECT * FROM tasks ORDER BY created_at DESC LIMIT 50"
-            ).fetchall()
-            return _enrich_tasks([dict(r) for r in rows])
+            total = count_tasks(conn, project=project, status=status, search=search)
+            total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
+            page = max(1, min(page, total_pages))
+            offset = (page - 1) * PAGE_SIZE
+            rows = get_task_history(
+                conn,
+                limit=PAGE_SIZE,
+                offset=offset,
+                project=project,
+                status=status,
+                search=search,
+                sort_by=sort_by,
+                sort_dir=sort_dir,
+            )
+            return _enrich_tasks([dict(r) for r in rows]), total, total_pages
         except sqlite3.OperationalError:
-            return []
+            return [], 0, 1
+
+    def _extract_history_params(request: Request) -> dict:
+        """Extract filter/sort/page query params from request."""
+        params = request.query_params
+        project = params.get("project") or None
+        status = params.get("status") or None
+        search = params.get("search") or None
+        sort_by = params.get("sort_by", "created_at")
+        sort_dir = params.get("sort_dir", "DESC")
+        try:
+            page = int(params.get("page", "1"))
+        except ValueError:
+            page = 1
+        return {
+            "project": project,
+            "status": status,
+            "search": search,
+            "sort_by": sort_by,
+            "sort_dir": sort_dir,
+            "page": page,
+        }
+
+    def _history_context(request: Request) -> dict:
+        """Build the full template context for history views."""
+        hp = _extract_history_params(request)
+        conn = _get_db()
+        tasks: list[dict] = []
+        total = 0
+        total_pages = 1
+        projects: list[str] = []
+        if conn:
+            try:
+                tasks, total, total_pages = _fetch_tasks_filtered(conn, **hp)
+                projects = get_distinct_projects(conn)
+            except sqlite3.OperationalError:
+                pass
+            finally:
+                conn.close()
+        page = max(1, min(hp["page"], total_pages))
+        return {
+            "request": request,
+            "tasks": tasks,
+            "total": total,
+            "page": page,
+            "total_pages": total_pages,
+            "projects": projects,
+            "filter_project": hp["project"] or "",
+            "filter_status": hp["status"] or "",
+            "filter_search": hp["search"] or "",
+            "sort_by": hp["sort_by"],
+            "sort_dir": hp["sort_dir"],
+            "linear_url": _linear_url,
+        }
 
     @app.get("/history", response_class=HTMLResponse)
     def history_page(request: Request):
-        conn = _get_db()
-        tasks = []
-        if conn:
-            try:
-                tasks = _fetch_tasks(conn)
-            finally:
-                conn.close()
-        return templates.TemplateResponse("history.html", {
-            "request": request,
-            "tasks": tasks,
-        })
+        ctx = _history_context(request)
+        return templates.TemplateResponse("history.html", ctx)
 
     @app.get("/partials/history", response_class=HTMLResponse)
     def partial_history(request: Request):
+        ctx = _history_context(request)
+        return templates.TemplateResponse("partials/history.html", ctx)
+
+    @app.get("/task/{task_id}", response_class=HTMLResponse)
+    def task_detail_page(request: Request, task_id: int):
         conn = _get_db()
-        tasks = []
-        if conn:
-            try:
-                tasks = _fetch_tasks(conn)
-            finally:
-                conn.close()
-        return templates.TemplateResponse("partials/history.html", {
+        if not conn:
+            return templates.TemplateResponse("task_detail.html", {
+                "request": request,
+                "task": None,
+                "stages": [],
+                "events": [],
+                "linear_url": _linear_url,
+                "format_duration": _format_duration,
+            })
+        try:
+            task_row = get_task(conn, task_id)
+            if task_row is None:
+                return templates.TemplateResponse("task_detail.html", {
+                    "request": request,
+                    "task": None,
+                    "stages": [],
+                    "events": [],
+                    "linear_url": _linear_url,
+                    "format_duration": _format_duration,
+                })
+            task = dict(task_row)
+            # Compute duration
+            task["duration"] = "-"
+            if task.get("started_at") and task.get("completed_at"):
+                try:
+                    start = datetime.fromisoformat(
+                        task["started_at"].replace("Z", "+00:00")
+                    )
+                    end = datetime.fromisoformat(
+                        task["completed_at"].replace("Z", "+00:00")
+                    )
+                    task["duration"] = _format_duration(
+                        int((end - start).total_seconds())
+                    )
+                except (ValueError, TypeError):
+                    pass
+            stages = [dict(r) for r in get_stage_runs(conn, task_id)]
+            events = [dict(r) for r in get_events(conn, task_id=task_id, limit=500)]
+            # Events come newest-first from DB; reverse for chronological display
+            events.reverse()
+        finally:
+            conn.close()
+        return templates.TemplateResponse("task_detail.html", {
             "request": request,
-            "tasks": tasks,
+            "task": task,
+            "stages": stages,
+            "events": events,
+            "linear_url": _linear_url,
+            "format_duration": _format_duration,
         })
 
     @app.get("/usage", response_class=HTMLResponse)
