@@ -388,7 +388,7 @@ class Supervisor:
                     detail=reason,
                 )
                 self._conn.commit()
-            self._slot_manager.set_dispatch_paused(True, reason)
+                self._slot_manager.set_dispatch_paused(True, reason)
             return
 
         # Utilization is below thresholds — resume if previously paused

@@ -27,10 +27,14 @@ DEFAULT_DB_PATH = DEFAULT_CONFIG_DIR / "botfarm.db"
 
 def _resolve_paths(
     config_path: Path | None,
-) -> tuple[Path, Path]:
-    """Resolve state file and database paths from config, falling back to defaults."""
+) -> tuple[Path, Path, "BotfarmConfig | None"]:
+    """Resolve state file and database paths from config, falling back to defaults.
+
+    Returns (state_path, db_path, config_or_None).
+    """
     state_path = DEFAULT_STATE_FILE
     db_path = DEFAULT_DB_PATH
+    config = None
 
     cfg_path = config_path or DEFAULT_CONFIG_PATH
     if cfg_path.exists():
@@ -38,7 +42,7 @@ def _resolve_paths(
         state_path = Path(config.state_file).expanduser()
         db_path = Path(config.database.path).expanduser()
 
-    return state_path, db_path
+    return state_path, db_path, config
 
 
 def _format_duration(total_seconds: int) -> str:
@@ -92,7 +96,7 @@ def main():
 )
 def status(config_path):
     """Show current slot states across all projects."""
-    state_path, _ = _resolve_paths(config_path)
+    state_path, _, _ = _resolve_paths(config_path)
 
     if not state_path.exists():
         click.echo("No state file found. Is the supervisor running?")
@@ -166,7 +170,7 @@ def status(config_path):
 @click.option("--status", "status_filter", default=None, help="Filter by status.")
 def history(config_path, limit, project, status_filter):
     """Show recent completed/failed tasks with key metrics."""
-    _, db_path = _resolve_paths(config_path)
+    _, db_path, _ = _resolve_paths(config_path)
 
     if not db_path.exists():
         click.echo("No database found. No tasks have been run yet.")
@@ -252,21 +256,18 @@ def history(config_path, limit, project, status_filter):
 )
 def limits(config_path):
     """Show current usage limit utilization."""
-    state_path, db_path = _resolve_paths(config_path)
+    state_path, db_path, cfg = _resolve_paths(config_path)
 
     # Load thresholds from config (fall back to defaults)
     from botfarm.config import UsageLimitsConfig
 
-    threshold_5h = UsageLimitsConfig.pause_five_hour_threshold
-    threshold_7d = UsageLimitsConfig.pause_seven_day_threshold
-    cfg_path = config_path or DEFAULT_CONFIG_PATH
-    if cfg_path.exists():
-        try:
-            cfg = load_config(cfg_path)
-            threshold_5h = cfg.usage_limits.pause_five_hour_threshold
-            threshold_7d = cfg.usage_limits.pause_seven_day_threshold
-        except ConfigError:
-            pass
+    if cfg is not None:
+        threshold_5h = cfg.usage_limits.pause_five_hour_threshold
+        threshold_7d = cfg.usage_limits.pause_seven_day_threshold
+    else:
+        defaults = UsageLimitsConfig()
+        threshold_5h = defaults.pause_five_hour_threshold
+        threshold_7d = defaults.pause_seven_day_threshold
 
     # Read dispatch_paused from state.json if available
     dispatch_paused_from_state = None
@@ -312,9 +313,13 @@ def limits(config_path):
     resets_at = row["resets_at"]
     recorded_at = row["created_at"]
 
+    # Derive yellow→red boundary as midpoint between threshold and 1.0
+    red_5h = (threshold_5h + 1.0) / 2
+    red_7d = (threshold_7d + 1.0) / 2
+
     if util_5h is not None:
         pct_5h = f"{util_5h * 100:.1f}%"
-        color = "green" if util_5h < threshold_5h else ("yellow" if util_5h < 0.95 else "red")
+        color = "green" if util_5h < threshold_5h else ("yellow" if util_5h < red_5h else "red")
         table.add_row(
             f"5-hour utilization (pause >= {threshold_5h * 100:.0f}%)",
             f"[{color}]{pct_5h}[/{color}]",
@@ -324,7 +329,7 @@ def limits(config_path):
 
     if util_7d is not None:
         pct_7d = f"{util_7d * 100:.1f}%"
-        color = "green" if util_7d < threshold_7d else ("yellow" if util_7d < 0.95 else "red")
+        color = "green" if util_7d < threshold_7d else ("yellow" if util_7d < red_7d else "red")
         table.add_row(
             f"7-day utilization (pause >= {threshold_7d * 100:.0f}%)",
             f"[{color}]{pct_7d}[/{color}]",

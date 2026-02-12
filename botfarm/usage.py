@@ -22,8 +22,6 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_POLL_INTERVAL = 300  # seconds
 DEFAULT_RETENTION_DAYS = 30
-PAUSE_THRESHOLD = 0.9  # legacy default — prefer configurable thresholds
-
 # Default thresholds (from ticket SMA-79)
 DEFAULT_PAUSE_5H_THRESHOLD = 0.85
 DEFAULT_PAUSE_7D_THRESHOLD = 0.90
@@ -37,16 +35,6 @@ class UsageState:
     utilization_7d: float | None = None
     resets_at_5h: str | None = None
     resets_at_7d: str | None = None
-
-    @property
-    def should_pause(self) -> bool:
-        """Return True if 5-hour utilization is at or above the default threshold.
-
-        Prefer ``should_pause_with_thresholds`` for configurable behaviour.
-        """
-        if self.utilization_5h is None:
-            return False
-        return self.utilization_5h >= PAUSE_THRESHOLD
 
     def should_pause_with_thresholds(
         self,

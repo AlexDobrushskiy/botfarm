@@ -15,7 +15,6 @@ from botfarm.usage import (
     DEFAULT_PAUSE_7D_THRESHOLD,
     DEFAULT_POLL_INTERVAL,
     DEFAULT_RETENTION_DAYS,
-    PAUSE_THRESHOLD,
     UsagePoller,
     UsageState,
 )
@@ -57,22 +56,6 @@ class TestUsageState:
         assert state.utilization_7d is None
         assert state.resets_at_5h is None
         assert state.resets_at_7d is None
-
-    def test_should_pause_false_when_none(self):
-        state = UsageState()
-        assert state.should_pause is False
-
-    def test_should_pause_false_below_threshold(self):
-        state = UsageState(utilization_5h=0.5)
-        assert state.should_pause is False
-
-    def test_should_pause_true_at_threshold(self):
-        state = UsageState(utilization_5h=PAUSE_THRESHOLD)
-        assert state.should_pause is True
-
-    def test_should_pause_true_above_threshold(self):
-        state = UsageState(utilization_5h=0.99)
-        assert state.should_pause is True
 
     def test_to_dict(self):
         state = UsageState(
@@ -396,20 +379,3 @@ class TestSnapshotRetention:
         assert len(snapshots) == 2
 
 
-# ---------------------------------------------------------------------------
-# Dispatch gating (should_pause)
-# ---------------------------------------------------------------------------
-
-
-class TestDispatchGating:
-    def test_high_utilization_pauses_dispatch(self, poller, conn):
-        with patch.object(poller, "_fetch", return_value=HIGH_USAGE_RESPONSE):
-            poller.force_poll(conn)
-
-        assert poller.state.should_pause is True
-
-    def test_normal_utilization_allows_dispatch(self, poller, conn):
-        with patch.object(poller, "_fetch", return_value=SAMPLE_USAGE_RESPONSE):
-            poller.force_poll(conn)
-
-        assert poller.state.should_pause is False
