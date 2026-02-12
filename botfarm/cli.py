@@ -1,6 +1,9 @@
+from pathlib import Path
+
 import click
 
 from botfarm import __version__
+from botfarm.config import DEFAULT_CONFIG_PATH, create_default_config
 
 
 @click.group()
@@ -26,3 +29,20 @@ def history():
 def limits():
     """Show current rate limit status."""
     click.echo("No limit data available.")
+
+
+@main.command()
+@click.option(
+    "--path",
+    type=click.Path(),
+    default=None,
+    help="Path for the config file.",
+)
+def init(path):
+    """Create a default configuration file."""
+    config_path = DEFAULT_CONFIG_PATH if path is None else Path(path)
+    if config_path.exists():
+        click.echo(f"Config file already exists: {config_path}")
+        return
+    create_default_config(config_path)
+    click.echo(f"Created default config at: {config_path}")
