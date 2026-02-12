@@ -331,6 +331,57 @@ def test_load_config_cross_project_duplicate_slots(tmp_path):
 # --- CLI init command ---
 
 
+# --- usage_limits config ---
+
+
+def test_load_config_usage_limits_defaults(tmp_path):
+    config_path = _write_config(tmp_path, MINIMAL_CONFIG)
+    config = load_config(config_path)
+    assert config.usage_limits.pause_five_hour_threshold == 0.85
+    assert config.usage_limits.pause_seven_day_threshold == 0.90
+
+
+def test_load_config_usage_limits_custom(tmp_path):
+    data = {
+        **MINIMAL_CONFIG,
+        "usage_limits": {
+            "pause_five_hour_threshold": 0.75,
+            "pause_seven_day_threshold": 0.80,
+        },
+    }
+    config_path = _write_config(tmp_path, data)
+    config = load_config(config_path)
+    assert config.usage_limits.pause_five_hour_threshold == 0.75
+    assert config.usage_limits.pause_seven_day_threshold == 0.80
+
+
+def test_load_config_usage_limits_out_of_range(tmp_path):
+    data = {
+        **MINIMAL_CONFIG,
+        "usage_limits": {
+            "pause_five_hour_threshold": 1.5,
+        },
+    }
+    config_path = _write_config(tmp_path, data)
+    with pytest.raises(ConfigError, match="between 0.0 and 1.0"):
+        load_config(config_path)
+
+
+def test_load_config_usage_limits_negative(tmp_path):
+    data = {
+        **MINIMAL_CONFIG,
+        "usage_limits": {
+            "pause_seven_day_threshold": -0.1,
+        },
+    }
+    config_path = _write_config(tmp_path, data)
+    with pytest.raises(ConfigError, match="between 0.0 and 1.0"):
+        load_config(config_path)
+
+
+# --- CLI init command ---
+
+
 def test_cli_init(tmp_path):
     from click.testing import CliRunner
 

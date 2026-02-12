@@ -117,6 +117,12 @@ def status(config_path):
         return
 
     console = Console()
+
+    # Show dispatch pause banner if active
+    if isinstance(data, dict) and data.get("dispatch_paused"):
+        reason = data.get("dispatch_pause_reason", "unknown")
+        console.print(f"[bold red]DISPATCH PAUSED:[/bold red] {reason}\n")
+
     table = Table(title="Slot Status")
     table.add_column("Project", style="bold")
     table.add_column("Slot", justify="right")
@@ -246,7 +252,33 @@ def history(config_path, limit, project, status_filter):
 )
 def limits(config_path):
     """Show current usage limit utilization."""
-    _, db_path = _resolve_paths(config_path)
+    state_path, db_path = _resolve_paths(config_path)
+
+    # Load thresholds from config (fall back to defaults)
+    from botfarm.config import UsageLimitsConfig
+
+    threshold_5h = UsageLimitsConfig.pause_five_hour_threshold
+    threshold_7d = UsageLimitsConfig.pause_seven_day_threshold
+    cfg_path = config_path or DEFAULT_CONFIG_PATH
+    if cfg_path.exists():
+        try:
+            cfg = load_config(cfg_path)
+            threshold_5h = cfg.usage_limits.pause_five_hour_threshold
+            threshold_7d = cfg.usage_limits.pause_seven_day_threshold
+        except ConfigError:
+            pass
+
+    # Read dispatch_paused from state.json if available
+    dispatch_paused_from_state = None
+    dispatch_pause_reason = None
+    if state_path.exists():
+        try:
+            state_data = json.loads(state_path.read_text())
+            if isinstance(state_data, dict):
+                dispatch_paused_from_state = state_data.get("dispatch_paused")
+                dispatch_pause_reason = state_data.get("dispatch_pause_reason")
+        except (json.JSONDecodeError, OSError):
+            pass
 
     if not db_path.exists():
         click.echo("No database found. No usage data available.")
@@ -282,26 +314,39 @@ def limits(config_path):
 
     if util_5h is not None:
         pct_5h = f"{util_5h * 100:.1f}%"
-        color = "green" if util_5h < 0.7 else ("yellow" if util_5h < 0.9 else "red")
-        table.add_row("5-hour utilization", f"[{color}]{pct_5h}[/{color}]")
+        color = "green" if util_5h < threshold_5h else ("yellow" if util_5h < 0.95 else "red")
+        table.add_row(
+            f"5-hour utilization (pause >= {threshold_5h * 100:.0f}%)",
+            f"[{color}]{pct_5h}[/{color}]",
+        )
     else:
         table.add_row("5-hour utilization", "-")
 
     if util_7d is not None:
         pct_7d = f"{util_7d * 100:.1f}%"
-        color = "green" if util_7d < 0.7 else ("yellow" if util_7d < 0.9 else "red")
-        table.add_row("7-day utilization", f"[{color}]{pct_7d}[/{color}]")
+        color = "green" if util_7d < threshold_7d else ("yellow" if util_7d < 0.95 else "red")
+        table.add_row(
+            f"7-day utilization (pause >= {threshold_7d * 100:.0f}%)",
+            f"[{color}]{pct_7d}[/{color}]",
+        )
     else:
         table.add_row("7-day utilization", "-")
 
     if resets_at:
         table.add_row("Resets at", resets_at)
 
-    # TODO: threshold (0.9) is duplicated from supervisor dispatch logic — unify when
-    # the supervisor makes this configurable.
-    paused = util_5h is not None and util_5h >= 0.9
+    # Use authoritative dispatch_paused state from state.json if available,
+    # otherwise derive from thresholds
+    if dispatch_paused_from_state is not None:
+        paused = dispatch_paused_from_state
+    else:
+        paused = (util_5h is not None and util_5h >= threshold_5h) or (
+            util_7d is not None and util_7d >= threshold_7d
+        )
     pause_color = "red" if paused else "green"
     pause_label = "YES" if paused else "no"
+    if paused and dispatch_pause_reason:
+        pause_label = f"YES — {dispatch_pause_reason}"
     table.add_row("Dispatch paused", f"[{pause_color}]{pause_label}[/{pause_color}]")
 
     if recorded_at:

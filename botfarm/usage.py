@@ -22,7 +22,11 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_POLL_INTERVAL = 300  # seconds
 DEFAULT_RETENTION_DAYS = 30
-PAUSE_THRESHOLD = 0.9  # 90% utilization → pause dispatch
+PAUSE_THRESHOLD = 0.9  # legacy default — prefer configurable thresholds
+
+# Default thresholds (from ticket SMA-79)
+DEFAULT_PAUSE_5H_THRESHOLD = 0.85
+DEFAULT_PAUSE_7D_THRESHOLD = 0.90
 
 
 @dataclass
@@ -36,10 +40,40 @@ class UsageState:
 
     @property
     def should_pause(self) -> bool:
-        """Return True if 5-hour utilization is at or above the pause threshold."""
+        """Return True if 5-hour utilization is at or above the default threshold.
+
+        Prefer ``should_pause_with_thresholds`` for configurable behaviour.
+        """
         if self.utilization_5h is None:
             return False
         return self.utilization_5h >= PAUSE_THRESHOLD
+
+    def should_pause_with_thresholds(
+        self,
+        five_hour_threshold: float = DEFAULT_PAUSE_5H_THRESHOLD,
+        seven_day_threshold: float = DEFAULT_PAUSE_7D_THRESHOLD,
+    ) -> tuple[bool, str | None]:
+        """Check whether dispatch should be paused based on configurable thresholds.
+
+        Returns (should_pause, reason_string_or_None).
+        """
+        if (
+            self.utilization_5h is not None
+            and self.utilization_5h >= five_hour_threshold
+        ):
+            return True, (
+                f"5-hour utilization {self.utilization_5h * 100:.1f}% "
+                f">= {five_hour_threshold * 100:.0f}% threshold"
+            )
+        if (
+            self.utilization_7d is not None
+            and self.utilization_7d >= seven_day_threshold
+        ):
+            return True, (
+                f"7-day utilization {self.utilization_7d * 100:.1f}% "
+                f">= {seven_day_threshold * 100:.0f}% threshold"
+            )
+        return False, None
 
     def to_dict(self) -> dict:
         return {
