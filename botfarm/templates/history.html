@@ -4,7 +4,39 @@
 {% block content %}
 <h1>Task History</h1>
 
-<div id="history-panel" hx-get="/partials/history" hx-trigger="every 10s" hx-swap="innerHTML">
+<form id="history-filters" hx-get="/partials/history" hx-target="#history-panel" hx-trigger="submit" hx-swap="innerHTML" hx-push-url="false">
+    <div class="grid" style="align-items: end;">
+        <label>
+            Search
+            <input type="search" name="search" value="{{ filter_search }}" placeholder="Ticket ID or title...">
+        </label>
+        <label>
+            Project
+            <select name="project">
+                <option value="">All projects</option>
+                {% for p in projects %}
+                <option value="{{ p }}"{% if filter_project == p %} selected{% endif %}>{{ p }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        <label>
+            Status
+            <select name="status">
+                <option value="">All statuses</option>
+                {% for s in ["completed", "failed", "in_progress", "pending", "needs_human", "interrupted"] %}
+                <option value="{{ s }}"{% if filter_status == s %} selected{% endif %}>{{ s | replace("_", " ") }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        <div>
+            <button type="submit">Filter</button>
+        </div>
+    </div>
+    <input type="hidden" name="sort_by" value="{{ sort_by }}">
+    <input type="hidden" name="sort_dir" value="{{ sort_dir }}">
+</form>
+
+<div id="history-panel" hx-get="/partials/history?project={{ filter_project | urlencode }}&status={{ filter_status | urlencode }}&search={{ filter_search | urlencode }}&sort_by={{ sort_by }}&sort_dir={{ sort_dir }}" hx-trigger="every 10s" hx-swap="innerHTML">
     {% include "partials/history.html" %}
 </div>
 {% endblock %}

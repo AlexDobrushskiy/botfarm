@@ -8,6 +8,8 @@ import pytest
 
 from botfarm.db import (
     SCHEMA_VERSION,
+    count_tasks,
+    get_distinct_projects,
     get_events,
     get_stage_runs,
     get_task,
@@ -184,6 +186,67 @@ class TestTasks:
             )
         limited = get_task_history(conn, limit=3)
         assert len(limited) == 3
+
+    def test_get_task_history_offset(self, conn):
+        for i in range(5):
+            insert_task(
+                conn, ticket_id=f"O-{i}", title=f"Task {i}", project="p", slot=i
+            )
+        page1 = get_task_history(conn, limit=2, offset=0)
+        page2 = get_task_history(conn, limit=2, offset=2)
+        assert len(page1) == 2
+        assert len(page2) == 2
+        assert page1[0]["ticket_id"] != page2[0]["ticket_id"]
+
+    def test_get_task_history_search(self, conn):
+        insert_task(conn, ticket_id="SRCH-1", title="Fix login bug", project="p", slot=1)
+        insert_task(conn, ticket_id="SRCH-2", title="Add feature", project="p", slot=2)
+        results = get_task_history(conn, search="login")
+        assert len(results) == 1
+        assert results[0]["ticket_id"] == "SRCH-1"
+
+    def test_get_task_history_search_by_ticket(self, conn):
+        insert_task(conn, ticket_id="FIND-42", title="Something", project="p", slot=1)
+        insert_task(conn, ticket_id="OTHER-1", title="Other", project="p", slot=2)
+        results = get_task_history(conn, search="FIND-42")
+        assert len(results) == 1
+        assert results[0]["ticket_id"] == "FIND-42"
+
+    def test_get_task_history_sort(self, conn):
+        insert_task(conn, ticket_id="SORT-A", title="A", project="p", slot=1, status="completed")
+        update_task(conn, 1, cost_usd=10.0)
+        insert_task(conn, ticket_id="SORT-B", title="B", project="p", slot=2, status="completed")
+        update_task(conn, 2, cost_usd=1.0)
+        asc = get_task_history(conn, sort_by="cost_usd", sort_dir="ASC")
+        assert asc[0]["cost_usd"] <= asc[1]["cost_usd"]
+
+    def test_get_task_history_invalid_sort_defaults(self, conn):
+        insert_task(conn, ticket_id="DEF-1", title="T", project="p", slot=1)
+        # Should not raise on invalid sort column
+        results = get_task_history(conn, sort_by="DROP TABLE tasks")
+        assert len(results) == 1
+
+    def test_count_tasks(self, conn):
+        for i in range(5):
+            insert_task(
+                conn, ticket_id=f"C-{i}", title=f"T{i}",
+                project="a" if i < 3 else "b", slot=i,
+            )
+        assert count_tasks(conn) == 5
+        assert count_tasks(conn, project="a") == 3
+        assert count_tasks(conn, project="b") == 2
+
+    def test_count_tasks_with_search(self, conn):
+        insert_task(conn, ticket_id="CS-1", title="Fix bug", project="p", slot=1)
+        insert_task(conn, ticket_id="CS-2", title="Add test", project="p", slot=2)
+        assert count_tasks(conn, search="bug") == 1
+
+    def test_get_distinct_projects(self, conn):
+        insert_task(conn, ticket_id="DP-1", title="T1", project="alpha", slot=1)
+        insert_task(conn, ticket_id="DP-2", title="T2", project="beta", slot=2)
+        insert_task(conn, ticket_id="DP-3", title="T3", project="alpha", slot=3)
+        projects = get_distinct_projects(conn)
+        assert projects == ["alpha", "beta"]
 
 
 # ---------------------------------------------------------------------------

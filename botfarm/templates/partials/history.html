@@ -1,21 +1,43 @@
+{% macro sort_header(label, col) %}
+{% set next_dir = "ASC" if (sort_by == col and sort_dir == "DESC") else "DESC" %}
+<th>
+    <a href="/history?sort_by={{ col }}&sort_dir={{ next_dir }}&project={{ filter_project | urlencode }}&status={{ filter_status | urlencode }}&search={{ filter_search | urlencode }}"
+       style="text-decoration: none; color: inherit;">
+        {{ label }}
+        {% if sort_by == col %}
+            {% if sort_dir == "DESC" %}&darr;{% else %}&uarr;{% endif %}
+        {% endif %}
+    </a>
+</th>
+{% endmacro %}
+
 {% if tasks %}
+<p style="color: var(--pico-muted-color); margin-bottom: 0.5rem;">
+    {{ total }} task{{ "s" if total != 1 else "" }} found &middot; page {{ page }} of {{ total_pages }}
+</p>
 <figure>
 <table>
     <thead>
         <tr>
-            <th>Ticket</th>
-            <th>Project</th>
-            <th>Status</th>
-            <th>Cost ($)</th>
-            <th>Turns</th>
-            <th>Duration</th>
-            <th>Created</th>
+            {{ sort_header("Ticket", "ticket_id") }}
+            <th>Title</th>
+            {{ sort_header("Project", "project") }}
+            {{ sort_header("Status", "status") }}
+            <th>Wall Time</th>
+            {{ sort_header("Cost ($)", "cost_usd") }}
+            {{ sort_header("Turns", "turns") }}
+            <th>Reviews</th>
+            <th>Comments</th>
+            <th>Limit Hits</th>
+            {{ sort_header("Started", "started_at") }}
+            {{ sort_header("Completed", "completed_at") }}
         </tr>
     </thead>
     <tbody>
         {% for task in tasks %}
-        <tr>
-            <td>{{ task.ticket_id }}</td>
+        <tr style="cursor: pointer;" onclick="window.location='/task/{{ task.id }}'">
+            <td><a href="{{ linear_url(task.ticket_id) }}" target="_blank" onclick="event.stopPropagation()">{{ task.ticket_id }}</a></td>
+            <td>{{ task.title[:50] }}{% if task.title|length > 50 %}&hellip;{% endif %}</td>
             <td>{{ task.project }}</td>
             <td>
                 {% if task.status == "completed" %}
@@ -23,20 +45,45 @@
                 {% elif task.status == "failed" %}
                     <span class="status-failed">failed</span>
                 {% elif task.status == "in_progress" %}
-                    <span class="status-busy">in_progress</span>
+                    <span class="status-busy">in progress</span>
                 {% else %}
-                    {{ task.status }}
+                    {{ task.status | replace("_", " ") }}
                 {% endif %}
             </td>
+            <td>{{ task.duration }}</td>
             <td>{{ "%.2f"|format(task.cost_usd) if task.cost_usd is not none else "-" }}</td>
             <td>{{ task.turns if task.turns is not none else "-" }}</td>
-            <td>{{ task.duration }}</td>
-            <td>{{ task.created_at[:16] if task.created_at else "-" }}</td>
+            <td>{{ task.review_iterations if task.review_iterations is not none else "-" }}</td>
+            <td>{{ task.comments if task.comments else "-" }}</td>
+            <td>{{ task.limit_interruptions if task.limit_interruptions is not none else "0" }}</td>
+            <td>{{ task.started_at[:16] if task.started_at else "-" }}</td>
+            <td>{{ task.completed_at[:16] if task.completed_at else "-" }}</td>
         </tr>
         {% endfor %}
     </tbody>
 </table>
 </figure>
+
+{% if total_pages > 1 %}
+<nav aria-label="Pagination" style="display: flex; justify-content: center; gap: 0.5rem;">
+    {% if page > 1 %}
+    <a href="/history?page={{ page - 1 }}&sort_by={{ sort_by }}&sort_dir={{ sort_dir }}&project={{ filter_project | urlencode }}&status={{ filter_status | urlencode }}&search={{ filter_search | urlencode }}" role="button" class="outline">&laquo; Prev</a>
+    {% endif %}
+    {% for p in range(1, total_pages + 1) %}
+        {% if p == page %}
+        <a role="button" aria-current="page">{{ p }}</a>
+        {% elif p <= 3 or p > total_pages - 3 or (p >= page - 1 and p <= page + 1) %}
+        <a href="/history?page={{ p }}&sort_by={{ sort_by }}&sort_dir={{ sort_dir }}&project={{ filter_project | urlencode }}&status={{ filter_status | urlencode }}&search={{ filter_search | urlencode }}" role="button" class="outline">{{ p }}</a>
+        {% elif p == 4 or p == total_pages - 3 %}
+        <span style="align-self: center;">&hellip;</span>
+        {% endif %}
+    {% endfor %}
+    {% if page < total_pages %}
+    <a href="/history?page={{ page + 1 }}&sort_by={{ sort_by }}&sort_dir={{ sort_dir }}&project={{ filter_project | urlencode }}&status={{ filter_status | urlencode }}&search={{ filter_search | urlencode }}" role="button" class="outline">Next &raquo;</a>
+    {% endif %}
+</nav>
+{% endif %}
+
 {% else %}
 <p>No tasks found.</p>
 {% endif %}

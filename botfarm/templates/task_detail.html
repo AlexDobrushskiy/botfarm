@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+{% set active_page = "history" %}
+{% block title %}{% if task %}{{ task.ticket_id }} - {% endif %}Task Detail - Botfarm{% endblock %}
+{% block content %}
+
+{% if task %}
+<p><a href="/history">&larr; Back to Task History</a></p>
+
+<h1>
+    <a href="{{ linear_url(task.ticket_id) }}" target="_blank">{{ task.ticket_id }}</a>
+    &mdash; {{ task.title }}
+</h1>
+
+<!-- Summary header -->
+<div class="grid">
+    <article class="metric-card">
+        <h2>
+            {% if task.status == "completed" %}
+                <span class="status-free">completed</span>
+            {% elif task.status == "failed" %}
+                <span class="status-failed">failed</span>
+            {% elif task.status == "in_progress" %}
+                <span class="status-busy">in progress</span>
+            {% else %}
+                {{ task.status | replace("_", " ") }}
+            {% endif %}
+        </h2>
+        <p>Status</p>
+    </article>
+    <article class="metric-card">
+        <h2>{{ task.duration }}</h2>
+        <p>Wall Time</p>
+    </article>
+    <article class="metric-card">
+        <h2>${{ "%.2f"|format(task.cost_usd) if task.cost_usd is not none else "0.00" }}</h2>
+        <p>Cost</p>
+    </article>
+    <article class="metric-card">
+        <h2>{{ task.turns if task.turns is not none else 0 }}</h2>
+        <p>Turns</p>
+    </article>
+    <article class="metric-card">
+        <h2>{{ task.review_iterations if task.review_iterations is not none else 0 }}</h2>
+        <p>Review Iterations</p>
+    </article>
+    <article class="metric-card">
+        <h2>{{ task.limit_interruptions if task.limit_interruptions is not none else 0 }}</h2>
+        <p>Limit Interruptions</p>
+    </article>
+</div>
+
+<details open>
+    <summary><strong>Task Info</strong></summary>
+    <table>
+        <tbody>
+            <tr><td><strong>Project</strong></td><td>{{ task.project }}</td></tr>
+            <tr><td><strong>Slot</strong></td><td>{{ task.slot }}</td></tr>
+            <tr><td><strong>Created</strong></td><td>{{ task.created_at[:19] if task.created_at else "-" }}</td></tr>
+            <tr><td><strong>Started</strong></td><td>{{ task.started_at[:19] if task.started_at else "-" }}</td></tr>
+            <tr><td><strong>Completed</strong></td><td>{{ task.completed_at[:19] if task.completed_at else "-" }}</td></tr>
+            {% if task.failure_reason %}
+            <tr><td><strong>Failure Reason</strong></td><td class="status-failed">{{ task.failure_reason }}</td></tr>
+            {% endif %}
+            {% if task.comments %}
+            <tr><td><strong>Review Comments</strong></td><td>{{ task.comments }}</td></tr>
+            {% endif %}
+        </tbody>
+    </table>
+</details>
+
+<!-- Stage runs -->
+<details open>
+    <summary><strong>Stage Runs ({{ stages|length }})</strong></summary>
+    {% if stages %}
+    <figure>
+    <table>
+        <thead>
+            <tr>
+                <th>Stage</th>
+                <th>Iteration</th>
+                <th>Duration</th>
+                <th>Cost ($)</th>
+                <th>Turns</th>
+                <th>Session ID</th>
+                <th>Exit Subtype</th>
+                <th>Limit Restart</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for stage in stages %}
+            <tr>
+                <td>{{ stage.stage }}</td>
+                <td>{{ stage.iteration }}</td>
+                <td>{{ format_duration(stage.duration_seconds | int) if stage.duration_seconds is not none else "-" }}</td>
+                <td>{{ "%.2f"|format(stage.cost_usd) if stage.cost_usd is not none else "-" }}</td>
+                <td>{{ stage.turns if stage.turns is not none else "-" }}</td>
+                <td style="font-family: monospace; font-size: 0.8rem;">{{ stage.session_id[:12] if stage.session_id else "-" }}{% if stage.session_id and stage.session_id|length > 12 %}&hellip;{% endif %}</td>
+                <td>{{ stage.exit_subtype if stage.exit_subtype else "-" }}</td>
+                <td>{{ "Yes" if stage.was_limit_restart else "No" }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    </figure>
+    {% else %}
+    <p>No stage runs recorded.</p>
+    {% endif %}
+</details>
+
+<!-- Event log -->
+<details open>
+    <summary><strong>Event Log ({{ events|length }})</strong></summary>
+    {% if events %}
+    <figure>
+    <table>
+        <thead>
+            <tr>
+                <th>Timestamp</th>
+                <th>Event Type</th>
+                <th>Detail</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for event in events %}
+            <tr>
+                <td>{{ event.created_at[:19] if event.created_at else "-" }}</td>
+                <td>{{ event.event_type }}</td>
+                <td>{{ event.detail if event.detail else "-" }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    </figure>
+    {% else %}
+    <p>No events recorded.</p>
+    {% endif %}
+</details>
+
+{% else %}
+<p><a href="/history">&larr; Back to Task History</a></p>
+<p>Task not found.</p>
+{% endif %}
+
+{% endblock %}
