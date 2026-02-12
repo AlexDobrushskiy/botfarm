@@ -31,7 +31,7 @@
             </td>
             <td>
                 {% if slot.ticket_id %}
-                    <a href="https://linear.app/issue/{{ slot.ticket_id }}" target="_blank" rel="noopener">{{ slot.ticket_id }}</a>{% if slot.ticket_title %} — {{ slot.ticket_title }}{% endif %}
+                    <a href="{{ linear_url(slot.ticket_id) }}" target="_blank" rel="noopener">{{ slot.ticket_id }}</a>{% if slot.ticket_title %} — {{ slot.ticket_title }}{% endif %}
                 {% else %}
                     -
                 {% endif %}

@@ -29,13 +29,8 @@
         {% endif %}
     </div>
 </div>
-{% if dispatch_paused %}
-<div class="banner-paused" style="margin-top:0.5rem;">
-    ⚠ Dispatch paused{% if dispatch_pause_reason %}: {{ dispatch_pause_reason }}{% endif %}
-</div>
-{% endif %}
 {% if last_usage_check %}
-<small>Last checked: {{ last_usage_check }}</small>
+<small>Last checked: {{ elapsed(last_usage_check) }} ago</small>
 {% endif %}
 {% else %}
 <p>No usage data available.</p>

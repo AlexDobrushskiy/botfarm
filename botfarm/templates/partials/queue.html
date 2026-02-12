@@ -15,7 +15,7 @@
             <td>{{ proj.todo_count }}</td>
             <td>
                 {% if proj.next_ticket_id %}
-                    <a href="https://linear.app/issue/{{ proj.next_ticket_id }}" target="_blank" rel="noopener">{{ proj.next_ticket_id }}</a>{% if proj.next_ticket_title %} — {{ proj.next_ticket_title }}{% endif %}
+                    <a href="{{ linear_url(proj.next_ticket_id) }}" target="_blank" rel="noopener">{{ proj.next_ticket_id }}</a>{% if proj.next_ticket_title %} — {{ proj.next_ticket_title }}{% endif %}
                 {% else %}
                     -
                 {% endif %}

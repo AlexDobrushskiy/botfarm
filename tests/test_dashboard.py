@@ -234,6 +234,15 @@ class TestPartialQueue:
         assert "TST-5" in body
         assert "Add logging" in body
 
+    def test_queue_ticket_link_with_workspace(self, state_file, db_file):
+        app = create_app(
+            state_file=state_file, db_path=db_file,
+            linear_workspace="my-team",
+        )
+        client = TestClient(app)
+        resp = client.get("/partials/queue")
+        assert "linear.app/my-team/issue/TST-5" in resp.text
+
     def test_no_queue_data(self, tmp_path):
         state = tmp_path / "state.json"
         state.write_text(json.dumps({"slots": [], "usage": {}}))
@@ -274,6 +283,15 @@ class TestSlotPanelEnhancements:
         resp = client.get("/partials/slots")
         assert "linear.app/issue/TST-1" in resp.text
 
+    def test_ticket_link_with_workspace(self, state_file, db_file):
+        app = create_app(
+            state_file=state_file, db_path=db_file,
+            linear_workspace="my-team",
+        )
+        client = TestClient(app)
+        resp = client.get("/partials/slots")
+        assert "linear.app/my-team/issue/TST-1" in resp.text
+
     def test_paused_slot_resume_countdown(self, state_file, db_file):
         data = json.loads(state_file.read_text())
         data["slots"][0]["status"] = "paused_limit"
@@ -306,8 +324,10 @@ class TestUsagePanelEnhancements:
     def test_last_usage_check(self, client):
         resp = client.get("/partials/usage")
         assert "Last checked:" in resp.text
+        assert "ago" in resp.text
 
-    def test_usage_dispatch_pause_warning(self, state_file, db_file):
+    def test_no_dispatch_pause_banner_in_usage(self, state_file, db_file):
+        """Dispatch pause banner lives in slots panel only, not usage."""
         data = json.loads(state_file.read_text())
         data["dispatch_paused"] = True
         data["dispatch_pause_reason"] = "5-hour limit exceeded"
@@ -315,8 +335,8 @@ class TestUsagePanelEnhancements:
         app = create_app(state_file=state_file, db_path=db_file)
         client = TestClient(app)
         resp = client.get("/partials/usage")
-        assert "Dispatch paused" in resp.text
-        assert "5-hour limit exceeded" in resp.text
+        assert "DISPATCH PAUSED" not in resp.text
+        assert "Dispatch paused" not in resp.text
 
 
 # --- Index Queue panel ---
