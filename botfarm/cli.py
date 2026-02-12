@@ -1,16 +1,19 @@
 from pathlib import Path
 
 import click
+from dotenv import load_dotenv
 
 from botfarm import __version__
-from botfarm.config import DEFAULT_CONFIG_PATH, create_default_config
+from botfarm.config import DEFAULT_CONFIG_DIR, DEFAULT_CONFIG_PATH, create_default_config
+
+ENV_FILE_PATH = DEFAULT_CONFIG_DIR / ".env"
 
 
 @click.group()
 @click.version_option(version=__version__)
 def main():
     """Botfarm: autonomous Linear ticket dispatcher for Claude Code agents."""
-    pass
+    load_dotenv(ENV_FILE_PATH, override=False)
 
 
 @main.command()
