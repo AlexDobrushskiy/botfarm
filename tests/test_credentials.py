@@ -353,3 +353,22 @@ async def test_fetch_usage_401():
     with patch("botfarm.credentials.httpx.AsyncClient", return_value=mock_client):
         with pytest.raises(httpx.HTTPStatusError):
             await fetch_usage("expired-token")
+
+
+@pytest.mark.asyncio
+async def test_fetch_usage_with_external_client():
+    """When a caller provides their own client, it is used directly."""
+    expected = {"daily_cost_usd": 2.0}
+    mock_response = httpx.Response(
+        200,
+        json=expected,
+        request=httpx.Request("GET", USAGE_API_URL),
+    )
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+
+    result = await fetch_usage("test-token", client=mock_client)
+
+    assert result == expected
+    mock_client.get.assert_called_once()

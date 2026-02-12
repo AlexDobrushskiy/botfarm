@@ -1,7 +1,8 @@
 """Retrieve Claude Code OAuth tokens for the usage API.
 
 Supports macOS (system keychain) and Linux (~/.claude/.credentials.json).
-Tokens are cached in memory and refreshed on 401.
+Tokens are cached in memory; callers are responsible for detecting 401
+responses and calling ``CredentialManager.refresh_token()`` to reload.
 """
 
 from __future__ import annotations
@@ -33,7 +34,12 @@ class CredentialError(Exception):
 
 @dataclass
 class OAuthToken:
-    """Holds a cached OAuth access token."""
+    """Holds a cached OAuth access token.
+
+    ``expires_at`` is stored for informational purposes only.  This module
+    does **not** perform proactive expiry checks — callers should handle
+    HTTP 401 responses and call ``CredentialManager.refresh_token()``.
+    """
 
     access_token: str
     expires_at: str | None = None
@@ -87,13 +93,12 @@ def _load_token() -> OAuthToken:
 
 def _load_token_linux() -> OAuthToken:
     """Read credentials from ~/.claude/.credentials.json on Linux."""
-    if not LINUX_CREDENTIALS_PATH.exists():
+    try:
+        data = json.loads(LINUX_CREDENTIALS_PATH.read_text())
+    except FileNotFoundError:
         raise CredentialError(
             f"Credential file not found: {LINUX_CREDENTIALS_PATH}"
         )
-
-    try:
-        data = json.loads(LINUX_CREDENTIALS_PATH.read_text())
     except (json.JSONDecodeError, OSError) as exc:
         raise CredentialError(f"Failed to read credential file: {exc}") from exc
 
@@ -151,13 +156,19 @@ def _extract_token(data: dict) -> OAuthToken:
     )
 
 
-async def fetch_usage(token: str) -> dict:
+async def fetch_usage(
+    token: str, *, client: httpx.AsyncClient | None = None
+) -> dict:
     """Call the Anthropic OAuth usage API and return the parsed response.
+
+    If *client* is provided it is used as-is (caller manages its lifecycle).
+    Otherwise a throwaway ``AsyncClient`` is created for the single request.
 
     Raises httpx.HTTPStatusError on non-2xx responses.
     """
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(
+
+    async def _do_request(c: httpx.AsyncClient) -> dict:
+        resp = await c.get(
             USAGE_API_URL,
             headers={
                 "Authorization": f"Bearer {token}",
@@ -167,3 +178,9 @@ async def fetch_usage(token: str) -> dict:
         )
         resp.raise_for_status()
         return resp.json()
+
+    if client is not None:
+        return await _do_request(client)
+
+    async with httpx.AsyncClient() as c:
+        return await _do_request(c)
