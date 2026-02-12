@@ -73,6 +73,7 @@ class SlotManager:
     def __init__(self, state_path: str | Path = DEFAULT_STATE_PATH) -> None:
         self._state_path = Path(state_path).expanduser()
         self._slots: dict[tuple[str, int], SlotState] = {}
+        self._usage: dict | None = None
 
     @property
     def state_path(self) -> Path:
@@ -255,9 +256,13 @@ class SlotManager:
     def _save(self) -> None:
         """Write state.json atomically (write-then-rename)."""
         self._state_path.parent.mkdir(parents=True, exist_ok=True)
-        data = [s.to_dict() for s in self._slots.values()]
+        payload: dict = {
+            "slots": [s.to_dict() for s in self._slots.values()],
+        }
+        if self._usage is not None:
+            payload["usage"] = self._usage
         tmp_path = self._state_path.with_suffix(".tmp")
-        tmp_path.write_text(json.dumps(data, indent=2) + "\n")
+        tmp_path.write_text(json.dumps(payload, indent=2) + "\n")
         tmp_path.replace(self._state_path)
 
     def load(self) -> None:
@@ -273,11 +278,17 @@ class SlotManager:
             logger.warning("Failed to read state file %s: %s", self._state_path, exc)
             return
 
-        if not isinstance(data, list):
-            logger.warning("Invalid state file format — expected a JSON array")
+        # Support both old format (bare list) and new format (dict with "slots" key)
+        if isinstance(data, dict):
+            slot_list = data.get("slots", [])
+            self._usage = data.get("usage")
+        elif isinstance(data, list):
+            slot_list = data
+        else:
+            logger.warning("Invalid state file format — expected a JSON object or array")
             return
 
-        for entry in data:
+        for entry in slot_list:
             if not isinstance(entry, dict):
                 continue
             project = entry.get("project")
@@ -313,6 +324,15 @@ class SlotManager:
         if messages:
             self._save()
         return messages
+
+    # ------------------------------------------------------------------
+    # Usage state
+    # ------------------------------------------------------------------
+
+    def set_usage(self, usage: dict) -> None:
+        """Store current usage data (written to state.json on next save)."""
+        self._usage = usage
+        self._save()
 
     # ------------------------------------------------------------------
     # Dispatch helpers

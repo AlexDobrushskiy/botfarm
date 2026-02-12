@@ -364,9 +364,10 @@ class TestPersistence:
         mgr.save()
         assert mgr.state_path.exists()
         data = json.loads(mgr.state_path.read_text())
-        assert isinstance(data, list)
-        assert len(data) == 1
-        assert data[0]["project"] == "proj"
+        assert isinstance(data, dict)
+        assert "slots" in data
+        assert len(data["slots"]) == 1
+        assert data["slots"][0]["project"] == "proj"
 
     def test_state_saved_on_assign(self, mgr: SlotManager):
         mgr.register_slot("proj", 1)
@@ -374,8 +375,8 @@ class TestPersistence:
             "proj", 1, ticket_id="T-1", ticket_title="T1", branch="b1"
         )
         data = json.loads(mgr.state_path.read_text())
-        assert data[0]["status"] == "busy"
-        assert data[0]["ticket_id"] == "T-1"
+        assert data["slots"][0]["status"] == "busy"
+        assert data["slots"][0]["ticket_id"] == "T-1"
 
     def test_load_restores_state(self, tmp_path: Path):
         state_path = tmp_path / "state.json"
@@ -416,7 +417,7 @@ class TestPersistence:
 
     def test_load_wrong_format(self, tmp_path: Path):
         state_path = tmp_path / "state.json"
-        state_path.write_text(json.dumps({"not": "a list"}))
+        state_path.write_text(json.dumps("just a string"))
         mgr = SlotManager(state_path=state_path)
         mgr.register_slot("proj", 1)
         mgr.load()
@@ -424,7 +425,7 @@ class TestPersistence:
 
     def test_load_ignores_unregistered_slots(self, tmp_path: Path):
         state_path = tmp_path / "state.json"
-        data = [{"project": "unknown", "slot_id": 99, "status": "busy"}]
+        data = {"slots": [{"project": "unknown", "slot_id": 99, "status": "busy"}]}
         state_path.write_text(json.dumps(data))
 
         mgr = SlotManager(state_path=state_path)
@@ -432,6 +433,17 @@ class TestPersistence:
         mgr.load()
         assert mgr.get_slot("unknown", 99) is None
         assert mgr.get_slot("proj", 1).status == "free"
+
+    def test_load_legacy_list_format(self, tmp_path: Path):
+        """Old state files (bare list) should still load correctly."""
+        state_path = tmp_path / "state.json"
+        data = [{"project": "proj", "slot_id": 1, "status": "busy", "ticket_id": "T-1"}]
+        state_path.write_text(json.dumps(data))
+
+        mgr = SlotManager(state_path=state_path)
+        mgr.register_slot("proj", 1)
+        mgr.load()
+        assert mgr.get_slot("proj", 1).status == "busy"
 
     def test_atomic_write(self, mgr: SlotManager):
         """Verify the .tmp intermediate file is cleaned up."""
@@ -505,7 +517,7 @@ class TestReconcile:
             mgr.reconcile()
 
         data = json.loads(mgr.state_path.read_text())
-        assert data[0]["status"] == "failed"
+        assert data["slots"][0]["status"] == "failed"
 
 
 # ---------------------------------------------------------------------------

@@ -437,11 +437,13 @@ class TestTick:
         with (
             patch.object(supervisor, "_reconcile_workers") as mock_reconcile,
             patch.object(supervisor, "_handle_finished_slots") as mock_handle,
+            patch.object(supervisor, "_poll_usage") as mock_usage,
             patch.object(supervisor, "_poll_and_dispatch") as mock_poll,
         ):
             supervisor._tick()
             mock_reconcile.assert_called_once()
             mock_handle.assert_called_once()
+            mock_usage.assert_called_once()
             mock_poll.assert_called_once()
 
     def test_tick_exception_does_not_propagate(self, supervisor):
@@ -457,11 +459,13 @@ class TestTick:
                 supervisor, "_reconcile_workers", side_effect=RuntimeError("boom")
             ),
             patch.object(supervisor, "_handle_finished_slots") as mock_handle,
+            patch.object(supervisor, "_poll_usage") as mock_usage,
             patch.object(supervisor, "_poll_and_dispatch") as mock_poll,
         ):
             supervisor._tick()
             # Other phases still run despite _reconcile_workers failure
             mock_handle.assert_called_once()
+            mock_usage.assert_called_once()
             mock_poll.assert_called_once()
 
 
@@ -525,7 +529,7 @@ class TestShutdown:
         # State file should exist and have the busy slot
         import json
         data = json.loads(sm.state_path.read_text())
-        busy = [d for d in data if d["status"] == "busy"]
+        busy = [d for d in data["slots"] if d["status"] == "busy"]
         assert len(busy) == 1
 
     def test_shutdown_logs_running_workers(self, supervisor):

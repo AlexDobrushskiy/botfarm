@@ -103,7 +103,16 @@ def status(config_path):
     except (json.JSONDecodeError, OSError) as exc:
         raise click.ClickException(f"Failed to read state file: {exc}") from exc
 
-    if not isinstance(data, list) or not data:
+    # Support both old format (bare list) and new format (dict with "slots" key)
+    if isinstance(data, dict):
+        slot_list = data.get("slots", [])
+    elif isinstance(data, list):
+        slot_list = data
+    else:
+        click.echo("No slots configured.")
+        return
+
+    if not slot_list:
         click.echo("No slots configured.")
         return
 
@@ -116,7 +125,7 @@ def status(config_path):
     table.add_column("Stage")
     table.add_column("Elapsed")
 
-    for slot in data:
+    for slot in slot_list:
         status_val = slot.get("status", "unknown")
         color = _STATUS_COLORS.get(status_val, "white")
         ticket = slot.get("ticket_id") or "-"
