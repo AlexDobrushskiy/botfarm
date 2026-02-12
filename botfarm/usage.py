@@ -65,11 +65,16 @@ class UsagePoller:
 
     _state: UsageState = field(default_factory=UsageState)
     _last_poll: float = 0.0
-    _client: httpx.AsyncClient | None = field(default=None, repr=False)
+    _last_polled_fresh: bool = field(default=False, repr=False)
 
     @property
     def state(self) -> UsageState:
         return self._state
+
+    @property
+    def last_polled_fresh(self) -> bool:
+        """Whether the most recent ``poll()`` call actually fetched new data."""
+        return self._last_polled_fresh
 
     def poll(self, conn: sqlite3.Connection) -> UsageState:
         """Poll the usage API if the interval has elapsed.
@@ -79,23 +84,23 @@ class UsagePoller:
         """
         now = time.monotonic()
         if now - self._last_poll < self.poll_interval:
+            self._last_polled_fresh = False
             return self._state
 
         self._last_poll = now
+        self._last_polled_fresh = True
         self._do_poll(conn)
         return self._state
 
     def force_poll(self, conn: sqlite3.Connection) -> UsageState:
         """Poll immediately, ignoring the interval timer."""
         self._last_poll = time.monotonic()
+        self._last_polled_fresh = True
         self._do_poll(conn)
         return self._state
 
     def close(self) -> None:
-        """Close the reusable HTTP client if one was created."""
-        if self._client is not None:
-            asyncio.get_event_loop().run_until_complete(self._client.aclose())
-            self._client = None
+        """Clean up resources (currently a no-op)."""
 
     def _do_poll(self, conn: sqlite3.Connection) -> None:
         """Execute one poll cycle: fetch → parse → store → purge."""
@@ -130,13 +135,12 @@ class UsagePoller:
 
         self._parse_and_store(data, conn)
         self._purge_old_snapshots(conn)
+        conn.commit()
 
     def _fetch(self, token: str) -> dict:
         """Call the usage API synchronously via asyncio."""
         loop = _get_or_create_event_loop()
-        return loop.run_until_complete(
-            fetch_usage(token, client=self._client)
-        )
+        return loop.run_until_complete(fetch_usage(token))
 
     def _parse_and_store(self, data: dict, conn: sqlite3.Connection) -> None:
         """Parse the API response and update in-memory state + database."""
@@ -154,7 +158,6 @@ class UsagePoller:
             utilization_7d=self._state.utilization_7d,
             resets_at=self._state.resets_at_5h,
         )
-        conn.commit()
 
         logger.info(
             "Usage snapshot: 5h=%.1f%%, 7d=%.1f%%, resets=%s",
@@ -170,7 +173,6 @@ class UsagePoller:
             "WHERE created_at < datetime('now', ?)",
             (f"-{self.retention_days} days",),
         )
-        conn.commit()
 
 
 def _get_or_create_event_loop() -> asyncio.AbstractEventLoop:

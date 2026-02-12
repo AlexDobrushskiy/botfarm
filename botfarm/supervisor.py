@@ -364,7 +364,8 @@ class Supervisor:
     def _poll_usage(self) -> None:
         """Poll the usage API and update slot manager state."""
         state = self._usage_poller.poll(self._conn)
-        self._slot_manager.set_usage(state.to_dict())
+        if self._usage_poller.last_polled_fresh:
+            self._slot_manager.set_usage(state.to_dict())
 
     # ------------------------------------------------------------------
     # Polling and dispatch
