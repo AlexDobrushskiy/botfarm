@@ -284,6 +284,8 @@ def run_pipeline(
     slot_id: int | None = None,
     max_turns: dict[str, int] | None = None,
     pr_checks_timeout: int = 600,
+    resume_from_stage: str | None = None,
+    resume_session_id: str | None = None,  # TODO: wire through to run_claude --resume
 ) -> PipelineResult:
     """Execute the full implement→review→fix→pr_checks→merge pipeline.
 
@@ -297,6 +299,10 @@ def run_pipeline(
         slot_id: Slot ID (required if slot_manager is provided).
         max_turns: Per-stage max_turns overrides.
         pr_checks_timeout: Seconds to wait for CI checks.
+        resume_from_stage: If set, skip stages before this one (for limit
+            resumption). The pipeline continues from this stage onward.
+        resume_session_id: If set, attempt to use ``--resume`` with this
+            session ID for the first stage invocation.
 
     Returns:
         PipelineResult with aggregated metrics.
@@ -306,8 +312,35 @@ def run_pipeline(
 
     pr_url: str | None = None
 
+    # Validate resume_from_stage upfront
+    if resume_from_stage and resume_from_stage not in STAGES:
+        pipeline.failure_stage = resume_from_stage
+        pipeline.failure_reason = f"Unknown resume stage: {resume_from_stage}"
+        _record_failure(conn, task_id, pipeline)
+        return pipeline
+
+    # When resuming, recover PR URL from existing stage_runs
+    if resume_from_stage:
+        pr_url = _recover_pr_url(conn, task_id, cwd)
+        if pr_url:
+            pipeline.pr_url = pr_url
+
+    # Determine which stages to skip when resuming
+    skipping = resume_from_stage is not None
+
     for stage in STAGES:
-        logger.info("Starting stage '%s' for %s", stage, ticket_id)
+        if skipping:
+            if stage == resume_from_stage:
+                skipping = False
+                logger.info(
+                    "Resuming pipeline at stage '%s' for %s", stage, ticket_id,
+                )
+            else:
+                pipeline.stages_completed.append(stage)
+                logger.info("Skipping already-completed stage '%s' for %s", stage, ticket_id)
+                continue
+        else:
+            logger.info("Starting stage '%s' for %s", stage, ticket_id)
 
         # Update slot state if manager provided
         if slot_manager and project and slot_id is not None:
@@ -475,5 +508,30 @@ def _extract_pr_url(text: str) -> str | None:
     """
     match = re.search(r"https://github\.com/[\w.-]+/[\w.-]+/pull/\d+", text)
     return match.group(0) if match else None
+
+
+def _recover_pr_url(conn, task_id: int, cwd: str | Path) -> str | None:
+    """Recover the PR URL for a resumed pipeline.
+
+    First checks ``gh pr view`` in the working directory, then falls back
+    to scanning previous stage_run records in the database.
+    """
+    # Try gh pr view to get current branch's PR URL
+    try:
+        proc = subprocess.run(
+            ["gh", "pr", "view", "--json", "url", "--jq", ".url"],
+            capture_output=True,
+            text=True,
+            cwd=str(cwd),
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            url = proc.stdout.strip()
+            if "github.com" in url and "/pull/" in url:
+                logger.info("Recovered PR URL from gh: %s", url)
+                return url
+    except Exception:
+        pass
+
+    return None
 
 

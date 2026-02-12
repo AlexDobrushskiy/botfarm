@@ -40,6 +40,7 @@ class SlotState:
     started_at: str | None = None
     pid: int | None = None
     interrupted_by_limit: bool = False
+    resume_after: str | None = None
     stages_completed: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -112,6 +113,10 @@ class SlotManager:
 
     def busy_slots(self) -> list[SlotState]:
         return [s for s in self._slots.values() if s.status == "busy"]
+
+    def paused_limit_slots(self) -> list[SlotState]:
+        """Return all slots paused due to rate limiting."""
+        return [s for s in self._slots.values() if s.status == "paused_limit"]
 
     def active_ticket_ids(self) -> set[str]:
         """Return the set of Linear issue IDs currently assigned to busy slots."""
@@ -192,11 +197,14 @@ class SlotManager:
         slot.pr_url = pr_url
         self._save()
 
-    def mark_paused_limit(self, project: str, slot_id: int) -> None:
+    def mark_paused_limit(
+        self, project: str, slot_id: int, *, resume_after: str | None = None,
+    ) -> None:
         """Pause a slot due to rate limiting."""
         slot = self._require_slot(project, slot_id)
         slot.status = "paused_limit"
         slot.interrupted_by_limit = True
+        slot.resume_after = resume_after
         slot.pid = None
         self._save()
 
@@ -233,6 +241,7 @@ class SlotManager:
         slot.started_at = None
         slot.pid = None
         slot.interrupted_by_limit = False
+        slot.resume_after = None
         slot.stages_completed = []
         self._save()
 
@@ -245,6 +254,7 @@ class SlotManager:
                 "expected 'paused_limit'"
             )
         slot.status = "busy"
+        slot.resume_after = None
         self._save()
 
     # ------------------------------------------------------------------

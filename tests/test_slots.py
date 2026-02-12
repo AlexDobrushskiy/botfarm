@@ -285,6 +285,17 @@ class TestMarkPausedLimit:
         assert slot.interrupted_by_limit is True
         assert slot.pid is None
 
+    def test_mark_paused_with_resume_after(self, mgr: SlotManager):
+        mgr.register_slot("proj", 1)
+        mgr.assign_ticket(
+            "proj", 1, ticket_id="T-1", ticket_title="T1", branch="b1"
+        )
+        resume_time = "2026-02-12T22:00:00+00:00"
+        mgr.mark_paused_limit("proj", 1, resume_after=resume_time)
+        slot = mgr.get_slot("proj", 1)
+        assert slot.resume_after == resume_time
+        assert slot.status == "paused_limit"
+
 
 class TestMarkCompleted:
     def test_mark_completed(self, mgr: SlotManager):
@@ -334,7 +345,25 @@ class TestFreeSlot:
         assert slot.started_at is None
         assert slot.pid is None
         assert slot.interrupted_by_limit is False
+        assert slot.resume_after is None
         assert slot.stages_completed == []
+
+
+class TestPausedLimitSlots:
+    def test_paused_limit_slots_returns_paused(self, mgr: SlotManager):
+        mgr.register_slot("proj", 1)
+        mgr.register_slot("proj", 2)
+        mgr.assign_ticket(
+            "proj", 1, ticket_id="T-1", ticket_title="T1", branch="b1"
+        )
+        mgr.mark_paused_limit("proj", 1)
+        paused = mgr.paused_limit_slots()
+        assert len(paused) == 1
+        assert paused[0].slot_id == 1
+
+    def test_paused_limit_slots_empty_when_none_paused(self, mgr: SlotManager):
+        mgr.register_slot("proj", 1)
+        assert mgr.paused_limit_slots() == []
 
 
 class TestResumeSlot:
@@ -346,6 +375,15 @@ class TestResumeSlot:
         mgr.mark_paused_limit("proj", 1)
         mgr.resume_slot("proj", 1)
         assert mgr.get_slot("proj", 1).status == "busy"
+
+    def test_resume_clears_resume_after(self, mgr: SlotManager):
+        mgr.register_slot("proj", 1)
+        mgr.assign_ticket(
+            "proj", 1, ticket_id="T-1", ticket_title="T1", branch="b1"
+        )
+        mgr.mark_paused_limit("proj", 1, resume_after="2026-02-12T22:00:00+00:00")
+        mgr.resume_slot("proj", 1)
+        assert mgr.get_slot("proj", 1).resume_after is None
 
     def test_resume_non_paused_raises(self, mgr: SlotManager):
         mgr.register_slot("proj", 1)
