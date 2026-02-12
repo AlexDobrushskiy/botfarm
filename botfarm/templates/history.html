@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% set active_page = "history" %}
+{% block title %}Task History - Botfarm{% endblock %}
+{% block content %}
+<h1>Task History</h1>
+
+<div id="history-panel" hx-get="/partials/history" hx-trigger="every 10s" hx-swap="innerHTML">
+    {% include "partials/history.html" %}
+</div>
+{% endblock %}

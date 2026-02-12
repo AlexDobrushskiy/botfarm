@@ -1,0 +1,47 @@
+{% if dispatch_paused %}
+<div class="banner-paused">
+    DISPATCH PAUSED{% if dispatch_pause_reason %}: {{ dispatch_pause_reason }}{% endif %}
+</div>
+{% endif %}
+
+{% if slots %}
+<figure>
+<table>
+    <thead>
+        <tr>
+            <th>Project</th>
+            <th>Slot</th>
+            <th>Status</th>
+            <th>Ticket</th>
+            <th>Stage</th>
+            <th>Elapsed</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for slot in slots %}
+        <tr>
+            <td>{{ slot.project }}</td>
+            <td>{{ slot.slot_id }}</td>
+            <td><span class="status-{{ slot.status }}">{{ slot.status }}</span></td>
+            <td>
+                {% if slot.ticket_id %}
+                    {{ slot.ticket_id }}{% if slot.ticket_title %} ({{ slot.ticket_title }}){% endif %}
+                {% else %}
+                    -
+                {% endif %}
+            </td>
+            <td>
+                {{ slot.stage or "-" }}
+                {% if slot.stage_iteration is defined and slot.stage_iteration > 1 %}
+                    (iter {{ slot.stage_iteration }})
+                {% endif %}
+            </td>
+            <td>{{ elapsed(slot.started_at) }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+</figure>
+{% else %}
+<p>No slots configured. Is the supervisor running?</p>
+{% endif %}

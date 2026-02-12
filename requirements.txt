@@ -4,5 +4,9 @@ rich
 pyyaml
 httpx
 aiosqlite
+fastapi
+uvicorn
+jinja2
+python-multipart
 pytest
 pytest-asyncio

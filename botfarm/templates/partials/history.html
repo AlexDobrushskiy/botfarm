@@ -1,0 +1,42 @@
+{% if tasks %}
+<figure>
+<table>
+    <thead>
+        <tr>
+            <th>Ticket</th>
+            <th>Project</th>
+            <th>Status</th>
+            <th>Cost ($)</th>
+            <th>Turns</th>
+            <th>Duration</th>
+            <th>Created</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for task in tasks %}
+        <tr>
+            <td>{{ task.ticket_id }}</td>
+            <td>{{ task.project }}</td>
+            <td>
+                {% if task.status == "completed" %}
+                    <span class="status-free">completed</span>
+                {% elif task.status == "failed" %}
+                    <span class="status-failed">failed</span>
+                {% elif task.status == "in_progress" %}
+                    <span class="status-busy">in_progress</span>
+                {% else %}
+                    {{ task.status }}
+                {% endif %}
+            </td>
+            <td>{{ "%.2f"|format(task.cost_usd) if task.cost_usd is not none else "-" }}</td>
+            <td>{{ task.turns if task.turns is not none else "-" }}</td>
+            <td>{{ task.duration }}</td>
+            <td>{{ task.created_at[:16] if task.created_at else "-" }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+</figure>
+{% else %}
+<p>No tasks found.</p>
+{% endif %}

@@ -13,6 +13,10 @@ dependencies = [
     "pyyaml",
     "httpx",
     "aiosqlite",
+    "fastapi",
+    "uvicorn",
+    "jinja2",
+    "python-multipart",
 ]
 
 [project.scripts]

@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Botfarm Dashboard{% endblock %}</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <style>
+        :root { --pico-font-size: 15px; }
+        nav ul { margin-bottom: 0; }
+        .status-free { color: var(--pico-ins-color); }
+        .status-busy { color: var(--pico-color-yellow-500, #eab308); }
+        .status-paused_limit { color: var(--pico-color-purple-400, #c084fc); }
+        .status-failed { color: var(--pico-del-color); }
+        .status-completed_pending_cleanup { color: var(--pico-color-cyan-400, #22d3ee); }
+        .banner-paused {
+            background: var(--pico-del-color);
+            color: #fff;
+            padding: 0.5rem 1rem;
+            border-radius: var(--pico-border-radius);
+            margin-bottom: 1rem;
+            font-weight: bold;
+        }
+        table { font-size: 0.9rem; }
+        .metric-card {
+            text-align: center;
+            padding: 1.5rem;
+        }
+        .metric-card h2 { margin-bottom: 0.25rem; }
+        .metric-card p { margin-bottom: 0; color: var(--pico-muted-color); }
+    </style>
+</head>
+<body>
+    <nav class="container-fluid">
+        <ul>
+            <li><strong>Botfarm</strong></li>
+        </ul>
+        <ul>
+            <li><a href="/"{% if active_page == "status" %} aria-current="page"{% endif %}>Live Status</a></li>
+            <li><a href="/history"{% if active_page == "history" %} aria-current="page"{% endif %}>Task History</a></li>
+            <li><a href="/usage"{% if active_page == "usage" %} aria-current="page"{% endif %}>Usage Trends</a></li>
+            <li><a href="/metrics"{% if active_page == "metrics" %} aria-current="page"{% endif %}>Metrics</a></li>
+        </ul>
+    </nav>
+    <main class="container">
+        {% block content %}{% endblock %}
+    </main>
+</body>
+</html>
