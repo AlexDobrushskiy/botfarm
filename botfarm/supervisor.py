@@ -28,6 +28,7 @@ from botfarm.config import BotfarmConfig, ProjectConfig
 from botfarm.db import init_db, insert_event, insert_task, update_task
 from botfarm.linear import LinearPoller, create_pollers
 from botfarm.slots import SlotManager, SlotState
+from botfarm.usage import UsagePoller
 from botfarm.worker import PipelineResult, run_pipeline
 
 logger = logging.getLogger(__name__)
@@ -157,6 +158,9 @@ class Supervisor:
         self._db_path = str(db_path)
         self._conn: sqlite3.Connection = init_db(db_path)
 
+        # Usage poller
+        self._usage_poller = UsagePoller()
+
         # Track child processes: (project, slot_id) -> Process
         self._workers: dict[tuple[str, int], multiprocessing.Process] = {}
 
@@ -207,6 +211,12 @@ class Supervisor:
         )
         self._conn.commit()
 
+        # Initial usage poll so we have data before the first dispatch
+        try:
+            self._usage_poller.force_poll(self._conn)
+        except Exception:
+            logger.exception("Initial usage poll failed — continuing without usage data")
+
         try:
             while not self._shutdown_requested:
                 self._tick()
@@ -217,7 +227,12 @@ class Supervisor:
 
     def _tick(self) -> None:
         """One iteration of the supervisor loop."""
-        for phase in (self._reconcile_workers, self._handle_finished_slots, self._poll_and_dispatch):
+        for phase in (
+            self._reconcile_workers,
+            self._handle_finished_slots,
+            self._poll_usage,
+            self._poll_and_dispatch,
+        ):
             try:
                 phase()
             except Exception:
@@ -343,11 +358,28 @@ class Supervisor:
         logger.info("Freed slot %s/%d after failure", project, slot.slot_id)
 
     # ------------------------------------------------------------------
+    # Usage polling
+    # ------------------------------------------------------------------
+
+    def _poll_usage(self) -> None:
+        """Poll the usage API and update slot manager state."""
+        state = self._usage_poller.poll(self._conn)
+        if self._usage_poller.last_polled_fresh:
+            self._slot_manager.set_usage(state.to_dict())
+
+    # ------------------------------------------------------------------
     # Polling and dispatch
     # ------------------------------------------------------------------
 
     def _poll_and_dispatch(self) -> None:
         """Poll each project for tickets and dispatch workers to free slots."""
+        if self._usage_poller.state.should_pause:
+            logger.info(
+                "Dispatch paused — 5h utilization at %.1f%%",
+                (self._usage_poller.state.utilization_5h or 0) * 100,
+            )
+            return
+
         active_ids = self._slot_manager.active_ticket_ids()
 
         for project_name, poller in self._pollers.items():
@@ -463,6 +495,7 @@ class Supervisor:
 
         # Persist state
         self._slot_manager.save()
+        self._usage_poller.close()
 
         # Log running workers (we don't kill them)
         running = [
