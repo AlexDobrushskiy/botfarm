@@ -3,7 +3,13 @@
     <div>
         <strong>5-hour utilization:</strong>
         {% if usage.utilization_5h is not none %}
-            {{ "%.1f"|format(usage.utilization_5h * 100) }}%
+            <span class="{% if usage.utilization_5h >= 0.85 %}status-failed{% elif usage.utilization_5h >= 0.7 %}status-busy{% else %}status-free{% endif %}">
+                {{ "%.1f"|format(usage.utilization_5h * 100) }}%
+            </span>
+            <progress value="{{ (usage.utilization_5h * 100)|round|int }}" max="100"></progress>
+            {% if usage.resets_at_5h %}
+            <br><small>Resets at: <span class="reset-countdown" data-reset="{{ usage.resets_at_5h }}">{{ usage.resets_at_5h[:19] }}</span></small>
+            {% endif %}
         {% else %}
             -
         {% endif %}
@@ -11,12 +17,26 @@
     <div>
         <strong>7-day utilization:</strong>
         {% if usage.utilization_7d is not none %}
-            {{ "%.1f"|format(usage.utilization_7d * 100) }}%
+            <span class="{% if usage.utilization_7d >= 0.9 %}status-failed{% elif usage.utilization_7d >= 0.75 %}status-busy{% else %}status-free{% endif %}">
+                {{ "%.1f"|format(usage.utilization_7d * 100) }}%
+            </span>
+            <progress value="{{ (usage.utilization_7d * 100)|round|int }}" max="100"></progress>
+            {% if usage.resets_at_7d %}
+            <br><small>Resets at: <span class="reset-countdown" data-reset="{{ usage.resets_at_7d }}">{{ usage.resets_at_7d[:19] }}</span></small>
+            {% endif %}
         {% else %}
             -
         {% endif %}
     </div>
 </div>
+{% if dispatch_paused %}
+<div class="banner-paused" style="margin-top:0.5rem;">
+    ⚠ Dispatch paused{% if dispatch_pause_reason %}: {{ dispatch_pause_reason }}{% endif %}
+</div>
+{% endif %}
+{% if last_usage_check %}
+<small>Last checked: {{ last_usage_check }}</small>
+{% endif %}
 {% else %}
 <p>No usage data available.</p>
 {% endif %}

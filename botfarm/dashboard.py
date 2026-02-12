@@ -107,12 +107,16 @@ def create_app(
         dispatch_paused = state.get("dispatch_paused", False)
         dispatch_pause_reason = state.get("dispatch_pause_reason")
         usage = state.get("usage", {})
+        queue = state.get("queue")
+        last_usage_check = state.get("last_usage_check")
         return templates.TemplateResponse("index.html", {
             "request": request,
             "slots": slots,
             "dispatch_paused": dispatch_paused,
             "dispatch_pause_reason": dispatch_pause_reason,
             "usage": usage,
+            "queue": queue,
+            "last_usage_check": last_usage_check,
             "elapsed": _elapsed,
         })
 
@@ -134,9 +138,24 @@ def create_app(
     def partial_usage(request: Request):
         state = _read_state()
         usage = state.get("usage", {})
+        dispatch_paused = state.get("dispatch_paused", False)
+        dispatch_pause_reason = state.get("dispatch_pause_reason")
+        last_usage_check = state.get("last_usage_check")
         return templates.TemplateResponse("partials/usage.html", {
             "request": request,
             "usage": usage,
+            "dispatch_paused": dispatch_paused,
+            "dispatch_pause_reason": dispatch_pause_reason,
+            "last_usage_check": last_usage_check,
+        })
+
+    @app.get("/partials/queue", response_class=HTMLResponse)
+    def partial_queue(request: Request):
+        state = _read_state()
+        queue = state.get("queue")
+        return templates.TemplateResponse("partials/queue.html", {
+            "request": request,
+            "queue": queue,
         })
 
     def _enrich_tasks(tasks: list[dict]) -> list[dict]:

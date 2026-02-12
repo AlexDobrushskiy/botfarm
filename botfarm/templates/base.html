@@ -29,7 +29,31 @@
         }
         .metric-card h2 { margin-bottom: 0.25rem; }
         .metric-card p { margin-bottom: 0; color: var(--pico-muted-color); }
+        progress { width: 100%; height: 0.5rem; margin-top: 0.25rem; }
     </style>
+    <script>
+    function updateCountdowns() {
+        var now = Date.now();
+        document.querySelectorAll(".resume-countdown").forEach(function(el) {
+            var target = new Date(el.dataset.resume).getTime();
+            var diff = target - now;
+            if (diff <= 0) { el.textContent = "ready to resume"; return; }
+            var mins = Math.ceil(diff / 60000);
+            el.textContent = "resumes in " + mins + "m";
+        });
+        document.querySelectorAll(".reset-countdown").forEach(function(el) {
+            var target = new Date(el.dataset.reset).getTime();
+            var diff = target - now;
+            if (diff <= 0) { el.textContent = "resetting now"; return; }
+            var hrs = Math.floor(diff / 3600000);
+            var mins = Math.ceil((diff % 3600000) / 60000);
+            el.textContent = (hrs > 0 ? hrs + "h " : "") + mins + "m";
+        });
+    }
+    setInterval(updateCountdowns, 10000);
+    document.addEventListener("htmx:afterSwap", updateCountdowns);
+    document.addEventListener("DOMContentLoaded", updateCountdowns);
+    </script>
 </head>
 <body>
     <nav class="container-fluid">

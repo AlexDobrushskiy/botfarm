@@ -61,6 +61,17 @@ def state_file(tmp_path):
         },
         "dispatch_paused": False,
         "dispatch_pause_reason": None,
+        "last_usage_check": "2026-02-12T14:30:00+00:00",
+        "queue": {
+            "projects": [
+                {
+                    "name": "my-project",
+                    "todo_count": 3,
+                    "next_ticket_id": "TST-5",
+                    "next_ticket_title": "Add logging",
+                },
+            ],
+        },
     }
     path.write_text(json.dumps(data))
     return path
@@ -205,6 +216,125 @@ class TestPartialUsage:
         resp = client.get("/partials/usage")
         assert "45.0%" in resp.text
         assert "72.0%" in resp.text
+
+
+# --- Partial Queue ---
+
+
+class TestPartialQueue:
+    def test_returns_200(self, client):
+        resp = client.get("/partials/queue")
+        assert resp.status_code == 200
+
+    def test_contains_queue_data(self, client):
+        resp = client.get("/partials/queue")
+        body = resp.text
+        assert "my-project" in body
+        assert "3" in body
+        assert "TST-5" in body
+        assert "Add logging" in body
+
+    def test_no_queue_data(self, tmp_path):
+        state = tmp_path / "state.json"
+        state.write_text(json.dumps({"slots": [], "usage": {}}))
+        app = create_app(
+            state_file=state,
+            db_path=tmp_path / "nonexistent.db",
+        )
+        client = TestClient(app)
+        resp = client.get("/partials/queue")
+        assert resp.status_code == 200
+        assert "No work available" in resp.text
+
+    def test_empty_queue_projects(self, tmp_path):
+        state = tmp_path / "state.json"
+        state.write_text(json.dumps({
+            "slots": [], "usage": {},
+            "queue": {"projects": []},
+        }))
+        app = create_app(
+            state_file=state,
+            db_path=tmp_path / "nonexistent.db",
+        )
+        client = TestClient(app)
+        resp = client.get("/partials/queue")
+        assert resp.status_code == 200
+        assert "No work available" in resp.text
+
+
+# --- Slot Panel enhancements ---
+
+
+class TestSlotPanelEnhancements:
+    def test_pid_displayed(self, client):
+        resp = client.get("/partials/slots")
+        assert "1234" in resp.text
+
+    def test_ticket_link(self, client):
+        resp = client.get("/partials/slots")
+        assert "linear.app/issue/TST-1" in resp.text
+
+    def test_paused_slot_resume_countdown(self, state_file, db_file):
+        data = json.loads(state_file.read_text())
+        data["slots"][0]["status"] = "paused_limit"
+        data["slots"][0]["resume_after"] = "2099-12-31T23:59:00+00:00"
+        state_file.write_text(json.dumps(data))
+        app = create_app(state_file=state_file, db_path=db_file)
+        client = TestClient(app)
+        resp = client.get("/partials/slots")
+        assert "resume-countdown" in resp.text
+        assert "2099-12-31T23:59:00" in resp.text
+
+    def test_pid_header_present(self, client):
+        resp = client.get("/partials/slots")
+        assert "<th>PID</th>" in resp.text
+
+
+# --- Usage Panel enhancements ---
+
+
+class TestUsagePanelEnhancements:
+    def test_progress_bars(self, client):
+        resp = client.get("/partials/usage")
+        assert "<progress" in resp.text
+
+    def test_reset_countdowns(self, client):
+        resp = client.get("/partials/usage")
+        assert "reset-countdown" in resp.text
+        assert "Resets at:" in resp.text
+
+    def test_last_usage_check(self, client):
+        resp = client.get("/partials/usage")
+        assert "Last checked:" in resp.text
+
+    def test_usage_dispatch_pause_warning(self, state_file, db_file):
+        data = json.loads(state_file.read_text())
+        data["dispatch_paused"] = True
+        data["dispatch_pause_reason"] = "5-hour limit exceeded"
+        state_file.write_text(json.dumps(data))
+        app = create_app(state_file=state_file, db_path=db_file)
+        client = TestClient(app)
+        resp = client.get("/partials/usage")
+        assert "Dispatch paused" in resp.text
+        assert "5-hour limit exceeded" in resp.text
+
+
+# --- Index Queue panel ---
+
+
+class TestIndexQueuePanel:
+    def test_index_contains_queue_section(self, client):
+        resp = client.get("/")
+        body = resp.text
+        assert "Queue" in body
+        assert "queue-panel" in body
+        assert "/partials/queue" in body
+
+    def test_index_contains_queue_data(self, client):
+        resp = client.get("/")
+        body = resp.text
+        assert "TST-5" in body
+        assert "Add logging" in body
 
 
 # --- History ---

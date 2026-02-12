@@ -4,6 +4,7 @@
 {% block content %}
 <h1>Live Status</h1>
 
+<h2>Slots</h2>
 <div id="slots-panel" hx-get="/partials/slots" hx-trigger="every 5s" hx-swap="innerHTML">
     {% include "partials/slots.html" %}
 </div>
@@ -11,5 +12,10 @@
 <h2>Usage</h2>
 <div id="usage-panel" hx-get="/partials/usage" hx-trigger="every 5s" hx-swap="innerHTML">
     {% include "partials/usage.html" %}
+</div>
+
+<h2>Queue</h2>
+<div id="queue-panel" hx-get="/partials/queue" hx-trigger="every 5s" hx-swap="innerHTML">
+    {% include "partials/queue.html" %}
 </div>
 {% endblock %}
