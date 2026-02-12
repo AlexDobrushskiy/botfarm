@@ -20,7 +20,6 @@ from botfarm.worker import (
     run_claude,
     run_pipeline,
     _extract_pr_url,
-    _extract_pr_ref,
     _run_implement,
     _run_review,
     _run_fix,
@@ -120,6 +119,12 @@ class TestParseClaudeOutput:
         assert result.cost_usd == 0.25
         assert result.exit_subtype == "tool_use"
         assert result.result_text == "Done"
+        assert result.is_error is False
+
+    def test_is_error_true(self):
+        raw = _make_claude_json(is_error=True)
+        result = parse_claude_output(raw)
+        assert result.is_error is True
 
     def test_duration_conversion(self):
         raw = _make_claude_json(duration_ms=60000)
@@ -197,19 +202,16 @@ class TestExtractPrUrl:
         text = "see https://github.com/org/project/pull/100"
         assert _extract_pr_url(text) == "https://github.com/org/project/pull/100"
 
+    def test_trailing_punctuation_not_captured(self):
+        text = "see https://github.com/owner/repo/pull/42."
+        assert _extract_pr_url(text) == "https://github.com/owner/repo/pull/42"
+
+    def test_trailing_fragment_not_captured(self):
+        text = "link: https://github.com/owner/repo/pull/42#issuecomment-123"
+        assert _extract_pr_url(text) == "https://github.com/owner/repo/pull/42"
+
     def test_empty_string(self):
         assert _extract_pr_url("") is None
-
-
-# ---------------------------------------------------------------------------
-# _extract_pr_ref
-# ---------------------------------------------------------------------------
-
-
-class TestExtractPrRef:
-    def test_returns_url_as_is(self):
-        url = "https://github.com/owner/repo/pull/42"
-        assert _extract_pr_ref(url) == url
 
 
 # ---------------------------------------------------------------------------
@@ -250,6 +252,21 @@ class TestRunImplement:
         assert result.success is True
         assert result.pr_url is None
 
+    @patch("botfarm.worker.run_claude")
+    def test_is_error_returns_failure(self, mock_claude, tmp_path):
+        mock_claude.return_value = ClaudeResult(
+            session_id="s1",
+            num_turns=10,
+            duration_seconds=30.0,
+            cost_usd=0.5,
+            exit_subtype="tool_use",
+            result_text="Max turns reached",
+            is_error=True,
+        )
+        result = _run_implement("SMA-1", cwd=tmp_path, max_turns=100)
+        assert result.success is False
+        assert "Claude reported error" in result.error
+
 
 class TestRunReview:
     @patch("botfarm.worker.run_claude")
@@ -266,6 +283,21 @@ class TestRunReview:
         assert result.success is True
         assert result.stage == "review"
 
+    @patch("botfarm.worker.run_claude")
+    def test_is_error_returns_failure(self, mock_claude, tmp_path):
+        mock_claude.return_value = ClaudeResult(
+            session_id="s2",
+            num_turns=5,
+            duration_seconds=15.0,
+            cost_usd=0.2,
+            exit_subtype="tool_use",
+            result_text="Error occurred",
+            is_error=True,
+        )
+        result = _run_review(PR_URL, cwd=tmp_path, max_turns=50)
+        assert result.success is False
+        assert "Claude reported error" in result.error
+
 
 class TestRunFix:
     @patch("botfarm.worker.run_claude")
@@ -281,6 +313,21 @@ class TestRunFix:
         result = _run_fix(PR_URL, cwd=tmp_path, max_turns=50)
         assert result.success is True
         assert result.stage == "fix"
+
+    @patch("botfarm.worker.run_claude")
+    def test_is_error_returns_failure(self, mock_claude, tmp_path):
+        mock_claude.return_value = ClaudeResult(
+            session_id="s3",
+            num_turns=8,
+            duration_seconds=20.0,
+            cost_usd=0.3,
+            exit_subtype="tool_use",
+            result_text="Error occurred",
+            is_error=True,
+        )
+        result = _run_fix(PR_URL, cwd=tmp_path, max_turns=50)
+        assert result.success is False
+        assert "Claude reported error" in result.error
 
 
 class TestRunPrChecks:
@@ -386,11 +433,12 @@ class TestRunPipeline:
         assert len(runs) == 5
         assert [r["stage"] for r in runs] == list(STAGES)
 
-        # Task should be marked completed
+        # Task should be marked completed with timestamp
         task = get_task(conn, task_id)
         assert task["status"] == "completed"
         assert task["cost_usd"] == pytest.approx(1.0)
         assert task["turns"] == 23
+        assert task["completed_at"] is not None
 
     @patch("botfarm.worker._execute_stage")
     def test_implement_no_pr_url_fails(self, mock_exec, conn, task_id, tmp_path):
@@ -446,6 +494,7 @@ class TestRunPipeline:
         task = get_task(conn, task_id)
         assert task["status"] == "failed"
         assert "subprocess died" in task["failure_reason"]
+        assert task["completed_at"] is not None
 
     @patch("botfarm.worker._execute_stage")
     def test_merge_failure(self, mock_exec, conn, task_id, tmp_path):

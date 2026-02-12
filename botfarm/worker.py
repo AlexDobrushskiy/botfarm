@@ -13,6 +13,7 @@ import re
 import subprocess
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from botfarm.db import insert_stage_run, update_task
@@ -47,6 +48,7 @@ class ClaudeResult:
     cost_usd: float
     exit_subtype: str
     result_text: str
+    is_error: bool = False
 
 
 def parse_claude_output(raw: str) -> ClaudeResult:
@@ -65,6 +67,7 @@ def parse_claude_output(raw: str) -> ClaudeResult:
         cost_usd=data.get("cost_usd", 0.0),
         exit_subtype=data.get("subtype", ""),
         result_text=data.get("result", ""),
+        is_error=bool(data.get("is_error", False)),
     )
 
 
@@ -138,6 +141,14 @@ def _run_implement(ticket_id: str, *, cwd: str | Path, max_turns: int) -> StageR
     )
     result = run_claude(prompt, cwd=cwd, max_turns=max_turns)
 
+    if result.is_error:
+        return StageResult(
+            stage="implement",
+            success=False,
+            claude_result=result,
+            error=f"Claude reported error: {result.result_text[:200]}",
+        )
+
     # Try to extract PR URL from the result text
     pr_url = _extract_pr_url(result.result_text)
 
@@ -158,6 +169,14 @@ def _run_review(pr_url: str, *, cwd: str | Path, max_turns: int) -> StageResult:
     )
     result = run_claude(prompt, cwd=cwd, max_turns=max_turns)
 
+    if result.is_error:
+        return StageResult(
+            stage="review",
+            success=False,
+            claude_result=result,
+            error=f"Claude reported error: {result.result_text[:200]}",
+        )
+
     return StageResult(
         stage="review",
         success=True,
@@ -174,6 +193,14 @@ def _run_fix(pr_url: str, *, cwd: str | Path, max_turns: int) -> StageResult:
     )
     result = run_claude(prompt, cwd=cwd, max_turns=max_turns)
 
+    if result.is_error:
+        return StageResult(
+            stage="fix",
+            success=False,
+            claude_result=result,
+            error=f"Claude reported error: {result.result_text[:200]}",
+        )
+
     return StageResult(
         stage="fix",
         success=True,
@@ -183,20 +210,18 @@ def _run_fix(pr_url: str, *, cwd: str | Path, max_turns: int) -> StageResult:
 
 def _run_pr_checks(pr_url: str, *, cwd: str | Path, timeout: int = 600) -> StageResult:
     """PR_CHECKS stage — Wait for CI checks to pass. No Claude Code invocation."""
-    # Extract PR number or use the URL directly
-    pr_ref = _extract_pr_ref(pr_url)
-
     start = time.monotonic()
     try:
         proc = subprocess.run(
-            ["gh", "pr", "checks", pr_ref, "--watch"],
+            ["gh", "pr", "checks", pr_url, "--watch"],
             capture_output=True,
             text=True,
             cwd=str(cwd),
             timeout=timeout,
         )
-        elapsed = time.monotonic() - start
         success = proc.returncode == 0
+        if success:
+            logger.info("CI checks passed in %.1fs", time.monotonic() - start)
         return StageResult(
             stage="pr_checks",
             success=success,
@@ -213,10 +238,8 @@ def _run_pr_checks(pr_url: str, *, cwd: str | Path, timeout: int = 600) -> Stage
 
 def _run_merge(pr_url: str, *, cwd: str | Path) -> StageResult:
     """MERGE stage — Squash merge the PR and delete the remote branch."""
-    pr_ref = _extract_pr_ref(pr_url)
-
     proc = subprocess.run(
-        ["gh", "pr", "merge", pr_ref, "--squash", "--delete-branch"],
+        ["gh", "pr", "merge", pr_url, "--squash", "--delete-branch"],
         capture_output=True,
         text=True,
         cwd=str(cwd),
@@ -364,6 +387,7 @@ def run_pipeline(
         status="completed",
         cost_usd=pipeline.total_cost_usd,
         turns=pipeline.total_turns,
+        completed_at=datetime.now(timezone.utc).isoformat(),
     )
     conn.commit()
 
@@ -388,16 +412,20 @@ def _execute_stage(
     if stage == "implement":
         return _run_implement(ticket_id, cwd=cwd, max_turns=max_turns)
     elif stage == "review":
-        assert pr_url, "review stage requires pr_url"
+        if not pr_url:
+            raise ValueError(f"{stage} stage requires pr_url")
         return _run_review(pr_url, cwd=cwd, max_turns=max_turns)
     elif stage == "fix":
-        assert pr_url, "fix stage requires pr_url"
+        if not pr_url:
+            raise ValueError(f"{stage} stage requires pr_url")
         return _run_fix(pr_url, cwd=cwd, max_turns=max_turns)
     elif stage == "pr_checks":
-        assert pr_url, "pr_checks stage requires pr_url"
+        if not pr_url:
+            raise ValueError(f"{stage} stage requires pr_url")
         return _run_pr_checks(pr_url, cwd=cwd, timeout=pr_checks_timeout)
     elif stage == "merge":
-        assert pr_url, "merge stage requires pr_url"
+        if not pr_url:
+            raise ValueError(f"{stage} stage requires pr_url")
         return _run_merge(pr_url, cwd=cwd)
     else:
         raise ValueError(f"Unknown stage: {stage}")
@@ -435,6 +463,7 @@ def _record_failure(conn, task_id: int, pipeline: PipelineResult) -> None:
         cost_usd=pipeline.total_cost_usd,
         turns=pipeline.total_turns,
         failure_reason=f"{pipeline.failure_stage}: {pipeline.failure_reason}"[:500],
+        completed_at=datetime.now(timezone.utc).isoformat(),
     )
     conn.commit()
 
@@ -444,14 +473,7 @@ def _extract_pr_url(text: str) -> str | None:
 
     Looks for patterns like https://github.com/<owner>/<repo>/pull/<number>.
     """
-    match = re.search(r"https://github\.com/[^\s]+/pull/\d+", text)
+    match = re.search(r"https://github\.com/[\w.-]+/[\w.-]+/pull/\d+", text)
     return match.group(0) if match else None
 
 
-def _extract_pr_ref(pr_url: str) -> str:
-    """Extract a usable PR reference from a URL.
-
-    If it looks like ``https://github.com/owner/repo/pull/123``,
-    returns the URL as-is (gh CLI accepts full URLs).
-    """
-    return pr_url
