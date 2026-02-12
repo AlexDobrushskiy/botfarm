@@ -539,6 +539,66 @@ class TestIsPidAlive:
 # ---------------------------------------------------------------------------
 
 
+class TestDispatchPaused:
+    def test_defaults(self, mgr: SlotManager):
+        assert mgr.dispatch_paused is False
+        assert mgr.dispatch_pause_reason is None
+
+    def test_set_paused(self, mgr: SlotManager):
+        mgr.register_slot("proj", 1)
+        mgr.set_dispatch_paused(True, "5-hour utilization 87.0% >= 85% threshold")
+        assert mgr.dispatch_paused is True
+        assert "5-hour" in mgr.dispatch_pause_reason
+
+    def test_clear_paused(self, mgr: SlotManager):
+        mgr.register_slot("proj", 1)
+        mgr.set_dispatch_paused(True, "some reason")
+        mgr.set_dispatch_paused(False)
+        assert mgr.dispatch_paused is False
+        assert mgr.dispatch_pause_reason is None
+
+    def test_paused_persisted_in_state_file(self, mgr: SlotManager):
+        mgr.register_slot("proj", 1)
+        mgr.set_dispatch_paused(True, "test reason")
+        data = json.loads(mgr.state_path.read_text())
+        assert data["dispatch_paused"] is True
+        assert data["dispatch_pause_reason"] == "test reason"
+
+    def test_paused_not_persisted_cleared(self, mgr: SlotManager):
+        mgr.register_slot("proj", 1)
+        mgr.set_dispatch_paused(True, "reason")
+        mgr.set_dispatch_paused(False)
+        data = json.loads(mgr.state_path.read_text())
+        assert data["dispatch_paused"] is False
+        assert "dispatch_pause_reason" not in data
+
+    def test_paused_loaded_from_state(self, tmp_path: Path):
+        state_path = tmp_path / "state.json"
+        data = {
+            "slots": [{"project": "proj", "slot_id": 1, "status": "free"}],
+            "dispatch_paused": True,
+            "dispatch_pause_reason": "7-day utilization 92.0% >= 90% threshold",
+        }
+        state_path.write_text(json.dumps(data))
+
+        mgr = SlotManager(state_path=state_path)
+        mgr.register_slot("proj", 1)
+        mgr.load()
+        assert mgr.dispatch_paused is True
+        assert "7-day" in mgr.dispatch_pause_reason
+
+    def test_paused_defaults_on_load_if_missing(self, tmp_path: Path):
+        state_path = tmp_path / "state.json"
+        data = {"slots": [{"project": "proj", "slot_id": 1, "status": "free"}]}
+        state_path.write_text(json.dumps(data))
+
+        mgr = SlotManager(state_path=state_path)
+        mgr.register_slot("proj", 1)
+        mgr.load()
+        assert mgr.dispatch_paused is False
+        assert mgr.dispatch_pause_reason is None
+
+
 class TestSlotStatuses:
     def test_expected_values(self):
         assert SLOT_STATUSES == {

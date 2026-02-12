@@ -299,6 +299,84 @@ class TestHandleFinishedSlots:
 # ---------------------------------------------------------------------------
 
 
+class TestDispatchPauseResume:
+    def test_5h_threshold_pauses_dispatch(self, supervisor):
+        """Dispatch is paused when 5h utilization >= threshold."""
+        supervisor._usage_poller._state.utilization_5h = 0.86
+        supervisor._usage_poller._state.utilization_7d = 0.50
+
+        poller = supervisor._pollers["test-project"]
+        poller.poll.return_value = [_make_issue()]
+
+        with patch.object(supervisor, "_dispatch_worker") as mock_dispatch:
+            supervisor._poll_and_dispatch()
+            mock_dispatch.assert_not_called()
+
+        assert supervisor.slot_manager.dispatch_paused is True
+        assert "5-hour" in supervisor.slot_manager.dispatch_pause_reason
+
+    def test_7d_threshold_pauses_dispatch(self, supervisor):
+        """Dispatch is paused when 7d utilization >= threshold."""
+        supervisor._usage_poller._state.utilization_5h = 0.50
+        supervisor._usage_poller._state.utilization_7d = 0.91
+
+        supervisor._poll_and_dispatch()
+
+        assert supervisor.slot_manager.dispatch_paused is True
+        assert "7-day" in supervisor.slot_manager.dispatch_pause_reason
+
+    def test_pause_event_logged_only_once(self, supervisor):
+        """The dispatch_paused event is logged only on transition to paused."""
+        supervisor._usage_poller._state.utilization_5h = 0.90
+
+        supervisor._poll_and_dispatch()  # first call — logs event
+        supervisor._poll_and_dispatch()  # second call — no new event
+
+        events = get_events(supervisor._conn, event_type="dispatch_paused")
+        assert len(events) == 1
+
+    def test_resume_when_utilization_drops(self, supervisor):
+        """Dispatch resumes when utilization drops below thresholds."""
+        # First: pause
+        supervisor._usage_poller._state.utilization_5h = 0.90
+        supervisor._poll_and_dispatch()
+        assert supervisor.slot_manager.dispatch_paused is True
+
+        # Then: utilization drops
+        supervisor._usage_poller._state.utilization_5h = 0.50
+        with patch.object(supervisor, "_dispatch_worker"):
+            supervisor._poll_and_dispatch()
+
+        assert supervisor.slot_manager.dispatch_paused is False
+        events = get_events(supervisor._conn, event_type="dispatch_resumed")
+        assert len(events) == 1
+
+    def test_below_threshold_no_dispatch_paused_state(self, supervisor):
+        """When utilization is below thresholds, dispatch_paused is False."""
+        supervisor._usage_poller._state.utilization_5h = 0.50
+        supervisor._usage_poller._state.utilization_7d = 0.60
+
+        poller = supervisor._pollers["test-project"]
+        poller.poll.return_value = [_make_issue()]
+
+        with patch.object(supervisor, "_dispatch_worker"):
+            supervisor._poll_and_dispatch()
+
+        assert supervisor.slot_manager.dispatch_paused is False
+
+    def test_none_utilization_allows_dispatch(self, supervisor):
+        """When utilization is None, dispatch proceeds normally."""
+        supervisor._usage_poller._state.utilization_5h = None
+        supervisor._usage_poller._state.utilization_7d = None
+
+        poller = supervisor._pollers["test-project"]
+        poller.poll.return_value = [_make_issue()]
+
+        with patch.object(supervisor, "_dispatch_worker") as mock_dispatch:
+            supervisor._poll_and_dispatch()
+            mock_dispatch.assert_called_once()
+
+
 class TestPollAndDispatch:
     def test_no_candidates_no_dispatch(self, supervisor):
         poller = supervisor._pollers["test-project"]

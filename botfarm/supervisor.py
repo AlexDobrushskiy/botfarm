@@ -373,12 +373,35 @@ class Supervisor:
 
     def _poll_and_dispatch(self) -> None:
         """Poll each project for tickets and dispatch workers to free slots."""
-        if self._usage_poller.state.should_pause:
-            logger.info(
-                "Dispatch paused — 5h utilization at %.1f%%",
-                (self._usage_poller.state.utilization_5h or 0) * 100,
-            )
+        thresholds = self._config.usage_limits
+        should_pause, reason = self._usage_poller.state.should_pause_with_thresholds(
+            five_hour_threshold=thresholds.pause_five_hour_threshold,
+            seven_day_threshold=thresholds.pause_seven_day_threshold,
+        )
+
+        if should_pause:
+            if not self._slot_manager.dispatch_paused:
+                logger.warning("Dispatch paused: %s", reason)
+                insert_event(
+                    self._conn,
+                    event_type="dispatch_paused",
+                    detail=reason,
+                )
+                self._conn.commit()
+                self._slot_manager.set_dispatch_paused(True, reason)
             return
+
+        # Utilization is below thresholds — resume if previously paused
+        if self._slot_manager.dispatch_paused:
+            prev_reason = self._slot_manager.dispatch_pause_reason
+            logger.info("Dispatch resumed — utilization dropped below thresholds")
+            self._slot_manager.set_dispatch_paused(False)
+            insert_event(
+                self._conn,
+                event_type="dispatch_resumed",
+                detail=f"previous_reason={prev_reason}",
+            )
+            self._conn.commit()
 
         active_ids = self._slot_manager.active_ticket_ids()
 

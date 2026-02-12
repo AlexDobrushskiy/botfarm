@@ -92,7 +92,7 @@ class TestStatusCommand:
     def test_no_state_file(self, runner, tmp_path, monkeypatch):
         monkeypatch.setattr(
             "botfarm.cli._resolve_paths",
-            lambda _: (tmp_path / "nonexistent.json", tmp_path / "botfarm.db"),
+            lambda _: (tmp_path / "nonexistent.json", tmp_path / "botfarm.db", None),
         )
         result = runner.invoke(main, ["status"])
         assert result.exit_code == 0
@@ -102,7 +102,7 @@ class TestStatusCommand:
         state_file.write_text("[]")
         monkeypatch.setattr(
             "botfarm.cli._resolve_paths",
-            lambda _: (state_file, state_file.parent / "botfarm.db"),
+            lambda _: (state_file, state_file.parent / "botfarm.db", None),
         )
         result = runner.invoke(main, ["status"])
         assert result.exit_code == 0
@@ -112,7 +112,7 @@ class TestStatusCommand:
         state_file.write_text("{invalid json")
         monkeypatch.setattr(
             "botfarm.cli._resolve_paths",
-            lambda _: (state_file, state_file.parent / "botfarm.db"),
+            lambda _: (state_file, state_file.parent / "botfarm.db", None),
         )
         result = runner.invoke(main, ["status"])
         assert result.exit_code != 0
@@ -137,7 +137,7 @@ class TestStatusCommand:
         )
         monkeypatch.setattr(
             "botfarm.cli._resolve_paths",
-            lambda _: (state_file, state_file.parent / "botfarm.db"),
+            lambda _: (state_file, state_file.parent / "botfarm.db", None),
         )
         result = runner.invoke(main, ["status"])
         assert result.exit_code == 0
@@ -163,7 +163,7 @@ class TestStatusCommand:
         )
         monkeypatch.setattr(
             "botfarm.cli._resolve_paths",
-            lambda _: (state_file, state_file.parent / "botfarm.db"),
+            lambda _: (state_file, state_file.parent / "botfarm.db", None),
         )
         result = runner.invoke(main, ["status"])
         assert result.exit_code == 0
@@ -192,7 +192,7 @@ class TestStatusCommand:
         )
         monkeypatch.setattr(
             "botfarm.cli._resolve_paths",
-            lambda _: (state_file, state_file.parent / "botfarm.db"),
+            lambda _: (state_file, state_file.parent / "botfarm.db", None),
         )
         result = runner.invoke(main, ["status"])
         assert result.exit_code == 0
@@ -234,7 +234,7 @@ class TestStatusCommand:
         state_file.write_text(json.dumps(slots))
         monkeypatch.setattr(
             "botfarm.cli._resolve_paths",
-            lambda _: (state_file, state_file.parent / "botfarm.db"),
+            lambda _: (state_file, state_file.parent / "botfarm.db", None),
         )
         result = runner.invoke(main, ["status"])
         assert result.exit_code == 0
@@ -243,6 +243,64 @@ class TestStatusCommand:
         assert "free" in result.output
         assert "busy" in result.output
         assert "failed" in result.output
+
+    def test_dispatch_paused_banner(self, runner, state_file, monkeypatch):
+        state_file.write_text(
+            json.dumps(
+                {
+                    "slots": [
+                        {
+                            "project": "proj",
+                            "slot_id": 1,
+                            "status": "free",
+                            "ticket_id": None,
+                            "ticket_title": None,
+                            "stage": None,
+                            "started_at": None,
+                            "stage_iteration": 0,
+                        }
+                    ],
+                    "dispatch_paused": True,
+                    "dispatch_pause_reason": "5-hour utilization 87.0% >= 85% threshold",
+                }
+            )
+        )
+        monkeypatch.setattr(
+            "botfarm.cli._resolve_paths",
+            lambda _: (state_file, state_file.parent / "botfarm.db", None),
+        )
+        result = runner.invoke(main, ["status"])
+        assert result.exit_code == 0
+        assert "DISPATCH PAUSED" in result.output
+        assert "5-hour" in result.output
+
+    def test_no_dispatch_paused_banner_when_not_paused(self, runner, state_file, monkeypatch):
+        state_file.write_text(
+            json.dumps(
+                {
+                    "slots": [
+                        {
+                            "project": "proj",
+                            "slot_id": 1,
+                            "status": "free",
+                            "ticket_id": None,
+                            "ticket_title": None,
+                            "stage": None,
+                            "started_at": None,
+                            "stage_iteration": 0,
+                        }
+                    ],
+                    "dispatch_paused": False,
+                }
+            )
+        )
+        monkeypatch.setattr(
+            "botfarm.cli._resolve_paths",
+            lambda _: (state_file, state_file.parent / "botfarm.db", None),
+        )
+        result = runner.invoke(main, ["status"])
+        assert result.exit_code == 0
+        assert "DISPATCH PAUSED" not in result.output
 
     def test_paused_limit_status(self, runner, state_file, monkeypatch):
         state_file.write_text(
@@ -263,7 +321,7 @@ class TestStatusCommand:
         )
         monkeypatch.setattr(
             "botfarm.cli._resolve_paths",
-            lambda _: (state_file, state_file.parent / "botfarm.db"),
+            lambda _: (state_file, state_file.parent / "botfarm.db", None),
         )
         result = runner.invoke(main, ["status"])
         assert result.exit_code == 0
@@ -279,7 +337,7 @@ class TestHistoryCommand:
     def test_no_database(self, runner, tmp_path, monkeypatch):
         monkeypatch.setattr(
             "botfarm.cli._resolve_paths",
-            lambda _: (tmp_path / "state.json", tmp_path / "nonexistent.db"),
+            lambda _: (tmp_path / "state.json", tmp_path / "nonexistent.db", None),
         )
         result = runner.invoke(main, ["history"])
         assert result.exit_code == 0
@@ -288,7 +346,7 @@ class TestHistoryCommand:
     def test_empty_database(self, runner, db_file, monkeypatch):
         monkeypatch.setattr(
             "botfarm.cli._resolve_paths",
-            lambda _: (db_file.parent / "state.json", db_file),
+            lambda _: (db_file.parent / "state.json", db_file, None),
         )
         result = runner.invoke(main, ["history"])
         assert result.exit_code == 0
@@ -319,7 +377,7 @@ class TestHistoryCommand:
 
         monkeypatch.setattr(
             "botfarm.cli._resolve_paths",
-            lambda _: (db_file.parent / "state.json", db_file),
+            lambda _: (db_file.parent / "state.json", db_file, None),
         )
         result = runner.invoke(main, ["history"])
         assert result.exit_code == 0
@@ -355,7 +413,7 @@ class TestHistoryCommand:
 
         monkeypatch.setattr(
             "botfarm.cli._resolve_paths",
-            lambda _: (db_file.parent / "state.json", db_file),
+            lambda _: (db_file.parent / "state.json", db_file, None),
         )
         result = runner.invoke(main, ["history", "--project", "proj-a"])
         assert result.exit_code == 0
@@ -387,7 +445,7 @@ class TestHistoryCommand:
 
         monkeypatch.setattr(
             "botfarm.cli._resolve_paths",
-            lambda _: (db_file.parent / "state.json", db_file),
+            lambda _: (db_file.parent / "state.json", db_file, None),
         )
         result = runner.invoke(main, ["history", "--status", "failed"])
         assert result.exit_code == 0
@@ -412,7 +470,7 @@ class TestHistoryCommand:
 
         monkeypatch.setattr(
             "botfarm.cli._resolve_paths",
-            lambda _: (db_file.parent / "state.json", db_file),
+            lambda _: (db_file.parent / "state.json", db_file, None),
         )
         result = runner.invoke(main, ["history", "-n", "2"])
         assert result.exit_code == 0
@@ -438,7 +496,7 @@ class TestHistoryCommand:
 
         monkeypatch.setattr(
             "botfarm.cli._resolve_paths",
-            lambda _: (db_file.parent / "state.json", db_file),
+            lambda _: (db_file.parent / "state.json", db_file, None),
         )
         result = runner.invoke(main, ["history"])
         assert result.exit_code == 0
@@ -467,7 +525,7 @@ class TestHistoryCommand:
 
         monkeypatch.setattr(
             "botfarm.cli._resolve_paths",
-            lambda _: (db_file.parent / "state.json", db_file),
+            lambda _: (db_file.parent / "state.json", db_file, None),
         )
         result = runner.invoke(main, ["history"])
         assert result.exit_code == 0
@@ -483,7 +541,7 @@ class TestLimitsCommand:
     def test_no_database(self, runner, tmp_path, monkeypatch):
         monkeypatch.setattr(
             "botfarm.cli._resolve_paths",
-            lambda _: (tmp_path / "state.json", tmp_path / "nonexistent.db"),
+            lambda _: (tmp_path / "state.json", tmp_path / "nonexistent.db", None),
         )
         result = runner.invoke(main, ["limits"])
         assert result.exit_code == 0
@@ -492,7 +550,7 @@ class TestLimitsCommand:
     def test_no_snapshots(self, runner, db_file, monkeypatch):
         monkeypatch.setattr(
             "botfarm.cli._resolve_paths",
-            lambda _: (db_file.parent / "state.json", db_file),
+            lambda _: (db_file.parent / "state.json", db_file, None),
         )
         result = runner.invoke(main, ["limits"])
         assert result.exit_code == 0
@@ -513,7 +571,7 @@ class TestLimitsCommand:
 
         monkeypatch.setattr(
             "botfarm.cli._resolve_paths",
-            lambda _: (db_file.parent / "state.json", db_file),
+            lambda _: (db_file.parent / "state.json", db_file, None),
         )
         result = runner.invoke(main, ["limits"])
         assert result.exit_code == 0
@@ -536,7 +594,7 @@ class TestLimitsCommand:
 
         monkeypatch.setattr(
             "botfarm.cli._resolve_paths",
-            lambda _: (db_file.parent / "state.json", db_file),
+            lambda _: (db_file.parent / "state.json", db_file, None),
         )
         result = runner.invoke(main, ["limits"])
         assert result.exit_code == 0
@@ -554,11 +612,42 @@ class TestLimitsCommand:
 
         monkeypatch.setattr(
             "botfarm.cli._resolve_paths",
-            lambda _: (db_file.parent / "state.json", db_file),
+            lambda _: (db_file.parent / "state.json", db_file, None),
         )
         result = runner.invoke(main, ["limits"])
         assert result.exit_code == 0
         assert "Usage Limits" in result.output
+
+    def test_dispatch_paused_from_state_file(self, runner, db_file, state_file, monkeypatch):
+        conn = sqlite3.connect(str(db_file))
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys=ON")
+        insert_usage_snapshot(
+            conn,
+            utilization_5h=0.50,
+            utilization_7d=0.30,
+        )
+        conn.commit()
+        conn.close()
+
+        state_file.write_text(
+            json.dumps(
+                {
+                    "slots": [],
+                    "dispatch_paused": True,
+                    "dispatch_pause_reason": "5-hour utilization 87.0% >= 85% threshold",
+                }
+            )
+        )
+
+        monkeypatch.setattr(
+            "botfarm.cli._resolve_paths",
+            lambda _: (state_file, db_file, None),
+        )
+        result = runner.invoke(main, ["limits"])
+        assert result.exit_code == 0
+        assert "YES" in result.output
+        assert "5-hour" in result.output
 
     def test_latest_snapshot_used(self, runner, db_file, monkeypatch):
         conn = sqlite3.connect(str(db_file))
@@ -581,7 +670,7 @@ class TestLimitsCommand:
 
         monkeypatch.setattr(
             "botfarm.cli._resolve_paths",
-            lambda _: (db_file.parent / "state.json", db_file),
+            lambda _: (db_file.parent / "state.json", db_file, None),
         )
         result = runner.invoke(main, ["limits"])
         assert result.exit_code == 0

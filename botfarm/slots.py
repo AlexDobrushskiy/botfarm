@@ -74,6 +74,8 @@ class SlotManager:
         self._state_path = Path(state_path).expanduser()
         self._slots: dict[tuple[str, int], SlotState] = {}
         self._usage: dict | None = None
+        self._dispatch_paused: bool = False
+        self._dispatch_pause_reason: str | None = None
 
     @property
     def state_path(self) -> Path:
@@ -261,6 +263,9 @@ class SlotManager:
         }
         if self._usage is not None:
             payload["usage"] = self._usage
+        payload["dispatch_paused"] = self._dispatch_paused
+        if self._dispatch_pause_reason is not None:
+            payload["dispatch_pause_reason"] = self._dispatch_pause_reason
         tmp_path = self._state_path.with_suffix(".tmp")
         tmp_path.write_text(json.dumps(payload, indent=2) + "\n")
         tmp_path.replace(self._state_path)
@@ -282,6 +287,8 @@ class SlotManager:
         if isinstance(data, dict):
             slot_list = data.get("slots", [])
             self._usage = data.get("usage")
+            self._dispatch_paused = data.get("dispatch_paused", False)
+            self._dispatch_pause_reason = data.get("dispatch_pause_reason")
         elif isinstance(data, list):
             slot_list = data
         else:
@@ -332,6 +339,24 @@ class SlotManager:
     def set_usage(self, usage: dict) -> None:
         """Store current usage data (written to state.json on next save)."""
         self._usage = usage
+        self._save()
+
+    # ------------------------------------------------------------------
+    # Dispatch pause state
+    # ------------------------------------------------------------------
+
+    @property
+    def dispatch_paused(self) -> bool:
+        return self._dispatch_paused
+
+    @property
+    def dispatch_pause_reason(self) -> str | None:
+        return self._dispatch_pause_reason
+
+    def set_dispatch_paused(self, paused: bool, reason: str | None = None) -> None:
+        """Set or clear the dispatch pause state."""
+        self._dispatch_paused = paused
+        self._dispatch_pause_reason = reason if paused else None
         self._save()
 
     # ------------------------------------------------------------------

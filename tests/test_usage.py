@@ -11,9 +11,10 @@ import pytest
 from botfarm.credentials import CredentialManager
 from botfarm.db import get_usage_snapshots, init_db
 from botfarm.usage import (
+    DEFAULT_PAUSE_5H_THRESHOLD,
+    DEFAULT_PAUSE_7D_THRESHOLD,
     DEFAULT_POLL_INTERVAL,
     DEFAULT_RETENTION_DAYS,
-    PAUSE_THRESHOLD,
     UsagePoller,
     UsageState,
 )
@@ -56,22 +57,6 @@ class TestUsageState:
         assert state.resets_at_5h is None
         assert state.resets_at_7d is None
 
-    def test_should_pause_false_when_none(self):
-        state = UsageState()
-        assert state.should_pause is False
-
-    def test_should_pause_false_below_threshold(self):
-        state = UsageState(utilization_5h=0.5)
-        assert state.should_pause is False
-
-    def test_should_pause_true_at_threshold(self):
-        state = UsageState(utilization_5h=PAUSE_THRESHOLD)
-        assert state.should_pause is True
-
-    def test_should_pause_true_above_threshold(self):
-        state = UsageState(utilization_5h=0.99)
-        assert state.should_pause is True
-
     def test_to_dict(self):
         state = UsageState(
             utilization_5h=0.42,
@@ -91,6 +76,86 @@ class TestUsageState:
         state = UsageState()
         d = state.to_dict()
         assert all(v is None for v in d.values())
+
+    # --- should_pause_with_thresholds ---
+
+    def test_pause_with_thresholds_none_values(self):
+        state = UsageState()
+        paused, reason = state.should_pause_with_thresholds()
+        assert paused is False
+        assert reason is None
+
+    def test_pause_with_thresholds_5h_above(self):
+        state = UsageState(utilization_5h=0.86)
+        paused, reason = state.should_pause_with_thresholds(
+            five_hour_threshold=0.85
+        )
+        assert paused is True
+        assert "5-hour" in reason
+        assert "86.0%" in reason
+
+    def test_pause_with_thresholds_5h_at_threshold(self):
+        state = UsageState(utilization_5h=0.85)
+        paused, reason = state.should_pause_with_thresholds(
+            five_hour_threshold=0.85
+        )
+        assert paused is True
+
+    def test_pause_with_thresholds_5h_below(self):
+        state = UsageState(utilization_5h=0.50)
+        paused, reason = state.should_pause_with_thresholds(
+            five_hour_threshold=0.85
+        )
+        assert paused is False
+        assert reason is None
+
+    def test_pause_with_thresholds_7d_above(self):
+        state = UsageState(utilization_5h=0.50, utilization_7d=0.92)
+        paused, reason = state.should_pause_with_thresholds(
+            five_hour_threshold=0.85, seven_day_threshold=0.90,
+        )
+        assert paused is True
+        assert "7-day" in reason
+        assert "92.0%" in reason
+
+    def test_pause_with_thresholds_7d_at_threshold(self):
+        state = UsageState(utilization_5h=0.50, utilization_7d=0.90)
+        paused, reason = state.should_pause_with_thresholds(
+            five_hour_threshold=0.85, seven_day_threshold=0.90,
+        )
+        assert paused is True
+
+    def test_pause_with_thresholds_5h_checked_first(self):
+        """5h threshold is checked before 7d — 5h reason takes priority."""
+        state = UsageState(utilization_5h=0.90, utilization_7d=0.95)
+        paused, reason = state.should_pause_with_thresholds(
+            five_hour_threshold=0.85, seven_day_threshold=0.90,
+        )
+        assert paused is True
+        assert "5-hour" in reason
+
+    def test_pause_with_thresholds_both_below(self):
+        state = UsageState(utilization_5h=0.50, utilization_7d=0.60)
+        paused, reason = state.should_pause_with_thresholds(
+            five_hour_threshold=0.85, seven_day_threshold=0.90,
+        )
+        assert paused is False
+        assert reason is None
+
+    def test_pause_with_thresholds_custom(self):
+        state = UsageState(utilization_5h=0.71)
+        paused, _ = state.should_pause_with_thresholds(
+            five_hour_threshold=0.70,
+        )
+        assert paused is True
+
+    def test_pause_with_thresholds_7d_none(self):
+        """If 7d utilization is None, only 5h is checked."""
+        state = UsageState(utilization_5h=0.50, utilization_7d=None)
+        paused, reason = state.should_pause_with_thresholds(
+            five_hour_threshold=0.85, seven_day_threshold=0.90,
+        )
+        assert paused is False
 
 
 # ---------------------------------------------------------------------------
@@ -314,20 +379,3 @@ class TestSnapshotRetention:
         assert len(snapshots) == 2
 
 
-# ---------------------------------------------------------------------------
-# Dispatch gating (should_pause)
-# ---------------------------------------------------------------------------
-
-
-class TestDispatchGating:
-    def test_high_utilization_pauses_dispatch(self, poller, conn):
-        with patch.object(poller, "_fetch", return_value=HIGH_USAGE_RESPONSE):
-            poller.force_poll(conn)
-
-        assert poller.state.should_pause is True
-
-    def test_normal_utilization_allows_dispatch(self, poller, conn):
-        with patch.object(poller, "_fetch", return_value=SAMPLE_USAGE_RESPONSE):
-            poller.force_poll(conn)
-
-        assert poller.state.should_pause is False

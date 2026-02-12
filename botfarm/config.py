@@ -34,6 +34,10 @@ linear:
 database:
   path: ~/.botfarm/botfarm.db
 
+usage_limits:
+  pause_five_hour_threshold: 0.85
+  pause_seven_day_threshold: 0.90
+
 state_file: ~/.botfarm/state.json
 """
 
@@ -60,11 +64,18 @@ class DatabaseConfig:
 
 
 @dataclass
+class UsageLimitsConfig:
+    pause_five_hour_threshold: float = 0.85
+    pause_seven_day_threshold: float = 0.90
+
+
+@dataclass
 class BotfarmConfig:
     projects: list[ProjectConfig]
     max_total_slots: int = 5
     linear: LinearConfig = field(default_factory=LinearConfig)
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
+    usage_limits: UsageLimitsConfig = field(default_factory=UsageLimitsConfig)
     state_file: str = "~/.botfarm/state.json"
 
 
@@ -168,6 +179,11 @@ def _validate_config(config: BotfarmConfig) -> None:
             f"max_total_slots ({config.max_total_slots})"
         )
 
+    for attr in ("pause_five_hour_threshold", "pause_seven_day_threshold"):
+        val = getattr(config.usage_limits, attr)
+        if not (0.0 <= val <= 1.0):
+            raise ConfigError(f"usage_limits.{attr} must be between 0.0 and 1.0")
+
 
 def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
     """Load, expand, validate, and return the botfarm configuration."""
@@ -199,11 +215,18 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         path=db_data.get("path", "~/.botfarm/botfarm.db"),
     )
 
+    ul_data = data.get("usage_limits", {})
+    usage_limits = UsageLimitsConfig(
+        pause_five_hour_threshold=float(ul_data.get("pause_five_hour_threshold", 0.85)),
+        pause_seven_day_threshold=float(ul_data.get("pause_seven_day_threshold", 0.90)),
+    )
+
     config = BotfarmConfig(
         projects=projects,
         max_total_slots=data.get("max_total_slots", 5),
         linear=linear,
         database=database,
+        usage_limits=usage_limits,
         state_file=data.get("state_file", "~/.botfarm/state.json"),
     )
 
