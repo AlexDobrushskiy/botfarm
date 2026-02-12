@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% set active_page = "status" %}
+{% block title %}Live Status - Botfarm{% endblock %}
+{% block content %}
+<h1>Live Status</h1>
+
+<div id="slots-panel" hx-get="/partials/slots" hx-trigger="every 5s" hx-swap="innerHTML">
+    {% include "partials/slots.html" %}
+</div>
+
+<h2>Usage</h2>
+<div id="usage-panel" hx-get="/partials/usage" hx-trigger="every 5s" hx-swap="innerHTML">
+    {% include "partials/usage.html" %}
+</div>
+{% endblock %}

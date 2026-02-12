@@ -242,6 +242,16 @@ class Supervisor:
         )
         self._conn.commit()
 
+        # Start dashboard if enabled
+        self._dashboard_thread = None
+        if self._config.dashboard.enabled:
+            from botfarm.dashboard import start_dashboard
+            self._dashboard_thread = start_dashboard(
+                self._config.dashboard,
+                state_file=self._config.state_file,
+                db_path=self._config.database.path,
+            )
+
         # Initial usage poll so we have data before the first dispatch
         try:
             self._usage_poller.force_poll(self._conn)

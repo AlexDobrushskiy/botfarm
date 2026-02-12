@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% set active_page = "usage" %}
+{% block title %}Usage Trends - Botfarm{% endblock %}
+{% block content %}
+<h1>Usage Trends</h1>
+
+<h2>Current</h2>
+{% include "partials/usage.html" %}
+
+<h2>History</h2>
+{% if snapshots %}
+<figure>
+<table>
+    <thead>
+        <tr>
+            <th>Timestamp</th>
+            <th>5-hour (%)</th>
+            <th>7-day (%)</th>
+            <th>Resets At</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for s in snapshots %}
+        <tr>
+            <td>{{ s.created_at[:19] if s.created_at else "-" }}</td>
+            <td>{{ "%.1f"|format(s.utilization_5h * 100) if s.utilization_5h is not none else "-" }}</td>
+            <td>{{ "%.1f"|format(s.utilization_7d * 100) if s.utilization_7d is not none else "-" }}</td>
+            <td>{{ s.resets_at[:19] if s.resets_at else "-" }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+</figure>
+
+<canvas id="usage-chart" style="max-height:400px"></canvas>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script>
+    const snapshots = {{ snapshots | tojson }};
+    const labels = snapshots.map(s => s.created_at ? s.created_at.slice(5, 16) : "").reverse();
+    const data5h = snapshots.map(s => s.utilization_5h != null ? (s.utilization_5h * 100).toFixed(1) : null).reverse();
+    const data7d = snapshots.map(s => s.utilization_7d != null ? (s.utilization_7d * 100).toFixed(1) : null).reverse();
+    new Chart(document.getElementById("usage-chart"), {
+        type: "line",
+        data: {
+            labels: labels,
+            datasets: [
+                { label: "5-hour %", data: data5h, borderColor: "#3b82f6", tension: 0.3 },
+                { label: "7-day %", data: data7d, borderColor: "#f59e0b", tension: 0.3 },
+            ]
+        },
+        options: {
+            responsive: true,
+            scales: { y: { min: 0, max: 100, title: { display: true, text: "Utilization %" } } },
+        }
+    });
+</script>
+{% else %}
+<p>No usage snapshots recorded yet.</p>
+{% endif %}
+{% endblock %}

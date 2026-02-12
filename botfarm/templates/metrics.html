@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% set active_page = "metrics" %}
+{% block title %}Metrics - Botfarm{% endblock %}
+{% block content %}
+<h1>Metrics</h1>
+
+<div class="grid">
+    <article class="metric-card">
+        <h2>{{ metrics.total_tasks }}</h2>
+        <p>Total Tasks</p>
+    </article>
+    <article class="metric-card">
+        <h2>{{ metrics.completed_tasks }}</h2>
+        <p>Completed</p>
+    </article>
+    <article class="metric-card">
+        <h2>{{ metrics.failed_tasks }}</h2>
+        <p>Failed</p>
+    </article>
+</div>
+
+<div class="grid">
+    <article class="metric-card">
+        <h2>${{ "%.2f"|format(metrics.total_cost) }}</h2>
+        <p>Total Cost</p>
+    </article>
+    <article class="metric-card">
+        <h2>${{ "%.2f"|format(metrics.avg_cost) }}</h2>
+        <p>Avg Cost / Task</p>
+    </article>
+    <article class="metric-card">
+        <h2>{{ metrics.total_turns }}</h2>
+        <p>Total Turns</p>
+    </article>
+    <article class="metric-card">
+        <h2>{{ metrics.avg_turns }}</h2>
+        <p>Avg Turns / Task</p>
+    </article>
+</div>
+{% endblock %}

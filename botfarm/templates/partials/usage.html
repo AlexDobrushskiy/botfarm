@@ -1,0 +1,22 @@
+{% if usage %}
+<div class="grid">
+    <div>
+        <strong>5-hour utilization:</strong>
+        {% if usage.utilization_5h is not none %}
+            {{ "%.1f"|format(usage.utilization_5h * 100) }}%
+        {% else %}
+            -
+        {% endif %}
+    </div>
+    <div>
+        <strong>7-day utilization:</strong>
+        {% if usage.utilization_7d is not none %}
+            {{ "%.1f"|format(usage.utilization_7d * 100) }}%
+        {% else %}
+            -
+        {% endif %}
+    </div>
+</div>
+{% else %}
+<p>No usage data available.</p>
+{% endif %}

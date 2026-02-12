@@ -38,6 +38,11 @@ usage_limits:
   pause_five_hour_threshold: 0.85
   pause_seven_day_threshold: 0.90
 
+dashboard:
+  enabled: false
+  host: 0.0.0.0
+  port: 8420
+
 state_file: ~/.botfarm/state.json
 """
 
@@ -70,12 +75,20 @@ class UsageLimitsConfig:
 
 
 @dataclass
+class DashboardConfig:
+    enabled: bool = False
+    host: str = "0.0.0.0"
+    port: int = 8420
+
+
+@dataclass
 class BotfarmConfig:
     projects: list[ProjectConfig]
     max_total_slots: int = 5
     linear: LinearConfig = field(default_factory=LinearConfig)
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     usage_limits: UsageLimitsConfig = field(default_factory=UsageLimitsConfig)
+    dashboard: DashboardConfig = field(default_factory=DashboardConfig)
     state_file: str = "~/.botfarm/state.json"
 
 
@@ -221,12 +234,20 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         pause_seven_day_threshold=float(ul_data.get("pause_seven_day_threshold", 0.90)),
     )
 
+    dash_data = data.get("dashboard", {})
+    dashboard = DashboardConfig(
+        enabled=bool(dash_data.get("enabled", False)),
+        host=str(dash_data.get("host", "0.0.0.0")),
+        port=int(dash_data.get("port", 8420)),
+    )
+
     config = BotfarmConfig(
         projects=projects,
         max_total_slots=data.get("max_total_slots", 5),
         linear=linear,
         database=database,
         usage_limits=usage_limits,
+        dashboard=dashboard,
         state_file=data.get("state_file", "~/.botfarm/state.json"),
     )
 
