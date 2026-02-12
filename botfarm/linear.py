@@ -277,7 +277,7 @@ class LinearPoller:
                 )
                 continue
 
-            if issue.id in active_ticket_ids:
+            if issue.identifier in active_ticket_ids:
                 logger.debug(
                     "Skipping %s: already active",
                     issue.identifier,

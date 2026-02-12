@@ -17,10 +17,10 @@ from botfarm.config import (
 )
 from botfarm.db import get_events, get_task, init_db, insert_task
 from botfarm.linear import LinearIssue
-from botfarm.slots import SlotManager
 from botfarm.supervisor import (
     DEFAULT_LOG_DIR,
     Supervisor,
+    _WorkerResult,
     _worker_entry,
     setup_logging,
 )
@@ -165,6 +165,37 @@ class TestReconcileWorkers:
         supervisor._reconcile_workers()
 
         assert ("test-project", 1) in supervisor._workers
+
+    def test_drains_success_from_result_queue(self, supervisor):
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+
+        supervisor._result_queue.put(_WorkerResult(
+            project="test-project", slot_id=1, success=True,
+        ))
+
+        supervisor._reconcile_workers()
+
+        assert sm.get_slot("test-project", 1).status == "completed_pending_cleanup"
+
+    def test_drains_failure_from_result_queue(self, supervisor):
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+
+        supervisor._result_queue.put(_WorkerResult(
+            project="test-project", slot_id=1, success=False,
+            failure_stage="implement", failure_reason="crash",
+        ))
+
+        supervisor._reconcile_workers()
+
+        assert sm.get_slot("test-project", 1).status == "failed"
 
 
 # ---------------------------------------------------------------------------
@@ -343,7 +374,7 @@ class TestDispatchWorker:
             assert updated_slot.pid == 12345
 
             # Linear moved to In Progress
-            poller.move_issue.assert_called_once_with(issue.id, "In Progress")
+            poller.move_issue.assert_called_once_with(issue.identifier, "In Progress")
 
             # Task in DB
             task = get_task(supervisor._conn, 1)
@@ -419,6 +450,19 @@ class TestTick:
         ):
             # Should not raise
             supervisor._tick()
+
+    def test_tick_phase_failure_does_not_skip_others(self, supervisor):
+        with (
+            patch.object(
+                supervisor, "_reconcile_workers", side_effect=RuntimeError("boom")
+            ),
+            patch.object(supervisor, "_handle_finished_slots") as mock_handle,
+            patch.object(supervisor, "_poll_and_dispatch") as mock_poll,
+        ):
+            supervisor._tick()
+            # Other phases still run despite _reconcile_workers failure
+            mock_handle.assert_called_once()
+            mock_poll.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -528,11 +572,11 @@ class TestSleep:
 
 class TestWorkerEntry:
     @patch("botfarm.supervisor.run_pipeline")
-    def test_successful_pipeline_marks_completed(self, mock_pipeline, tmp_path):
+    def test_successful_pipeline_sends_success(self, mock_pipeline, tmp_path):
+        import multiprocessing
         db_path = str(tmp_path / "test.db")
-        state_path = str(tmp_path / "state.json")
+        q = multiprocessing.Queue()
 
-        # Set up DB and slot state
         conn = init_db(db_path)
         task_id = insert_task(
             conn,
@@ -545,14 +589,6 @@ class TestWorkerEntry:
         conn.commit()
         conn.close()
 
-        sm = SlotManager(state_path=state_path)
-        sm.register_slot("proj", 1)
-        sm.assign_ticket(
-            "proj", 1, ticket_id="TST-1", ticket_title="Test", branch="b1",
-        )
-        sm.save()
-
-        # Pipeline succeeds
         mock_result = MagicMock()
         mock_result.success = True
         mock_pipeline.return_value = mock_result
@@ -565,20 +601,21 @@ class TestWorkerEntry:
             slot_id=1,
             cwd=str(tmp_path),
             db_path=db_path,
-            state_file=state_path,
+            result_queue=q,
             max_turns=None,
         )
 
-        # Slot should be completed_pending_cleanup
-        sm2 = SlotManager(state_path=state_path)
-        sm2.register_slot("proj", 1)
-        sm2.load()
-        assert sm2.get_slot("proj", 1).status == "completed_pending_cleanup"
+        wr = q.get(timeout=1)
+        assert isinstance(wr, _WorkerResult)
+        assert wr.success is True
+        assert wr.project == "proj"
+        assert wr.slot_id == 1
 
     @patch("botfarm.supervisor.run_pipeline")
-    def test_failed_pipeline_marks_failed(self, mock_pipeline, tmp_path):
+    def test_failed_pipeline_sends_failure(self, mock_pipeline, tmp_path):
+        import multiprocessing
         db_path = str(tmp_path / "test.db")
-        state_path = str(tmp_path / "state.json")
+        q = multiprocessing.Queue()
 
         conn = init_db(db_path)
         task_id = insert_task(
@@ -591,13 +628,6 @@ class TestWorkerEntry:
         )
         conn.commit()
         conn.close()
-
-        sm = SlotManager(state_path=state_path)
-        sm.register_slot("proj", 1)
-        sm.assign_ticket(
-            "proj", 1, ticket_id="TST-2", ticket_title="Test", branch="b1",
-        )
-        sm.save()
 
         mock_result = MagicMock()
         mock_result.success = False
@@ -613,19 +643,20 @@ class TestWorkerEntry:
             slot_id=1,
             cwd=str(tmp_path),
             db_path=db_path,
-            state_file=state_path,
+            result_queue=q,
             max_turns=None,
         )
 
-        sm2 = SlotManager(state_path=state_path)
-        sm2.register_slot("proj", 1)
-        sm2.load()
-        assert sm2.get_slot("proj", 1).status == "failed"
+        wr = q.get(timeout=1)
+        assert isinstance(wr, _WorkerResult)
+        assert wr.success is False
+        assert wr.failure_stage == "implement"
 
     @patch("botfarm.supervisor.run_pipeline")
-    def test_exception_marks_failed(self, mock_pipeline, tmp_path):
+    def test_exception_sends_failure(self, mock_pipeline, tmp_path):
+        import multiprocessing
         db_path = str(tmp_path / "test.db")
-        state_path = str(tmp_path / "state.json")
+        q = multiprocessing.Queue()
 
         conn = init_db(db_path)
         task_id = insert_task(
@@ -639,13 +670,6 @@ class TestWorkerEntry:
         conn.commit()
         conn.close()
 
-        sm = SlotManager(state_path=state_path)
-        sm.register_slot("proj", 1)
-        sm.assign_ticket(
-            "proj", 1, ticket_id="TST-3", ticket_title="Test", branch="b1",
-        )
-        sm.save()
-
         mock_pipeline.side_effect = RuntimeError("crash")
 
         _worker_entry(
@@ -656,14 +680,14 @@ class TestWorkerEntry:
             slot_id=1,
             cwd=str(tmp_path),
             db_path=db_path,
-            state_file=state_path,
+            result_queue=q,
             max_turns=None,
         )
 
-        sm2 = SlotManager(state_path=state_path)
-        sm2.register_slot("proj", 1)
-        sm2.load()
-        assert sm2.get_slot("proj", 1).status == "failed"
+        wr = q.get(timeout=1)
+        assert isinstance(wr, _WorkerResult)
+        assert wr.success is False
+        assert wr.failure_stage == "worker_entry"
 
 
 # ---------------------------------------------------------------------------

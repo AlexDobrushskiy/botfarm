@@ -15,9 +15,11 @@ from __future__ import annotations
 
 import logging
 import multiprocessing
+import queue as queue_mod
 import signal
 import sqlite3
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from types import FrameType
@@ -38,6 +40,17 @@ DEFAULT_LOG_DIR = Path.home() / ".botfarm" / "logs"
 # ---------------------------------------------------------------------------
 
 
+@dataclass
+class _WorkerResult:
+    """Message sent from a worker subprocess back to the supervisor."""
+
+    project: str
+    slot_id: int
+    success: bool
+    failure_stage: str | None = None
+    failure_reason: str | None = None
+
+
 def _worker_entry(
     *,
     ticket_id: str,
@@ -47,19 +60,19 @@ def _worker_entry(
     slot_id: int,
     cwd: str,
     db_path: str,
-    state_file: str,
+    result_queue: multiprocessing.Queue,
     max_turns: dict[str, int] | None,
 ) -> None:
     """Entry point for a worker subprocess.
 
-    This runs ``run_pipeline`` with its own DB connection and SlotManager
-    so the worker is fully isolated from the supervisor process.
+    This runs ``run_pipeline`` with its own DB connection. Results are
+    communicated back to the supervisor via ``result_queue`` so only
+    the supervisor writes to the shared state file.
     """
+    # Ignore SIGINT so only the supervisor handles Ctrl-C
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+
     conn = init_db(db_path)
-    sm = SlotManager(state_path=state_file)
-    # Register just our slot so the manager can update it
-    sm.register_slot(project_name, slot_id)
-    sm.load()
 
     try:
         result: PipelineResult = run_pipeline(
@@ -67,22 +80,22 @@ def _worker_entry(
             task_id=task_id,
             cwd=cwd,
             conn=conn,
-            slot_manager=sm,
-            project=project_name,
-            slot_id=slot_id,
             max_turns=max_turns,
         )
         if result.success:
-            sm.mark_completed(project_name, slot_id)
+            result_queue.put(_WorkerResult(
+                project=project_name, slot_id=slot_id, success=True,
+            ))
             logger.info(
                 "Worker %s/%d finished successfully for %s",
                 project_name, slot_id, ticket_id,
             )
         else:
-            sm.mark_failed(
-                project_name, slot_id,
-                reason=f"{result.failure_stage}: {result.failure_reason}",
-            )
+            result_queue.put(_WorkerResult(
+                project=project_name, slot_id=slot_id, success=False,
+                failure_stage=result.failure_stage,
+                failure_reason=result.failure_reason,
+            ))
             logger.warning(
                 "Worker %s/%d pipeline failed at %s for %s: %s",
                 project_name, slot_id, result.failure_stage,
@@ -92,7 +105,11 @@ def _worker_entry(
         logger.exception(
             "Worker %s/%d crashed for %s", project_name, slot_id, ticket_id,
         )
-        sm.mark_failed(project_name, slot_id, reason=str(exc)[:500])
+        result_queue.put(_WorkerResult(
+            project=project_name, slot_id=slot_id, success=False,
+            failure_stage="worker_entry",
+            failure_reason=str(exc)[:500],
+        ))
     finally:
         conn.close()
 
@@ -142,6 +159,9 @@ class Supervisor:
 
         # Track child processes: (project, slot_id) -> Process
         self._workers: dict[tuple[str, int], multiprocessing.Process] = {}
+
+        # Queue for worker results — workers send _WorkerResult here
+        self._result_queue: multiprocessing.Queue = multiprocessing.Queue()
 
     @property
     def slot_manager(self) -> SlotManager:
@@ -197,12 +217,11 @@ class Supervisor:
 
     def _tick(self) -> None:
         """One iteration of the supervisor loop."""
-        try:
-            self._reconcile_workers()
-            self._handle_finished_slots()
-            self._poll_and_dispatch()
-        except Exception:
-            logger.exception("Supervisor tick failed — will retry next cycle")
+        for phase in (self._reconcile_workers, self._handle_finished_slots, self._poll_and_dispatch):
+            try:
+                phase()
+            except Exception:
+                logger.exception("%s failed", getattr(phase, "__name__", repr(phase)))
 
     # ------------------------------------------------------------------
     # Reconciliation
@@ -210,7 +229,30 @@ class Supervisor:
 
     def _reconcile_workers(self) -> None:
         """Check worker subprocesses and reconcile slot state."""
-        # First, clean up any tracked processes that have exited
+        # Drain worker results from the queue.
+        # Use a short timeout because multiprocessing.Queue.put() is
+        # asynchronous — items may not be immediately available.
+        while True:
+            try:
+                wr: _WorkerResult = self._result_queue.get(timeout=0.05)
+            except queue_mod.Empty:
+                break
+            if wr.success:
+                self._slot_manager.mark_completed(wr.project, wr.slot_id)
+                logger.info(
+                    "Worker result: %s/%d completed", wr.project, wr.slot_id,
+                )
+            else:
+                reason = f"{wr.failure_stage}: {wr.failure_reason}"
+                self._slot_manager.mark_failed(
+                    wr.project, wr.slot_id, reason=reason,
+                )
+                logger.warning(
+                    "Worker result: %s/%d failed — %s",
+                    wr.project, wr.slot_id, reason,
+                )
+
+        # Clean up any tracked processes that have exited
         finished = []
         for key, proc in self._workers.items():
             if not proc.is_alive():
@@ -328,7 +370,7 @@ class Supervisor:
             issue = candidates[0]
             self._dispatch_worker(project_name, slot, issue, poller)
             # Update active IDs so subsequent projects don't pick same ticket
-            active_ids.add(issue.id)
+            active_ids.add(issue.identifier)
 
     def _dispatch_worker(
         self,
@@ -344,7 +386,7 @@ class Supervisor:
 
         # Move issue to In Progress on Linear
         try:
-            poller.move_issue(issue.id, "In Progress")
+            poller.move_issue(issue.identifier, "In Progress")
         except Exception:
             logger.exception(
                 "Failed to move %s to 'In Progress' — skipping dispatch",
@@ -397,7 +439,7 @@ class Supervisor:
                 "slot_id": slot.slot_id,
                 "cwd": cwd,
                 "db_path": self._db_path,
-                "state_file": str(self._slot_manager.state_path),
+                "result_queue": self._result_queue,
                 "max_turns": None,
             },
             daemon=False,  # Not daemon — survives supervisor exit
@@ -484,14 +526,27 @@ def setup_logging(
     root = logging.getLogger()
     root.setLevel(level)
 
+    # Guard against duplicate handlers on repeated calls
+    has_file = any(
+        isinstance(h, logging.FileHandler)
+        and getattr(h, "baseFilename", None) == str(log_file)
+        for h in root.handlers
+    )
+    has_console = any(
+        isinstance(h, logging.StreamHandler)
+        and not isinstance(h, logging.FileHandler)
+        for h in root.handlers
+    )
+
     # File handler
-    fh = logging.FileHandler(log_file)
-    fh.setLevel(level)
-    fh.setFormatter(fmt)
-    root.addHandler(fh)
+    if not has_file:
+        fh = logging.FileHandler(log_file)
+        fh.setLevel(level)
+        fh.setFormatter(fmt)
+        root.addHandler(fh)
 
     # Console handler (for foreground mode)
-    if console:
+    if console and not has_console:
         ch = logging.StreamHandler()
         ch.setLevel(level)
         ch.setFormatter(fmt)
