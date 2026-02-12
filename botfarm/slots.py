@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import signal
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -300,12 +299,13 @@ class SlotManager:
         for slot in self._slots.values():
             if slot.status in ("busy", "paused_limit") and slot.pid is not None:
                 if not _is_pid_alive(slot.pid):
+                    old_pid = slot.pid
                     old_status = slot.status
                     slot.status = "failed"
                     slot.pid = None
                     msg = (
                         f"Slot ({slot.project}, {slot.slot_id}): "
-                        f"PID {slot.pid} gone, "
+                        f"PID {old_pid} gone, "
                         f"{old_status} -> failed"
                     )
                     messages.append(msg)
