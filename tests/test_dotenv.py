@@ -24,11 +24,11 @@ def test_dotenv_loads_env_vars(tmp_path, monkeypatch):
 
     runner = CliRunner()
     result = runner.invoke(main, ["status"])
-    assert result.exit_code == 0
-    assert os.environ.get("BOTFARM_TEST_DOTENV_VAR") == "loaded_value"
-
-    # Clean up
-    monkeypatch.delenv("BOTFARM_TEST_DOTENV_VAR", raising=False)
+    try:
+        assert result.exit_code == 0
+        assert os.environ.get("BOTFARM_TEST_DOTENV_VAR") == "loaded_value"
+    finally:
+        os.environ.pop("BOTFARM_TEST_DOTENV_VAR", None)
 
 
 def test_dotenv_no_error_when_missing(tmp_path, monkeypatch):

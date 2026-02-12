@@ -13,7 +13,7 @@ ENV_FILE_PATH = DEFAULT_CONFIG_DIR / ".env"
 @click.version_option(version=__version__)
 def main():
     """Botfarm: autonomous Linear ticket dispatcher for Claude Code agents."""
-    load_dotenv(ENV_FILE_PATH)
+    load_dotenv(ENV_FILE_PATH, override=False)
 
 
 @main.command()
