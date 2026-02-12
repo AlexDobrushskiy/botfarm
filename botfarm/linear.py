@@ -133,15 +133,29 @@ class LinearClient:
                 timeout=30.0,
             )
             response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise LinearAPIError(
+                f"HTTP {exc.response.status_code}: {exc.response.text[:200]}"
+            ) from exc
         except httpx.HTTPError as exc:
             raise LinearAPIError(f"HTTP request failed: {exc}") from exc
 
-        body = response.json()
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise LinearAPIError(
+                f"Linear API returned invalid JSON (HTTP {response.status_code})"
+            ) from exc
         if "errors" in body:
             messages = [e.get("message", str(e)) for e in body["errors"]]
             raise LinearAPIError(f"GraphQL errors: {'; '.join(messages)}")
 
-        return body.get("data", {})
+        data = body.get("data")
+        if not data:
+            raise LinearAPIError(
+                f"Linear API response missing 'data' key (HTTP {response.status_code})"
+            )
+        return data
 
     def fetch_team_issues(
         self,
@@ -168,7 +182,7 @@ class LinearClient:
                     url=node.get("url", ""),
                     assignee_id=assignee.get("id"),
                     assignee_email=assignee.get("email"),
-                    labels=[ln["name"] for ln in label_nodes],
+                    labels=[ln["name"] for ln in label_nodes if "name" in ln],
                 )
             )
         return issues
@@ -221,6 +235,7 @@ class LinearPoller:
         self._client = client
         self._project = project
         self._exclude_tags = set(tag.lower() for tag in exclude_tags)
+        # TODO: Add TTL-based invalidation if the supervisor becomes long-running
         self._state_cache: dict[str, str] | None = None
 
     @property

@@ -120,7 +120,7 @@ class TestLinearClientExecute:
             with pytest.raises(LinearAPIError, match="Unauthorized.*Bad field"):
                 client._execute("query { viewer { id } }")
 
-    def test_http_status_error_raises(self):
+    def test_http_status_error_includes_status_code(self):
         client = LinearClient(api_key="key")
         resp = httpx.Response(
             status_code=500,
@@ -128,7 +128,50 @@ class TestLinearClientExecute:
             request=httpx.Request("POST", LINEAR_API_URL),
         )
         with patch.object(httpx, "post", return_value=resp):
+            with pytest.raises(LinearAPIError, match="HTTP 500"):
+                client._execute("query { viewer { id } }")
+
+    def test_timeout_error_raises(self):
+        client = LinearClient(api_key="key")
+        with patch.object(
+            httpx,
+            "post",
+            side_effect=httpx.TimeoutException("timed out"),
+        ):
             with pytest.raises(LinearAPIError, match="HTTP request failed"):
+                client._execute("query { viewer { id } }")
+
+    def test_invalid_json_raises(self):
+        client = LinearClient(api_key="key")
+        resp = httpx.Response(
+            status_code=200,
+            text="<html>not json</html>",
+            request=httpx.Request("POST", LINEAR_API_URL),
+        )
+        with patch.object(httpx, "post", return_value=resp):
+            with pytest.raises(LinearAPIError, match="invalid JSON"):
+                client._execute("query { viewer { id } }")
+
+    def test_missing_data_key_raises(self):
+        client = LinearClient(api_key="key")
+        resp = httpx.Response(
+            status_code=200,
+            json={"something": "else"},
+            request=httpx.Request("POST", LINEAR_API_URL),
+        )
+        with patch.object(httpx, "post", return_value=resp):
+            with pytest.raises(LinearAPIError, match="missing 'data' key"):
+                client._execute("query { viewer { id } }")
+
+    def test_null_data_raises(self):
+        client = LinearClient(api_key="key")
+        resp = httpx.Response(
+            status_code=200,
+            json={"data": None},
+            request=httpx.Request("POST", LINEAR_API_URL),
+        )
+        with patch.object(httpx, "post", return_value=resp):
+            with pytest.raises(LinearAPIError, match="missing 'data' key"):
                 client._execute("query { viewer { id } }")
 
 
@@ -279,6 +322,13 @@ class TestUpdateIssueState:
             with pytest.raises(LinearAPIError, match="Failed to update"):
                 client.update_issue_state("i1", "s3")
 
+    def test_missing_top_level_key_raises(self):
+        client = LinearClient(api_key="key")
+        data = {"unexpected": "response"}
+        with patch.object(httpx, "post", return_value=_graphql_response(data)):
+            with pytest.raises(LinearAPIError, match="Failed to update"):
+                client.update_issue_state("i1", "s3")
+
 
 # ---------------------------------------------------------------------------
 # LinearClient.add_comment
@@ -295,6 +345,13 @@ class TestAddComment:
     def test_failure_raises(self):
         client = LinearClient(api_key="key")
         data = {"commentCreate": {"success": False}}
+        with patch.object(httpx, "post", return_value=_graphql_response(data)):
+            with pytest.raises(LinearAPIError, match="Failed to add comment"):
+                client.add_comment("i1", "Hello")
+
+    def test_missing_top_level_key_raises(self):
+        client = LinearClient(api_key="key")
+        data = {"unexpected": "response"}
         with patch.object(httpx, "post", return_value=_graphql_response(data)):
             with pytest.raises(LinearAPIError, match="Failed to add comment"):
                 client.add_comment("i1", "Hello")
