@@ -33,6 +33,8 @@ linear:
 
 database:
   path: ~/.botfarm/botfarm.db
+
+state_file: ~/.botfarm/state.json
 """
 
 
@@ -63,6 +65,7 @@ class BotfarmConfig:
     max_total_slots: int = 5
     linear: LinearConfig = field(default_factory=LinearConfig)
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
+    state_file: str = "~/.botfarm/state.json"
 
 
 class ConfigError(Exception):
@@ -201,6 +204,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         max_total_slots=data.get("max_total_slots", 5),
         linear=linear,
         database=database,
+        state_file=data.get("state_file", "~/.botfarm/state.json"),
     )
 
     _validate_config(config)
