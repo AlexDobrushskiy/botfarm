@@ -1,0 +1,30 @@
+{% if queue and queue.projects %}
+<figure>
+<table>
+    <thead>
+        <tr>
+            <th>Project</th>
+            <th>Todo Tickets</th>
+            <th>Next Ticket</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for proj in queue.projects %}
+        <tr>
+            <td>{{ proj.name }}</td>
+            <td>{{ proj.todo_count }}</td>
+            <td>
+                {% if proj.next_ticket_id %}
+                    <a href="{{ linear_url(proj.next_ticket_id) }}" target="_blank" rel="noopener">{{ proj.next_ticket_id }}</a>{% if proj.next_ticket_title %} — {{ proj.next_ticket_title }}{% endif %}
+                {% else %}
+                    -
+                {% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+</figure>
+{% else %}
+<p>No work available — queue is empty or supervisor is not running.</p>
+{% endif %}

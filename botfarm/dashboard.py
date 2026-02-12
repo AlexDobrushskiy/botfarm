@@ -28,6 +28,7 @@ def create_app(
     *,
     state_file: str | Path,
     db_path: str | Path,
+    linear_workspace: str = "",
 ) -> FastAPI:
     """Create the FastAPI dashboard application.
 
@@ -37,6 +38,8 @@ def create_app(
         Path to the supervisor state.json file.
     db_path:
         Path to the SQLite database.
+    linear_workspace:
+        Linear workspace slug used for building ticket URLs.
     """
     app = FastAPI(title="Botfarm Dashboard", docs_url=None, redoc_url=None)
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
@@ -44,6 +47,7 @@ def create_app(
     # Store paths on app state for route handlers
     app.state.state_file = Path(state_file).expanduser()
     app.state.db_path = Path(db_path).expanduser()
+    app.state.linear_workspace = linear_workspace
 
     # --- Helpers ---
 
@@ -91,6 +95,13 @@ def create_app(
         except (ValueError, TypeError):
             return "-"
 
+    def _linear_url(ticket_id: str) -> str:
+        """Build a Linear issue URL from a ticket identifier."""
+        ws = app.state.linear_workspace
+        if ws:
+            return f"https://linear.app/{ws}/issue/{ticket_id}"
+        return f"https://linear.app/issue/{ticket_id}"
+
     # Make helpers available to templates
     @app.middleware("http")
     async def add_template_globals(request: Request, call_next):
@@ -107,13 +118,18 @@ def create_app(
         dispatch_paused = state.get("dispatch_paused", False)
         dispatch_pause_reason = state.get("dispatch_pause_reason")
         usage = state.get("usage", {})
+        queue = state.get("queue")
+        last_usage_check = state.get("last_usage_check")
         return templates.TemplateResponse("index.html", {
             "request": request,
             "slots": slots,
             "dispatch_paused": dispatch_paused,
             "dispatch_pause_reason": dispatch_pause_reason,
             "usage": usage,
+            "queue": queue,
+            "last_usage_check": last_usage_check,
             "elapsed": _elapsed,
+            "linear_url": _linear_url,
         })
 
     @app.get("/partials/slots", response_class=HTMLResponse)
@@ -128,15 +144,33 @@ def create_app(
             "dispatch_paused": dispatch_paused,
             "dispatch_pause_reason": dispatch_pause_reason,
             "elapsed": _elapsed,
+            "linear_url": _linear_url,
         })
 
     @app.get("/partials/usage", response_class=HTMLResponse)
     def partial_usage(request: Request):
         state = _read_state()
         usage = state.get("usage", {})
+        dispatch_paused = state.get("dispatch_paused", False)
+        dispatch_pause_reason = state.get("dispatch_pause_reason")
+        last_usage_check = state.get("last_usage_check")
         return templates.TemplateResponse("partials/usage.html", {
             "request": request,
             "usage": usage,
+            "dispatch_paused": dispatch_paused,
+            "dispatch_pause_reason": dispatch_pause_reason,
+            "last_usage_check": last_usage_check,
+            "elapsed": _elapsed,
+        })
+
+    @app.get("/partials/queue", response_class=HTMLResponse)
+    def partial_queue(request: Request):
+        state = _read_state()
+        queue = state.get("queue")
+        return templates.TemplateResponse("partials/queue.html", {
+            "request": request,
+            "queue": queue,
+            "linear_url": _linear_url,
         })
 
     def _enrich_tasks(tasks: list[dict]) -> list[dict]:
@@ -265,6 +299,7 @@ def start_dashboard(
     *,
     state_file: str | Path,
     db_path: str | Path,
+    linear_workspace: str = "",
 ) -> threading.Thread | None:
     """Start the dashboard server in a background daemon thread.
 
@@ -273,7 +308,10 @@ def start_dashboard(
     if not config.enabled:
         return None
 
-    app = create_app(state_file=state_file, db_path=db_path)
+    app = create_app(
+        state_file=state_file, db_path=db_path,
+        linear_workspace=linear_workspace,
+    )
 
     def _run():
         import uvicorn

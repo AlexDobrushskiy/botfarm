@@ -27,6 +27,7 @@ max_total_slots: 5
 
 linear:
   api_key: ${LINEAR_API_KEY}
+  workspace: my-workspace
   poll_interval_seconds: 120
   exclude_tags:
     - Human
@@ -59,6 +60,7 @@ class ProjectConfig:
 @dataclass
 class LinearConfig:
     api_key: str = ""
+    workspace: str = ""
     poll_interval_seconds: int = 120
     exclude_tags: list[str] = field(default_factory=lambda: ["Human"])
 
@@ -219,6 +221,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
     linear_data = data.get("linear", {})
     linear = LinearConfig(
         api_key=linear_data.get("api_key", ""),
+        workspace=linear_data.get("workspace", ""),
         poll_interval_seconds=linear_data.get("poll_interval_seconds", 120),
         exclude_tags=linear_data.get("exclude_tags", ["Human"]),
     )

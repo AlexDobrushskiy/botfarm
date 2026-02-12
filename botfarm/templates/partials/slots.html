@@ -15,6 +15,7 @@
             <th>Ticket</th>
             <th>Stage</th>
             <th>Elapsed</th>
+            <th>PID</th>
         </tr>
     </thead>
     <tbody>
@@ -22,10 +23,15 @@
         <tr>
             <td>{{ slot.project }}</td>
             <td>{{ slot.slot_id }}</td>
-            <td><span class="status-{{ slot.status }}">{{ slot.status }}</span></td>
+            <td>
+                <span class="status-{{ slot.status }}">{{ slot.status | replace("_", " ") }}</span>
+                {% if slot.status == "paused_limit" and slot.resume_after %}
+                <br><small class="resume-countdown" data-resume="{{ slot.resume_after }}"></small>
+                {% endif %}
+            </td>
             <td>
                 {% if slot.ticket_id %}
-                    {{ slot.ticket_id }}{% if slot.ticket_title %} ({{ slot.ticket_title }}){% endif %}
+                    <a href="{{ linear_url(slot.ticket_id) }}" target="_blank" rel="noopener">{{ slot.ticket_id }}</a>{% if slot.ticket_title %} — {{ slot.ticket_title }}{% endif %}
                 {% else %}
                     -
                 {% endif %}
@@ -37,6 +43,7 @@
                 {% endif %}
             </td>
             <td>{{ elapsed(slot.started_at) }}</td>
+            <td>{{ slot.pid or "-" }}</td>
         </tr>
         {% endfor %}
     </tbody>
