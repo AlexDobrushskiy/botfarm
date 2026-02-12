@@ -7,6 +7,7 @@ import sqlite3
 import pytest
 
 from botfarm.db import (
+    SCHEMA_VERSION,
     get_events,
     get_stage_runs,
     get_task,
@@ -71,6 +72,15 @@ class TestInitDb:
         row = c2.execute("SELECT version FROM schema_version").fetchone()
         assert row[0] == 1
         c2.close()
+
+    def test_schema_version_mismatch_raises(self, tmp_path):
+        db_file = tmp_path / "botfarm.db"
+        c = init_db(db_file)
+        c.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION + 99,))
+        c.commit()
+        c.close()
+        with pytest.raises(RuntimeError, match="schema version mismatch"):
+            init_db(db_file)
 
 
 # ---------------------------------------------------------------------------

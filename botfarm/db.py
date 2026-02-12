@@ -82,12 +82,19 @@ def init_db(db_path: str | Path) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(SCHEMA_SQL)
+    # executescript() implicitly commits and can reset pragmas — re-apply FK enforcement
+    conn.execute("PRAGMA foreign_keys=ON")
     conn.execute(
         "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)"
     )
     row = conn.execute("SELECT version FROM schema_version").fetchone()
     if row is None:
         conn.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
+    elif row[0] != SCHEMA_VERSION:
+        raise RuntimeError(
+            f"Database schema version mismatch: expected {SCHEMA_VERSION}, got {row[0]}. "
+            "Manual migration required."
+        )
     conn.commit()
     return conn
 
@@ -113,7 +120,6 @@ def insert_task(
         """,
         (ticket_id, title, project, slot, status, _now_iso()),
     )
-    conn.commit()
     return cur.lastrowid
 
 
@@ -149,7 +155,6 @@ def update_task(
     values = list(fields.values())
     values.append(task_id)
     conn.execute(f"UPDATE tasks SET {set_clause} WHERE id = ?", values)  # noqa: S608
-    conn.commit()
 
 
 def get_task(conn: sqlite3.Connection, task_id: int) -> sqlite3.Row | None:
@@ -223,7 +228,6 @@ def insert_stage_run(
             _now_iso(),
         ),
     )
-    conn.commit()
     return cur.lastrowid
 
 
@@ -254,7 +258,6 @@ def insert_usage_snapshot(
         """,
         (utilization_5h, utilization_7d, resets_at, _now_iso()),
     )
-    conn.commit()
     return cur.lastrowid
 
 
@@ -287,7 +290,6 @@ def insert_event(
         """,
         (task_id, event_type, detail, _now_iso()),
     )
-    conn.commit()
     return cur.lastrowid
 
 
