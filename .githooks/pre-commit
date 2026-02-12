@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Get staged files (Added, Copied, Modified, Renamed)
+STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACMR)
+
+if [ -z "$STAGED_FILES" ]; then
+  exit 0
+fi
+
+# Check for Python files
+PY_FILES=$(echo "$STAGED_FILES" | grep '\.py$' || true)
+
+if [ -z "$PY_FILES" ]; then
+  exit 0
+fi
+
+echo "==> Python files changed, running pytest..."
+if ! .venv/bin/python -m pytest tests/ -x -q; then
+  echo "==> Tests FAILED"
+  echo "==> Pre-commit hook FAILED. Fix the failing tests before committing."
+  exit 1
+else
+  echo "==> Tests passed"
+fi

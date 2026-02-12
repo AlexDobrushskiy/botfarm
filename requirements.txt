@@ -1,0 +1,7 @@
+click
+rich
+pyyaml
+httpx
+aiosqlite
+pytest
+pytest-asyncio
