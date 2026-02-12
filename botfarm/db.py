@@ -267,7 +267,7 @@ def count_tasks(
 
 def get_distinct_projects(conn: sqlite3.Connection) -> list[str]:
     """Return distinct project names from tasks table."""
-    rows = conn.execute("SELECT DISTINCT project FROM tasks ORDER BY project").fetchall()
+    rows = conn.execute("SELECT DISTINCT project FROM tasks WHERE project IS NOT NULL ORDER BY project").fetchall()
     return [r[0] for r in rows]
 
 

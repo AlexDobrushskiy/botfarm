@@ -235,6 +235,12 @@ def create_app(
         except sqlite3.OperationalError:
             return [], 0, 1
 
+    ALLOWED_SORT_COLS = {
+        "ticket_id", "title", "project", "status", "cost_usd", "turns",
+        "review_iterations", "limit_interruptions", "created_at",
+        "started_at", "completed_at",
+    }
+
     def _extract_history_params(request: Request) -> dict:
         """Extract filter/sort/page query params from request."""
         params = request.query_params
@@ -242,7 +248,11 @@ def create_app(
         status = params.get("status") or None
         search = params.get("search") or None
         sort_by = params.get("sort_by", "created_at")
+        if sort_by not in ALLOWED_SORT_COLS:
+            sort_by = "created_at"
         sort_dir = params.get("sort_dir", "DESC")
+        if sort_dir.upper() not in ("ASC", "DESC"):
+            sort_dir = "DESC"
         try:
             page = int(params.get("page", "1"))
         except ValueError:
@@ -298,51 +308,27 @@ def create_app(
         ctx = _history_context(request)
         return templates.TemplateResponse("partials/history.html", ctx)
 
+    EVENT_LOG_LIMIT = 500
+
     @app.get("/task/{task_id}", response_class=HTMLResponse)
     def task_detail_page(request: Request, task_id: int):
+        task = None
+        stages: list[dict] = []
+        events: list[dict] = []
         conn = _get_db()
-        if not conn:
-            return templates.TemplateResponse("task_detail.html", {
-                "request": request,
-                "task": None,
-                "stages": [],
-                "events": [],
-                "linear_url": _linear_url,
-                "format_duration": _format_duration,
-            })
-        try:
-            task_row = get_task(conn, task_id)
-            if task_row is None:
-                return templates.TemplateResponse("task_detail.html", {
-                    "request": request,
-                    "task": None,
-                    "stages": [],
-                    "events": [],
-                    "linear_url": _linear_url,
-                    "format_duration": _format_duration,
-                })
-            task = dict(task_row)
-            # Compute duration
-            task["duration"] = "-"
-            if task.get("started_at") and task.get("completed_at"):
-                try:
-                    start = datetime.fromisoformat(
-                        task["started_at"].replace("Z", "+00:00")
-                    )
-                    end = datetime.fromisoformat(
-                        task["completed_at"].replace("Z", "+00:00")
-                    )
-                    task["duration"] = _format_duration(
-                        int((end - start).total_seconds())
-                    )
-                except (ValueError, TypeError):
-                    pass
-            stages = [dict(r) for r in get_stage_runs(conn, task_id)]
-            events = [dict(r) for r in get_events(conn, task_id=task_id, limit=500)]
-            # Events come newest-first from DB; reverse for chronological display
-            events.reverse()
-        finally:
-            conn.close()
+        if conn:
+            try:
+                task_row = get_task(conn, task_id)
+                if task_row is not None:
+                    task = _enrich_tasks([dict(task_row)])[0]
+                    stages = [dict(r) for r in get_stage_runs(conn, task_id)]
+                    events = [dict(r) for r in get_events(
+                        conn, task_id=task_id, limit=EVENT_LOG_LIMIT,
+                    )]
+                    # Events come newest-first from DB; reverse for chronological display
+                    events.reverse()
+            finally:
+                conn.close()
         return templates.TemplateResponse("task_detail.html", {
             "request": request,
             "task": task,
