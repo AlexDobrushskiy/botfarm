@@ -28,6 +28,7 @@ MINIMAL_CONFIG = {
         }
     ],
     "max_total_slots": 5,
+    "linear": {"api_key": "test-key"},
 }
 
 
@@ -45,9 +46,9 @@ def test_expand_env_vars_braces(monkeypatch):
     assert expand_env_vars("${MY_VAR}") == "hello"
 
 
-def test_expand_env_vars_dollar_sign(monkeypatch):
+def test_expand_env_vars_bare_dollar_not_expanded(monkeypatch):
     monkeypatch.setenv("MY_VAR", "hello")
-    assert expand_env_vars("prefix-$MY_VAR-suffix") == "prefix-hello-suffix"
+    assert expand_env_vars("prefix-$MY_VAR-suffix") == "prefix-$MY_VAR-suffix"
 
 
 def test_expand_env_vars_missing_raises():
@@ -119,7 +120,9 @@ def test_load_config_missing_projects(tmp_path):
 
 
 def test_load_config_empty_projects(tmp_path):
-    config_path = _write_config(tmp_path, {"projects": [], "max_total_slots": 5})
+    config_path = _write_config(
+        tmp_path, {"projects": [], "max_total_slots": 5, "linear": {"api_key": "k"}}
+    )
     with pytest.raises(ConfigError, match="At least one project"):
         load_config(config_path)
 
@@ -187,6 +190,7 @@ def test_load_config_exceeds_max_slots(tmp_path):
             },
         ],
         "max_total_slots": 5,
+        "linear": {"api_key": "test-key"},
     }
     config_path = _write_config(tmp_path, data)
     with pytest.raises(ConfigError, match="exceeds max_total_slots"):
@@ -212,6 +216,7 @@ def test_load_config_duplicate_project_names(tmp_path):
             },
         ],
         "max_total_slots": 5,
+        "linear": {"api_key": "test-key"},
     }
     config_path = _write_config(tmp_path, data)
     with pytest.raises(ConfigError, match="Duplicate project names"):
@@ -293,9 +298,49 @@ def test_load_config_max_total_slots_zero(tmp_path):
 
 
 def test_load_config_poll_interval_zero(tmp_path):
-    data = {**MINIMAL_CONFIG, "linear": {"poll_interval_seconds": 0}}
+    data = {**MINIMAL_CONFIG, "linear": {"api_key": "k", "poll_interval_seconds": 0}}
     config_path = _write_config(tmp_path, data)
     with pytest.raises(ConfigError, match="at least 1"):
+        load_config(config_path)
+
+
+def test_load_config_empty_api_key(tmp_path):
+    data = {**MINIMAL_CONFIG, "linear": {"api_key": ""}}
+    config_path = _write_config(tmp_path, data)
+    with pytest.raises(ConfigError, match="api_key must be set"):
+        load_config(config_path)
+
+
+def test_load_config_missing_api_key(tmp_path):
+    data = {**MINIMAL_CONFIG, "linear": {}}
+    config_path = _write_config(tmp_path, data)
+    with pytest.raises(ConfigError, match="api_key must be set"):
+        load_config(config_path)
+
+
+def test_load_config_cross_project_duplicate_slots(tmp_path):
+    data = {
+        "projects": [
+            {
+                "name": "project-a",
+                "linear_team": "TST",
+                "base_dir": "~/a",
+                "worktree_prefix": "a-slot-",
+                "slots": [1, 2],
+            },
+            {
+                "name": "project-b",
+                "linear_team": "TST",
+                "base_dir": "~/b",
+                "worktree_prefix": "b-slot-",
+                "slots": [2, 3],
+            },
+        ],
+        "max_total_slots": 10,
+        "linear": {"api_key": "test-key"},
+    }
+    config_path = _write_config(tmp_path, data)
+    with pytest.raises(ConfigError, match="Duplicate slot assignments"):
         load_config(config_path)
 
 

@@ -94,13 +94,16 @@ class ConfigError(Exception):
 
 
 def expand_env_vars(value: str) -> str:
-    """Expand ${VAR} and $VAR references in a string using environment variables.
+    """Expand ${VAR} references in a string using environment variables.
+
+    Only the braced syntax ${VAR} is supported to avoid false positives
+    with bare dollar signs in config values.
 
     Raises ConfigError if a referenced variable is not set.
     """
 
     def _replace(match: re.Match) -> str:
-        var_name = match.group(1) or match.group(2)
+        var_name = match.group(1)
         env_value = os.environ.get(var_name)
         if env_value is None:
             raise ConfigError(
@@ -108,7 +111,7 @@ def expand_env_vars(value: str) -> str:
             )
         return env_value
 
-    return re.sub(r"\$\{(\w+)\}|\$(\w+)", _replace, value)
+    return re.sub(r"\$\{(\w+)\}", _replace, value)
 
 
 def _expand_env_recursive(obj: object) -> object:
@@ -160,6 +163,9 @@ def _validate_config(config: BotfarmConfig) -> None:
     if config.max_total_slots < 1:
         raise ConfigError("max_total_slots must be at least 1")
 
+    if not config.linear.api_key:
+        raise ConfigError("linear.api_key must be set")
+
     if config.linear.poll_interval_seconds < 1:
         raise ConfigError("poll_interval_seconds must be at least 1")
 
@@ -170,12 +176,11 @@ def _validate_config(config: BotfarmConfig) -> None:
     if len(names) != len(set(names)):
         raise ConfigError("Duplicate project names found")
 
-    all_slot_keys = []
+    all_slots = []
     for p in config.projects:
-        for s in p.slots:
-            all_slot_keys.append((p.name, s))
-    if len(all_slot_keys) != len(set(all_slot_keys)):
-        raise ConfigError("Duplicate slot assignments found")
+        all_slots.extend(p.slots)
+    if len(all_slots) != len(set(all_slots)):
+        raise ConfigError("Duplicate slot assignments found across projects")
 
     total_slots = sum(len(p.slots) for p in config.projects)
     if total_slots > config.max_total_slots:
