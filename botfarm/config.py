@@ -44,6 +44,9 @@ dashboard:
   host: 0.0.0.0
   port: 8420
 
+agents:
+  max_review_iterations: 3
+
 state_file: ~/.botfarm/state.json
 """
 
@@ -84,6 +87,11 @@ class DashboardConfig:
 
 
 @dataclass
+class AgentsConfig:
+    max_review_iterations: int = 3
+
+
+@dataclass
 class BotfarmConfig:
     projects: list[ProjectConfig]
     max_total_slots: int = 5
@@ -91,6 +99,7 @@ class BotfarmConfig:
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     usage_limits: UsageLimitsConfig = field(default_factory=UsageLimitsConfig)
     dashboard: DashboardConfig = field(default_factory=DashboardConfig)
+    agents: AgentsConfig = field(default_factory=AgentsConfig)
     state_file: str = "~/.botfarm/state.json"
 
 
@@ -199,6 +208,9 @@ def _validate_config(config: BotfarmConfig) -> None:
         if not (0.0 <= val <= 1.0):
             raise ConfigError(f"usage_limits.{attr} must be between 0.0 and 1.0")
 
+    if config.agents.max_review_iterations < 1:
+        raise ConfigError("agents.max_review_iterations must be at least 1")
+
 
 def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
     """Load, expand, validate, and return the botfarm configuration."""
@@ -244,6 +256,11 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         port=int(dash_data.get("port", 8420)),
     )
 
+    agents_data = data.get("agents", {})
+    agents = AgentsConfig(
+        max_review_iterations=int(agents_data.get("max_review_iterations", 3)),
+    )
+
     config = BotfarmConfig(
         projects=projects,
         max_total_slots=data.get("max_total_slots", 5),
@@ -251,6 +268,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         database=database,
         usage_limits=usage_limits,
         dashboard=dashboard,
+        agents=agents,
         state_file=data.get("state_file", "~/.botfarm/state.json"),
     )
 

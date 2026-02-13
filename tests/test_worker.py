@@ -20,6 +20,7 @@ from botfarm.worker import (
     run_claude,
     run_pipeline,
     _extract_pr_url,
+    _parse_review_approved,
     _recover_pr_url,
     _run_implement,
     _run_review,
@@ -384,7 +385,7 @@ class TestRunMerge:
 # ---------------------------------------------------------------------------
 
 
-def _mock_stage_result(stage, success=True, pr_url=None, cost=0.1, turns=3):
+def _mock_stage_result(stage, success=True, pr_url=None, cost=0.1, turns=3, review_approved=None):
     """Build a StageResult with optional ClaudeResult."""
     cr = None
     if stage in ("implement", "review", "fix"):
@@ -402,6 +403,7 @@ def _mock_stage_result(stage, success=True, pr_url=None, cost=0.1, turns=3):
         claude_result=cr,
         pr_url=pr_url,
         error=None if success else f"{stage} failed",
+        review_approved=review_approved,
     )
 
 
@@ -421,6 +423,7 @@ class TestRunPipeline:
             task_id=task_id,
             cwd=tmp_path,
             conn=conn,
+            max_review_iterations=1,
         )
         assert result.success is True
         assert result.stages_completed == list(STAGES)
@@ -460,7 +463,7 @@ class TestRunPipeline:
 
     @patch("botfarm.worker._execute_stage")
     def test_review_failure_stops_pipeline(self, mock_exec, conn, task_id, tmp_path):
-        """Review stage fails → pipeline stops, only implement+review recorded."""
+        """Review stage fails → pipeline stops, only implement recorded."""
         mock_exec.side_effect = [
             _mock_stage_result("implement", pr_url=PR_URL),
             _mock_stage_result("review", success=False),
@@ -470,6 +473,7 @@ class TestRunPipeline:
             task_id=task_id,
             cwd=tmp_path,
             conn=conn,
+            max_review_iterations=1,
         )
         assert result.success is False
         assert result.stages_completed == ["implement"]
@@ -512,6 +516,7 @@ class TestRunPipeline:
             task_id=task_id,
             cwd=tmp_path,
             conn=conn,
+            max_review_iterations=1,
         )
         assert result.success is False
         assert result.failure_stage == "merge"
@@ -535,6 +540,7 @@ class TestRunPipeline:
             slot_manager=slot_manager,
             project="test-project",
             slot_id=1,
+            max_review_iterations=1,
         )
         assert result.success is True
 
@@ -559,6 +565,7 @@ class TestRunPipeline:
             cwd=tmp_path,
             conn=conn,
             max_turns=custom_turns,
+            max_review_iterations=1,
         )
         # Verify first call (implement) got max_turns=50
         first_call = mock_exec.call_args_list[0]
@@ -582,6 +589,7 @@ class TestRunPipeline:
             task_id=task_id,
             cwd=tmp_path,
             conn=conn,
+            max_review_iterations=1,
         )
         assert result.total_cost_usd == pytest.approx(1.8)
         assert result.total_turns == 35
@@ -604,6 +612,7 @@ class TestRunPipeline:
             cwd=tmp_path,
             conn=conn,
             pr_checks_timeout=300,
+            max_review_iterations=1,
         )
         # pr_checks is the 4th call (index 3)
         pr_checks_call = mock_exec.call_args_list[3]
@@ -635,6 +644,7 @@ class TestRunPipelineResume:
             cwd=tmp_path,
             conn=conn,
             resume_from_stage="review",
+            max_review_iterations=1,
         )
         assert result.success is True
         assert result.stages_completed == list(STAGES)
@@ -663,9 +673,36 @@ class TestRunPipelineResume:
             cwd=tmp_path,
             conn=conn,
             resume_from_stage="fix",
+            max_review_iterations=1,
         )
         assert result.success is True
         assert mock_exec.call_count == 3
+
+    @patch("botfarm.worker._recover_pr_url")
+    @patch("botfarm.worker._execute_stage")
+    def test_resume_from_fix_enters_review_loop(
+        self, mock_exec, mock_recover, conn, task_id, tmp_path,
+    ):
+        """Resuming from 'fix' with max_review_iterations>1 re-reviews after fix."""
+        mock_recover.return_value = PR_URL
+        mock_exec.side_effect = [
+            _mock_stage_result("fix"),           # resumed fix
+            _mock_stage_result("review", review_approved=True),  # verify fix
+            _mock_stage_result("pr_checks"),
+            _mock_stage_result("merge"),
+        ]
+        result = run_pipeline(
+            ticket_id="SMA-99",
+            task_id=task_id,
+            cwd=tmp_path,
+            conn=conn,
+            resume_from_stage="fix",
+            max_review_iterations=3,
+        )
+        assert result.success is True
+        assert mock_exec.call_count == 4
+        called_stages = [c[0][0] for c in mock_exec.call_args_list]
+        assert called_stages == ["fix", "review", "pr_checks", "merge"]
 
     @patch("botfarm.worker._recover_pr_url")
     @patch("botfarm.worker._execute_stage")
@@ -704,6 +741,7 @@ class TestRunPipelineResume:
             cwd=tmp_path,
             conn=conn,
             resume_from_stage="implement",
+            max_review_iterations=1,
         )
         assert result.success is True
         assert mock_exec.call_count == 5
@@ -785,3 +823,268 @@ class TestDataclasses:
         assert pr.total_cost_usd == 0.0
         assert pr.total_turns == 0
         assert pr.failure_stage is None
+
+    def test_stage_result_review_approved_default(self):
+        sr = StageResult(stage="review", success=True)
+        assert sr.review_approved is None
+
+
+# ---------------------------------------------------------------------------
+# _parse_review_approved
+# ---------------------------------------------------------------------------
+
+
+class TestParseReviewApproved:
+    def test_approve_flag(self):
+        assert _parse_review_approved("I ran gh pr review --approve") is True
+
+    def test_request_changes_flag(self):
+        assert _parse_review_approved("gh pr review --request-changes") is False
+
+    def test_lgtm(self):
+        assert _parse_review_approved("LGTM, ship it!") is True
+
+    def test_looks_good_to_me(self):
+        assert _parse_review_approved("This looks good to me overall.") is True
+
+    def test_approve_the_pr(self):
+        assert _parse_review_approved("I approve the PR.") is True
+
+    def test_changes_requested(self):
+        assert _parse_review_approved("Changes requested: fix the typo") is False
+
+    def test_needs_changes(self):
+        assert _parse_review_approved("This needs changes before merging.") is False
+
+    def test_ambiguous_defaults_to_false(self):
+        assert _parse_review_approved("I reviewed the code.") is False
+
+    def test_empty_string(self):
+        assert _parse_review_approved("") is False
+
+    def test_changes_pattern_takes_priority(self):
+        # If both approve and changes patterns are present, changes wins
+        assert _parse_review_approved("LGTM but request changes on the tests") is False
+
+    def test_ignores_lgtm_early_in_output(self):
+        # "LGTM" in quoted PR content early in the output should not cause false positive
+        early_lgtm = "The PR description says LGTM. " + ("x" * 600) + "I request changes."
+        assert _parse_review_approved(early_lgtm) is False
+
+    def test_detects_approval_in_tail(self):
+        # Approval signal in the last 500 chars is detected
+        long_prefix = "Reviewing code... " + ("x" * 600)
+        assert _parse_review_approved(long_prefix + " I ran gh pr review --approve") is True
+
+
+# ---------------------------------------------------------------------------
+# run_pipeline — review iteration loop tests
+# ---------------------------------------------------------------------------
+
+
+class TestReviewIterationLoop:
+    @patch("botfarm.worker._execute_stage")
+    def test_review_approved_first_iteration_skips_fix(
+        self, mock_exec, conn, task_id, tmp_path,
+    ):
+        """When review approves on first iteration, fix is skipped."""
+        mock_exec.side_effect = [
+            _mock_stage_result("implement", pr_url=PR_URL),
+            _mock_stage_result("review", review_approved=True),
+            _mock_stage_result("pr_checks"),
+            _mock_stage_result("merge"),
+        ]
+        result = run_pipeline(
+            ticket_id="SMA-99",
+            task_id=task_id,
+            cwd=tmp_path,
+            conn=conn,
+            max_review_iterations=3,
+        )
+        assert result.success is True
+        assert result.stages_completed == list(STAGES)
+        assert mock_exec.call_count == 4
+
+        task = get_task(conn, task_id)
+        assert task["review_iterations"] == 1
+
+    @patch("botfarm.worker._execute_stage")
+    def test_review_changes_then_approved_second_iteration(
+        self, mock_exec, conn, task_id, tmp_path,
+    ):
+        """Review requests changes, fix runs, second review approves."""
+        mock_exec.side_effect = [
+            _mock_stage_result("implement", pr_url=PR_URL),
+            # Iteration 1: review requests changes
+            _mock_stage_result("review", review_approved=False, cost=0.2, turns=5),
+            _mock_stage_result("fix", cost=0.3, turns=8),
+            # Iteration 2: review approves
+            _mock_stage_result("review", review_approved=True, cost=0.1, turns=3),
+            _mock_stage_result("pr_checks"),
+            _mock_stage_result("merge"),
+        ]
+        result = run_pipeline(
+            ticket_id="SMA-99",
+            task_id=task_id,
+            cwd=tmp_path,
+            conn=conn,
+            max_review_iterations=3,
+        )
+        assert result.success is True
+        assert mock_exec.call_count == 6
+
+        task = get_task(conn, task_id)
+        assert task["review_iterations"] == 2
+
+        # Check stage runs include iteration tracking
+        runs = get_stage_runs(conn, task_id)
+        review_runs = [r for r in runs if r["stage"] == "review"]
+        assert len(review_runs) == 2
+        assert review_runs[0]["iteration"] == 1
+        assert review_runs[1]["iteration"] == 2
+
+    @patch("botfarm.worker._execute_stage")
+    def test_max_iterations_reached(self, mock_exec, conn, task_id, tmp_path):
+        """After max iterations, proceed to pr_checks regardless."""
+        mock_exec.side_effect = [
+            _mock_stage_result("implement", pr_url=PR_URL),
+            # Iteration 1
+            _mock_stage_result("review", review_approved=False),
+            _mock_stage_result("fix"),
+            # Iteration 2
+            _mock_stage_result("review", review_approved=False),
+            _mock_stage_result("fix"),
+            # pr_checks and merge
+            _mock_stage_result("pr_checks"),
+            _mock_stage_result("merge"),
+        ]
+        result = run_pipeline(
+            ticket_id="SMA-99",
+            task_id=task_id,
+            cwd=tmp_path,
+            conn=conn,
+            max_review_iterations=2,
+        )
+        assert result.success is True
+        assert result.stages_completed == list(STAGES)
+        assert mock_exec.call_count == 7
+
+        task = get_task(conn, task_id)
+        assert task["review_iterations"] == 2
+
+    @patch("botfarm.worker._execute_stage")
+    def test_fix_failure_in_iteration_stops_pipeline(
+        self, mock_exec, conn, task_id, tmp_path,
+    ):
+        """Fix failure during iteration loop stops the pipeline."""
+        mock_exec.side_effect = [
+            _mock_stage_result("implement", pr_url=PR_URL),
+            _mock_stage_result("review", review_approved=False),
+            _mock_stage_result("fix", success=False),
+        ]
+        result = run_pipeline(
+            ticket_id="SMA-99",
+            task_id=task_id,
+            cwd=tmp_path,
+            conn=conn,
+            max_review_iterations=3,
+        )
+        assert result.success is False
+        assert result.failure_stage == "fix"
+
+    @patch("botfarm.worker._execute_stage")
+    def test_review_failure_in_second_iteration_stops_pipeline(
+        self, mock_exec, conn, task_id, tmp_path,
+    ):
+        """Review failure on second iteration stops the pipeline."""
+        mock_exec.side_effect = [
+            _mock_stage_result("implement", pr_url=PR_URL),
+            _mock_stage_result("review", review_approved=False),
+            _mock_stage_result("fix"),
+            _mock_stage_result("review", success=False),
+        ]
+        result = run_pipeline(
+            ticket_id="SMA-99",
+            task_id=task_id,
+            cwd=tmp_path,
+            conn=conn,
+            max_review_iterations=3,
+        )
+        assert result.success is False
+        assert result.failure_stage == "review"
+
+    @patch("botfarm.worker._execute_stage")
+    def test_metrics_accumulate_across_iterations(
+        self, mock_exec, conn, task_id, tmp_path,
+    ):
+        """Costs and turns from all review/fix iterations are accumulated."""
+        mock_exec.side_effect = [
+            _mock_stage_result("implement", pr_url=PR_URL, cost=1.0, turns=20),
+            # Iteration 1
+            _mock_stage_result("review", review_approved=False, cost=0.2, turns=5),
+            _mock_stage_result("fix", cost=0.3, turns=8),
+            # Iteration 2 — approved
+            _mock_stage_result("review", review_approved=True, cost=0.1, turns=3),
+            _mock_stage_result("pr_checks"),
+            _mock_stage_result("merge"),
+        ]
+        result = run_pipeline(
+            ticket_id="SMA-99",
+            task_id=task_id,
+            cwd=tmp_path,
+            conn=conn,
+            max_review_iterations=3,
+        )
+        assert result.success is True
+        # 1.0 + 0.2 + 0.3 + 0.1 = 1.6
+        assert result.total_cost_usd == pytest.approx(1.6)
+        # 20 + 5 + 8 + 3 = 36
+        assert result.total_turns == 36
+
+    @patch("botfarm.worker._execute_stage")
+    def test_events_logged_for_iterations(self, mock_exec, conn, task_id, tmp_path):
+        """Review iteration events are logged in task_events."""
+        from botfarm.db import get_events
+
+        mock_exec.side_effect = [
+            _mock_stage_result("implement", pr_url=PR_URL),
+            _mock_stage_result("review", review_approved=False),
+            _mock_stage_result("fix"),
+            _mock_stage_result("review", review_approved=True),
+            _mock_stage_result("pr_checks"),
+            _mock_stage_result("merge"),
+        ]
+        run_pipeline(
+            ticket_id="SMA-99",
+            task_id=task_id,
+            cwd=tmp_path,
+            conn=conn,
+            max_review_iterations=3,
+        )
+        events = get_events(conn, task_id=task_id)
+        event_types = [e["event_type"] for e in events]
+        assert "review_iteration_started" in event_types
+        assert "review_approved" in event_types
+
+    @patch("botfarm.worker._execute_stage")
+    def test_max_iterations_reached_event(self, mock_exec, conn, task_id, tmp_path):
+        """max_iterations_reached event is logged when limit is hit."""
+        from botfarm.db import get_events
+
+        mock_exec.side_effect = [
+            _mock_stage_result("implement", pr_url=PR_URL),
+            _mock_stage_result("review", review_approved=False),
+            _mock_stage_result("fix"),
+            _mock_stage_result("pr_checks"),
+            _mock_stage_result("merge"),
+        ]
+        run_pipeline(
+            ticket_id="SMA-99",
+            task_id=task_id,
+            cwd=tmp_path,
+            conn=conn,
+            max_review_iterations=1,
+        )
+        events = get_events(conn, task_id=task_id)
+        event_types = [e["event_type"] for e in events]
+        assert "max_iterations_reached" in event_types
