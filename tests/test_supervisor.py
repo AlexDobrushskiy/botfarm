@@ -1268,6 +1268,28 @@ class TestCheckTimeouts:
         slot.pid = 99999  # fake PID
         return slot
 
+    def _run_full_timeout(self, supervisor):
+        """Run both phases of timeout: SIGTERM then SIGKILL after grace."""
+        with (
+            patch("botfarm.supervisor.os.killpg") as mock_killpg,
+            patch("botfarm.supervisor.os.getpgid", return_value=99999),
+        ):
+            mock_killpg.side_effect = [
+                None,  # SIGTERM phase
+            ]
+            supervisor._check_timeouts()  # phase 1: sends SIGTERM
+
+        # Phase 2: simulate grace period elapsed
+        slot = supervisor.slot_manager.get_slot("test-project", 1)
+        # Set sigterm_sent_at far in the past so grace period has elapsed
+        slot.sigterm_sent_at = "2020-01-01T00:00:00.000000Z"
+
+        with (
+            patch("botfarm.supervisor.os.killpg", side_effect=ProcessLookupError),
+            patch("botfarm.supervisor.os.getpgid", return_value=99999),
+        ):
+            supervisor._check_timeouts()  # phase 2: escalates to SIGKILL
+
     def test_no_timeout_when_within_limit(self, supervisor):
         """Worker within time limit is not killed."""
         now = datetime.now(timezone.utc)
@@ -1275,16 +1297,36 @@ class TestCheckTimeouts:
         started = (now - timedelta(minutes=10)).isoformat()
         self._make_busy_slot(supervisor, stage_started_at=started)
 
-        with patch("botfarm.supervisor.os.kill") as mock_kill:
+        with (
+            patch("botfarm.supervisor.os.killpg") as mock_killpg,
+            patch("botfarm.supervisor.os.getpgid", return_value=99999),
+        ):
             supervisor._check_timeouts()
-            mock_kill.assert_not_called()
+            mock_killpg.assert_not_called()
 
         assert supervisor.slot_manager.get_slot("test-project", 1).status == "busy"
 
-    def test_timeout_kills_worker_and_marks_failed(self, supervisor):
-        """Worker that exceeds timeout is killed and slot marked failed."""
+    def test_timeout_sends_sigterm_first(self, supervisor):
+        """First call sends SIGTERM and records sigterm_sent_at."""
         now = datetime.now(timezone.utc)
-        # Started 130 minutes ago, limit is 120 minutes for implement
+        started = (now - timedelta(minutes=130)).isoformat()
+        self._make_busy_slot(supervisor, stage_started_at=started)
+
+        with (
+            patch("botfarm.supervisor.os.killpg") as mock_killpg,
+            patch("botfarm.supervisor.os.getpgid", return_value=99999),
+        ):
+            supervisor._check_timeouts()
+            mock_killpg.assert_called_once_with(99999, signal.SIGTERM)
+
+        slot = supervisor.slot_manager.get_slot("test-project", 1)
+        assert slot.sigterm_sent_at is not None
+        # Slot is still busy after SIGTERM — not yet marked failed
+        assert slot.status == "busy"
+
+    def test_timeout_escalates_to_sigkill_after_grace(self, supervisor):
+        """After grace period, SIGKILL is sent and slot marked failed."""
+        now = datetime.now(timezone.utc)
         started = (now - timedelta(minutes=130)).isoformat()
         self._make_busy_slot(supervisor, stage_started_at=started)
 
@@ -1295,55 +1337,33 @@ class TestCheckTimeouts:
         )
         supervisor._conn.commit()
 
-        with (
-            patch("botfarm.supervisor.os.kill") as mock_kill,
-            patch("botfarm.supervisor.time.sleep"),
-        ):
-            # After SIGTERM, process is dead (os.kill(pid, 0) raises)
-            mock_kill.side_effect = [
-                None,           # SIGTERM succeeds
-                ProcessLookupError,  # pid check — process is gone
-            ]
-
-            supervisor._check_timeouts()
+        self._run_full_timeout(supervisor)
 
         assert supervisor.slot_manager.get_slot("test-project", 1).status == "failed"
 
-    def test_timeout_sends_sigterm_then_sigkill(self, supervisor):
-        """When SIGTERM doesn't work, SIGKILL is sent after grace period."""
+    def test_timeout_no_escalate_within_grace(self, supervisor):
+        """Within grace period, SIGKILL is not sent."""
         now = datetime.now(timezone.utc)
         started = (now - timedelta(minutes=130)).isoformat()
         self._make_busy_slot(supervisor, stage_started_at=started)
 
-        insert_task(
-            supervisor._conn,
-            ticket_id="TST-1", title="Test", project="test-project", slot=1,
-            status="in_progress",
-        )
-        supervisor._conn.commit()
-
+        # Phase 1: send SIGTERM
         with (
-            patch("botfarm.supervisor.os.kill") as mock_kill,
-            patch("botfarm.supervisor.time.sleep") as mock_sleep,
+            patch("botfarm.supervisor.os.killpg"),
+            patch("botfarm.supervisor.os.getpgid", return_value=99999),
         ):
-            # SIGTERM succeeds, process still alive, SIGKILL succeeds
-            mock_kill.side_effect = [
-                None,  # SIGTERM
-                None,  # os.kill(pid, 0) — still alive
-                None,  # SIGKILL
-            ]
-
             supervisor._check_timeouts()
 
-        # Verify SIGTERM, check, SIGKILL sequence
-        calls = mock_kill.call_args_list
-        assert calls[0] == call(99999, signal.SIGTERM)
-        assert calls[1] == call(99999, 0)  # alive check
-        assert calls[2] == call(99999, signal.SIGKILL)
-        # Grace period sleep
-        mock_sleep.assert_called_once_with(
-            supervisor._config.agents.timeout_grace_seconds,
-        )
+        # Phase 2: sigterm_sent_at is very recent (just set), grace=10s not elapsed
+        with (
+            patch("botfarm.supervisor.os.killpg") as mock_killpg,
+            patch("botfarm.supervisor.os.getpgid", return_value=99999),
+        ):
+            supervisor._check_timeouts()
+            mock_killpg.assert_not_called()
+
+        # Still busy — not yet escalated
+        assert supervisor.slot_manager.get_slot("test-project", 1).status == "busy"
 
     def test_timeout_records_event(self, supervisor):
         """Timeout records a task_events(timeout) entry."""
@@ -1358,11 +1378,7 @@ class TestCheckTimeouts:
         )
         supervisor._conn.commit()
 
-        with (
-            patch("botfarm.supervisor.os.kill", side_effect=ProcessLookupError),
-            patch("botfarm.supervisor.time.sleep"),
-        ):
-            supervisor._check_timeouts()
+        self._run_full_timeout(supervisor)
 
         events = get_events(supervisor._conn, event_type="timeout")
         assert len(events) == 1
@@ -1383,11 +1399,7 @@ class TestCheckTimeouts:
         )
         supervisor._conn.commit()
 
-        with (
-            patch("botfarm.supervisor.os.kill", side_effect=ProcessLookupError),
-            patch("botfarm.supervisor.time.sleep"),
-        ):
-            supervisor._check_timeouts()
+        self._run_full_timeout(supervisor)
 
         task = get_task(supervisor._conn, task_id)
         assert task["status"] == "failed"
@@ -1407,11 +1419,7 @@ class TestCheckTimeouts:
         )
         supervisor._conn.commit()
 
-        with (
-            patch("botfarm.supervisor.os.kill", side_effect=ProcessLookupError),
-            patch("botfarm.supervisor.time.sleep"),
-        ):
-            supervisor._check_timeouts()
+        self._run_full_timeout(supervisor)
 
         assert supervisor.slot_manager.get_slot("test-project", 1).status == "failed"
 
@@ -1421,9 +1429,12 @@ class TestCheckTimeouts:
         started = (now - timedelta(hours=10)).isoformat()
         self._make_busy_slot(supervisor, stage_started_at=started, stage="pr_checks")
 
-        with patch("botfarm.supervisor.os.kill") as mock_kill:
+        with (
+            patch("botfarm.supervisor.os.killpg") as mock_killpg,
+            patch("botfarm.supervisor.os.getpgid", return_value=99999),
+        ):
             supervisor._check_timeouts()
-            mock_kill.assert_not_called()
+            mock_killpg.assert_not_called()
 
         assert supervisor.slot_manager.get_slot("test-project", 1).status == "busy"
 
@@ -1439,9 +1450,12 @@ class TestCheckTimeouts:
         slot.stage_started_at = None
         slot.pid = 99999
 
-        with patch("botfarm.supervisor.os.kill") as mock_kill:
+        with (
+            patch("botfarm.supervisor.os.killpg") as mock_killpg,
+            patch("botfarm.supervisor.os.getpgid", return_value=99999),
+        ):
             supervisor._check_timeouts()
-            mock_kill.assert_not_called()
+            mock_killpg.assert_not_called()
 
     def test_tick_calls_check_timeouts(self, supervisor):
         """_check_timeouts is called as part of _tick."""
@@ -1458,8 +1472,6 @@ class TestCheckTimeouts:
 
     def test_timeout_with_custom_config(self, tmp_path):
         """Custom timeout_minutes values are respected."""
-        from datetime import timedelta
-
         config = _make_config(tmp_path)
         config.agents.timeout_minutes = {"implement": 10, "review": 5, "fix": 8}
         (tmp_path / "repo").mkdir()
@@ -1490,11 +1502,40 @@ class TestCheckTimeouts:
         )
         sup._conn.commit()
 
+        # Phase 1: SIGTERM
         with (
-            patch("botfarm.supervisor.os.kill", side_effect=ProcessLookupError),
-            patch("botfarm.supervisor.time.sleep"),
+            patch("botfarm.supervisor.os.killpg"),
+            patch("botfarm.supervisor.os.getpgid", return_value=99999),
+        ):
+            sup._check_timeouts()
+
+        # Phase 2: set sigterm_sent_at to past for grace period expiry
+        slot = sm.get_slot("test-project", 1)
+        slot.sigterm_sent_at = "2020-01-01T00:00:00.000000Z"
+
+        with (
+            patch("botfarm.supervisor.os.killpg", side_effect=ProcessLookupError),
+            patch("botfarm.supervisor.os.getpgid", return_value=99999),
         ):
             sup._check_timeouts()
 
         assert sm.get_slot("test-project", 1).status == "failed"
         sup._conn.close()
+
+    def test_reconcile_skips_sigterm_slots(self, supervisor):
+        """Reconcile skips slots with sigterm_sent_at to preserve timeout reason."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        slot = sm.get_slot("test-project", 1)
+        slot.pid = 99999
+        slot.sigterm_sent_at = "2020-01-01T00:00:00.000000Z"
+
+        with patch("botfarm.slots._is_pid_alive", return_value=False):
+            messages = sm.reconcile()
+
+        # Should not be reconciled — timeout system owns it
+        assert messages == []
+        assert slot.status == "busy"

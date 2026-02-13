@@ -343,7 +343,13 @@ class Supervisor:
     # ------------------------------------------------------------------
 
     def _check_timeouts(self) -> None:
-        """Kill worker processes that have exceeded their stage timeout."""
+        """Kill worker processes that have exceeded their stage timeout.
+
+        Non-blocking: on the first tick after timeout, sends SIGTERM and
+        records ``sigterm_sent_at`` on the slot.  On a subsequent tick,
+        if the grace period has elapsed and the process is still alive,
+        escalates to SIGKILL.  This avoids blocking the supervisor loop.
+        """
         timeout_cfg = self._config.agents.timeout_minutes
         grace = self._config.agents.timeout_grace_seconds
         now = datetime.now(timezone.utc)
@@ -351,6 +357,13 @@ class Supervisor:
         for slot in self._slot_manager.busy_slots():
             if slot.pid is None or slot.stage is None:
                 continue
+
+            # --- Phase 2: escalate SIGTERM → SIGKILL after grace period ---
+            if slot.sigterm_sent_at:
+                self._maybe_escalate_kill(slot, now=now, grace=grace)
+                continue
+
+            # --- Phase 1: detect timeout and send SIGTERM ---
             if not slot.stage_started_at:
                 continue
 
@@ -363,6 +376,10 @@ class Supervisor:
                     slot.stage_started_at.replace("Z", "+00:00"),
                 )
             except (ValueError, TypeError):
+                logger.warning(
+                    "Failed to parse stage_started_at for %s/%d: %r",
+                    slot.project, slot.slot_id, slot.stage_started_at,
+                )
                 continue
 
             elapsed = (now - stage_start).total_seconds()
@@ -370,38 +387,62 @@ class Supervisor:
             if elapsed < limit_seconds:
                 continue
 
-            self._timeout_worker(slot, elapsed=elapsed, limit=limit_seconds, grace=grace)
+            self._send_sigterm(slot, elapsed=elapsed, limit=limit_seconds)
 
-    def _timeout_worker(
+    def _send_sigterm(
         self,
-        slot,
+        slot: SlotState,
         *,
         elapsed: float,
         limit: float,
-        grace: int,
     ) -> None:
-        """Terminate a timed-out worker: SIGTERM, grace period, then SIGKILL."""
+        """Send SIGTERM to a timed-out worker and record the time."""
         pid = slot.pid
         stage = slot.stage
         project = slot.project
 
         logger.warning(
             "Worker PID %d for %s/%d timed out in stage '%s' "
-            "(%.0fs elapsed, %ds limit)",
+            "(%.0fs elapsed, %ds limit) — sending SIGTERM",
             pid, project, slot.slot_id, stage, elapsed, int(limit),
         )
 
-        # Send SIGTERM
         try:
-            os.kill(pid, signal.SIGTERM)
+            os.killpg(os.getpgid(pid), signal.SIGTERM)
         except (OSError, ProcessLookupError):
             pass  # already dead
 
-        # Wait grace period then SIGKILL if still alive
-        time.sleep(grace)
+        # Record SIGTERM time so _maybe_escalate_kill can check grace period
+        from botfarm.slots import _now_iso
+        slot.sigterm_sent_at = _now_iso()
+        self._slot_manager.save()
+
+    def _maybe_escalate_kill(
+        self,
+        slot: SlotState,
+        *,
+        now: datetime,
+        grace: int,
+    ) -> None:
+        """If the grace period has elapsed since SIGTERM, escalate to SIGKILL."""
         try:
-            os.kill(pid, 0)  # check if still alive
-            os.kill(pid, signal.SIGKILL)
+            sigterm_time = datetime.fromisoformat(
+                slot.sigterm_sent_at.replace("Z", "+00:00"),
+            )
+        except (ValueError, TypeError):
+            # Can't parse — escalate immediately
+            sigterm_time = now
+
+        if (now - sigterm_time).total_seconds() < grace:
+            return  # still within grace period
+
+        pid = slot.pid
+        stage = slot.stage
+        project = slot.project
+
+        try:
+            os.killpg(os.getpgid(pid), 0)  # check if still alive
+            os.killpg(os.getpgid(pid), signal.SIGKILL)
             logger.warning(
                 "Worker PID %d did not exit after SIGTERM, sent SIGKILL", pid,
             )
@@ -413,6 +454,19 @@ class Supervisor:
         proc = self._workers.pop(key, None)
         if proc is not None:
             proc.join(timeout=2)
+
+        # Compute elapsed from stage start for event detail
+        elapsed = 0.0
+        limit = 0
+        try:
+            stage_start = datetime.fromisoformat(
+                slot.stage_started_at.replace("Z", "+00:00"),
+            )
+            elapsed = (now - stage_start).total_seconds()
+            limit_minutes = self._config.agents.timeout_minutes.get(stage, 0)
+            limit = limit_minutes * 60
+        except (ValueError, TypeError, AttributeError):
+            pass
 
         # Mark slot as failed
         reason = f"timeout in stage {stage}"

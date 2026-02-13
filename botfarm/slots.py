@@ -39,6 +39,7 @@ class SlotState:
     current_session_id: str | None = None
     started_at: str | None = None
     stage_started_at: str | None = None
+    sigterm_sent_at: str | None = None
     pid: int | None = None
     interrupted_by_limit: bool = False
     resume_after: str | None = None
@@ -242,6 +243,7 @@ class SlotManager:
         slot.current_session_id = None
         slot.started_at = None
         slot.stage_started_at = None
+        slot.sigterm_sent_at = None
         slot.pid = None
         slot.interrupted_by_limit = False
         slot.resume_after = None
@@ -324,11 +326,15 @@ class SlotManager:
         """Check persisted state against reality after a restart.
 
         For busy/paused slots whose PID is no longer alive, mark them failed.
+        Slots with ``sigterm_sent_at`` set are being handled by the timeout
+        system and are skipped here to preserve the descriptive timeout reason.
         Returns a list of human-readable messages describing what changed.
         """
         messages: list[str] = []
         for slot in self._slots.values():
             if slot.status in ("busy", "paused_limit") and slot.pid is not None:
+                if slot.sigterm_sent_at:
+                    continue  # timeout system owns this slot
                 if not _is_pid_alive(slot.pid):
                     old_pid = slot.pid
                     old_status = slot.status

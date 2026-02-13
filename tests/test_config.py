@@ -481,6 +481,16 @@ def test_load_config_timeout_minutes_zero_rejected(tmp_path):
         load_config(config_path)
 
 
+def test_load_config_timeout_minutes_unknown_stage_rejected(tmp_path):
+    data = {
+        **MINIMAL_CONFIG,
+        "agents": {"timeout_minutes": {"implment": 60}},
+    }
+    config_path = _write_config(tmp_path, data)
+    with pytest.raises(ConfigError, match="unknown stage 'implment'"):
+        load_config(config_path)
+
+
 def test_load_config_timeout_grace_seconds_custom(tmp_path):
     data = {
         **MINIMAL_CONFIG,

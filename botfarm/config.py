@@ -227,7 +227,13 @@ def _validate_config(config: BotfarmConfig) -> None:
     if config.agents.max_ci_retries < 0:
         raise ConfigError("agents.max_ci_retries must be at least 0")
 
+    known_stages = {"implement", "review", "fix", "pr_checks", "merge"}
     for stage, minutes in config.agents.timeout_minutes.items():
+        if stage not in known_stages:
+            raise ConfigError(
+                f"agents.timeout_minutes: unknown stage '{stage}'. "
+                f"Valid stages: {sorted(known_stages)}"
+            )
         if minutes < 1:
             raise ConfigError(
                 f"agents.timeout_minutes.{stage} must be at least 1"

@@ -356,6 +356,7 @@ class TestFreeSlot:
         assert slot.current_session_id is None
         assert slot.started_at is None
         assert slot.stage_started_at is None
+        assert slot.sigterm_sent_at is None
         assert slot.pid is None
         assert slot.interrupted_by_limit is False
         assert slot.resume_after is None
