@@ -169,8 +169,10 @@ class UsagePoller:
         five_hour = data.get("five_hour", {})
         seven_day = data.get("seven_day", {})
 
-        self._state.utilization_5h = five_hour.get("utilization")
-        self._state.utilization_7d = seven_day.get("utilization")
+        raw_5h = five_hour.get("utilization")
+        self._state.utilization_5h = raw_5h / 100 if raw_5h is not None else None
+        raw_7d = seven_day.get("utilization")
+        self._state.utilization_7d = raw_7d / 100 if raw_7d is not None else None
         self._state.resets_at_5h = five_hour.get("resets_at")
         self._state.resets_at_7d = seven_day.get("resets_at")
 

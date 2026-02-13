@@ -23,22 +23,22 @@ from botfarm.usage import (
 
 SAMPLE_USAGE_RESPONSE = {
     "five_hour": {
-        "utilization": 0.42,
+        "utilization": 42,
         "resets_at": "2026-02-12T22:00:00Z",
     },
     "seven_day": {
-        "utilization": 0.15,
+        "utilization": 15,
         "resets_at": "2026-02-18T00:00:00Z",
     },
 }
 
 HIGH_USAGE_RESPONSE = {
     "five_hour": {
-        "utilization": 0.95,
+        "utilization": 95,
         "resets_at": "2026-02-12T22:00:00Z",
     },
     "seven_day": {
-        "utilization": 0.60,
+        "utilization": 60,
         "resets_at": "2026-02-18T00:00:00Z",
     },
 }
@@ -323,7 +323,7 @@ class TestUsagePollerErrors:
 class TestUsagePollerParsing:
     def test_partial_response_missing_seven_day(self, poller, conn):
         response = {
-            "five_hour": {"utilization": 0.5, "resets_at": "2026-02-12T22:00:00Z"},
+            "five_hour": {"utilization": 50, "resets_at": "2026-02-12T22:00:00Z"},
         }
         with patch.object(poller, "_fetch", return_value=response):
             state = poller.force_poll(conn)
