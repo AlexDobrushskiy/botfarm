@@ -4,6 +4,21 @@
 {% block content %}
 <h1>Metrics</h1>
 
+{% if projects %}
+<form method="get" action="/metrics" style="max-width:300px; margin-bottom:1.5rem;">
+    <fieldset role="group">
+        <select name="project" aria-label="Filter by project">
+            <option value="">All Projects</option>
+            {% for p in projects %}
+            <option value="{{ p }}" {% if filter_project == p %}selected{% endif %}>{{ p }}</option>
+            {% endfor %}
+        </select>
+        <button type="submit">Filter</button>
+    </fieldset>
+</form>
+{% endif %}
+
+<h2>Overview</h2>
 <div class="grid">
     <article class="metric-card">
         <h2>{{ metrics.total_tasks }}</h2>
@@ -17,24 +32,87 @@
         <h2>{{ metrics.failed_tasks }}</h2>
         <p>Failed</p>
     </article>
+    <article class="metric-card">
+        <h2>{{ "%.1f"|format(metrics.success_rate) }}%</h2>
+        <p>Success Rate</p>
+    </article>
 </div>
 
+<h2>Averages</h2>
+<div class="grid">
+    <article class="metric-card">
+        <h2>${{ "%.2f"|format(metrics.avg_cost) }}</h2>
+        <p>Avg Cost / Task</p>
+    </article>
+    <article class="metric-card">
+        <h2>{{ format_duration(metrics.avg_wall_time_seconds) }}</h2>
+        <p>Avg Wall Time</p>
+    </article>
+    <article class="metric-card">
+        <h2>{{ metrics.avg_turns }}</h2>
+        <p>Avg Turns / Task</p>
+    </article>
+    <article class="metric-card">
+        <h2>{{ metrics.avg_review_iterations }}</h2>
+        <p>Avg Review Iterations</p>
+    </article>
+</div>
+
+<h2>Tasks Completed</h2>
+<div class="grid">
+    <article class="metric-card">
+        <h2>{{ metrics.completed_today }}</h2>
+        <p>Today</p>
+    </article>
+    <article class="metric-card">
+        <h2>{{ metrics.completed_week }}</h2>
+        <p>Last 7 Days</p>
+    </article>
+    <article class="metric-card">
+        <h2>{{ metrics.completed_month }}</h2>
+        <p>Last 30 Days</p>
+    </article>
+</div>
+
+<h2>Cost</h2>
 <div class="grid">
     <article class="metric-card">
         <h2>${{ "%.2f"|format(metrics.total_cost) }}</h2>
         <p>Total Cost</p>
     </article>
     <article class="metric-card">
-        <h2>${{ "%.2f"|format(metrics.avg_cost) }}</h2>
-        <p>Avg Cost / Task</p>
+        <h2>${{ "%.2f"|format(metrics.cost_today) }}</h2>
+        <p>Today</p>
     </article>
     <article class="metric-card">
-        <h2>{{ metrics.total_turns }}</h2>
-        <p>Total Turns</p>
+        <h2>${{ "%.2f"|format(metrics.cost_week) }}</h2>
+        <p>Last 7 Days</p>
     </article>
     <article class="metric-card">
-        <h2>{{ metrics.avg_turns }}</h2>
-        <p>Avg Turns / Task</p>
+        <h2>${{ "%.2f"|format(metrics.cost_month) }}</h2>
+        <p>Last 30 Days</p>
     </article>
 </div>
+
+{% if metrics.failure_reasons %}
+<h2>Common Failure Reasons</h2>
+<figure>
+<table>
+    <thead>
+        <tr>
+            <th>Reason</th>
+            <th>Count</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for fr in metrics.failure_reasons %}
+        <tr>
+            <td>{{ fr.reason }}</td>
+            <td>{{ fr.count }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+</figure>
+{% endif %}
 {% endblock %}

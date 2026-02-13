@@ -669,7 +669,7 @@ class TestUsagePage:
         resp = client.get("/usage")
         assert resp.status_code == 200
 
-    def test_contains_snapshot_table(self, client):
+    def test_contains_snapshot_data(self, client):
         resp = client.get("/usage")
         body = resp.text
         assert "45.0" in body
@@ -679,6 +679,39 @@ class TestUsagePage:
         resp = client.get("/usage")
         assert "usage-chart" in resp.text
         assert "chart.js" in resp.text.lower()
+
+    def test_time_range_selector(self, client):
+        resp = client.get("/usage")
+        body = resp.text
+        assert "Last 24h" in body
+        assert "Last 7d" in body
+        assert "Last 30d" in body
+
+    def test_default_range_is_7d(self, client):
+        resp = client.get("/usage")
+        body = resp.text
+        # 7d button should be active (aria-current)
+        assert 'range=7d" role="button" aria-current="true"' in body
+
+    def test_range_24h(self, client):
+        resp = client.get("/usage?range=24h")
+        assert resp.status_code == 200
+        body = resp.text
+        assert 'range=24h" role="button" aria-current="true"' in body
+
+    def test_range_30d(self, client):
+        resp = client.get("/usage?range=30d")
+        assert resp.status_code == 200
+
+    def test_invalid_range_defaults_to_7d(self, client):
+        resp = client.get("/usage?range=invalid")
+        assert resp.status_code == 200
+        assert 'range=7d" role="button" aria-current="true"' in resp.text
+
+    def test_raw_data_in_details(self, client):
+        resp = client.get("/usage")
+        assert "<details>" in resp.text
+        assert "Raw snapshot data" in resp.text
 
 
 # --- Metrics ---
@@ -695,7 +728,56 @@ class TestMetricsPage:
         assert "Total Tasks" in body
         assert "Completed" in body
         assert "Failed" in body
+        assert "Total Cost" in body
         assert "$1.75" in body
+
+    def test_contains_success_rate(self, client):
+        resp = client.get("/metrics")
+        body = resp.text
+        assert "Success Rate" in body
+        # 1 completed / 2 total = 50%
+        assert "50.0%" in body
+
+    def test_contains_averages(self, client):
+        resp = client.get("/metrics")
+        body = resp.text
+        assert "Avg Cost / Task" in body
+        assert "Avg Wall Time" in body
+        assert "Avg Turns / Task" in body
+        assert "Avg Review Iterations" in body
+
+    def test_contains_time_buckets(self, client):
+        resp = client.get("/metrics")
+        body = resp.text
+        assert "Tasks Completed" in body
+        assert "Today" in body
+        assert "Last 7 Days" in body
+        assert "Last 30 Days" in body
+
+    def test_contains_cost_buckets(self, client):
+        resp = client.get("/metrics")
+        body = resp.text
+        assert "Cost" in body
+
+    def test_failure_reasons_displayed(self, client):
+        resp = client.get("/metrics")
+        body = resp.text
+        assert "Common Failure Reasons" in body
+        assert "Tests failed" in body
+
+    def test_project_filter(self, client):
+        resp = client.get("/metrics?project=my-project")
+        body = resp.text
+        assert resp.status_code == 200
+        # Only 1 task in my-project (TST-1, completed, $1.25)
+        assert "$1.25" in body
+        assert "100.0%" in body  # 1/1 success rate
+
+    def test_project_filter_dropdown(self, client):
+        resp = client.get("/metrics")
+        body = resp.text
+        assert "my-project" in body
+        assert "other-project" in body
 
     def test_metrics_no_db(self, state_file, tmp_path):
         app = create_app(
@@ -706,6 +788,12 @@ class TestMetricsPage:
         resp = client.get("/metrics")
         assert resp.status_code == 200
         assert "Total Tasks" in resp.text
+
+    def test_avg_wall_time_formatted(self, client):
+        resp = client.get("/metrics")
+        body = resp.text
+        # TST-1 has 1.5h wall time => 1h30m
+        assert "1h30m" in body
 
 
 # --- start_dashboard ---
