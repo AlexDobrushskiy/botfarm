@@ -609,6 +609,16 @@ class Supervisor:
                 self._slot_manager.mark_failed(
                     wr.project, wr.slot_id, reason=reason,
                 )
+                # Update DB task with failure info
+                slot = self._slot_manager.get_slot(wr.project, wr.slot_id)
+                task_id = self._find_task_id(slot.ticket_id) if slot else None
+                if task_id is not None:
+                    update_task(
+                        self._conn, task_id,
+                        status="failed",
+                        failure_reason=reason,
+                    )
+                    self._conn.commit()
                 logger.warning(
                     "Worker result: %s/%d failed — %s",
                     wr.project, wr.slot_id, reason,
@@ -798,20 +808,37 @@ class Supervisor:
                 self._handle_failed_slot(slot)
 
     def _handle_completed_slot(self, slot: SlotState) -> None:
-        """Update Linear for a completed slot and free it."""
+        """Update Linear for a completed slot and free it.
+
+        Checks if the PR was merged to determine the correct status:
+        - PR merged → move to done_status (e.g. "Done")
+        - PR open/other → move to in_review_status (e.g. "In Review")
+        """
         project = slot.project
+        linear_cfg = self._config.linear
         poller = self._pollers.get(project)
         if poller and slot.ticket_id:
+            # Determine target status based on PR state
+            pr_status = self._check_pr_status(slot)
+            if pr_status == "merged":
+                target_status = linear_cfg.done_status
+            else:
+                target_status = linear_cfg.in_review_status
+
             try:
-                poller.move_issue(slot.ticket_id, "In Review")
+                poller.move_issue(slot.ticket_id, target_status)
                 logger.info(
-                    "Moved %s to 'In Review' after successful pipeline",
-                    slot.ticket_id,
+                    "Moved %s to '%s' after successful pipeline",
+                    slot.ticket_id, target_status,
                 )
             except Exception:
                 logger.exception(
-                    "Failed to move %s to 'In Review'", slot.ticket_id,
+                    "Failed to move %s to '%s'", slot.ticket_id, target_status,
                 )
+
+            # Post completion comment if enabled
+            if linear_cfg.comment_on_completion:
+                self._post_completion_comment(poller, slot)
 
         insert_event(
             self._conn,
@@ -827,22 +854,24 @@ class Supervisor:
     def _handle_failed_slot(self, slot: SlotState) -> None:
         """Update Linear for a failed slot and free it."""
         project = slot.project
+        linear_cfg = self._config.linear
         poller = self._pollers.get(project)
         if poller and slot.ticket_id:
+            target_status = linear_cfg.failed_status
             try:
-                poller.move_issue(slot.ticket_id, "Todo")
-                poller.add_comment(
-                    slot.ticket_id,
-                    "Botfarm worker failed. Moving back to Todo for retry.",
-                )
+                poller.move_issue(slot.ticket_id, target_status)
                 logger.info(
-                    "Moved %s back to 'Todo' after failure", slot.ticket_id,
+                    "Moved %s to '%s' after failure",
+                    slot.ticket_id, target_status,
                 )
             except Exception:
                 logger.exception(
-                    "Failed to update Linear for failed ticket %s",
-                    slot.ticket_id,
+                    "Failed to move %s to '%s'",
+                    slot.ticket_id, target_status,
                 )
+
+            if linear_cfg.comment_on_failure:
+                self._post_failure_comment(poller, slot)
 
         insert_event(
             self._conn,
@@ -854,6 +883,67 @@ class Supervisor:
 
         self._slot_manager.free_slot(project, slot.slot_id)
         logger.info("Freed slot %s/%d after failure", project, slot.slot_id)
+
+    def _post_failure_comment(self, poller: LinearPoller, slot: SlotState) -> None:
+        """Post a comment on the Linear issue with failure details."""
+        stage = slot.stage or "unknown"
+        reason = "unknown"
+
+        # Get failure reason from DB task record
+        task_id = self._find_task_id(slot.ticket_id)
+        if task_id is not None:
+            from botfarm.db import get_task
+            task = get_task(self._conn, task_id)
+            if task and task["failure_reason"]:
+                reason = task["failure_reason"]
+
+        lines = [
+            "**Botfarm worker failed**",
+            "",
+            f"- **Stage:** `{stage}`",
+            f"- **Reason:** {reason}",
+        ]
+        try:
+            poller.add_comment(slot.ticket_id, "\n".join(lines))
+        except Exception:
+            logger.exception(
+                "Failed to post failure comment on %s", slot.ticket_id,
+            )
+
+    def _post_completion_comment(self, poller: LinearPoller, slot: SlotState) -> None:
+        """Post a summary comment on the Linear issue after completion."""
+        task_id = self._find_task_id(slot.ticket_id)
+        lines = ["**Botfarm task completed**"]
+
+        if task_id is not None:
+            from botfarm.db import get_task
+            task = get_task(self._conn, task_id)
+            if task:
+                if task["cost_usd"] is not None:
+                    lines.append(f"- **Cost:** ${task['cost_usd']:.2f}")
+                if task["started_at"] and task["completed_at"]:
+                    try:
+                        started = datetime.fromisoformat(
+                            task["started_at"].replace("Z", "+00:00"),
+                        )
+                        completed = datetime.fromisoformat(
+                            task["completed_at"].replace("Z", "+00:00"),
+                        )
+                        duration = completed - started
+                        minutes = int(duration.total_seconds() / 60)
+                        lines.append(f"- **Duration:** {minutes}m")
+                    except (ValueError, TypeError):
+                        pass
+
+        if slot.pr_url:
+            lines.append(f"- **PR:** {slot.pr_url}")
+
+        try:
+            poller.add_comment(slot.ticket_id, "\n".join(lines))
+        except Exception:
+            logger.exception(
+                "Failed to post completion comment on %s", slot.ticket_id,
+            )
 
     # ------------------------------------------------------------------
     # Limit interruption handling
@@ -885,6 +975,23 @@ class Supervisor:
             f"stage={wr.failure_stage}, resume_after={resume_after}",
         )
         self._conn.commit()
+
+        # Post limit pause comment if enabled
+        if self._config.linear.comment_on_limit_pause and slot and slot.ticket_id:
+            poller = self._pollers.get(wr.project)
+            if poller:
+                try:
+                    poller.add_comment(
+                        slot.ticket_id,
+                        f"Botfarm worker paused due to usage limit hit "
+                        f"at stage `{wr.failure_stage}`. "
+                        f"Will resume automatically after limits reset.",
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to post limit pause comment on %s",
+                        slot.ticket_id,
+                    )
 
         logger.warning(
             "Worker %s/%d paused due to limit hit at stage %s, "
@@ -1107,12 +1214,13 @@ class Supervisor:
         branch = f"{project_cfg.worktree_prefix}{slot.slot_id}"
 
         # Move issue to In Progress on Linear
+        in_progress = self._config.linear.in_progress_status
         try:
-            poller.move_issue(issue.identifier, "In Progress")
+            poller.move_issue(issue.identifier, in_progress)
         except Exception:
             logger.exception(
-                "Failed to move %s to 'In Progress' — skipping dispatch",
-                issue.identifier,
+                "Failed to move %s to '%s' — skipping dispatch",
+                issue.identifier, in_progress,
             )
             return
 

@@ -231,10 +231,12 @@ class LinearPoller:
         client: LinearClient,
         project: ProjectConfig,
         exclude_tags: list[str],
+        todo_status: str = "Todo",
     ) -> None:
         self._client = client
         self._project = project
         self._exclude_tags = set(tag.lower() for tag in exclude_tags)
+        self._todo_status = todo_status
         # TODO: Add TTL-based invalidation if the supervisor becomes long-running
         self._state_cache: dict[str, str] | None = None
 
@@ -261,7 +263,7 @@ class LinearPoller:
 
         issues = self._client.fetch_team_issues(
             team_key=self._project.linear_team,
-            status_name="Todo",
+            status_name=self._todo_status,
         )
 
         candidates = []
@@ -331,6 +333,7 @@ def create_pollers(config: BotfarmConfig) -> list[LinearPoller]:
             client=client,
             project=project,
             exclude_tags=config.linear.exclude_tags,
+            todo_status=config.linear.todo_status,
         )
         for project in config.projects
     ]

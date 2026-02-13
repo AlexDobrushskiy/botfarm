@@ -31,6 +31,17 @@ linear:
   poll_interval_seconds: 120
   exclude_tags:
     - Human
+  # Workflow status names (must match your Linear team's workflow)
+  todo_status: Todo
+  in_progress_status: In Progress
+  done_status: Done
+  in_review_status: In Review
+  failed_status: Todo
+  cancelled_status: Todo
+  # Comment posting controls
+  comment_on_failure: true
+  comment_on_completion: false
+  comment_on_limit_pause: false
 
 database:
   path: ~/.botfarm/botfarm.db
@@ -72,6 +83,17 @@ class LinearConfig:
     workspace: str = ""
     poll_interval_seconds: int = 120
     exclude_tags: list[str] = field(default_factory=lambda: ["Human"])
+    # Configurable workflow status names
+    todo_status: str = "Todo"
+    in_progress_status: str = "In Progress"
+    done_status: str = "Done"
+    in_review_status: str = "In Review"
+    failed_status: str = "Todo"
+    cancelled_status: str = "Todo"
+    # Comment posting controls
+    comment_on_failure: bool = True
+    comment_on_completion: bool = False
+    comment_on_limit_pause: bool = False
 
 
 @dataclass
@@ -267,6 +289,15 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         workspace=linear_data.get("workspace", ""),
         poll_interval_seconds=linear_data.get("poll_interval_seconds", 120),
         exclude_tags=linear_data.get("exclude_tags", ["Human"]),
+        todo_status=str(linear_data.get("todo_status", "Todo")),
+        in_progress_status=str(linear_data.get("in_progress_status", "In Progress")),
+        done_status=str(linear_data.get("done_status", "Done")),
+        in_review_status=str(linear_data.get("in_review_status", "In Review")),
+        failed_status=str(linear_data.get("failed_status", "Todo")),
+        cancelled_status=str(linear_data.get("cancelled_status", "Todo")),
+        comment_on_failure=bool(linear_data.get("comment_on_failure", True)),
+        comment_on_completion=bool(linear_data.get("comment_on_completion", False)),
+        comment_on_limit_pause=bool(linear_data.get("comment_on_limit_pause", False)),
     )
 
     db_data = data.get("database", {})
