@@ -338,16 +338,25 @@ def create_app(
             "format_duration": _format_duration,
         })
 
+    USAGE_RANGE_HOURS = {"24h": 24, "7d": 168, "30d": 720}
+
     @app.get("/usage", response_class=HTMLResponse)
     def usage_page(request: Request):
         state = _read_state()
         usage = state.get("usage", {})
+        time_range = request.query_params.get("range", "7d")
+        if time_range not in USAGE_RANGE_HOURS:
+            time_range = "7d"
+        hours = USAGE_RANGE_HOURS[time_range]
         snapshots = []
         conn = _get_db()
         if conn:
             try:
                 rows = conn.execute(
-                    "SELECT * FROM usage_snapshots ORDER BY created_at DESC LIMIT 100"
+                    "SELECT * FROM usage_snapshots "
+                    "WHERE created_at >= datetime('now', ?)"
+                    " ORDER BY created_at ASC",
+                    (f"-{hours} hours",),
                 ).fetchall()
                 snapshots = [dict(r) for r in rows]
             except sqlite3.OperationalError:
@@ -358,39 +367,126 @@ def create_app(
             "request": request,
             "usage": usage,
             "snapshots": snapshots,
+            "time_range": time_range,
         })
 
-    @app.get("/metrics", response_class=HTMLResponse)
-    def metrics_page(request: Request):
-        conn = _get_db()
+    def _compute_metrics(
+        conn: sqlite3.Connection, project: str | None = None,
+    ) -> dict:
+        """Compute all metrics, optionally filtered by project."""
         metrics: dict = {
             "total_tasks": 0,
             "completed_tasks": 0,
             "failed_tasks": 0,
             "total_cost": 0.0,
-            "total_turns": 0,
             "avg_cost": 0.0,
             "avg_turns": 0,
+            "avg_review_iterations": 0.0,
+            "avg_wall_time_seconds": 0,
+            "success_rate": 0.0,
+            "completed_today": 0,
+            "completed_week": 0,
+            "completed_month": 0,
+            "cost_today": 0.0,
+            "cost_week": 0.0,
+            "cost_month": 0.0,
+            "failure_reasons": [],
         }
+        where = " WHERE 1=1"
+        params: list[object] = []
+        if project:
+            where += " AND project = ?"
+            params.append(project)
+
+        # Core aggregates
+        row = conn.execute(
+            "SELECT COUNT(*) as total, "
+            "SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) as completed, "
+            "SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) as failed, "
+            "COALESCE(SUM(cost_usd), 0) as total_cost, "
+            "COALESCE(AVG(cost_usd), 0) as avg_cost, "
+            "COALESCE(AVG(turns), 0) as avg_turns, "
+            "COALESCE(AVG(review_iterations), 0) as avg_reviews "
+            "FROM tasks" + where,
+            params,
+        ).fetchone()
+        if row:
+            metrics["total_tasks"] = row["total"] or 0
+            metrics["completed_tasks"] = row["completed"] or 0
+            metrics["failed_tasks"] = row["failed"] or 0
+            metrics["total_cost"] = row["total_cost"]
+            metrics["avg_cost"] = row["avg_cost"]
+            metrics["avg_turns"] = round(row["avg_turns"])
+            metrics["avg_review_iterations"] = round(row["avg_reviews"], 1)
+            if metrics["total_tasks"] > 0:
+                metrics["success_rate"] = round(
+                    metrics["completed_tasks"] / metrics["total_tasks"] * 100, 1,
+                )
+
+        # Average wall time (only for tasks with both timestamps)
+        wt_row = conn.execute(
+            "SELECT AVG("
+            "  (julianday(completed_at) - julianday(started_at)) * 86400"
+            ") as avg_wt "
+            "FROM tasks" + where
+            + " AND started_at IS NOT NULL AND completed_at IS NOT NULL",
+            params,
+        ).fetchone()
+        if wt_row and wt_row["avg_wt"] is not None:
+            metrics["avg_wall_time_seconds"] = int(wt_row["avg_wt"])
+
+        # Time-bucketed counts & costs
+        for label, interval in [
+            ("today", "start of day"),
+            ("week", "-6 days", ),
+            ("month", "-29 days"),
+        ]:
+            bucket_row = conn.execute(
+                "SELECT "
+                "SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) as cnt, "
+                "COALESCE(SUM(cost_usd), 0) as cost "
+                "FROM tasks" + where
+                + " AND completed_at >= datetime('now', ?)",
+                [*params, interval],
+            ).fetchone()
+            if bucket_row:
+                metrics[f"completed_{label}"] = bucket_row["cnt"] or 0
+                metrics[f"cost_{label}"] = bucket_row["cost"]
+
+        # Most common failure reasons
+        reason_rows = conn.execute(
+            "SELECT failure_reason, COUNT(*) as cnt "
+            "FROM tasks" + where
+            + " AND failure_reason IS NOT NULL AND failure_reason != '' "
+            "GROUP BY failure_reason ORDER BY cnt DESC LIMIT 5",
+            params,
+        ).fetchall()
+        metrics["failure_reasons"] = [
+            {"reason": r["failure_reason"], "count": r["cnt"]}
+            for r in reason_rows
+        ]
+
+        return metrics
+
+    _EMPTY_METRICS: dict = {
+        "total_tasks": 0, "completed_tasks": 0, "failed_tasks": 0,
+        "total_cost": 0.0, "avg_cost": 0.0, "avg_turns": 0,
+        "avg_review_iterations": 0.0, "avg_wall_time_seconds": 0,
+        "success_rate": 0.0, "completed_today": 0, "completed_week": 0,
+        "completed_month": 0, "cost_today": 0.0, "cost_week": 0.0,
+        "cost_month": 0.0, "failure_reasons": [],
+    }
+
+    @app.get("/metrics", response_class=HTMLResponse)
+    def metrics_page(request: Request):
+        filter_project = request.query_params.get("project") or ""
+        conn = _get_db()
+        metrics = dict(_EMPTY_METRICS)
+        projects: list[str] = []
         if conn:
             try:
-                row = conn.execute(
-                    "SELECT COUNT(*) as total, "
-                    "SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) as completed, "
-                    "SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) as failed, "
-                    "SUM(cost_usd) as total_cost, "
-                    "SUM(turns) as total_turns "
-                    "FROM tasks"
-                ).fetchone()
-                if row:
-                    metrics["total_tasks"] = row["total"] or 0
-                    metrics["completed_tasks"] = row["completed"] or 0
-                    metrics["failed_tasks"] = row["failed"] or 0
-                    metrics["total_cost"] = row["total_cost"] or 0.0
-                    metrics["total_turns"] = row["total_turns"] or 0
-                    if metrics["total_tasks"] > 0:
-                        metrics["avg_cost"] = metrics["total_cost"] / metrics["total_tasks"]
-                        metrics["avg_turns"] = metrics["total_turns"] // metrics["total_tasks"]
+                metrics = _compute_metrics(conn, project=filter_project or None)
+                projects = get_distinct_projects(conn)
             except sqlite3.OperationalError:
                 pass
             finally:
@@ -398,6 +494,9 @@ def create_app(
         return templates.TemplateResponse("metrics.html", {
             "request": request,
             "metrics": metrics,
+            "projects": projects,
+            "filter_project": filter_project,
+            "format_duration": _format_duration,
         })
 
     return app

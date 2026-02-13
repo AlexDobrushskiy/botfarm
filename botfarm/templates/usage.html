@@ -8,53 +8,67 @@
 {% include "partials/usage.html" %}
 
 <h2>History</h2>
-{% if snapshots %}
-<figure>
-<table>
-    <thead>
-        <tr>
-            <th>Timestamp</th>
-            <th>5-hour (%)</th>
-            <th>7-day (%)</th>
-            <th>Resets At</th>
-        </tr>
-    </thead>
-    <tbody>
-        {% for s in snapshots %}
-        <tr>
-            <td>{{ s.created_at[:19] if s.created_at else "-" }}</td>
-            <td>{{ "%.1f"|format(s.utilization_5h * 100) if s.utilization_5h is not none else "-" }}</td>
-            <td>{{ "%.1f"|format(s.utilization_7d * 100) if s.utilization_7d is not none else "-" }}</td>
-            <td>{{ s.resets_at[:19] if s.resets_at else "-" }}</td>
-        </tr>
-        {% endfor %}
-    </tbody>
-</table>
-</figure>
 
+<fieldset role="group" style="max-width:360px; margin-bottom:1rem;">
+    <a href="/usage?range=24h" role="button" {% if time_range == "24h" %}aria-current="true"{% else %}class="outline"{% endif %}>Last 24h</a>
+    <a href="/usage?range=7d" role="button" {% if time_range == "7d" %}aria-current="true"{% else %}class="outline"{% endif %}>Last 7d</a>
+    <a href="/usage?range=30d" role="button" {% if time_range == "30d" %}aria-current="true"{% else %}class="outline"{% endif %}>Last 30d</a>
+</fieldset>
+
+{% if snapshots %}
 <canvas id="usage-chart" style="max-height:400px"></canvas>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <script>
     const snapshots = {{ snapshots | tojson }};
-    const labels = snapshots.map(s => s.created_at ? s.created_at.slice(5, 16) : "").reverse();
-    const data5h = snapshots.map(s => s.utilization_5h != null ? (s.utilization_5h * 100).toFixed(1) : null).reverse();
-    const data7d = snapshots.map(s => s.utilization_7d != null ? (s.utilization_7d * 100).toFixed(1) : null).reverse();
+    const labels = snapshots.map(s => s.created_at ? s.created_at.slice(5, 16) : "");
+    const data5h = snapshots.map(s => s.utilization_5h != null ? (s.utilization_5h * 100).toFixed(1) : null);
+    const data7d = snapshots.map(s => s.utilization_7d != null ? (s.utilization_7d * 100).toFixed(1) : null);
     new Chart(document.getElementById("usage-chart"), {
         type: "line",
         data: {
             labels: labels,
             datasets: [
-                { label: "5-hour %", data: data5h, borderColor: "#3b82f6", tension: 0.3 },
-                { label: "7-day %", data: data7d, borderColor: "#f59e0b", tension: 0.3 },
+                { label: "5-hour %", data: data5h, borderColor: "#3b82f6", backgroundColor: "rgba(59,130,246,0.1)", fill: true, tension: 0.3, pointRadius: 2 },
+                { label: "7-day %", data: data7d, borderColor: "#f59e0b", backgroundColor: "rgba(245,158,11,0.1)", fill: true, tension: 0.3, pointRadius: 2 },
             ]
         },
         options: {
             responsive: true,
+            interaction: { intersect: false, mode: "index" },
             scales: { y: { min: 0, max: 100, title: { display: true, text: "Utilization %" } } },
+            plugins: {
+                tooltip: { callbacks: { label: ctx => ctx.dataset.label + ": " + ctx.parsed.y + "%" } },
+            },
         }
     });
 </script>
+
+<details>
+    <summary>Raw snapshot data ({{ snapshots | length }} records)</summary>
+    <figure>
+    <table>
+        <thead>
+            <tr>
+                <th>Timestamp</th>
+                <th>5-hour (%)</th>
+                <th>7-day (%)</th>
+                <th>Resets At</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for s in snapshots | reverse %}
+            <tr>
+                <td>{{ s.created_at[:19] if s.created_at else "-" }}</td>
+                <td>{{ "%.1f"|format(s.utilization_5h * 100) if s.utilization_5h is not none else "-" }}</td>
+                <td>{{ "%.1f"|format(s.utilization_7d * 100) if s.utilization_7d is not none else "-" }}</td>
+                <td>{{ s.resets_at[:19] if s.resets_at else "-" }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    </figure>
+</details>
 {% else %}
-<p>No usage snapshots recorded yet.</p>
+<p>No usage snapshots recorded for this time range.</p>
 {% endif %}
 {% endblock %}
