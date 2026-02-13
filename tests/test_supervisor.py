@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import logging
 import signal
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch, call
 
 import pytest
 
 from botfarm.config import (
+    AgentsConfig,
     BotfarmConfig,
     DatabaseConfig,
     LinearConfig,
@@ -1243,4 +1245,256 @@ class TestMultiProject:
         sm = sup.slot_manager
         assert sm.get_slot("alpha", 1).status == "busy"
         assert sm.get_slot("beta", 2).status == "busy"
+        sup._conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Timeout enforcement
+# ---------------------------------------------------------------------------
+
+
+class TestCheckTimeouts:
+    def _make_busy_slot(self, supervisor, stage_started_at, stage="implement"):
+        """Helper: assign a ticket, set stage and stage_started_at."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.update_stage("test-project", 1, stage=stage)
+        # Override stage_started_at to a controlled value
+        slot = sm.get_slot("test-project", 1)
+        slot.stage_started_at = stage_started_at
+        slot.pid = 99999  # fake PID
+        return slot
+
+    def test_no_timeout_when_within_limit(self, supervisor):
+        """Worker within time limit is not killed."""
+        now = datetime.now(timezone.utc)
+        # Started 10 minutes ago, limit is 120 minutes
+        started = (now - timedelta(minutes=10)).isoformat()
+        self._make_busy_slot(supervisor, stage_started_at=started)
+
+        with patch("botfarm.supervisor.os.kill") as mock_kill:
+            supervisor._check_timeouts()
+            mock_kill.assert_not_called()
+
+        assert supervisor.slot_manager.get_slot("test-project", 1).status == "busy"
+
+    def test_timeout_kills_worker_and_marks_failed(self, supervisor):
+        """Worker that exceeds timeout is killed and slot marked failed."""
+        now = datetime.now(timezone.utc)
+        # Started 130 minutes ago, limit is 120 minutes for implement
+        started = (now - timedelta(minutes=130)).isoformat()
+        self._make_busy_slot(supervisor, stage_started_at=started)
+
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        with (
+            patch("botfarm.supervisor.os.kill") as mock_kill,
+            patch("botfarm.supervisor.time.sleep"),
+        ):
+            # After SIGTERM, process is dead (os.kill(pid, 0) raises)
+            mock_kill.side_effect = [
+                None,           # SIGTERM succeeds
+                ProcessLookupError,  # pid check — process is gone
+            ]
+
+            supervisor._check_timeouts()
+
+        assert supervisor.slot_manager.get_slot("test-project", 1).status == "failed"
+
+    def test_timeout_sends_sigterm_then_sigkill(self, supervisor):
+        """When SIGTERM doesn't work, SIGKILL is sent after grace period."""
+        now = datetime.now(timezone.utc)
+        started = (now - timedelta(minutes=130)).isoformat()
+        self._make_busy_slot(supervisor, stage_started_at=started)
+
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        with (
+            patch("botfarm.supervisor.os.kill") as mock_kill,
+            patch("botfarm.supervisor.time.sleep") as mock_sleep,
+        ):
+            # SIGTERM succeeds, process still alive, SIGKILL succeeds
+            mock_kill.side_effect = [
+                None,  # SIGTERM
+                None,  # os.kill(pid, 0) — still alive
+                None,  # SIGKILL
+            ]
+
+            supervisor._check_timeouts()
+
+        # Verify SIGTERM, check, SIGKILL sequence
+        calls = mock_kill.call_args_list
+        assert calls[0] == call(99999, signal.SIGTERM)
+        assert calls[1] == call(99999, 0)  # alive check
+        assert calls[2] == call(99999, signal.SIGKILL)
+        # Grace period sleep
+        mock_sleep.assert_called_once_with(
+            supervisor._config.agents.timeout_grace_seconds,
+        )
+
+    def test_timeout_records_event(self, supervisor):
+        """Timeout records a task_events(timeout) entry."""
+        now = datetime.now(timezone.utc)
+        started = (now - timedelta(minutes=130)).isoformat()
+        self._make_busy_slot(supervisor, stage_started_at=started)
+
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        with (
+            patch("botfarm.supervisor.os.kill", side_effect=ProcessLookupError),
+            patch("botfarm.supervisor.time.sleep"),
+        ):
+            supervisor._check_timeouts()
+
+        events = get_events(supervisor._conn, event_type="timeout")
+        assert len(events) == 1
+        assert "stage=implement" in events[0]["detail"]
+        assert "elapsed=" in events[0]["detail"]
+        assert "limit=" in events[0]["detail"]
+
+    def test_timeout_updates_task_status_to_failed(self, supervisor):
+        """Timeout marks the task as failed with a descriptive reason."""
+        now = datetime.now(timezone.utc)
+        started = (now - timedelta(minutes=130)).isoformat()
+        self._make_busy_slot(supervisor, stage_started_at=started)
+
+        task_id = insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        with (
+            patch("botfarm.supervisor.os.kill", side_effect=ProcessLookupError),
+            patch("botfarm.supervisor.time.sleep"),
+        ):
+            supervisor._check_timeouts()
+
+        task = get_task(supervisor._conn, task_id)
+        assert task["status"] == "failed"
+        assert "timeout in stage implement" in task["failure_reason"]
+
+    def test_timeout_uses_stage_specific_limit(self, supervisor):
+        """Review stage uses its own timeout (30 min default)."""
+        now = datetime.now(timezone.utc)
+        # 35 minutes — over review limit (30) but under implement limit (120)
+        started = (now - timedelta(minutes=35)).isoformat()
+        self._make_busy_slot(supervisor, stage_started_at=started, stage="review")
+
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        with (
+            patch("botfarm.supervisor.os.kill", side_effect=ProcessLookupError),
+            patch("botfarm.supervisor.time.sleep"),
+        ):
+            supervisor._check_timeouts()
+
+        assert supervisor.slot_manager.get_slot("test-project", 1).status == "failed"
+
+    def test_no_timeout_for_stage_without_config(self, supervisor):
+        """Stages not in timeout_minutes config (e.g. pr_checks, merge) are skipped."""
+        now = datetime.now(timezone.utc)
+        started = (now - timedelta(hours=10)).isoformat()
+        self._make_busy_slot(supervisor, stage_started_at=started, stage="pr_checks")
+
+        with patch("botfarm.supervisor.os.kill") as mock_kill:
+            supervisor._check_timeouts()
+            mock_kill.assert_not_called()
+
+        assert supervisor.slot_manager.get_slot("test-project", 1).status == "busy"
+
+    def test_no_timeout_without_stage_started_at(self, supervisor):
+        """If stage_started_at is not set, skip timeout check."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        slot = sm.get_slot("test-project", 1)
+        slot.stage = "implement"
+        slot.stage_started_at = None
+        slot.pid = 99999
+
+        with patch("botfarm.supervisor.os.kill") as mock_kill:
+            supervisor._check_timeouts()
+            mock_kill.assert_not_called()
+
+    def test_tick_calls_check_timeouts(self, supervisor):
+        """_check_timeouts is called as part of _tick."""
+        with (
+            patch.object(supervisor, "_reconcile_workers"),
+            patch.object(supervisor, "_check_timeouts") as mock_timeouts,
+            patch.object(supervisor, "_handle_finished_slots"),
+            patch.object(supervisor, "_handle_paused_slots"),
+            patch.object(supervisor, "_poll_usage"),
+            patch.object(supervisor, "_poll_and_dispatch"),
+        ):
+            supervisor._tick()
+            mock_timeouts.assert_called_once()
+
+    def test_timeout_with_custom_config(self, tmp_path):
+        """Custom timeout_minutes values are respected."""
+        from datetime import timedelta
+
+        config = _make_config(tmp_path)
+        config.agents.timeout_minutes = {"implement": 10, "review": 5, "fix": 8}
+        (tmp_path / "repo").mkdir()
+
+        mock_poller = MagicMock()
+        mock_poller.project_name = "test-project"
+        mock_poller.poll.return_value = []
+
+        with patch("botfarm.supervisor.create_pollers", return_value=[mock_poller]):
+            sup = Supervisor(config, log_dir=tmp_path / "logs")
+
+        sm = sup.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.update_stage("test-project", 1, stage="implement")
+        slot = sm.get_slot("test-project", 1)
+        now = datetime.now(timezone.utc)
+        # 15 minutes — over custom 10-minute limit
+        slot.stage_started_at = (now - timedelta(minutes=15)).isoformat()
+        slot.pid = 99999
+
+        insert_task(
+            sup._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        sup._conn.commit()
+
+        with (
+            patch("botfarm.supervisor.os.kill", side_effect=ProcessLookupError),
+            patch("botfarm.supervisor.time.sleep"),
+        ):
+            sup._check_timeouts()
+
+        assert sm.get_slot("test-project", 1).status == "failed"
         sup._conn.close()

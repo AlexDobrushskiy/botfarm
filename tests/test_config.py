@@ -444,6 +444,63 @@ def test_load_config_agents_max_ci_retries_negative(tmp_path):
         load_config(config_path)
 
 
+# --- Timeout config ---
+
+
+def test_load_config_timeout_minutes_defaults(tmp_path):
+    config_path = _write_config(tmp_path, MINIMAL_CONFIG)
+    config = load_config(config_path)
+    assert config.agents.timeout_minutes == {
+        "implement": 120,
+        "review": 30,
+        "fix": 60,
+    }
+    assert config.agents.timeout_grace_seconds == 10
+
+
+def test_load_config_timeout_minutes_custom(tmp_path):
+    data = {
+        **MINIMAL_CONFIG,
+        "agents": {"timeout_minutes": {"implement": 60, "review": 15}},
+    }
+    config_path = _write_config(tmp_path, data)
+    config = load_config(config_path)
+    assert config.agents.timeout_minutes["implement"] == 60
+    assert config.agents.timeout_minutes["review"] == 15
+    # fix keeps its default
+    assert config.agents.timeout_minutes["fix"] == 60
+
+
+def test_load_config_timeout_minutes_zero_rejected(tmp_path):
+    data = {
+        **MINIMAL_CONFIG,
+        "agents": {"timeout_minutes": {"implement": 0}},
+    }
+    config_path = _write_config(tmp_path, data)
+    with pytest.raises(ConfigError, match="timeout_minutes.implement must be at least 1"):
+        load_config(config_path)
+
+
+def test_load_config_timeout_grace_seconds_custom(tmp_path):
+    data = {
+        **MINIMAL_CONFIG,
+        "agents": {"timeout_grace_seconds": 30},
+    }
+    config_path = _write_config(tmp_path, data)
+    config = load_config(config_path)
+    assert config.agents.timeout_grace_seconds == 30
+
+
+def test_load_config_timeout_grace_seconds_negative_rejected(tmp_path):
+    data = {
+        **MINIMAL_CONFIG,
+        "agents": {"timeout_grace_seconds": -1},
+    }
+    config_path = _write_config(tmp_path, data)
+    with pytest.raises(ConfigError, match="timeout_grace_seconds must be at least 0"):
+        load_config(config_path)
+
+
 # --- CLI init command ---
 
 

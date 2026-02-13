@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import multiprocessing
+import os
 import queue as queue_mod
 import signal
 import sqlite3
@@ -275,6 +276,7 @@ class Supervisor:
         """One iteration of the supervisor loop."""
         for phase in (
             self._reconcile_workers,
+            self._check_timeouts,
             self._handle_finished_slots,
             self._handle_paused_slots,
             self._poll_usage,
@@ -335,6 +337,103 @@ class Supervisor:
             )
         if messages:
             self._conn.commit()
+
+    # ------------------------------------------------------------------
+    # Timeout enforcement
+    # ------------------------------------------------------------------
+
+    def _check_timeouts(self) -> None:
+        """Kill worker processes that have exceeded their stage timeout."""
+        timeout_cfg = self._config.agents.timeout_minutes
+        grace = self._config.agents.timeout_grace_seconds
+        now = datetime.now(timezone.utc)
+
+        for slot in self._slot_manager.busy_slots():
+            if slot.pid is None or slot.stage is None:
+                continue
+            if not slot.stage_started_at:
+                continue
+
+            limit_minutes = timeout_cfg.get(slot.stage)
+            if limit_minutes is None:
+                continue
+
+            try:
+                stage_start = datetime.fromisoformat(
+                    slot.stage_started_at.replace("Z", "+00:00"),
+                )
+            except (ValueError, TypeError):
+                continue
+
+            elapsed = (now - stage_start).total_seconds()
+            limit_seconds = limit_minutes * 60
+            if elapsed < limit_seconds:
+                continue
+
+            self._timeout_worker(slot, elapsed=elapsed, limit=limit_seconds, grace=grace)
+
+    def _timeout_worker(
+        self,
+        slot,
+        *,
+        elapsed: float,
+        limit: float,
+        grace: int,
+    ) -> None:
+        """Terminate a timed-out worker: SIGTERM, grace period, then SIGKILL."""
+        pid = slot.pid
+        stage = slot.stage
+        project = slot.project
+
+        logger.warning(
+            "Worker PID %d for %s/%d timed out in stage '%s' "
+            "(%.0fs elapsed, %ds limit)",
+            pid, project, slot.slot_id, stage, elapsed, int(limit),
+        )
+
+        # Send SIGTERM
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except (OSError, ProcessLookupError):
+            pass  # already dead
+
+        # Wait grace period then SIGKILL if still alive
+        time.sleep(grace)
+        try:
+            os.kill(pid, 0)  # check if still alive
+            os.kill(pid, signal.SIGKILL)
+            logger.warning(
+                "Worker PID %d did not exit after SIGTERM, sent SIGKILL", pid,
+            )
+        except (OSError, ProcessLookupError):
+            pass  # exited during grace period
+
+        # Clean up the process from our tracking
+        key = (project, slot.slot_id)
+        proc = self._workers.pop(key, None)
+        if proc is not None:
+            proc.join(timeout=2)
+
+        # Mark slot as failed
+        reason = f"timeout in stage {stage}"
+        self._slot_manager.mark_failed(project, slot.slot_id, reason=reason)
+
+        # Log event and update task
+        task_id = self._find_task_id(slot.ticket_id)
+        insert_event(
+            self._conn,
+            task_id=task_id,
+            event_type="timeout",
+            detail=f"stage={stage}, elapsed={elapsed:.0f}s, limit={int(limit)}s",
+        )
+        if task_id is not None:
+            update_task(
+                self._conn,
+                task_id,
+                status="failed",
+                failure_reason=reason,
+            )
+        self._conn.commit()
 
     # ------------------------------------------------------------------
     # Handle finished slots

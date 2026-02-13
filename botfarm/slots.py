@@ -38,6 +38,7 @@ class SlotState:
     stage_iteration: int = 0
     current_session_id: str | None = None
     started_at: str | None = None
+    stage_started_at: str | None = None
     pid: int | None = None
     interrupted_by_limit: bool = False
     resume_after: str | None = None
@@ -182,6 +183,7 @@ class SlotManager:
         slot.stage = stage
         slot.stage_iteration = iteration
         slot.current_session_id = session_id
+        slot.stage_started_at = _now_iso()
         self._save()
 
     def complete_stage(self, project: str, slot_id: int, stage: str) -> None:
@@ -239,6 +241,7 @@ class SlotManager:
         slot.stage_iteration = 0
         slot.current_session_id = None
         slot.started_at = None
+        slot.stage_started_at = None
         slot.pid = None
         slot.interrupted_by_limit = False
         slot.resume_after = None
