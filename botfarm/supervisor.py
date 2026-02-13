@@ -65,6 +65,7 @@ def _worker_entry(
     result_queue: multiprocessing.Queue,
     max_turns: dict[str, int] | None,
     max_review_iterations: int = 3,
+    max_ci_retries: int = 2,
     resume_from_stage: str | None = None,
     resume_session_id: str | None = None,
 ) -> None:
@@ -90,6 +91,7 @@ def _worker_entry(
             conn=conn,
             max_turns=max_turns,
             max_review_iterations=max_review_iterations,
+            max_ci_retries=max_ci_retries,
             resume_from_stage=resume_from_stage,
             resume_session_id=resume_session_id,
         )
@@ -558,6 +560,7 @@ class Supervisor:
                 "result_queue": self._result_queue,
                 "max_turns": None,
                 "max_review_iterations": self._config.agents.max_review_iterations,
+                "max_ci_retries": self._config.agents.max_ci_retries,
                 "resume_from_stage": slot.stage,
                 "resume_session_id": slot.current_session_id,
             },
@@ -712,6 +715,7 @@ class Supervisor:
                 "result_queue": self._result_queue,
                 "max_turns": None,
                 "max_review_iterations": self._config.agents.max_review_iterations,
+                "max_ci_retries": self._config.agents.max_ci_retries,
             },
             daemon=False,  # Not daemon — survives supervisor exit
         )

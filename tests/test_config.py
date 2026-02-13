@@ -408,6 +408,42 @@ def test_load_config_agents_invalid_zero(tmp_path):
         load_config(config_path)
 
 
+def test_load_config_agents_max_ci_retries_default(tmp_path):
+    config_path = _write_config(tmp_path, MINIMAL_CONFIG)
+    config = load_config(config_path)
+    assert config.agents.max_ci_retries == 2
+
+
+def test_load_config_agents_max_ci_retries_custom(tmp_path):
+    data = {
+        **MINIMAL_CONFIG,
+        "agents": {"max_ci_retries": 5},
+    }
+    config_path = _write_config(tmp_path, data)
+    config = load_config(config_path)
+    assert config.agents.max_ci_retries == 5
+
+
+def test_load_config_agents_max_ci_retries_zero_allowed(tmp_path):
+    data = {
+        **MINIMAL_CONFIG,
+        "agents": {"max_ci_retries": 0},
+    }
+    config_path = _write_config(tmp_path, data)
+    config = load_config(config_path)
+    assert config.agents.max_ci_retries == 0
+
+
+def test_load_config_agents_max_ci_retries_negative(tmp_path):
+    data = {
+        **MINIMAL_CONFIG,
+        "agents": {"max_ci_retries": -1},
+    }
+    config_path = _write_config(tmp_path, data)
+    with pytest.raises(ConfigError, match="max_ci_retries must be at least 0"):
+        load_config(config_path)
+
+
 # --- CLI init command ---
 
 
