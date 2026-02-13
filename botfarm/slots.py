@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import tempfile
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -270,6 +271,43 @@ class SlotManager:
         """Persist current state to disk (public API for explicit saves)."""
         self._save()
 
+    def refresh_stages_from_disk(self) -> None:
+        """Read the state file and merge worker-written stage fields.
+
+        Worker subprocesses update stage fields directly in the state
+        file via ``update_slot_stage``.  The supervisor should call
+        this periodically (e.g. at the start of each tick) so that
+        in-memory state reflects worker progress before any writes.
+        Only busy slots are refreshed.
+        """
+        if not self._state_path.exists():
+            return
+
+        try:
+            raw = self._state_path.read_text()
+            data = json.loads(raw)
+        except (json.JSONDecodeError, OSError):
+            return
+
+        slot_list = data.get("slots", []) if isinstance(data, dict) else data
+        disk_map: dict[tuple[str, int], dict] = {}
+        for entry in slot_list:
+            if isinstance(entry, dict):
+                key = (entry.get("project"), entry.get("slot_id"))
+                disk_map[key] = entry
+
+        stage_fields = ("stage", "stage_iteration", "stage_started_at", "current_session_id")
+        for key, slot in self._slots.items():
+            if slot.status != "busy":
+                continue
+            disk_entry = disk_map.get(key)
+            if not disk_entry:
+                continue
+            for field in stage_fields:
+                disk_val = disk_entry.get(field)
+                if disk_val is not None:
+                    setattr(slot, field, disk_val)
+
     def _save(self) -> None:
         """Write state.json atomically (write-then-rename)."""
         self._state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -405,3 +443,64 @@ class SlotError(Exception):
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def update_slot_stage(
+    state_path: str | Path,
+    project: str,
+    slot_id: int,
+    *,
+    stage: str,
+    iteration: int = 1,
+    session_id: str | None = None,
+) -> None:
+    """Update the stage field of a specific slot directly in the state file.
+
+    This is designed for use by worker subprocesses that don't have access
+    to the full SlotManager. It reads the state file, updates only the
+    matching slot's stage fields, and writes it back atomically.
+    """
+    path = Path(state_path)
+    if not path.exists():
+        logger.warning("State file %s does not exist — skipping stage update", path)
+        return
+
+    try:
+        raw = path.read_text()
+        data = json.loads(raw)
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("Failed to read state file for stage update: %s", exc)
+        return
+
+    slot_list = data.get("slots", []) if isinstance(data, dict) else data
+    updated = False
+    for entry in slot_list:
+        if (
+            isinstance(entry, dict)
+            and entry.get("project") == project
+            and entry.get("slot_id") == slot_id
+        ):
+            entry["stage"] = stage
+            entry["stage_iteration"] = iteration
+            entry["stage_started_at"] = _now_iso()
+            if session_id is not None:
+                entry["current_session_id"] = session_id
+            updated = True
+            break
+
+    if not updated:
+        logger.warning(
+            "Slot (%s, %d) not found in state file — skipping stage update",
+            project, slot_id,
+        )
+        return
+
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, suffix=".tmp.worker")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=2)
+            f.write("\n")
+        Path(tmp_name).replace(path)
+    except BaseException:
+        Path(tmp_name).unlink(missing_ok=True)
+        raise

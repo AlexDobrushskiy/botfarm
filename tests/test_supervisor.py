@@ -706,6 +706,7 @@ class TestWorkerEntry:
             slot_id=1,
             cwd=str(tmp_path),
             db_path=db_path,
+            state_path=str(tmp_path / "state.json"),
             result_queue=q,
             max_turns=None,
         )
@@ -748,6 +749,7 @@ class TestWorkerEntry:
             slot_id=1,
             cwd=str(tmp_path),
             db_path=db_path,
+            state_path=str(tmp_path / "state.json"),
             result_queue=q,
             max_turns=None,
         )
@@ -785,6 +787,7 @@ class TestWorkerEntry:
             slot_id=1,
             cwd=str(tmp_path),
             db_path=db_path,
+            state_path=str(tmp_path / "state.json"),
             result_queue=q,
             max_turns=None,
         )
