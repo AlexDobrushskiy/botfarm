@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import sqlite3
 import subprocess
 import time
 from dataclasses import dataclass
@@ -372,10 +373,14 @@ def run_pipeline(
 
         # ----- Review iteration loop -----
         if stage == "review":
-            error = _run_review_fix_loop(ctx, pr_url=pr_url, max_iterations=max_review_iterations)
-            if error:
+            success = _run_review_fix_loop(ctx, pr_url=pr_url, max_iterations=max_review_iterations)
+            if not success:
                 return pipeline
-            # review and fix are handled; skip fix in the outer loop
+            # Ensure both review and fix appear in stages_completed.
+            # "review" is already added by run_and_record, but "fix" may
+            # not be if the reviewer approved on the first iteration
+            # (fix never ran).  We mark it complete so the outer loop's
+            # skip-fix guard works and stages_completed matches STAGES.
             if "review" not in pipeline.stages_completed:
                 pipeline.stages_completed.append("review")
             if "fix" not in pipeline.stages_completed:
@@ -387,13 +392,27 @@ def run_pipeline(
             continue
 
         if stage == "fix":
-            # Resuming from fix — run fix then continue with remaining
-            # review iterations (iteration 1 fix already completed).
+            # Resuming from fix — run the initial fix, then enter the
+            # review iteration loop with remaining iterations so fixes
+            # get verified.
             result = ctx.run_and_record("fix", pr_url=pr_url)
             if result is None:
                 return pipeline
             update_task(conn, task_id, review_iterations=1)
             conn.commit()
+            # Verify fixes via remaining review iterations (iteration 1
+            # fix already completed; start review loop from iteration 2).
+            if max_review_iterations > 1:
+                success = _run_review_fix_loop(
+                    ctx, pr_url=pr_url, max_iterations=max_review_iterations,
+                    start_iteration=2,
+                )
+                if not success:
+                    return pipeline
+            if "review" not in pipeline.stages_completed:
+                pipeline.stages_completed.append("review")
+            if "fix" not in pipeline.stages_completed:
+                pipeline.stages_completed.append("fix")
             continue
 
         # ----- Normal (non-review/fix) stages -----
@@ -442,7 +461,7 @@ class _PipelineContext:
     ticket_id: str
     task_id: int
     cwd: str | Path
-    conn: object  # sqlite3.Connection
+    conn: sqlite3.Connection
     turns_cfg: dict[str, int]
     pr_checks_timeout: int
     pipeline: PipelineResult
@@ -524,9 +543,15 @@ def _run_review_fix_loop(
     *,
     pr_url: str | None,
     max_iterations: int,
+    start_iteration: int = 1,
 ) -> bool:
-    """Run the review→fix loop, returning True if an error occurred."""
-    for iteration in range(1, max_iterations + 1):
+    """Run the review→fix loop.
+
+    Returns ``True`` on success (review approved or max iterations
+    reached — pipeline should proceed to pr_checks) and ``False`` if a
+    stage failed (failure already recorded by ``run_and_record``).
+    """
+    for iteration in range(start_iteration, max_iterations + 1):
         insert_event(
             ctx.conn,
             task_id=ctx.task_id,
@@ -538,7 +563,7 @@ def _run_review_fix_loop(
         # --- REVIEW ---
         review_result = ctx.run_and_record("review", pr_url=pr_url, iteration=iteration)
         if review_result is None:
-            return True  # failure recorded by run_and_record
+            return False  # failure recorded by run_and_record
 
         if review_result.review_approved:
             insert_event(
@@ -554,12 +579,12 @@ def _run_review_fix_loop(
                 "Review approved on iteration %d for %s — skipping fix",
                 iteration, ctx.ticket_id,
             )
-            return False  # success — proceed to pr_checks
+            return True  # success — proceed to pr_checks
 
         # --- FIX ---
         fix_result = ctx.run_and_record("fix", pr_url=pr_url, iteration=iteration)
         if fix_result is None:
-            return True  # failure recorded by run_and_record
+            return False  # failure recorded by run_and_record
 
         update_task(ctx.conn, ctx.task_id, review_iterations=iteration)
         ctx.conn.commit()
@@ -576,7 +601,7 @@ def _run_review_fix_loop(
         "Max review iterations (%d) reached for %s — proceeding to pr_checks",
         max_iterations, ctx.ticket_id,
     )
-    return False
+    return True
 
 
 def _execute_stage(
@@ -662,11 +687,15 @@ def _extract_pr_url(text: str) -> str | None:
 def _parse_review_approved(text: str) -> bool:
     """Determine whether a review result indicates approval or changes requested.
 
+    Only inspects the last 500 characters of *text* to avoid false positives
+    from quoted PR content earlier in the output.  The reviewer prompt
+    instructs Claude to state its verdict at the end of the response.
+
     Returns ``True`` if the review text signals approval (e.g. ``--approve``
     or "APPROVE"), ``False`` if changes are requested, and ``False`` as a
     conservative default when the signal is ambiguous.
     """
-    lower = text.lower()
+    lower = text[-500:].lower()
     # gh pr review --approve is the strongest signal
     if "--approve" in lower:
         return True

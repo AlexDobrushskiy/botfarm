@@ -680,6 +680,32 @@ class TestRunPipelineResume:
 
     @patch("botfarm.worker._recover_pr_url")
     @patch("botfarm.worker._execute_stage")
+    def test_resume_from_fix_enters_review_loop(
+        self, mock_exec, mock_recover, conn, task_id, tmp_path,
+    ):
+        """Resuming from 'fix' with max_review_iterations>1 re-reviews after fix."""
+        mock_recover.return_value = PR_URL
+        mock_exec.side_effect = [
+            _mock_stage_result("fix"),           # resumed fix
+            _mock_stage_result("review", review_approved=True),  # verify fix
+            _mock_stage_result("pr_checks"),
+            _mock_stage_result("merge"),
+        ]
+        result = run_pipeline(
+            ticket_id="SMA-99",
+            task_id=task_id,
+            cwd=tmp_path,
+            conn=conn,
+            resume_from_stage="fix",
+            max_review_iterations=3,
+        )
+        assert result.success is True
+        assert mock_exec.call_count == 4
+        called_stages = [c[0][0] for c in mock_exec.call_args_list]
+        assert called_stages == ["fix", "review", "pr_checks", "merge"]
+
+    @patch("botfarm.worker._recover_pr_url")
+    @patch("botfarm.worker._execute_stage")
     def test_resume_failure_at_resumed_stage(
         self, mock_exec, mock_recover, conn, task_id, tmp_path,
     ):
@@ -839,6 +865,16 @@ class TestParseReviewApproved:
     def test_changes_pattern_takes_priority(self):
         # If both approve and changes patterns are present, changes wins
         assert _parse_review_approved("LGTM but request changes on the tests") is False
+
+    def test_ignores_lgtm_early_in_output(self):
+        # "LGTM" in quoted PR content early in the output should not cause false positive
+        early_lgtm = "The PR description says LGTM. " + ("x" * 600) + "I request changes."
+        assert _parse_review_approved(early_lgtm) is False
+
+    def test_detects_approval_in_tail(self):
+        # Approval signal in the last 500 chars is detected
+        long_prefix = "Reviewing code... " + ("x" * 600)
+        assert _parse_review_approved(long_prefix + " I ran gh pr review --approve") is True
 
 
 # ---------------------------------------------------------------------------
