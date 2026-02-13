@@ -242,6 +242,11 @@ class Supervisor:
             normal tick loop — no special startup action needed.
         Finally, reconcile SQLite task records with state.json.
         """
+        # NOTE: SlotManager.reconcile() (called every tick via _reconcile_workers)
+        # also handles dead PIDs for busy/paused slots. After this startup
+        # recovery runs, the first tick's reconcile() will see slots already
+        # marked failed/completed and skip them. For reattached workers whose
+        # PID dies between here and the first tick, reconcile() will handle it.
         recovered_count = 0
         for slot in self._slot_manager.all_slots():
             if slot.status == "busy" and slot.pid is not None:
@@ -268,7 +273,9 @@ class Supervisor:
                 event_type="startup_recovery",
                 detail=f"slots_processed={recovered_count}",
             )
-            self._conn.commit()
+
+        # Single commit for all recovery operations (sub-methods do not commit individually)
+        self._conn.commit()
 
     def _reattach_worker(self, slot: SlotState) -> None:
         """Re-attach monitoring for a still-alive worker process.
@@ -311,7 +318,7 @@ class Supervisor:
                 update_task(self._conn, task_id, status="completed")
             insert_event(
                 self._conn,
-                task_id=self._find_task_id(ticket_id),
+                task_id=task_id,
                 event_type="recovery_completed",
                 detail=f"project={project}, slot={slot_id}, "
                 f"pid={old_pid}, reason=pr_merged",
@@ -327,10 +334,33 @@ class Supervisor:
                 update_task(self._conn, task_id, status="completed")
             insert_event(
                 self._conn,
-                task_id=self._find_task_id(ticket_id),
+                task_id=task_id,
                 event_type="recovery_completed",
                 detail=f"project={project}, slot={slot_id}, "
                 f"pid={old_pid}, reason=pr_open",
+            )
+        elif pr_status == "closed":
+            logger.warning(
+                "Dead worker PID %d for %s/%d: PR was closed without merging — marking failed",
+                old_pid, project, slot_id,
+            )
+            self._slot_manager.mark_failed(
+                project, slot_id,
+                reason=f"worker PID {old_pid} died (PR closed without merging)",
+            )
+            task_id = self._find_task_id(ticket_id)
+            if task_id is not None:
+                update_task(
+                    self._conn, task_id,
+                    status="failed",
+                    failure_reason=f"worker PID {old_pid} died (PR closed without merging)",
+                )
+            insert_event(
+                self._conn,
+                task_id=task_id,
+                event_type="recovery_failed",
+                detail=f"project={project}, slot={slot_id}, "
+                f"pid={old_pid}, reason=pr_closed",
             )
         else:
             logger.warning(
@@ -350,13 +380,11 @@ class Supervisor:
                 )
             insert_event(
                 self._conn,
-                task_id=self._find_task_id(ticket_id),
+                task_id=task_id,
                 event_type="recovery_failed",
                 detail=f"project={project}, slot={slot_id}, "
                 f"pid={old_pid}, reason=no_pr",
             )
-
-        self._conn.commit()
 
     def _recover_timed_out_slot(self, slot: SlotState) -> None:
         """Handle a slot that had a SIGTERM sent before the supervisor crashed."""
@@ -364,8 +392,19 @@ class Supervisor:
         slot_id = slot.slot_id
         old_pid = slot.pid
 
-        # The process should be dead by now (SIGTERM was sent before crash).
-        # Mark as failed with the timeout reason.
+        # If the process is still alive (e.g. supervisor crashed right after
+        # sending SIGTERM and the worker is still doing cleanup), send SIGKILL
+        # to ensure it's terminated before marking the slot as failed.
+        if _is_pid_alive(old_pid):
+            logger.warning(
+                "Timed-out worker PID %d for %s/%d is still alive — sending SIGKILL",
+                old_pid, project, slot_id,
+            )
+            try:
+                os.kill(old_pid, signal.SIGKILL)
+            except OSError:
+                pass  # already dead by now
+
         reason = f"timeout in stage {slot.stage} (recovered after restart)"
         self._slot_manager.mark_failed(project, slot_id, reason=reason)
 
@@ -383,7 +422,6 @@ class Supervisor:
             detail=f"project={project}, slot={slot_id}, "
             f"pid={old_pid}, stage={slot.stage}",
         )
-        self._conn.commit()
         logger.warning(
             "Recovered timed-out slot %s/%d (PID %s, stage %s) — marked failed",
             project, slot_id, old_pid, slot.stage,
@@ -392,9 +430,10 @@ class Supervisor:
     def _check_pr_status(self, slot: SlotState) -> str | None:
         """Check whether a PR exists for the slot's branch.
 
-        Returns ``"merged"``, ``"open"``, or ``None`` (no PR found).
-        Uses the PR URL from state if available, otherwise checks via
-        ``gh pr view`` in the project working directory.
+        Returns ``"merged"``, ``"open"``, ``"closed"``, or ``None``
+        (no PR found).  Uses the PR URL from state if available,
+        otherwise checks via ``gh pr view`` in the project working
+        directory.
         """
         # Try the stored PR URL first
         pr_ref = slot.pr_url
@@ -424,8 +463,8 @@ class Supervisor:
                 url = proc.stdout.strip()
                 if "/pull/" in url:
                     return url
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("gh pr view failed for branch %s: %s", branch, exc)
         return None
 
     @staticmethod
@@ -442,8 +481,10 @@ class Supervisor:
                     return "merged"
                 if state == "OPEN":
                     return "open"
-        except Exception:
-            pass
+                if state == "CLOSED":
+                    return "closed"
+        except Exception as exc:
+            logger.debug("gh pr view failed for %s: %s", pr_ref, exc)
         return None
 
     def _reconcile_db_tasks(self) -> None:
@@ -476,8 +517,6 @@ class Supervisor:
                 logger.info(
                     "Reconciled task %s: DB in_progress -> completed", slot.ticket_id,
                 )
-
-        self._conn.commit()
 
     # ------------------------------------------------------------------
     # Main loop

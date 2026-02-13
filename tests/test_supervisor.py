@@ -1633,6 +1633,34 @@ class TestRecoverOnStartup:
         assert len(events) == 1
         assert "pr_open" in events[0]["detail"]
 
+    def test_dead_worker_pr_closed_marked_failed(self, supervisor):
+        """Dead worker whose PR was closed without merging is marked failed."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        slot = sm.get_slot("test-project", 1)
+        slot.pid = 99999
+
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        with (
+            patch("botfarm.supervisor._is_pid_alive", return_value=False),
+            patch.object(supervisor, "_check_pr_status", return_value="closed"),
+        ):
+            supervisor._recover_on_startup()
+
+        assert sm.get_slot("test-project", 1).status == "failed"
+        events = get_events(supervisor._conn, event_type="recovery_failed")
+        assert len(events) == 1
+        assert "pr_closed" in events[0]["detail"]
+
     def test_alive_worker_reattached(self, supervisor):
         """Alive worker is re-attached — slot stays busy."""
         sm = supervisor.slot_manager
@@ -1676,6 +1704,35 @@ class TestRecoverOnStartup:
         events = get_events(supervisor._conn, event_type="recovery_timeout")
         assert len(events) == 1
         assert "implement" in events[0]["detail"]
+
+    def test_timed_out_slot_alive_pid_gets_sigkill(self, supervisor):
+        """Timed-out slot with alive PID sends SIGKILL before marking failed."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.update_stage("test-project", 1, stage="implement")
+        slot = sm.get_slot("test-project", 1)
+        slot.pid = 99999
+        slot.sigterm_sent_at = "2020-01-01T00:00:00.000000Z"
+
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        with (
+            patch("botfarm.supervisor._is_pid_alive", return_value=True),
+            patch("os.kill") as mock_kill,
+        ):
+            supervisor._recover_on_startup()
+
+        import signal as sig
+        mock_kill.assert_called_once_with(99999, sig.SIGKILL)
+        assert sm.get_slot("test-project", 1).status == "failed"
 
     def test_free_slots_not_affected(self, supervisor):
         """Free slots are not touched during recovery."""
@@ -1955,6 +2012,17 @@ class TestCheckPrStatus:
             result = Supervisor._gh_pr_url_for_branch("my-branch", "/tmp/repo")
 
         assert result is None
+
+    def test_gh_pr_state_closed(self):
+        """_gh_pr_state returns 'closed' for closed-not-merged PRs."""
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.stdout = "CLOSED\n"
+
+        with patch("botfarm.supervisor.subprocess.run", return_value=mock_proc):
+            result = Supervisor._gh_pr_state("https://github.com/org/repo/pull/1")
+
+        assert result == "closed"
 
     def test_gh_pr_url_for_branch_none_branch(self):
         """_gh_pr_url_for_branch returns None for None branch."""
