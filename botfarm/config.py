@@ -46,6 +46,7 @@ dashboard:
 
 agents:
   max_review_iterations: 3
+  max_ci_retries: 2
 
 state_file: ~/.botfarm/state.json
 """
@@ -89,6 +90,7 @@ class DashboardConfig:
 @dataclass
 class AgentsConfig:
     max_review_iterations: int = 3
+    max_ci_retries: int = 2
 
 
 @dataclass
@@ -211,6 +213,9 @@ def _validate_config(config: BotfarmConfig) -> None:
     if config.agents.max_review_iterations < 1:
         raise ConfigError("agents.max_review_iterations must be at least 1")
 
+    if config.agents.max_ci_retries < 0:
+        raise ConfigError("agents.max_ci_retries must be at least 0")
+
 
 def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
     """Load, expand, validate, and return the botfarm configuration."""
@@ -259,6 +264,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
     agents_data = data.get("agents", {})
     agents = AgentsConfig(
         max_review_iterations=int(agents_data.get("max_review_iterations", 3)),
+        max_ci_retries=int(agents_data.get("max_ci_retries", 2)),
     )
 
     config = BotfarmConfig(

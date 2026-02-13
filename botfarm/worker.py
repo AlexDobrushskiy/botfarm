@@ -232,7 +232,7 @@ def _run_pr_checks(pr_url: str, *, cwd: str | Path, timeout: int = 600) -> Stage
         return StageResult(
             stage="pr_checks",
             success=success,
-            error=None if success else f"CI checks failed:\n{proc.stdout[:500]}",
+            error=None if success else f"CI checks failed:\n{proc.stdout[:2000]}",
         )
     except subprocess.TimeoutExpired:
         elapsed = time.monotonic() - start
@@ -241,6 +241,33 @@ def _run_pr_checks(pr_url: str, *, cwd: str | Path, timeout: int = 600) -> Stage
             success=False,
             error=f"CI checks timed out after {elapsed:.0f}s",
         )
+
+
+def _run_ci_fix(
+    pr_url: str, *, ci_failure_output: str, cwd: str | Path, max_turns: int,
+) -> StageResult:
+    """FIX stage variant — Claude Code fixes CI failures using CI output context."""
+    prompt = (
+        f"The CI checks on PR {pr_url} have failed. "
+        "Diagnose and fix the CI failures based on the output below, "
+        "then run tests locally, commit and push the fixes.\n\n"
+        f"CI failure output:\n{ci_failure_output[:2000]}"
+    )
+    result = run_claude(prompt, cwd=cwd, max_turns=max_turns)
+
+    if result.is_error:
+        return StageResult(
+            stage="fix",
+            success=False,
+            claude_result=result,
+            error=f"Claude reported error: {result.result_text[:200]}",
+        )
+
+    return StageResult(
+        stage="fix",
+        success=True,
+        claude_result=result,
+    )
 
 
 def _run_merge(pr_url: str, *, cwd: str | Path) -> StageResult:
@@ -292,6 +319,7 @@ def run_pipeline(
     max_turns: dict[str, int] | None = None,
     pr_checks_timeout: int = 600,
     max_review_iterations: int = 3,
+    max_ci_retries: int = 2,
     resume_from_stage: str | None = None,
     resume_session_id: str | None = None,  # TODO: wire through to run_claude --resume
 ) -> PipelineResult:
@@ -301,6 +329,10 @@ def run_pipeline(
     to verify the fixes.  This continues until the reviewer approves or
     ``max_review_iterations`` is reached, after which the pipeline
     proceeds to pr_checks regardless.
+
+    If CI checks fail and ``max_ci_retries`` > 0, the pipeline loops
+    back to the fix stage (with CI failure context) and re-runs
+    pr_checks.  This continues until CI passes or retries are exhausted.
 
     Args:
         ticket_id: Linear ticket identifier (e.g. "SMA-42").
@@ -314,6 +346,8 @@ def run_pipeline(
         pr_checks_timeout: Seconds to wait for CI checks.
         max_review_iterations: Maximum review→fix iterations before
             proceeding to pr_checks (default 3).
+        max_ci_retries: Maximum fix→pr_checks retries when CI fails
+            (default 2). Set to 0 to disable CI retry loop.
         resume_from_stage: If set, skip stages before this one (for limit
             resumption). The pipeline continues from this stage onward.
         resume_session_id: If set, attempt to use ``--resume`` with this
@@ -415,7 +449,32 @@ def run_pipeline(
                 pipeline.stages_completed.append("fix")
             continue
 
-        # ----- Normal (non-review/fix) stages -----
+        # ----- CI retry loop -----
+        if stage == "pr_checks":
+            result = ctx.run_and_record("pr_checks", pr_url=pr_url)
+            if result is not None:
+                # CI passed on first try
+                continue
+            # CI failed — attempt retries if configured
+            if max_ci_retries > 0:
+                ci_failure_output = pipeline.failure_reason or "CI checks failed"
+                _reset_for_retry(ctx)
+                success = _run_ci_retry_loop(
+                    ctx,
+                    pr_url=pr_url,
+                    ci_failure_output=ci_failure_output,
+                    max_retries=max_ci_retries,
+                )
+                if not success:
+                    return pipeline
+                # Ensure pr_checks is marked completed
+                if "pr_checks" not in pipeline.stages_completed:
+                    pipeline.stages_completed.append("pr_checks")
+                continue
+            # No retries configured — fail
+            return pipeline
+
+        # ----- Normal stages (implement, merge) -----
         result = ctx.run_and_record(stage, pr_url=pr_url)
         if result is None:
             return pipeline
@@ -502,6 +561,33 @@ class _PipelineContext:
             _record_failure(self.conn, self.task_id, self.pipeline)
             return None
 
+        return self._finish_stage(stage, result, wall_start, iteration)
+
+    def run_and_record_result(
+        self,
+        stage: str,
+        result: StageResult,
+        *,
+        wall_start: float,
+        iteration: int = 1,
+    ) -> StageResult | None:
+        """Record a pre-computed StageResult, accumulate metrics.
+
+        Like ``run_and_record`` but skips execution — the caller already
+        ran the stage directly (e.g. ``_run_ci_fix``).
+
+        Returns the ``StageResult`` on success, or ``None`` on failure.
+        """
+        return self._finish_stage(stage, result, wall_start, iteration)
+
+    def _finish_stage(
+        self,
+        stage: str,
+        result: StageResult,
+        wall_start: float,
+        iteration: int,
+    ) -> StageResult | None:
+        """Shared logic for recording a stage result and updating metrics."""
         wall_elapsed = time.monotonic() - wall_start
 
         _record_stage_run(
@@ -602,6 +688,102 @@ def _run_review_fix_loop(
         max_iterations, ctx.ticket_id,
     )
     return True
+
+
+def _reset_for_retry(ctx: _PipelineContext) -> None:
+    """Reset pipeline and task state so a retry can proceed.
+
+    After ``run_and_record`` records a failure, this undoes the failure
+    side-effects (pipeline flags + task DB status) so the next retry
+    iteration starts from a clean state.
+    """
+    ctx.pipeline.failure_stage = None
+    ctx.pipeline.failure_reason = None
+    update_task(ctx.conn, ctx.task_id, status="in_progress", failure_reason=None)
+    ctx.conn.commit()
+
+
+def _run_ci_retry_loop(
+    ctx: _PipelineContext,
+    *,
+    pr_url: str | None,
+    ci_failure_output: str,
+    max_retries: int,
+) -> bool:
+    """Re-run fix→pr_checks when CI checks fail.
+
+    Returns ``True`` on success (CI checks pass) and ``False`` if the
+    fix stage fails or max retries are exhausted (failure already
+    recorded by ``run_and_record`` or recorded here).
+    """
+    for retry in range(1, max_retries + 1):
+        insert_event(
+            ctx.conn,
+            task_id=ctx.task_id,
+            event_type="ci_retry_started",
+            detail=f"retry={retry}, ci_output={ci_failure_output[:200]}",
+        )
+        ctx.conn.commit()
+
+        # --- FIX (with CI context) — call _run_ci_fix directly ---
+        wall_start = time.monotonic()
+        try:
+            fix_result = _run_ci_fix(
+                pr_url, ci_failure_output=ci_failure_output,
+                cwd=ctx.cwd, max_turns=ctx.turns_cfg.get("fix", 100),
+            )
+        except Exception as exc:
+            logger.error("CI fix stage raised: %s", exc)
+            ctx.pipeline.failure_stage = "fix"
+            ctx.pipeline.failure_reason = str(exc)[:500]
+            _record_failure(ctx.conn, ctx.task_id, ctx.pipeline)
+            return False
+
+        fix_result = ctx.run_and_record_result(
+            "fix", fix_result, wall_start=wall_start, iteration=retry,
+        )
+        if fix_result is None:
+            return False  # failure recorded by run_and_record_result
+
+        # --- PR_CHECKS ---
+        checks_result = ctx.run_and_record(
+            "pr_checks", pr_url=pr_url, iteration=retry,
+        )
+        if checks_result is not None:
+            # CI passed
+            insert_event(
+                ctx.conn,
+                task_id=ctx.task_id,
+                event_type="ci_passed_after_retry",
+                detail=f"retry={retry}",
+            )
+            ctx.conn.commit()
+            logger.info(
+                "CI checks passed on retry %d for %s",
+                retry, ctx.ticket_id,
+            )
+            return True
+
+        # CI still failing — capture new failure output for next retry
+        ci_failure_output = ctx.pipeline.failure_reason or ci_failure_output
+        _reset_for_retry(ctx)
+
+    # Max retries exhausted
+    insert_event(
+        ctx.conn,
+        task_id=ctx.task_id,
+        event_type="max_ci_retries_reached",
+        detail=f"retries={max_retries}",
+    )
+    ctx.conn.commit()
+    logger.warning(
+        "Max CI retries (%d) reached for %s — marking as failed",
+        max_retries, ctx.ticket_id,
+    )
+    ctx.pipeline.failure_stage = "pr_checks"
+    ctx.pipeline.failure_reason = f"CI checks failed after {max_retries} retries"
+    _record_failure(ctx.conn, ctx.task_id, ctx.pipeline)
+    return False
 
 
 def _execute_stage(
