@@ -379,6 +379,35 @@ def test_load_config_usage_limits_negative(tmp_path):
         load_config(config_path)
 
 
+# --- Agents config ---
+
+
+def test_load_config_agents_defaults(tmp_path):
+    config_path = _write_config(tmp_path, MINIMAL_CONFIG)
+    config = load_config(config_path)
+    assert config.agents.max_review_iterations == 3
+
+
+def test_load_config_agents_custom(tmp_path):
+    data = {
+        **MINIMAL_CONFIG,
+        "agents": {"max_review_iterations": 5},
+    }
+    config_path = _write_config(tmp_path, data)
+    config = load_config(config_path)
+    assert config.agents.max_review_iterations == 5
+
+
+def test_load_config_agents_invalid_zero(tmp_path):
+    data = {
+        **MINIMAL_CONFIG,
+        "agents": {"max_review_iterations": 0},
+    }
+    config_path = _write_config(tmp_path, data)
+    with pytest.raises(ConfigError, match="max_review_iterations must be at least 1"):
+        load_config(config_path)
+
+
 # --- CLI init command ---
 
 

@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from botfarm.db import insert_stage_run, update_task
+from botfarm.db import insert_event, insert_stage_run, update_task
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +125,7 @@ class StageResult:
     claude_result: ClaudeResult | None = None
     pr_url: str | None = None
     error: str | None = None
+    review_approved: bool | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -165,7 +166,9 @@ def _run_review(pr_url: str, *, cwd: str | Path, max_turns: int) -> StageResult:
     prompt = (
         f"Review the pull request at {pr_url}. "
         "Read the PR diff carefully. Post your review comments directly on the PR "
-        "using 'gh pr review'. Be thorough but constructive."
+        "using 'gh pr review'. Be thorough but constructive. "
+        "At the end of your response, state clearly whether you APPROVE the PR "
+        "or REQUEST CHANGES."
     )
     result = run_claude(prompt, cwd=cwd, max_turns=max_turns)
 
@@ -177,10 +180,13 @@ def _run_review(pr_url: str, *, cwd: str | Path, max_turns: int) -> StageResult:
             error=f"Claude reported error: {result.result_text[:200]}",
         )
 
+    approved = _parse_review_approved(result.result_text)
+
     return StageResult(
         stage="review",
         success=True,
         claude_result=result,
+        review_approved=approved,
     )
 
 
@@ -284,10 +290,16 @@ def run_pipeline(
     slot_id: int | None = None,
     max_turns: dict[str, int] | None = None,
     pr_checks_timeout: int = 600,
+    max_review_iterations: int = 3,
     resume_from_stage: str | None = None,
     resume_session_id: str | None = None,  # TODO: wire through to run_claude --resume
 ) -> PipelineResult:
     """Execute the full implement→review→fix→pr_checks→merge pipeline.
+
+    After the first review→fix cycle, the pipeline loops back to review
+    to verify the fixes.  This continues until the reviewer approves or
+    ``max_review_iterations`` is reached, after which the pipeline
+    proceeds to pr_checks regardless.
 
     Args:
         ticket_id: Linear ticket identifier (e.g. "SMA-42").
@@ -299,6 +311,8 @@ def run_pipeline(
         slot_id: Slot ID (required if slot_manager is provided).
         max_turns: Per-stage max_turns overrides.
         pr_checks_timeout: Seconds to wait for CI checks.
+        max_review_iterations: Maximum review→fix iterations before
+            proceeding to pr_checks (default 3).
         resume_from_stage: If set, skip stages before this one (for limit
             resumption). The pipeline continues from this stage onward.
         resume_session_id: If set, attempt to use ``--resume`` with this
@@ -328,6 +342,20 @@ def run_pipeline(
     # Determine which stages to skip when resuming
     skipping = resume_from_stage is not None
 
+    # Shared context for _run_and_record helper
+    ctx = _PipelineContext(
+        ticket_id=ticket_id,
+        task_id=task_id,
+        cwd=cwd,
+        conn=conn,
+        turns_cfg=turns_cfg,
+        pr_checks_timeout=pr_checks_timeout,
+        pipeline=pipeline,
+        slot_manager=slot_manager,
+        project=project,
+        slot_id=slot_id,
+    )
+
     for stage in STAGES:
         if skipping:
             if stage == resume_from_stage:
@@ -342,56 +370,36 @@ def run_pipeline(
         else:
             logger.info("Starting stage '%s' for %s", stage, ticket_id)
 
-        # Update slot state if manager provided
-        if slot_manager and project and slot_id is not None:
-            slot_manager.update_stage(project, slot_id, stage=stage)
+        # ----- Review iteration loop -----
+        if stage == "review":
+            error = _run_review_fix_loop(ctx, pr_url=pr_url, max_iterations=max_review_iterations)
+            if error:
+                return pipeline
+            # review and fix are handled; skip fix in the outer loop
+            if "review" not in pipeline.stages_completed:
+                pipeline.stages_completed.append("review")
+            if "fix" not in pipeline.stages_completed:
+                pipeline.stages_completed.append("fix")
+            continue
 
-        wall_start = time.monotonic()
+        if stage == "fix" and "fix" in pipeline.stages_completed:
+            # Already handled by _run_review_fix_loop above
+            continue
 
-        try:
-            result = _execute_stage(
-                stage,
-                ticket_id=ticket_id,
-                pr_url=pr_url,
-                cwd=cwd,
-                max_turns=turns_cfg.get(stage, 100),
-                pr_checks_timeout=pr_checks_timeout,
-            )
-        except Exception as exc:
-            logger.error("Stage '%s' raised: %s", stage, exc)
-            pipeline.failure_stage = stage
-            pipeline.failure_reason = str(exc)[:500]
-            _record_failure(conn, task_id, pipeline)
+        if stage == "fix":
+            # Resuming from fix — run fix then continue with remaining
+            # review iterations (iteration 1 fix already completed).
+            result = ctx.run_and_record("fix", pr_url=pr_url)
+            if result is None:
+                return pipeline
+            update_task(conn, task_id, review_iterations=1)
+            conn.commit()
+            continue
+
+        # ----- Normal (non-review/fix) stages -----
+        result = ctx.run_and_record(stage, pr_url=pr_url)
+        if result is None:
             return pipeline
-
-        wall_elapsed = time.monotonic() - wall_start
-
-        # Record stage run in DB
-        _record_stage_run(
-            conn,
-            task_id=task_id,
-            stage=stage,
-            result=result,
-            wall_elapsed=wall_elapsed,
-        )
-
-        # Accumulate metrics from claude invocations
-        if result.claude_result:
-            pipeline.total_cost_usd += result.claude_result.cost_usd
-            pipeline.total_turns += result.claude_result.num_turns
-            pipeline.total_duration_seconds += result.claude_result.duration_seconds
-
-        if not result.success:
-            logger.warning("Stage '%s' failed for %s", stage, ticket_id)
-            pipeline.failure_stage = stage
-            pipeline.failure_reason = result.error
-            _record_failure(conn, task_id, pipeline)
-            return pipeline
-
-        # Track completed stages
-        pipeline.stages_completed.append(stage)
-        if slot_manager and project and slot_id is not None:
-            slot_manager.complete_stage(project, slot_id, stage)
 
         # Capture PR URL from implement stage
         if stage == "implement" and result.pr_url:
@@ -406,11 +414,6 @@ def run_pipeline(
             pipeline.failure_reason = "Implement stage did not produce a PR URL"
             _record_failure(conn, task_id, pipeline)
             return pipeline
-
-        logger.info(
-            "Stage '%s' completed for %s (%.1fs wall)",
-            stage, ticket_id, wall_elapsed,
-        )
 
     # All stages passed
     pipeline.success = True
@@ -430,6 +433,150 @@ def run_pipeline(
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+@dataclass
+class _PipelineContext:
+    """Shared state passed to pipeline helpers to avoid long argument lists."""
+
+    ticket_id: str
+    task_id: int
+    cwd: str | Path
+    conn: object  # sqlite3.Connection
+    turns_cfg: dict[str, int]
+    pr_checks_timeout: int
+    pipeline: PipelineResult
+    slot_manager: object | None = None
+    project: str | None = None
+    slot_id: int | None = None
+
+    def run_and_record(
+        self,
+        stage: str,
+        *,
+        pr_url: str | None,
+        iteration: int = 1,
+    ) -> StageResult | None:
+        """Execute a stage, record it, accumulate metrics.
+
+        Returns the ``StageResult`` on success, or ``None`` if the stage
+        failed (in which case ``pipeline`` is updated with the failure).
+        """
+        if self.slot_manager and self.project and self.slot_id is not None:
+            self.slot_manager.update_stage(self.project, self.slot_id, stage=stage)
+
+        wall_start = time.monotonic()
+
+        try:
+            result = _execute_stage(
+                stage,
+                ticket_id=self.ticket_id,
+                pr_url=pr_url,
+                cwd=self.cwd,
+                max_turns=self.turns_cfg.get(stage, 100),
+                pr_checks_timeout=self.pr_checks_timeout,
+            )
+        except Exception as exc:
+            logger.error("Stage '%s' raised: %s", stage, exc)
+            self.pipeline.failure_stage = stage
+            self.pipeline.failure_reason = str(exc)[:500]
+            _record_failure(self.conn, self.task_id, self.pipeline)
+            return None
+
+        wall_elapsed = time.monotonic() - wall_start
+
+        _record_stage_run(
+            self.conn,
+            task_id=self.task_id,
+            stage=stage,
+            result=result,
+            wall_elapsed=wall_elapsed,
+            iteration=iteration,
+        )
+
+        if result.claude_result:
+            self.pipeline.total_cost_usd += result.claude_result.cost_usd
+            self.pipeline.total_turns += result.claude_result.num_turns
+            self.pipeline.total_duration_seconds += result.claude_result.duration_seconds
+
+        if not result.success:
+            logger.warning("Stage '%s' failed for %s", stage, self.ticket_id)
+            self.pipeline.failure_stage = stage
+            self.pipeline.failure_reason = result.error
+            _record_failure(self.conn, self.task_id, self.pipeline)
+            return None
+
+        if stage not in self.pipeline.stages_completed:
+            self.pipeline.stages_completed.append(stage)
+        if self.slot_manager and self.project and self.slot_id is not None:
+            self.slot_manager.complete_stage(self.project, self.slot_id, stage)
+
+        logger.info(
+            "Stage '%s' completed for %s (%.1fs wall)",
+            stage, self.ticket_id, wall_elapsed,
+        )
+
+        return result
+
+
+def _run_review_fix_loop(
+    ctx: _PipelineContext,
+    *,
+    pr_url: str | None,
+    max_iterations: int,
+) -> bool:
+    """Run the review→fix loop, returning True if an error occurred."""
+    for iteration in range(1, max_iterations + 1):
+        insert_event(
+            ctx.conn,
+            task_id=ctx.task_id,
+            event_type="review_iteration_started",
+            detail=f"iteration={iteration}",
+        )
+        ctx.conn.commit()
+
+        # --- REVIEW ---
+        review_result = ctx.run_and_record("review", pr_url=pr_url, iteration=iteration)
+        if review_result is None:
+            return True  # failure recorded by run_and_record
+
+        if review_result.review_approved:
+            insert_event(
+                ctx.conn,
+                task_id=ctx.task_id,
+                event_type="review_approved",
+                detail=f"iteration={iteration}",
+            )
+            ctx.conn.commit()
+            update_task(ctx.conn, ctx.task_id, review_iterations=iteration)
+            ctx.conn.commit()
+            logger.info(
+                "Review approved on iteration %d for %s — skipping fix",
+                iteration, ctx.ticket_id,
+            )
+            return False  # success — proceed to pr_checks
+
+        # --- FIX ---
+        fix_result = ctx.run_and_record("fix", pr_url=pr_url, iteration=iteration)
+        if fix_result is None:
+            return True  # failure recorded by run_and_record
+
+        update_task(ctx.conn, ctx.task_id, review_iterations=iteration)
+        ctx.conn.commit()
+
+    # Max iterations reached — proceed to pr_checks regardless
+    insert_event(
+        ctx.conn,
+        task_id=ctx.task_id,
+        event_type="max_iterations_reached",
+        detail=f"iterations={max_iterations}",
+    )
+    ctx.conn.commit()
+    logger.warning(
+        "Max review iterations (%d) reached for %s — proceeding to pr_checks",
+        max_iterations, ctx.ticket_id,
+    )
+    return False
 
 
 def _execute_stage(
@@ -471,6 +618,7 @@ def _record_stage_run(
     stage: str,
     result: StageResult,
     wall_elapsed: float,
+    iteration: int = 1,
 ) -> None:
     """Insert a stage_run row from the result."""
     cr = result.claude_result
@@ -478,6 +626,7 @@ def _record_stage_run(
         conn,
         task_id=task_id,
         stage=stage,
+        iteration=iteration,
         session_id=cr.session_id if cr else None,
         turns=cr.num_turns if cr else 0,
         duration_seconds=cr.duration_seconds if cr else wall_elapsed,
@@ -508,6 +657,44 @@ def _extract_pr_url(text: str) -> str | None:
     """
     match = re.search(r"https://github\.com/[\w.-]+/[\w.-]+/pull/\d+", text)
     return match.group(0) if match else None
+
+
+def _parse_review_approved(text: str) -> bool:
+    """Determine whether a review result indicates approval or changes requested.
+
+    Returns ``True`` if the review text signals approval (e.g. ``--approve``
+    or "APPROVE"), ``False`` if changes are requested, and ``False`` as a
+    conservative default when the signal is ambiguous.
+    """
+    lower = text.lower()
+    # gh pr review --approve is the strongest signal
+    if "--approve" in lower:
+        return True
+    # Explicit approval phrases
+    approve_patterns = [
+        "approve the pr",
+        "i approve",
+        "lgtm",
+        "looks good to me",
+        "approved the pr",
+        "approved this pr",
+        "pr is approved",
+    ]
+    changes_patterns = [
+        "request changes",
+        "changes requested",
+        "--request-changes",
+        "requesting changes",
+        "needs changes",
+    ]
+    for pattern in changes_patterns:
+        if pattern in lower:
+            return False
+    for pattern in approve_patterns:
+        if pattern in lower:
+            return True
+    # Conservative default: assume changes are needed
+    return False
 
 
 def _recover_pr_url(conn, task_id: int, cwd: str | Path) -> str | None:
