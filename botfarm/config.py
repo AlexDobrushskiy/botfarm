@@ -47,6 +47,11 @@ dashboard:
 agents:
   max_review_iterations: 3
   max_ci_retries: 2
+  timeout_minutes:
+    implement: 120
+    review: 30
+    fix: 60
+  timeout_grace_seconds: 10
 
 state_file: ~/.botfarm/state.json
 """
@@ -91,6 +96,12 @@ class DashboardConfig:
 class AgentsConfig:
     max_review_iterations: int = 3
     max_ci_retries: int = 2
+    timeout_minutes: dict[str, int] = field(default_factory=lambda: {
+        "implement": 120,
+        "review": 30,
+        "fix": 60,
+    })
+    timeout_grace_seconds: int = 10
 
 
 @dataclass
@@ -216,6 +227,21 @@ def _validate_config(config: BotfarmConfig) -> None:
     if config.agents.max_ci_retries < 0:
         raise ConfigError("agents.max_ci_retries must be at least 0")
 
+    known_stages = {"implement", "review", "fix", "pr_checks", "merge"}
+    for stage, minutes in config.agents.timeout_minutes.items():
+        if stage not in known_stages:
+            raise ConfigError(
+                f"agents.timeout_minutes: unknown stage '{stage}'. "
+                f"Valid stages: {sorted(known_stages)}"
+            )
+        if minutes < 1:
+            raise ConfigError(
+                f"agents.timeout_minutes.{stage} must be at least 1"
+            )
+
+    if config.agents.timeout_grace_seconds < 0:
+        raise ConfigError("agents.timeout_grace_seconds must be at least 0")
+
 
 def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
     """Load, expand, validate, and return the botfarm configuration."""
@@ -262,9 +288,14 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
     )
 
     agents_data = data.get("agents", {})
+    timeout_defaults = {"implement": 120, "review": 30, "fix": 60}
+    raw_timeouts = agents_data.get("timeout_minutes", {})
+    timeout_minutes = {**timeout_defaults, **{k: int(v) for k, v in raw_timeouts.items()}}
     agents = AgentsConfig(
         max_review_iterations=int(agents_data.get("max_review_iterations", 3)),
         max_ci_retries=int(agents_data.get("max_ci_retries", 2)),
+        timeout_minutes=timeout_minutes,
+        timeout_grace_seconds=int(agents_data.get("timeout_grace_seconds", 10)),
     )
 
     config = BotfarmConfig(

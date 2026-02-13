@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import multiprocessing
+import os
 import queue as queue_mod
 import signal
 import sqlite3
@@ -275,6 +276,7 @@ class Supervisor:
         """One iteration of the supervisor loop."""
         for phase in (
             self._reconcile_workers,
+            self._check_timeouts,
             self._handle_finished_slots,
             self._handle_paused_slots,
             self._poll_usage,
@@ -335,6 +337,157 @@ class Supervisor:
             )
         if messages:
             self._conn.commit()
+
+    # ------------------------------------------------------------------
+    # Timeout enforcement
+    # ------------------------------------------------------------------
+
+    def _check_timeouts(self) -> None:
+        """Kill worker processes that have exceeded their stage timeout.
+
+        Non-blocking: on the first tick after timeout, sends SIGTERM and
+        records ``sigterm_sent_at`` on the slot.  On a subsequent tick,
+        if the grace period has elapsed and the process is still alive,
+        escalates to SIGKILL.  This avoids blocking the supervisor loop.
+        """
+        timeout_cfg = self._config.agents.timeout_minutes
+        grace = self._config.agents.timeout_grace_seconds
+        now = datetime.now(timezone.utc)
+
+        for slot in self._slot_manager.busy_slots():
+            if slot.pid is None or slot.stage is None:
+                continue
+
+            # --- Phase 2: escalate SIGTERM → SIGKILL after grace period ---
+            if slot.sigterm_sent_at:
+                self._maybe_escalate_kill(slot, now=now, grace=grace)
+                continue
+
+            # --- Phase 1: detect timeout and send SIGTERM ---
+            if not slot.stage_started_at:
+                continue
+
+            limit_minutes = timeout_cfg.get(slot.stage)
+            if limit_minutes is None:
+                continue
+
+            try:
+                stage_start = datetime.fromisoformat(
+                    slot.stage_started_at.replace("Z", "+00:00"),
+                )
+            except (ValueError, TypeError):
+                logger.warning(
+                    "Failed to parse stage_started_at for %s/%d: %r",
+                    slot.project, slot.slot_id, slot.stage_started_at,
+                )
+                continue
+
+            elapsed = (now - stage_start).total_seconds()
+            limit_seconds = limit_minutes * 60
+            if elapsed < limit_seconds:
+                continue
+
+            self._send_sigterm(slot, elapsed=elapsed, limit=limit_seconds)
+
+    def _send_sigterm(
+        self,
+        slot: SlotState,
+        *,
+        elapsed: float,
+        limit: float,
+    ) -> None:
+        """Send SIGTERM to a timed-out worker and record the time."""
+        pid = slot.pid
+        stage = slot.stage
+        project = slot.project
+
+        logger.warning(
+            "Worker PID %d for %s/%d timed out in stage '%s' "
+            "(%.0fs elapsed, %ds limit) — sending SIGTERM",
+            pid, project, slot.slot_id, stage, elapsed, int(limit),
+        )
+
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGTERM)
+        except (OSError, ProcessLookupError):
+            pass  # already dead
+
+        # Record SIGTERM time so _maybe_escalate_kill can check grace period
+        from botfarm.slots import _now_iso
+        slot.sigterm_sent_at = _now_iso()
+        self._slot_manager.save()
+
+    def _maybe_escalate_kill(
+        self,
+        slot: SlotState,
+        *,
+        now: datetime,
+        grace: int,
+    ) -> None:
+        """If the grace period has elapsed since SIGTERM, escalate to SIGKILL."""
+        try:
+            sigterm_time = datetime.fromisoformat(
+                slot.sigterm_sent_at.replace("Z", "+00:00"),
+            )
+        except (ValueError, TypeError):
+            # Can't parse — escalate immediately
+            sigterm_time = now
+
+        if (now - sigterm_time).total_seconds() < grace:
+            return  # still within grace period
+
+        pid = slot.pid
+        stage = slot.stage
+        project = slot.project
+
+        try:
+            os.killpg(os.getpgid(pid), 0)  # check if still alive
+            os.killpg(os.getpgid(pid), signal.SIGKILL)
+            logger.warning(
+                "Worker PID %d did not exit after SIGTERM, sent SIGKILL", pid,
+            )
+        except (OSError, ProcessLookupError):
+            pass  # exited during grace period
+
+        # Clean up the process from our tracking
+        key = (project, slot.slot_id)
+        proc = self._workers.pop(key, None)
+        if proc is not None:
+            proc.join(timeout=2)
+
+        # Compute elapsed from stage start for event detail
+        elapsed = 0.0
+        limit = 0
+        try:
+            stage_start = datetime.fromisoformat(
+                slot.stage_started_at.replace("Z", "+00:00"),
+            )
+            elapsed = (now - stage_start).total_seconds()
+            limit_minutes = self._config.agents.timeout_minutes.get(stage, 0)
+            limit = limit_minutes * 60
+        except (ValueError, TypeError, AttributeError):
+            pass
+
+        # Mark slot as failed
+        reason = f"timeout in stage {stage}"
+        self._slot_manager.mark_failed(project, slot.slot_id, reason=reason)
+
+        # Log event and update task
+        task_id = self._find_task_id(slot.ticket_id)
+        insert_event(
+            self._conn,
+            task_id=task_id,
+            event_type="timeout",
+            detail=f"stage={stage}, elapsed={elapsed:.0f}s, limit={int(limit)}s",
+        )
+        if task_id is not None:
+            update_task(
+                self._conn,
+                task_id,
+                status="failed",
+                failure_reason=reason,
+            )
+        self._conn.commit()
 
     # ------------------------------------------------------------------
     # Handle finished slots

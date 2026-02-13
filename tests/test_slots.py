@@ -242,6 +242,18 @@ class TestUpdateStage:
         assert slot.stage_iteration == 1
         assert slot.current_session_id == "s1"
 
+    def test_update_stage_sets_stage_started_at(self, mgr: SlotManager):
+        mgr.register_slot("proj", 1)
+        mgr.assign_ticket(
+            "proj", 1, ticket_id="T-1", ticket_title="T1", branch="b1"
+        )
+        mgr.update_stage("proj", 1, stage="implement")
+        slot = mgr.get_slot("proj", 1)
+        assert slot.stage_started_at is not None
+        # Should be a valid ISO timestamp
+        from datetime import datetime
+        datetime.fromisoformat(slot.stage_started_at.replace("Z", "+00:00"))
+
 
 class TestCompleteStage:
     def test_complete_stage(self, mgr: SlotManager):
@@ -343,6 +355,8 @@ class TestFreeSlot:
         assert slot.stage_iteration == 0
         assert slot.current_session_id is None
         assert slot.started_at is None
+        assert slot.stage_started_at is None
+        assert slot.sigterm_sent_at is None
         assert slot.pid is None
         assert slot.interrupted_by_limit is False
         assert slot.resume_after is None
