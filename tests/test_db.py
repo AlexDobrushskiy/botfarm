@@ -129,6 +129,32 @@ class TestTasks:
         assert row["status"] == "pending"
         assert row["failure_reason"] is None
 
+    def test_insert_task_upsert_then_insert_event(self, conn):
+        """Regression: insert_event after upsert must not cause FK violation.
+
+        When insert_task hits ON CONFLICT DO UPDATE, cursor.lastrowid may
+        return a stale value from a prior INSERT.  The returned task_id must
+        still be valid for foreign-key references in task_events.
+        """
+        # First insert — creates row with id=N
+        tid1 = insert_task(conn, ticket_id="SMA-FK", title="First", project="p", slot=1)
+        insert_event(conn, task_id=tid1, event_type="worker_dispatched", detail="first")
+        update_task(conn, tid1, status="failed", failure_reason="boom")
+        conn.commit()
+
+        # Upsert — should return the same id
+        tid2 = insert_task(conn, ticket_id="SMA-FK", title="Retry", project="p", slot=1)
+        conn.commit()
+
+        assert tid2 == tid1
+
+        # This must not raise IntegrityError
+        insert_event(conn, task_id=tid2, event_type="worker_dispatched", detail="retry")
+        conn.commit()
+
+        events = get_events(conn, task_id=tid2, event_type="worker_dispatched")
+        assert len(events) == 2
+
     def test_update_task(self, conn):
         tid = insert_task(
             conn, ticket_id="SMA-4", title="Upd", project="p", slot=1
