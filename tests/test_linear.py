@@ -530,3 +530,61 @@ class TestCreatePollers:
         )
         pollers = create_pollers(config)
         assert pollers[0]._exclude_tags == {"human", "bot"}
+
+    def test_todo_status_passed(self):
+        config = BotfarmConfig(
+            projects=[_make_project(slots=[1])],
+            max_total_slots=5,
+            linear=LinearConfig(api_key="key", todo_status="Backlog"),
+            database=DatabaseConfig(),
+        )
+        pollers = create_pollers(config)
+        assert pollers[0]._todo_status == "Backlog"
+
+    def test_todo_status_default(self):
+        config = BotfarmConfig(
+            projects=[_make_project(slots=[1])],
+            max_total_slots=5,
+            linear=LinearConfig(api_key="key"),
+            database=DatabaseConfig(),
+        )
+        pollers = create_pollers(config)
+        assert pollers[0]._todo_status == "Todo"
+
+
+# ---------------------------------------------------------------------------
+# LinearPoller.poll with custom todo_status
+# ---------------------------------------------------------------------------
+
+
+class TestLinearPollerCustomTodoStatus:
+    def test_poll_uses_custom_todo_status(self):
+        client = MagicMock(spec=LinearClient)
+        client.fetch_team_issues.return_value = []
+        project = _make_project()
+        poller = LinearPoller(
+            client=client,
+            project=project,
+            exclude_tags=["Human"],
+            todo_status="Backlog",
+        )
+        poller.poll()
+        client.fetch_team_issues.assert_called_once_with(
+            team_key="SMA",
+            status_name="Backlog",
+        )
+
+    def test_poll_uses_default_todo_status(self):
+        client = MagicMock(spec=LinearClient)
+        client.fetch_team_issues.return_value = []
+        project = _make_project()
+        poller = LinearPoller(
+            client=client,
+            project=project,
+            exclude_tags=["Human"],
+        )
+        poller.poll()
+        client.fetch_team_issues.assert_called_once_with(
+            team_key="SMA",
+            status_name="Todo",
+        )

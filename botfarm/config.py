@@ -31,6 +31,16 @@ linear:
   poll_interval_seconds: 120
   exclude_tags:
     - Human
+  # Workflow status names (must match your Linear team's workflow)
+  todo_status: Todo
+  in_progress_status: In Progress
+  done_status: Done
+  in_review_status: In Review
+  failed_status: Todo
+  # Comment posting controls
+  comment_on_failure: true
+  comment_on_completion: false
+  comment_on_limit_pause: false
 
 database:
   path: ~/.botfarm/botfarm.db
@@ -72,6 +82,16 @@ class LinearConfig:
     workspace: str = ""
     poll_interval_seconds: int = 120
     exclude_tags: list[str] = field(default_factory=lambda: ["Human"])
+    # Configurable workflow status names
+    todo_status: str = "Todo"
+    in_progress_status: str = "In Progress"
+    done_status: str = "Done"
+    in_review_status: str = "In Review"
+    failed_status: str = "Todo"
+    # Comment posting controls
+    comment_on_failure: bool = True
+    comment_on_completion: bool = False
+    comment_on_limit_pause: bool = False
 
 
 @dataclass
@@ -243,6 +263,16 @@ def _validate_config(config: BotfarmConfig) -> None:
         raise ConfigError("agents.timeout_grace_seconds must be at least 0")
 
 
+def _parse_bool(data: dict, key: str, default: bool) -> bool:
+    """Parse a boolean config value, rejecting non-boolean types."""
+    value = data.get(key, default)
+    if not isinstance(value, bool):
+        raise ConfigError(
+            f"linear.{key} must be a boolean (true/false), got: {value!r}"
+        )
+    return value
+
+
 def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
     """Load, expand, validate, and return the botfarm configuration."""
     if not config_path.exists():
@@ -267,6 +297,14 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         workspace=linear_data.get("workspace", ""),
         poll_interval_seconds=linear_data.get("poll_interval_seconds", 120),
         exclude_tags=linear_data.get("exclude_tags", ["Human"]),
+        todo_status=str(linear_data.get("todo_status", "Todo")),
+        in_progress_status=str(linear_data.get("in_progress_status", "In Progress")),
+        done_status=str(linear_data.get("done_status", "Done")),
+        in_review_status=str(linear_data.get("in_review_status", "In Review")),
+        failed_status=str(linear_data.get("failed_status", "Todo")),
+        comment_on_failure=_parse_bool(linear_data, "comment_on_failure", True),
+        comment_on_completion=_parse_bool(linear_data, "comment_on_completion", False),
+        comment_on_limit_pause=_parse_bool(linear_data, "comment_on_limit_pause", False),
     )
 
     db_data = data.get("database", {})

@@ -17,7 +17,7 @@ from botfarm.config import (
     LinearConfig,
     ProjectConfig,
 )
-from botfarm.db import get_events, get_task, init_db, insert_task
+from botfarm.db import get_events, get_task, init_db, insert_task, update_task
 from botfarm.linear import LinearIssue
 from botfarm.supervisor import (
     DEFAULT_LOG_DIR,
@@ -218,9 +218,26 @@ class TestHandleFinishedSlots:
 
         poller = supervisor._pollers["test-project"]
 
-        supervisor._handle_finished_slots()
+        with patch.object(supervisor, "_check_pr_status", return_value=None):
+            supervisor._handle_finished_slots()
 
         poller.move_issue.assert_called_once_with("TST-1", "In Review")
+        assert sm.get_slot("test-project", 1).status == "free"
+
+    def test_completed_slot_merged_pr_moved_to_done(self, supervisor):
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.mark_completed("test-project", 1)
+
+        poller = supervisor._pollers["test-project"]
+
+        with patch.object(supervisor, "_check_pr_status", return_value="merged"):
+            supervisor._handle_finished_slots()
+
+        poller.move_issue.assert_called_once_with("TST-1", "Done")
         assert sm.get_slot("test-project", 1).status == "free"
 
     def test_failed_slot_moved_back_to_todo_and_freed(self, supervisor):
@@ -250,7 +267,8 @@ class TestHandleFinishedSlots:
         poller = supervisor._pollers["test-project"]
         poller.move_issue.side_effect = Exception("API down")
 
-        supervisor._handle_finished_slots()
+        with patch.object(supervisor, "_check_pr_status", return_value=None):
+            supervisor._handle_finished_slots()
 
         assert sm.get_slot("test-project", 1).status == "free"
 
@@ -277,7 +295,8 @@ class TestHandleFinishedSlots:
         )
         sm.mark_completed("test-project", 1)
 
-        supervisor._handle_finished_slots()
+        with patch.object(supervisor, "_check_pr_status", return_value=None):
+            supervisor._handle_finished_slots()
 
         events = get_events(supervisor._conn, event_type="slot_completed")
         assert len(events) == 1
@@ -2028,3 +2047,326 @@ class TestCheckPrStatus:
         """_gh_pr_url_for_branch returns None for None branch."""
         result = Supervisor._gh_pr_url_for_branch(None, "/tmp/repo")
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Configurable Linear status names
+# ---------------------------------------------------------------------------
+
+
+def _make_config_custom_statuses(tmp_path: Path) -> BotfarmConfig:
+    """Build a config with custom Linear status names."""
+    return BotfarmConfig(
+        projects=[
+            ProjectConfig(
+                name="test-project",
+                linear_team="TST",
+                base_dir=str(tmp_path / "repo"),
+                worktree_prefix="test-project-slot-",
+                slots=[1, 2],
+            ),
+        ],
+        max_total_slots=5,
+        linear=LinearConfig(
+            api_key="test-key",
+            poll_interval_seconds=10,
+            exclude_tags=["Human"],
+            todo_status="Backlog",
+            in_progress_status="Working",
+            done_status="Shipped",
+            in_review_status="Review",
+            failed_status="Needs Attention",
+            comment_on_failure=True,
+            comment_on_completion=True,
+            comment_on_limit_pause=True,
+        ),
+        database=DatabaseConfig(path=str(tmp_path / "test.db")),
+        state_file=str(tmp_path / "state.json"),
+    )
+
+
+@pytest.fixture()
+def supervisor_custom_statuses(tmp_path):
+    """Create a Supervisor with custom status names."""
+    config = _make_config_custom_statuses(tmp_path)
+    (tmp_path / "repo").mkdir()
+
+    mock_poller = MagicMock()
+    mock_poller.project_name = "test-project"
+    mock_poller.poll.return_value = []
+
+    with patch("botfarm.supervisor.create_pollers", return_value=[mock_poller]):
+        sup = Supervisor(config, log_dir=tmp_path / "logs")
+
+    return sup
+
+
+class TestConfigurableStatusNames:
+    def test_dispatch_uses_custom_in_progress_status(self, supervisor_custom_statuses, tmp_path):
+        sup = supervisor_custom_statuses
+        sm = sup.slot_manager
+        poller = sup._pollers["test-project"]
+        issue = _make_issue()
+
+        slot = sm.get_slot("test-project", 1)
+
+        with patch("botfarm.supervisor.multiprocessing.Process") as MockProc:
+            mock_proc = MagicMock()
+            mock_proc.pid = 12345
+            MockProc.return_value = mock_proc
+            sup._dispatch_worker("test-project", slot, issue, poller)
+
+        poller.move_issue.assert_called_once_with("TST-1", "Working")
+
+    def test_completed_slot_uses_custom_in_review_status(self, supervisor_custom_statuses):
+        sup = supervisor_custom_statuses
+        sm = sup.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.mark_completed("test-project", 1)
+
+        poller = sup._pollers["test-project"]
+
+        with patch.object(sup, "_check_pr_status", return_value=None):
+            sup._handle_finished_slots()
+
+        poller.move_issue.assert_called_once_with("TST-1", "Review")
+
+    def test_completed_merged_slot_uses_custom_done_status(self, supervisor_custom_statuses):
+        sup = supervisor_custom_statuses
+        sm = sup.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.mark_completed("test-project", 1)
+
+        poller = sup._pollers["test-project"]
+
+        with patch.object(sup, "_check_pr_status", return_value="merged"):
+            sup._handle_finished_slots()
+
+        poller.move_issue.assert_called_once_with("TST-1", "Shipped")
+
+    def test_failed_slot_uses_custom_failed_status(self, supervisor_custom_statuses):
+        sup = supervisor_custom_statuses
+        sm = sup.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.mark_failed("test-project", 1, reason="crash")
+
+        poller = sup._pollers["test-project"]
+
+        sup._handle_finished_slots()
+
+        poller.move_issue.assert_called_once_with("TST-1", "Needs Attention")
+
+
+# ---------------------------------------------------------------------------
+# Comment posting behavior
+# ---------------------------------------------------------------------------
+
+
+class TestCommentPosting:
+    def test_failure_comment_posted_by_default(self, supervisor):
+        """comment_on_failure is True by default."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.mark_failed("test-project", 1, reason="crash")
+
+        poller = supervisor._pollers["test-project"]
+
+        supervisor._handle_finished_slots()
+
+        poller.add_comment.assert_called_once()
+        comment_body = poller.add_comment.call_args[0][1]
+        assert "failed" in comment_body.lower()
+
+    def test_failure_comment_includes_stage_and_reason(self, supervisor):
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        # Create a DB task record with failure info
+        task_id = insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project",
+            slot=1, status="failed",
+        )
+        update_task(
+            supervisor._conn, task_id,
+            failure_reason="implement: some error",
+        )
+        supervisor._conn.commit()
+
+        sm.mark_failed("test-project", 1, reason="implement: some error")
+        # Set the stage on the slot so it appears in the comment
+        slot = sm.get_slot("test-project", 1)
+        slot.stage = "implement"
+
+        poller = supervisor._pollers["test-project"]
+
+        supervisor._handle_finished_slots()
+
+        comment_body = poller.add_comment.call_args[0][1]
+        assert "implement" in comment_body
+        assert "some error" in comment_body
+
+    def test_failure_comment_disabled(self, tmp_path):
+        """comment_on_failure=False suppresses failure comments."""
+        config = BotfarmConfig(
+            projects=[
+                ProjectConfig(
+                    name="test-project",
+                    linear_team="TST",
+                    base_dir=str(tmp_path / "repo"),
+                    worktree_prefix="test-project-slot-",
+                    slots=[1],
+                ),
+            ],
+            max_total_slots=5,
+            linear=LinearConfig(
+                api_key="test-key",
+                poll_interval_seconds=10,
+                comment_on_failure=False,
+            ),
+            database=DatabaseConfig(path=str(tmp_path / "test.db")),
+            state_file=str(tmp_path / "state.json"),
+        )
+        (tmp_path / "repo").mkdir()
+
+        mock_poller = MagicMock()
+        mock_poller.project_name = "test-project"
+
+        with patch("botfarm.supervisor.create_pollers", return_value=[mock_poller]):
+            sup = Supervisor(config, log_dir=tmp_path / "logs")
+
+        sm = sup.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.mark_failed("test-project", 1, reason="crash")
+
+        sup._handle_finished_slots()
+
+        mock_poller.add_comment.assert_not_called()
+
+    def test_completion_comment_posted_when_enabled(self, supervisor_custom_statuses):
+        sup = supervisor_custom_statuses
+        sm = sup.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.mark_completed("test-project", 1)
+
+        poller = sup._pollers["test-project"]
+
+        with patch.object(sup, "_check_pr_status", return_value=None):
+            sup._handle_finished_slots()
+
+        # Should have two calls: move_issue and add_comment
+        poller.add_comment.assert_called_once()
+        comment_body = poller.add_comment.call_args[0][1]
+        assert "completed" in comment_body.lower()
+
+    def test_completion_comment_not_posted_by_default(self, supervisor):
+        """comment_on_completion defaults to False."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.mark_completed("test-project", 1)
+
+        poller = supervisor._pollers["test-project"]
+
+        with patch.object(supervisor, "_check_pr_status", return_value=None):
+            supervisor._handle_finished_slots()
+
+        poller.add_comment.assert_not_called()
+
+    def test_completion_comment_includes_pr_url(self, supervisor_custom_statuses):
+        sup = supervisor_custom_statuses
+        sm = sup.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.mark_completed("test-project", 1)
+        slot = sm.get_slot("test-project", 1)
+        slot.pr_url = "https://github.com/org/repo/pull/42"
+
+        poller = sup._pollers["test-project"]
+
+        with patch.object(sup, "_check_pr_status", return_value=None):
+            sup._handle_finished_slots()
+
+        comment_body = poller.add_comment.call_args[0][1]
+        assert "https://github.com/org/repo/pull/42" in comment_body
+
+    def test_limit_pause_comment_posted_when_enabled(self, supervisor_custom_statuses):
+        sup = supervisor_custom_statuses
+        sm = sup.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+
+        wr = _WorkerResult(
+            project="test-project", slot_id=1, success=False,
+            failure_stage="implement", failure_reason="rate limit hit",
+            limit_hit=True,
+        )
+
+        sup._handle_limit_hit(wr)
+
+        poller = sup._pollers["test-project"]
+        poller.add_comment.assert_called_once()
+        comment_body = poller.add_comment.call_args[0][1]
+        assert "usage limit" in comment_body.lower()
+        assert "implement" in comment_body
+
+    def test_limit_pause_comment_not_posted_by_default(self, supervisor):
+        """comment_on_limit_pause defaults to False."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+
+        wr = _WorkerResult(
+            project="test-project", slot_id=1, success=False,
+            failure_stage="implement", failure_reason="rate limit hit",
+            limit_hit=True,
+        )
+
+        supervisor._handle_limit_hit(wr)
+
+        poller = supervisor._pollers["test-project"]
+        poller.add_comment.assert_not_called()
+
+    def test_failure_comment_error_does_not_break_handling(self, supervisor):
+        """If posting the failure comment fails, the slot is still freed."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.mark_failed("test-project", 1, reason="crash")
+
+        poller = supervisor._pollers["test-project"]
+        poller.add_comment.side_effect = Exception("comment API down")
+
+        supervisor._handle_finished_slots()
+
+        assert sm.get_slot("test-project", 1).status == "free"

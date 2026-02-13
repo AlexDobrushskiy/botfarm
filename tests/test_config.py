@@ -511,6 +511,89 @@ def test_load_config_timeout_grace_seconds_negative_rejected(tmp_path):
         load_config(config_path)
 
 
+# --- Linear status and comment config ---
+
+
+def test_load_config_linear_status_defaults(tmp_path):
+    config_path = _write_config(tmp_path, MINIMAL_CONFIG)
+    config = load_config(config_path)
+    assert config.linear.todo_status == "Todo"
+    assert config.linear.in_progress_status == "In Progress"
+    assert config.linear.done_status == "Done"
+    assert config.linear.in_review_status == "In Review"
+    assert config.linear.failed_status == "Todo"
+
+
+def test_load_config_linear_status_custom(tmp_path):
+    data = {
+        **MINIMAL_CONFIG,
+        "linear": {
+            "api_key": "test-key",
+            "todo_status": "Backlog",
+            "in_progress_status": "Working",
+            "done_status": "Shipped",
+            "in_review_status": "Review",
+            "failed_status": "Needs Attention",
+        },
+    }
+    config_path = _write_config(tmp_path, data)
+    config = load_config(config_path)
+    assert config.linear.todo_status == "Backlog"
+    assert config.linear.in_progress_status == "Working"
+    assert config.linear.done_status == "Shipped"
+    assert config.linear.in_review_status == "Review"
+    assert config.linear.failed_status == "Needs Attention"
+
+
+def test_load_config_comment_defaults(tmp_path):
+    config_path = _write_config(tmp_path, MINIMAL_CONFIG)
+    config = load_config(config_path)
+    assert config.linear.comment_on_failure is True
+    assert config.linear.comment_on_completion is False
+    assert config.linear.comment_on_limit_pause is False
+
+
+def test_load_config_comment_custom(tmp_path):
+    data = {
+        **MINIMAL_CONFIG,
+        "linear": {
+            "api_key": "test-key",
+            "comment_on_failure": False,
+            "comment_on_completion": True,
+            "comment_on_limit_pause": True,
+        },
+    }
+    config_path = _write_config(tmp_path, data)
+    config = load_config(config_path)
+    assert config.linear.comment_on_failure is False
+    assert config.linear.comment_on_completion is True
+    assert config.linear.comment_on_limit_pause is True
+
+
+def test_load_config_comment_rejects_string_bool(tmp_path):
+    data = {
+        **MINIMAL_CONFIG,
+        "linear": {
+            "api_key": "test-key",
+            "comment_on_failure": "false",
+        },
+    }
+    config_path = _write_config(tmp_path, data)
+    with pytest.raises(ConfigError, match="must be a boolean"):
+        load_config(config_path)
+
+
+def test_default_config_template_includes_status_and_comment_fields():
+    from botfarm.config import DEFAULT_CONFIG_TEMPLATE
+    assert "todo_status:" in DEFAULT_CONFIG_TEMPLATE
+    assert "in_progress_status:" in DEFAULT_CONFIG_TEMPLATE
+    assert "done_status:" in DEFAULT_CONFIG_TEMPLATE
+    assert "failed_status:" in DEFAULT_CONFIG_TEMPLATE
+    assert "comment_on_failure:" in DEFAULT_CONFIG_TEMPLATE
+    assert "comment_on_completion:" in DEFAULT_CONFIG_TEMPLATE
+    assert "comment_on_limit_pause:" in DEFAULT_CONFIG_TEMPLATE
+
+
 # --- CLI init command ---
 
 
