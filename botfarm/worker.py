@@ -232,7 +232,7 @@ def _run_pr_checks(pr_url: str, *, cwd: str | Path, timeout: int = 600) -> Stage
         return StageResult(
             stage="pr_checks",
             success=success,
-            error=None if success else f"CI checks failed:\n{proc.stdout[:500]}",
+            error=None if success else f"CI checks failed:\n{proc.stdout[:2000]}",
         )
     except subprocess.TimeoutExpired:
         elapsed = time.monotonic() - start
@@ -458,13 +458,7 @@ def run_pipeline(
             # CI failed — attempt retries if configured
             if max_ci_retries > 0:
                 ci_failure_output = pipeline.failure_reason or "CI checks failed"
-                # Clear the failure so the retry loop can proceed.
-                # run_and_record already called _record_failure — reset
-                # the task status back to "in_progress".
-                pipeline.failure_stage = None
-                pipeline.failure_reason = None
-                update_task(conn, task_id, status="in_progress", failure_reason=None)
-                conn.commit()
+                _reset_for_retry(ctx)
                 success = _run_ci_retry_loop(
                     ctx,
                     pr_url=pr_url,
@@ -540,7 +534,6 @@ class _PipelineContext:
         *,
         pr_url: str | None,
         iteration: int = 1,
-        ci_failure_output: str | None = None,
     ) -> StageResult | None:
         """Execute a stage, record it, accumulate metrics.
 
@@ -560,7 +553,6 @@ class _PipelineContext:
                 cwd=self.cwd,
                 max_turns=self.turns_cfg.get(stage, 100),
                 pr_checks_timeout=self.pr_checks_timeout,
-                ci_failure_output=ci_failure_output,
             )
         except Exception as exc:
             logger.error("Stage '%s' raised: %s", stage, exc)
@@ -569,6 +561,33 @@ class _PipelineContext:
             _record_failure(self.conn, self.task_id, self.pipeline)
             return None
 
+        return self._finish_stage(stage, result, wall_start, iteration)
+
+    def run_and_record_result(
+        self,
+        stage: str,
+        result: StageResult,
+        *,
+        wall_start: float,
+        iteration: int = 1,
+    ) -> StageResult | None:
+        """Record a pre-computed StageResult, accumulate metrics.
+
+        Like ``run_and_record`` but skips execution — the caller already
+        ran the stage directly (e.g. ``_run_ci_fix``).
+
+        Returns the ``StageResult`` on success, or ``None`` on failure.
+        """
+        return self._finish_stage(stage, result, wall_start, iteration)
+
+    def _finish_stage(
+        self,
+        stage: str,
+        result: StageResult,
+        wall_start: float,
+        iteration: int,
+    ) -> StageResult | None:
+        """Shared logic for recording a stage result and updating metrics."""
         wall_elapsed = time.monotonic() - wall_start
 
         _record_stage_run(
@@ -671,6 +690,19 @@ def _run_review_fix_loop(
     return True
 
 
+def _reset_for_retry(ctx: _PipelineContext) -> None:
+    """Reset pipeline and task state so a retry can proceed.
+
+    After ``run_and_record`` records a failure, this undoes the failure
+    side-effects (pipeline flags + task DB status) so the next retry
+    iteration starts from a clean state.
+    """
+    ctx.pipeline.failure_stage = None
+    ctx.pipeline.failure_reason = None
+    update_task(ctx.conn, ctx.task_id, status="in_progress", failure_reason=None)
+    ctx.conn.commit()
+
+
 def _run_ci_retry_loop(
     ctx: _PipelineContext,
     *,
@@ -693,13 +725,25 @@ def _run_ci_retry_loop(
         )
         ctx.conn.commit()
 
-        # --- FIX (with CI context) ---
-        fix_result = ctx.run_and_record(
-            "fix", pr_url=pr_url, iteration=retry,
-            ci_failure_output=ci_failure_output,
+        # --- FIX (with CI context) — call _run_ci_fix directly ---
+        wall_start = time.monotonic()
+        try:
+            fix_result = _run_ci_fix(
+                pr_url, ci_failure_output=ci_failure_output,
+                cwd=ctx.cwd, max_turns=ctx.turns_cfg.get("fix", 100),
+            )
+        except Exception as exc:
+            logger.error("CI fix stage raised: %s", exc)
+            ctx.pipeline.failure_stage = "fix"
+            ctx.pipeline.failure_reason = str(exc)[:500]
+            _record_failure(ctx.conn, ctx.task_id, ctx.pipeline)
+            return False
+
+        fix_result = ctx.run_and_record_result(
+            "fix", fix_result, wall_start=wall_start, iteration=retry,
         )
         if fix_result is None:
-            return False  # failure recorded by run_and_record
+            return False  # failure recorded by run_and_record_result
 
         # --- PR_CHECKS ---
         checks_result = ctx.run_and_record(
@@ -722,14 +766,7 @@ def _run_ci_retry_loop(
 
         # CI still failing — capture new failure output for next retry
         ci_failure_output = ctx.pipeline.failure_reason or ci_failure_output
-        # Clear the pipeline failure so the retry loop can continue.
-        # run_and_record already called _record_failure which set the task
-        # status to "failed" — reset it to "in_progress" so subsequent
-        # retries (or the final failure) record the correct state.
-        ctx.pipeline.failure_stage = None
-        ctx.pipeline.failure_reason = None
-        update_task(ctx.conn, ctx.task_id, status="in_progress", failure_reason=None)
-        ctx.conn.commit()
+        _reset_for_retry(ctx)
 
     # Max retries exhausted
     insert_event(
@@ -757,13 +794,8 @@ def _execute_stage(
     cwd: str | Path,
     max_turns: int,
     pr_checks_timeout: int,
-    ci_failure_output: str | None = None,
 ) -> StageResult:
-    """Dispatch to the appropriate stage runner.
-
-    When *ci_failure_output* is provided and the stage is ``"fix"``, the
-    CI-specific fix prompt is used instead of the regular review-fix prompt.
-    """
+    """Dispatch to the appropriate stage runner."""
     if stage == "implement":
         return _run_implement(ticket_id, cwd=cwd, max_turns=max_turns)
     elif stage == "review":
@@ -773,11 +805,6 @@ def _execute_stage(
     elif stage == "fix":
         if not pr_url:
             raise ValueError(f"{stage} stage requires pr_url")
-        if ci_failure_output is not None:
-            return _run_ci_fix(
-                pr_url, ci_failure_output=ci_failure_output,
-                cwd=cwd, max_turns=max_turns,
-            )
         return _run_fix(pr_url, cwd=cwd, max_turns=max_turns)
     elif stage == "pr_checks":
         if not pr_url:

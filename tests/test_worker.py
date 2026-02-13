@@ -1181,20 +1181,20 @@ class TestCiRetryLoop:
         assert result.stages_completed == list(STAGES)
         assert mock_exec.call_count == 4
 
+    @patch("botfarm.worker._run_ci_fix")
     @patch("botfarm.worker._execute_stage")
-    def test_ci_fails_then_passes_after_retry(self, mock_exec, conn, task_id, tmp_path):
+    def test_ci_fails_then_passes_after_retry(self, mock_exec, mock_ci_fix, conn, task_id, tmp_path):
         """CI fails, fix runs with CI context, CI passes on retry."""
         mock_exec.side_effect = [
             _mock_stage_result("implement", pr_url=PR_URL),
             _mock_stage_result("review", review_approved=True),
             # First pr_checks: fails
             _mock_stage_result("pr_checks", success=False),
-            # CI retry: fix with CI context
-            _mock_stage_result("fix", cost=0.3, turns=8),
-            # Second pr_checks: passes
+            # Second pr_checks (after CI fix): passes
             _mock_stage_result("pr_checks"),
             _mock_stage_result("merge"),
         ]
+        mock_ci_fix.return_value = _mock_stage_result("fix", cost=0.3, turns=8)
         result = run_pipeline(
             ticket_id="SMA-99",
             task_id=task_id,
@@ -1205,27 +1205,26 @@ class TestCiRetryLoop:
         )
         assert result.success is True
         assert result.stages_completed == list(STAGES)
-        assert mock_exec.call_count == 6
 
-        # Verify the fix call got ci_failure_output
-        fix_call = mock_exec.call_args_list[3]
-        assert fix_call.kwargs.get("ci_failure_output") is not None
+        # Verify _run_ci_fix was called with ci_failure_output
+        assert mock_ci_fix.call_count == 1
+        assert mock_ci_fix.call_args.kwargs.get("ci_failure_output") is not None
 
+    @patch("botfarm.worker._run_ci_fix")
     @patch("botfarm.worker._execute_stage")
-    def test_ci_fails_all_retries_exhausted(self, mock_exec, conn, task_id, tmp_path):
+    def test_ci_fails_all_retries_exhausted(self, mock_exec, mock_ci_fix, conn, task_id, tmp_path):
         """CI fails and all retries exhausted — pipeline fails."""
         mock_exec.side_effect = [
             _mock_stage_result("implement", pr_url=PR_URL),
             _mock_stage_result("review", review_approved=True),
             # First pr_checks: fails
             _mock_stage_result("pr_checks", success=False),
-            # Retry 1: fix succeeds, pr_checks fails again
-            _mock_stage_result("fix"),
+            # Retry 1: pr_checks fails again
             _mock_stage_result("pr_checks", success=False),
-            # Retry 2: fix succeeds, pr_checks fails again
-            _mock_stage_result("fix"),
+            # Retry 2: pr_checks fails again
             _mock_stage_result("pr_checks", success=False),
         ]
+        mock_ci_fix.return_value = _mock_stage_result("fix")
         result = run_pipeline(
             ticket_id="SMA-99",
             task_id=task_id,
@@ -1237,22 +1236,22 @@ class TestCiRetryLoop:
         assert result.success is False
         assert result.failure_stage == "pr_checks"
         assert "2 retries" in result.failure_reason
-        assert mock_exec.call_count == 7
+        assert mock_ci_fix.call_count == 2
 
         task = get_task(conn, task_id)
         assert task["status"] == "failed"
 
+    @patch("botfarm.worker._run_ci_fix")
     @patch("botfarm.worker._execute_stage")
-    def test_ci_fix_failure_stops_pipeline(self, mock_exec, conn, task_id, tmp_path):
+    def test_ci_fix_failure_stops_pipeline(self, mock_exec, mock_ci_fix, conn, task_id, tmp_path):
         """If the CI fix stage fails, pipeline stops immediately."""
         mock_exec.side_effect = [
             _mock_stage_result("implement", pr_url=PR_URL),
             _mock_stage_result("review", review_approved=True),
             # First pr_checks: fails
             _mock_stage_result("pr_checks", success=False),
-            # CI fix fails
-            _mock_stage_result("fix", success=False),
         ]
+        mock_ci_fix.return_value = _mock_stage_result("fix", success=False)
         result = run_pipeline(
             ticket_id="SMA-99",
             task_id=task_id,
@@ -1284,8 +1283,9 @@ class TestCiRetryLoop:
         assert result.failure_stage == "pr_checks"
         assert mock_exec.call_count == 3
 
+    @patch("botfarm.worker._run_ci_fix")
     @patch("botfarm.worker._execute_stage")
-    def test_ci_retry_events_logged(self, mock_exec, conn, task_id, tmp_path):
+    def test_ci_retry_events_logged(self, mock_exec, mock_ci_fix, conn, task_id, tmp_path):
         """CI retry events are logged in task_events."""
         from botfarm.db import get_events
 
@@ -1293,10 +1293,10 @@ class TestCiRetryLoop:
             _mock_stage_result("implement", pr_url=PR_URL),
             _mock_stage_result("review", review_approved=True),
             _mock_stage_result("pr_checks", success=False),
-            _mock_stage_result("fix"),
             _mock_stage_result("pr_checks"),
             _mock_stage_result("merge"),
         ]
+        mock_ci_fix.return_value = _mock_stage_result("fix")
         run_pipeline(
             ticket_id="SMA-99",
             task_id=task_id,
@@ -1310,8 +1310,9 @@ class TestCiRetryLoop:
         assert "ci_retry_started" in event_types
         assert "ci_passed_after_retry" in event_types
 
+    @patch("botfarm.worker._run_ci_fix")
     @patch("botfarm.worker._execute_stage")
-    def test_ci_max_retries_event_logged(self, mock_exec, conn, task_id, tmp_path):
+    def test_ci_max_retries_event_logged(self, mock_exec, mock_ci_fix, conn, task_id, tmp_path):
         """max_ci_retries_reached event is logged when retries exhausted."""
         from botfarm.db import get_events
 
@@ -1319,9 +1320,9 @@ class TestCiRetryLoop:
             _mock_stage_result("implement", pr_url=PR_URL),
             _mock_stage_result("review", review_approved=True),
             _mock_stage_result("pr_checks", success=False),
-            _mock_stage_result("fix"),
             _mock_stage_result("pr_checks", success=False),
         ]
+        mock_ci_fix.return_value = _mock_stage_result("fix")
         run_pipeline(
             ticket_id="SMA-99",
             task_id=task_id,
@@ -1335,17 +1336,18 @@ class TestCiRetryLoop:
         assert "ci_retry_started" in event_types
         assert "max_ci_retries_reached" in event_types
 
+    @patch("botfarm.worker._run_ci_fix")
     @patch("botfarm.worker._execute_stage")
-    def test_ci_retry_metrics_accumulate(self, mock_exec, conn, task_id, tmp_path):
+    def test_ci_retry_metrics_accumulate(self, mock_exec, mock_ci_fix, conn, task_id, tmp_path):
         """Costs and turns from CI fix retries accumulate in pipeline metrics."""
         mock_exec.side_effect = [
             _mock_stage_result("implement", pr_url=PR_URL, cost=1.0, turns=20),
             _mock_stage_result("review", review_approved=True, cost=0.2, turns=5),
             _mock_stage_result("pr_checks", success=False),
-            _mock_stage_result("fix", cost=0.4, turns=10),
             _mock_stage_result("pr_checks"),
             _mock_stage_result("merge"),
         ]
+        mock_ci_fix.return_value = _mock_stage_result("fix", cost=0.4, turns=10)
         result = run_pipeline(
             ticket_id="SMA-99",
             task_id=task_id,
@@ -1360,22 +1362,22 @@ class TestCiRetryLoop:
         # 20 + 5 + 10 = 35
         assert result.total_turns == 35
 
+    @patch("botfarm.worker._run_ci_fix")
     @patch("botfarm.worker._execute_stage")
-    def test_ci_retry_second_attempt_passes(self, mock_exec, conn, task_id, tmp_path):
+    def test_ci_retry_second_attempt_passes(self, mock_exec, mock_ci_fix, conn, task_id, tmp_path):
         """CI fails twice, passes on second retry."""
         mock_exec.side_effect = [
             _mock_stage_result("implement", pr_url=PR_URL),
             _mock_stage_result("review", review_approved=True),
             # Initial pr_checks: fails
             _mock_stage_result("pr_checks", success=False),
-            # Retry 1: fix ok, pr_checks fails
-            _mock_stage_result("fix"),
+            # Retry 1: pr_checks fails
             _mock_stage_result("pr_checks", success=False),
-            # Retry 2: fix ok, pr_checks passes
-            _mock_stage_result("fix"),
+            # Retry 2: pr_checks passes
             _mock_stage_result("pr_checks"),
             _mock_stage_result("merge"),
         ]
+        mock_ci_fix.return_value = _mock_stage_result("fix")
         result = run_pipeline(
             ticket_id="SMA-99",
             task_id=task_id,
@@ -1385,4 +1387,4 @@ class TestCiRetryLoop:
             max_ci_retries=2,
         )
         assert result.success is True
-        assert mock_exec.call_count == 8
+        assert mock_ci_fix.call_count == 2
