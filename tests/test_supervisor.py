@@ -1539,3 +1539,424 @@ class TestCheckTimeouts:
         # Should not be reconciled — timeout system owns it
         assert messages == []
         assert slot.status == "busy"
+
+
+# ---------------------------------------------------------------------------
+# Crash recovery on startup
+# ---------------------------------------------------------------------------
+
+
+class TestRecoverOnStartup:
+    """Tests for _recover_on_startup — the crash recovery logic."""
+
+    def test_dead_worker_no_pr_marked_failed(self, supervisor):
+        """Dead worker with no PR is marked failed."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        slot = sm.get_slot("test-project", 1)
+        slot.pid = 99999
+
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        with (
+            patch("botfarm.supervisor._is_pid_alive", return_value=False),
+            patch.object(supervisor, "_check_pr_status", return_value=None),
+        ):
+            supervisor._recover_on_startup()
+
+        assert sm.get_slot("test-project", 1).status == "failed"
+        events = get_events(supervisor._conn, event_type="recovery_failed")
+        assert len(events) == 1
+        assert "no_pr" in events[0]["detail"]
+
+    def test_dead_worker_pr_merged_marked_completed(self, supervisor):
+        """Dead worker whose PR was merged is marked completed."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        slot = sm.get_slot("test-project", 1)
+        slot.pid = 99999
+
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        with (
+            patch("botfarm.supervisor._is_pid_alive", return_value=False),
+            patch.object(supervisor, "_check_pr_status", return_value="merged"),
+        ):
+            supervisor._recover_on_startup()
+
+        assert sm.get_slot("test-project", 1).status == "completed_pending_cleanup"
+        events = get_events(supervisor._conn, event_type="recovery_completed")
+        assert len(events) == 1
+        assert "pr_merged" in events[0]["detail"]
+
+    def test_dead_worker_pr_open_marked_completed(self, supervisor):
+        """Dead worker whose PR is still open is marked completed."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        slot = sm.get_slot("test-project", 1)
+        slot.pid = 99999
+
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        with (
+            patch("botfarm.supervisor._is_pid_alive", return_value=False),
+            patch.object(supervisor, "_check_pr_status", return_value="open"),
+        ):
+            supervisor._recover_on_startup()
+
+        assert sm.get_slot("test-project", 1).status == "completed_pending_cleanup"
+        events = get_events(supervisor._conn, event_type="recovery_completed")
+        assert len(events) == 1
+        assert "pr_open" in events[0]["detail"]
+
+    def test_alive_worker_reattached(self, supervisor):
+        """Alive worker is re-attached — slot stays busy."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        slot = sm.get_slot("test-project", 1)
+        slot.pid = 99999
+
+        with patch("botfarm.supervisor._is_pid_alive", return_value=True):
+            supervisor._recover_on_startup()
+
+        assert sm.get_slot("test-project", 1).status == "busy"
+        events = get_events(supervisor._conn, event_type="worker_reattached")
+        assert len(events) == 1
+        assert "99999" in events[0]["detail"]
+
+    def test_timed_out_slot_recovered_as_failed(self, supervisor):
+        """Slot with sigterm_sent_at is recovered as failed (timeout)."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.update_stage("test-project", 1, stage="implement")
+        slot = sm.get_slot("test-project", 1)
+        slot.pid = 99999
+        slot.sigterm_sent_at = "2020-01-01T00:00:00.000000Z"
+
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        supervisor._recover_on_startup()
+
+        assert sm.get_slot("test-project", 1).status == "failed"
+        events = get_events(supervisor._conn, event_type="recovery_timeout")
+        assert len(events) == 1
+        assert "implement" in events[0]["detail"]
+
+    def test_free_slots_not_affected(self, supervisor):
+        """Free slots are not touched during recovery."""
+        sm = supervisor.slot_manager
+        assert sm.get_slot("test-project", 1).status == "free"
+        assert sm.get_slot("test-project", 2).status == "free"
+
+        supervisor._recover_on_startup()
+
+        assert sm.get_slot("test-project", 1).status == "free"
+        assert sm.get_slot("test-project", 2).status == "free"
+        events = get_events(supervisor._conn, event_type="startup_recovery")
+        assert len(events) == 0
+
+    def test_paused_slots_not_affected(self, supervisor):
+        """Paused slots are left as-is for _handle_paused_slots to handle."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.update_stage("test-project", 1, stage="implement")
+        sm.mark_paused_limit(
+            "test-project", 1,
+            resume_after="2099-01-01T00:00:00+00:00",
+        )
+
+        supervisor._recover_on_startup()
+
+        assert sm.get_slot("test-project", 1).status == "paused_limit"
+
+    def test_startup_recovery_event_logged(self, supervisor):
+        """When slots are recovered, a startup_recovery event is logged."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        slot = sm.get_slot("test-project", 1)
+        slot.pid = 99999
+
+        with (
+            patch("botfarm.supervisor._is_pid_alive", return_value=False),
+            patch.object(supervisor, "_check_pr_status", return_value=None),
+        ):
+            supervisor._recover_on_startup()
+
+        events = get_events(supervisor._conn, event_type="startup_recovery")
+        assert len(events) == 1
+        assert "slots_processed=1" in events[0]["detail"]
+
+    def test_multiple_slots_recovered(self, supervisor):
+        """Multiple busy slots with dead workers are all recovered."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test 1", branch="b1",
+        )
+        sm.assign_ticket(
+            "test-project", 2,
+            ticket_id="TST-2", ticket_title="Test 2", branch="b2",
+        )
+        sm.get_slot("test-project", 1).pid = 99998
+        sm.get_slot("test-project", 2).pid = 99999
+
+        with (
+            patch("botfarm.supervisor._is_pid_alive", return_value=False),
+            patch.object(supervisor, "_check_pr_status", return_value=None),
+        ):
+            supervisor._recover_on_startup()
+
+        assert sm.get_slot("test-project", 1).status == "failed"
+        assert sm.get_slot("test-project", 2).status == "failed"
+        events = get_events(supervisor._conn, event_type="startup_recovery")
+        assert "slots_processed=2" in events[0]["detail"]
+
+    def test_run_calls_recover_on_startup(self, supervisor, tmp_path):
+        """run() calls _recover_on_startup before entering the main loop."""
+        supervisor._shutdown_requested = True
+
+        with (
+            patch.object(supervisor, "_recover_on_startup") as mock_recover,
+            patch.object(supervisor, "install_signal_handlers"),
+        ):
+            supervisor.run()
+
+        mock_recover.assert_called_once()
+
+
+class TestReconcileDbTasks:
+    """Tests for _reconcile_db_tasks — DB/state consistency."""
+
+    def test_in_progress_task_with_failed_slot_reconciled(self, supervisor):
+        """DB task in_progress + slot failed -> DB updated to failed."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.mark_failed("test-project", 1, reason="crash")
+
+        task_id = insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        supervisor._reconcile_db_tasks()
+
+        task = get_task(supervisor._conn, task_id)
+        assert task["status"] == "failed"
+
+    def test_in_progress_task_with_completed_slot_reconciled(self, supervisor):
+        """DB task in_progress + slot completed -> DB updated to completed."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.mark_completed("test-project", 1)
+
+        task_id = insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        supervisor._reconcile_db_tasks()
+
+        task = get_task(supervisor._conn, task_id)
+        assert task["status"] == "completed"
+
+    def test_already_consistent_not_changed(self, supervisor):
+        """DB task that already matches slot status is not modified."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+
+        task_id = insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        supervisor._reconcile_db_tasks()
+
+        # busy slot + in_progress task = consistent, no change
+        task = get_task(supervisor._conn, task_id)
+        assert task["status"] == "in_progress"
+
+    def test_no_task_in_db_no_crash(self, supervisor):
+        """Slot with ticket_id that has no DB record doesn't crash."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-UNKNOWN", ticket_title="Test", branch="b1",
+        )
+        # No insert_task call — ticket has no DB record
+
+        # Should not raise
+        supervisor._reconcile_db_tasks()
+
+
+class TestCheckPrStatus:
+    """Tests for _check_pr_status and its helpers."""
+
+    def test_uses_stored_pr_url(self, supervisor):
+        """When slot has pr_url, uses it to check state."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.set_pr_url("test-project", 1, "https://github.com/org/repo/pull/42")
+        slot = sm.get_slot("test-project", 1)
+
+        with patch.object(
+            Supervisor, "_gh_pr_state", return_value="merged",
+        ):
+            result = supervisor._check_pr_status(slot)
+
+        assert result == "merged"
+
+    def test_falls_back_to_branch_lookup(self, supervisor):
+        """When no pr_url stored, looks up PR by branch."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        slot = sm.get_slot("test-project", 1)
+        assert slot.pr_url is None
+
+        with (
+            patch.object(
+                Supervisor, "_gh_pr_url_for_branch",
+                return_value="https://github.com/org/repo/pull/99",
+            ),
+            patch.object(Supervisor, "_gh_pr_state", return_value="open"),
+        ):
+            result = supervisor._check_pr_status(slot)
+
+        assert result == "open"
+
+    def test_returns_none_when_no_pr(self, supervisor):
+        """When no PR found by any method, returns None."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        slot = sm.get_slot("test-project", 1)
+
+        with patch.object(
+            Supervisor, "_gh_pr_url_for_branch", return_value=None,
+        ):
+            result = supervisor._check_pr_status(slot)
+
+        assert result is None
+
+    def test_gh_pr_state_merged(self):
+        """_gh_pr_state returns 'merged' for merged PRs."""
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.stdout = "MERGED\n"
+
+        with patch("botfarm.supervisor.subprocess.run", return_value=mock_proc):
+            result = Supervisor._gh_pr_state("https://github.com/org/repo/pull/1")
+
+        assert result == "merged"
+
+    def test_gh_pr_state_open(self):
+        """_gh_pr_state returns 'open' for open PRs."""
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.stdout = "OPEN\n"
+
+        with patch("botfarm.supervisor.subprocess.run", return_value=mock_proc):
+            result = Supervisor._gh_pr_state("https://github.com/org/repo/pull/1")
+
+        assert result == "open"
+
+    def test_gh_pr_state_failure(self):
+        """_gh_pr_state returns None on command failure."""
+        mock_proc = MagicMock()
+        mock_proc.returncode = 1
+        mock_proc.stdout = ""
+
+        with patch("botfarm.supervisor.subprocess.run", return_value=mock_proc):
+            result = Supervisor._gh_pr_state("https://github.com/org/repo/pull/1")
+
+        assert result is None
+
+    def test_gh_pr_url_for_branch_success(self):
+        """_gh_pr_url_for_branch returns URL on success."""
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.stdout = "https://github.com/org/repo/pull/42\n"
+
+        with patch("botfarm.supervisor.subprocess.run", return_value=mock_proc):
+            result = Supervisor._gh_pr_url_for_branch("my-branch", "/tmp/repo")
+
+        assert result == "https://github.com/org/repo/pull/42"
+
+    def test_gh_pr_url_for_branch_no_pr(self):
+        """_gh_pr_url_for_branch returns None when no PR exists."""
+        mock_proc = MagicMock()
+        mock_proc.returncode = 1
+        mock_proc.stdout = ""
+
+        with patch("botfarm.supervisor.subprocess.run", return_value=mock_proc):
+            result = Supervisor._gh_pr_url_for_branch("my-branch", "/tmp/repo")
+
+        assert result is None
+
+    def test_gh_pr_url_for_branch_none_branch(self):
+        """_gh_pr_url_for_branch returns None for None branch."""
+        result = Supervisor._gh_pr_url_for_branch(None, "/tmp/repo")
+        assert result is None
