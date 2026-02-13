@@ -21,7 +21,7 @@ query TeamTodoIssues($teamKey: String!, $statusName: String!, $first: Int!) {
       state: { name: { eq: $statusName } }
     }
     first: $first
-    orderBy: priority
+    orderBy: createdAt
   ) {
     nodes {
       id
