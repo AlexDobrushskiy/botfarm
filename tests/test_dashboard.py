@@ -751,8 +751,8 @@ class TestMetricsPage:
         body = resp.text
         assert "Tasks Completed" in body
         assert "Today" in body
-        assert "This Week" in body
-        assert "This Month" in body
+        assert "Last 7 Days" in body
+        assert "Last 30 Days" in body
 
     def test_contains_cost_buckets(self, client):
         resp = client.get("/metrics")

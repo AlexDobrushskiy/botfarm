@@ -374,24 +374,7 @@ def create_app(
         conn: sqlite3.Connection, project: str | None = None,
     ) -> dict:
         """Compute all metrics, optionally filtered by project."""
-        metrics: dict = {
-            "total_tasks": 0,
-            "completed_tasks": 0,
-            "failed_tasks": 0,
-            "total_cost": 0.0,
-            "avg_cost": 0.0,
-            "avg_turns": 0,
-            "avg_review_iterations": 0.0,
-            "avg_wall_time_seconds": 0,
-            "success_rate": 0.0,
-            "completed_today": 0,
-            "completed_week": 0,
-            "completed_month": 0,
-            "cost_today": 0.0,
-            "cost_week": 0.0,
-            "cost_month": 0.0,
-            "failure_reasons": [],
-        }
+        metrics: dict = {**_EMPTY_METRICS, "failure_reasons": []}
         where = " WHERE 1=1"
         params: list[object] = []
         if project:
@@ -403,10 +386,7 @@ def create_app(
             "SELECT COUNT(*) as total, "
             "SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) as completed, "
             "SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) as failed, "
-            "COALESCE(SUM(cost_usd), 0) as total_cost, "
-            "COALESCE(AVG(cost_usd), 0) as avg_cost, "
-            "COALESCE(AVG(turns), 0) as avg_turns, "
-            "COALESCE(AVG(review_iterations), 0) as avg_reviews "
+            "COALESCE(SUM(cost_usd), 0) as total_cost "
             "FROM tasks" + where,
             params,
         ).fetchone()
@@ -415,13 +395,23 @@ def create_app(
             metrics["completed_tasks"] = row["completed"] or 0
             metrics["failed_tasks"] = row["failed"] or 0
             metrics["total_cost"] = row["total_cost"]
-            metrics["avg_cost"] = row["avg_cost"]
-            metrics["avg_turns"] = round(row["avg_turns"])
-            metrics["avg_review_iterations"] = round(row["avg_reviews"], 1)
             if metrics["total_tasks"] > 0:
                 metrics["success_rate"] = round(
                     metrics["completed_tasks"] / metrics["total_tasks"] * 100, 1,
                 )
+
+        # Averages over completed tasks only
+        avg_row = conn.execute(
+            "SELECT COALESCE(AVG(cost_usd), 0) as avg_cost, "
+            "COALESCE(AVG(turns), 0) as avg_turns, "
+            "COALESCE(AVG(review_iterations), 0) as avg_reviews "
+            "FROM tasks" + where + " AND status = 'completed'",
+            params,
+        ).fetchone()
+        if avg_row:
+            metrics["avg_cost"] = avg_row["avg_cost"]
+            metrics["avg_turns"] = round(avg_row["avg_turns"])
+            metrics["avg_review_iterations"] = round(avg_row["avg_reviews"], 1)
 
         # Average wall time (only for tasks with both timestamps)
         wt_row = conn.execute(
@@ -435,18 +425,18 @@ def create_app(
         if wt_row and wt_row["avg_wt"] is not None:
             metrics["avg_wall_time_seconds"] = int(wt_row["avg_wt"])
 
-        # Time-bucketed counts & costs
+        # Time-bucketed counts & costs (completed tasks only)
         for label, interval in [
             ("today", "start of day"),
-            ("week", "-6 days", ),
+            ("week", "-6 days"),
             ("month", "-29 days"),
         ]:
             bucket_row = conn.execute(
-                "SELECT "
-                "SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) as cnt, "
+                "SELECT COUNT(*) as cnt, "
                 "COALESCE(SUM(cost_usd), 0) as cost "
                 "FROM tasks" + where
-                + " AND completed_at >= datetime('now', ?)",
+                + " AND status = 'completed'"
+                " AND completed_at >= datetime('now', ?)",
                 [*params, interval],
             ).fetchone()
             if bucket_row:
