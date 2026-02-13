@@ -522,7 +522,6 @@ def test_load_config_linear_status_defaults(tmp_path):
     assert config.linear.done_status == "Done"
     assert config.linear.in_review_status == "In Review"
     assert config.linear.failed_status == "Todo"
-    assert config.linear.cancelled_status == "Todo"
 
 
 def test_load_config_linear_status_custom(tmp_path):
@@ -535,7 +534,6 @@ def test_load_config_linear_status_custom(tmp_path):
             "done_status": "Shipped",
             "in_review_status": "Review",
             "failed_status": "Needs Attention",
-            "cancelled_status": "Backlog",
         },
     }
     config_path = _write_config(tmp_path, data)
@@ -545,7 +543,6 @@ def test_load_config_linear_status_custom(tmp_path):
     assert config.linear.done_status == "Shipped"
     assert config.linear.in_review_status == "Review"
     assert config.linear.failed_status == "Needs Attention"
-    assert config.linear.cancelled_status == "Backlog"
 
 
 def test_load_config_comment_defaults(tmp_path):
@@ -571,6 +568,19 @@ def test_load_config_comment_custom(tmp_path):
     assert config.linear.comment_on_failure is False
     assert config.linear.comment_on_completion is True
     assert config.linear.comment_on_limit_pause is True
+
+
+def test_load_config_comment_rejects_string_bool(tmp_path):
+    data = {
+        **MINIMAL_CONFIG,
+        "linear": {
+            "api_key": "test-key",
+            "comment_on_failure": "false",
+        },
+    }
+    config_path = _write_config(tmp_path, data)
+    with pytest.raises(ConfigError, match="must be a boolean"):
+        load_config(config_path)
 
 
 def test_default_config_template_includes_status_and_comment_fields():

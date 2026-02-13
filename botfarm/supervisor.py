@@ -27,7 +27,7 @@ from pathlib import Path
 from types import FrameType
 
 from botfarm.config import BotfarmConfig, ProjectConfig
-from botfarm.db import init_db, insert_event, insert_task, update_task
+from botfarm.db import get_task, init_db, insert_event, insert_task, update_task
 from botfarm.linear import LinearPoller, create_pollers
 from botfarm.slots import SlotManager, SlotState, _is_pid_alive
 from botfarm.usage import DEFAULT_PAUSE_5H_THRESHOLD, DEFAULT_PAUSE_7D_THRESHOLD, UsagePoller
@@ -606,12 +606,15 @@ class Supervisor:
                 self._handle_limit_hit(wr)
             else:
                 reason = f"{wr.failure_stage}: {wr.failure_reason}"
+                # Capture ticket_id before mark_failed in case it
+                # ever clears ticket state (like free_slot does).
+                slot = self._slot_manager.get_slot(wr.project, wr.slot_id)
+                ticket_id = slot.ticket_id if slot else None
                 self._slot_manager.mark_failed(
                     wr.project, wr.slot_id, reason=reason,
                 )
                 # Update DB task with failure info
-                slot = self._slot_manager.get_slot(wr.project, wr.slot_id)
-                task_id = self._find_task_id(slot.ticket_id) if slot else None
+                task_id = self._find_task_id(ticket_id)
                 if task_id is not None:
                     update_task(
                         self._conn, task_id,
@@ -892,7 +895,6 @@ class Supervisor:
         # Get failure reason from DB task record
         task_id = self._find_task_id(slot.ticket_id)
         if task_id is not None:
-            from botfarm.db import get_task
             task = get_task(self._conn, task_id)
             if task and task["failure_reason"]:
                 reason = task["failure_reason"]
@@ -916,7 +918,6 @@ class Supervisor:
         lines = ["**Botfarm task completed**"]
 
         if task_id is not None:
-            from botfarm.db import get_task
             task = get_task(self._conn, task_id)
             if task:
                 if task["cost_usd"] is not None:
@@ -930,8 +931,13 @@ class Supervisor:
                             task["completed_at"].replace("Z", "+00:00"),
                         )
                         duration = completed - started
-                        minutes = int(duration.total_seconds() / 60)
-                        lines.append(f"- **Duration:** {minutes}m")
+                        total_secs = int(duration.total_seconds())
+                        if total_secs < 60:
+                            lines.append(f"- **Duration:** {total_secs}s")
+                        else:
+                            lines.append(
+                                f"- **Duration:** {total_secs // 60}m"
+                            )
                     except (ValueError, TypeError):
                         pass
 

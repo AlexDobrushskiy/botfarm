@@ -37,7 +37,6 @@ linear:
   done_status: Done
   in_review_status: In Review
   failed_status: Todo
-  cancelled_status: Todo
   # Comment posting controls
   comment_on_failure: true
   comment_on_completion: false
@@ -89,7 +88,6 @@ class LinearConfig:
     done_status: str = "Done"
     in_review_status: str = "In Review"
     failed_status: str = "Todo"
-    cancelled_status: str = "Todo"
     # Comment posting controls
     comment_on_failure: bool = True
     comment_on_completion: bool = False
@@ -265,6 +263,16 @@ def _validate_config(config: BotfarmConfig) -> None:
         raise ConfigError("agents.timeout_grace_seconds must be at least 0")
 
 
+def _parse_bool(data: dict, key: str, default: bool) -> bool:
+    """Parse a boolean config value, rejecting non-boolean types."""
+    value = data.get(key, default)
+    if not isinstance(value, bool):
+        raise ConfigError(
+            f"linear.{key} must be a boolean (true/false), got: {value!r}"
+        )
+    return value
+
+
 def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
     """Load, expand, validate, and return the botfarm configuration."""
     if not config_path.exists():
@@ -294,10 +302,9 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         done_status=str(linear_data.get("done_status", "Done")),
         in_review_status=str(linear_data.get("in_review_status", "In Review")),
         failed_status=str(linear_data.get("failed_status", "Todo")),
-        cancelled_status=str(linear_data.get("cancelled_status", "Todo")),
-        comment_on_failure=bool(linear_data.get("comment_on_failure", True)),
-        comment_on_completion=bool(linear_data.get("comment_on_completion", False)),
-        comment_on_limit_pause=bool(linear_data.get("comment_on_limit_pause", False)),
+        comment_on_failure=_parse_bool(linear_data, "comment_on_failure", True),
+        comment_on_completion=_parse_bool(linear_data, "comment_on_completion", False),
+        comment_on_limit_pause=_parse_bool(linear_data, "comment_on_limit_pause", False),
     )
 
     db_data = data.get("database", {})

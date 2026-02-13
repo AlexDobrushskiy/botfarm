@@ -2076,7 +2076,6 @@ def _make_config_custom_statuses(tmp_path: Path) -> BotfarmConfig:
             done_status="Shipped",
             in_review_status="Review",
             failed_status="Needs Attention",
-            cancelled_status="Backlog",
             comment_on_failure=True,
             comment_on_completion=True,
             comment_on_limit_pause=True,
