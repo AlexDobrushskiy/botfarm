@@ -393,7 +393,7 @@ def init(path):
 )
 def run(config_path, log_dir):
     """Run the supervisor in foreground mode."""
-    from botfarm.supervisor import Supervisor, setup_logging
+    from botfarm.supervisor import DEFAULT_LOG_DIR, Supervisor, setup_logging
 
     cfg_path = config_path or DEFAULT_CONFIG_PATH
     try:
@@ -401,7 +401,7 @@ def run(config_path, log_dir):
     except ConfigError as exc:
         raise click.ClickException(str(exc)) from exc
 
-    setup_logging(log_dir=log_dir, console=True)
+    setup_logging(log_dir=log_dir or DEFAULT_LOG_DIR, console=True)
 
-    supervisor = Supervisor(config, log_dir=log_dir)
+    supervisor = Supervisor(config, log_dir=log_dir or DEFAULT_LOG_DIR)
     supervisor.run()
