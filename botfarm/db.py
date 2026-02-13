@@ -118,7 +118,7 @@ def insert_task(
     failure), the existing row is updated with fresh values instead of
     raising an IntegrityError.
     """
-    cur = conn.execute(
+    conn.execute(
         """
         INSERT INTO tasks (ticket_id, title, project, slot, status, created_at)
         VALUES (?, ?, ?, ?, ?, ?)
@@ -139,10 +139,9 @@ def insert_task(
         """,
         (ticket_id, title, project, slot, status, _now_iso()),
     )
-    # ON CONFLICT ... DO UPDATE sets lastrowid; for the update case we need
-    # to look up the existing id.
-    if cur.lastrowid:
-        return cur.lastrowid
+    # cursor.lastrowid is unreliable for ON CONFLICT DO UPDATE — when
+    # the UPDATE branch fires it may return a stale value from a prior
+    # INSERT.  Always look up the canonical id by ticket_id instead.
     row = conn.execute(
         "SELECT id FROM tasks WHERE ticket_id = ?", (ticket_id,)
     ).fetchone()
