@@ -550,9 +550,12 @@ class _PipelineContext:
                 self.project,
                 self.slot_id,
                 stage=stage,
+                iteration=iteration,
             )
         elif self.slot_manager and self.project and self.slot_id is not None:
-            self.slot_manager.update_stage(self.project, self.slot_id, stage=stage)
+            self.slot_manager.update_stage(
+                self.project, self.slot_id, stage=stage, iteration=iteration,
+            )
 
         wall_start = time.monotonic()
 

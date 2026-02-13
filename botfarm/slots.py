@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import tempfile
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -494,6 +495,12 @@ def update_slot_stage(
         )
         return
 
-    tmp_path = path.with_suffix(".tmp")
-    tmp_path.write_text(json.dumps(data, indent=2) + "\n")
-    tmp_path.replace(path)
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, suffix=".tmp.worker")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=2)
+            f.write("\n")
+        Path(tmp_name).replace(path)
+    except BaseException:
+        Path(tmp_name).unlink(missing_ok=True)
+        raise
