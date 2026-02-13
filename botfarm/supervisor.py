@@ -30,7 +30,6 @@ from botfarm.config import BotfarmConfig, ProjectConfig
 from botfarm.db import get_task, init_db, insert_event, insert_task, update_task
 from botfarm.linear import LinearPoller, create_pollers
 from botfarm.notifications import Notifier
-from botfarm.notifications import NotificationsConfig as _NotifConfig
 from botfarm.slots import SlotManager, SlotState, _is_pid_alive
 from botfarm.usage import DEFAULT_PAUSE_5H_THRESHOLD, DEFAULT_PAUSE_7D_THRESHOLD, UsagePoller
 from botfarm.worker import PipelineResult, run_pipeline
@@ -202,6 +201,7 @@ class Supervisor:
 
         # Webhook notifier
         self._notifier = Notifier(config.notifications)
+        self._was_busy = False  # Track busy→idle transition for notifications
 
         # Track child processes: (project, slot_id) -> Process
         self._workers: dict[tuple[str, int], multiprocessing.Process] = {}
@@ -1266,8 +1266,14 @@ class Supervisor:
             # Update active IDs so subsequent projects don't pick same ticket
             active_ids.add(issue.identifier)
 
-        # Notify if all slots are idle after dispatch
-        if not self._slot_manager.busy_slots() and not self._slot_manager.paused_limit_slots():
+        # Notify only on busy→idle transition (not every idle tick)
+        currently_busy = bool(
+            self._slot_manager.busy_slots() or self._slot_manager.paused_limit_slots()
+        )
+        if currently_busy:
+            self._was_busy = True
+        elif self._was_busy:
+            self._was_busy = False
             self._notifier.notify_all_idle()
 
     def _dispatch_worker(

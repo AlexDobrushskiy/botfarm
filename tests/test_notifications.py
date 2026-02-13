@@ -8,7 +8,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from botfarm.notifications import Notifier, NotificationsConfig, _detect_format
+from botfarm.config import NotificationsConfig
+from botfarm.notifications import Notifier, _detect_format
 
 
 # ---------------------------------------------------------------------------
@@ -20,11 +21,14 @@ class TestDetectFormat:
     def test_slack_default(self):
         assert _detect_format("https://hooks.slack.com/services/xxx", "slack") == "slack"
 
-    def test_discord_url_auto_detect(self):
-        assert _detect_format("https://discord.com/api/webhooks/xxx", "slack") == "discord"
+    def test_explicit_slack_respected_even_for_discord_url(self):
+        assert _detect_format("https://discord.com/api/webhooks/xxx", "slack") == "slack"
 
-    def test_discordapp_url_auto_detect(self):
-        assert _detect_format("https://discordapp.com/api/webhooks/xxx", "slack") == "discord"
+    def test_discord_url_auto_detect_when_no_format(self):
+        assert _detect_format("https://discord.com/api/webhooks/xxx", "") == "discord"
+
+    def test_discordapp_url_auto_detect_when_no_format(self):
+        assert _detect_format("https://discordapp.com/api/webhooks/xxx", "") == "discord"
 
     def test_explicit_discord_overrides(self):
         assert _detect_format("https://hooks.slack.com/services/xxx", "discord") == "discord"
@@ -252,4 +256,23 @@ class TestErrorHandling:
 
         # Should not raise
         n.notify_task_failed(ticket_id="SMA-1", title="Test")
+        n.close()
+
+    def test_rate_limited_event_not_retried_on_failure(self):
+        """_last_sent is updated even on failure to prevent retry storms."""
+        n = Notifier(NotificationsConfig(
+            webhook_url="https://hooks.slack.com/services/xxx",
+            rate_limit_seconds=300,
+        ))
+        n._client = MagicMock()
+        n._client.post.side_effect = Exception("connection refused")
+
+        # First call fails
+        n.notify_limit_hit(reason="test")
+        assert n._client.post.call_count == 1
+
+        # Second call should still be rate-limited despite the first failure
+        n.notify_limit_hit(reason="test")
+        assert n._client.post.call_count == 1
+
         n.close()

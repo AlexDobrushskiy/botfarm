@@ -14,33 +14,28 @@ rate-limited to avoid spam during frequent polling.
 
 from __future__ import annotations
 
-import json
 import logging
 import time
-from dataclasses import dataclass
 
 import httpx
 
+from botfarm.config import NotificationsConfig
+
 logger = logging.getLogger(__name__)
-
-# Minimum seconds between identical event types (for rate limiting)
-_RATE_LIMIT_SECONDS = 300  # 5 minutes
-
-
-@dataclass
-class NotificationsConfig:
-    webhook_url: str = ""
-    webhook_format: str = "slack"  # "slack" or "discord"
-    rate_limit_seconds: int = _RATE_LIMIT_SECONDS
 
 
 def _detect_format(url: str, configured_format: str) -> str:
-    """Auto-detect webhook format from URL if not explicitly configured."""
-    if configured_format and configured_format != "slack":
+    """Auto-detect webhook format from URL when not explicitly configured.
+
+    If the user provided an explicit format, it is always respected.
+    Auto-detection from URL only applies when no format was configured
+    (empty string).
+    """
+    if configured_format:
         return configured_format
     if "discord.com" in url or "discordapp.com" in url:
         return "discord"
-    return configured_format or "slack"
+    return "slack"
 
 
 class Notifier:
@@ -153,10 +148,12 @@ class Notifier:
             payload = self._format_payload(message)
             resp = self._client.post(self._url, json=payload)
             resp.raise_for_status()
-            self._last_sent[event_type] = time.monotonic()
             logger.debug("Sent %s notification", event_type)
         except Exception:
             logger.debug("Failed to send %s notification", event_type, exc_info=True)
+        finally:
+            if rate_limited:
+                self._last_sent[event_type] = time.monotonic()
 
     def _format_payload(self, message: str) -> dict:
         """Build the webhook payload for the configured format."""
