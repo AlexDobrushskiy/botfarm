@@ -15,6 +15,7 @@ from botfarm.slots import (
     SlotManager,
     SlotState,
     _is_pid_alive,
+    update_slot_stage,
 )
 
 
@@ -773,3 +774,138 @@ class TestLifecycleIntegration:
         assert len(messages) == 1
         assert mgr2.get_slot("proj", 1).status == "failed"
         assert mgr2.get_slot("proj", 2).status == "free"
+
+
+# ---------------------------------------------------------------------------
+# update_slot_stage — file-based stage updates from worker subprocesses
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateSlotStage:
+    def test_updates_stage_in_state_file(self, tmp_path: Path):
+        """update_slot_stage should write the stage to the state file."""
+        state_path = tmp_path / "state.json"
+        mgr = SlotManager(state_path=state_path)
+        mgr.register_slot("proj", 1)
+        mgr.assign_ticket(
+            "proj", 1, ticket_id="T-1", ticket_title="T1", branch="b1"
+        )
+
+        update_slot_stage(state_path, "proj", 1, stage="implement")
+
+        data = json.loads(state_path.read_text())
+        slot_data = data["slots"][0]
+        assert slot_data["stage"] == "implement"
+        assert slot_data["stage_iteration"] == 1
+        assert slot_data["stage_started_at"] is not None
+
+    def test_updates_iteration_and_session_id(self, tmp_path: Path):
+        state_path = tmp_path / "state.json"
+        mgr = SlotManager(state_path=state_path)
+        mgr.register_slot("proj", 1)
+        mgr.assign_ticket(
+            "proj", 1, ticket_id="T-1", ticket_title="T1", branch="b1"
+        )
+
+        update_slot_stage(
+            state_path, "proj", 1,
+            stage="review", iteration=2, session_id="sess-123",
+        )
+
+        data = json.loads(state_path.read_text())
+        slot_data = data["slots"][0]
+        assert slot_data["stage"] == "review"
+        assert slot_data["stage_iteration"] == 2
+        assert slot_data["current_session_id"] == "sess-123"
+
+    def test_no_op_when_file_missing(self, tmp_path: Path):
+        """Should not raise when the state file doesn't exist."""
+        state_path = tmp_path / "nonexistent.json"
+        update_slot_stage(state_path, "proj", 1, stage="implement")
+        assert not state_path.exists()
+
+    def test_no_op_when_slot_not_found(self, tmp_path: Path):
+        """Should not raise when the slot isn't in the file."""
+        state_path = tmp_path / "state.json"
+        mgr = SlotManager(state_path=state_path)
+        mgr.register_slot("proj", 1)
+        mgr.save()
+
+        update_slot_stage(state_path, "other-proj", 99, stage="implement")
+
+        # File should be unchanged
+        data = json.loads(state_path.read_text())
+        assert data["slots"][0]["stage"] is None
+
+    def test_updates_correct_slot_among_multiple(self, tmp_path: Path):
+        state_path = tmp_path / "state.json"
+        mgr = SlotManager(state_path=state_path)
+        mgr.register_slot("proj", 1)
+        mgr.register_slot("proj", 2)
+        mgr.assign_ticket(
+            "proj", 1, ticket_id="T-1", ticket_title="T1", branch="b1"
+        )
+        mgr.assign_ticket(
+            "proj", 2, ticket_id="T-2", ticket_title="T2", branch="b2"
+        )
+
+        update_slot_stage(state_path, "proj", 2, stage="review")
+
+        data = json.loads(state_path.read_text())
+        slot1 = next(s for s in data["slots"] if s["slot_id"] == 1)
+        slot2 = next(s for s in data["slots"] if s["slot_id"] == 2)
+        assert slot1["stage"] is None  # unchanged
+        assert slot2["stage"] == "review"
+
+
+# ---------------------------------------------------------------------------
+# _refresh_stages_from_disk — supervisor preserves worker stage updates
+# ---------------------------------------------------------------------------
+
+
+class TestRefreshStagesFromDisk:
+    def test_refresh_merges_worker_stage_into_memory(self, tmp_path: Path):
+        """refresh_stages_from_disk should merge worker-written stage data
+        into in-memory state so that subsequent saves don't lose it."""
+        state_path = tmp_path / "state.json"
+        mgr = SlotManager(state_path=state_path)
+        mgr.register_slot("proj", 1)
+        mgr.assign_ticket(
+            "proj", 1, ticket_id="T-1", ticket_title="T1", branch="b1"
+        )
+
+        # Simulate worker subprocess updating stage directly in the file
+        update_slot_stage(state_path, "proj", 1, stage="review", iteration=2)
+
+        # Supervisor's in-memory state still has stage=None
+        assert mgr.get_slot("proj", 1).stage is None
+
+        # Refresh from disk (as the supervisor tick would do)
+        mgr.refresh_stages_from_disk()
+
+        # In-memory state should now reflect the worker's update
+        assert mgr.get_slot("proj", 1).stage == "review"
+        assert mgr.get_slot("proj", 1).stage_iteration == 2
+
+        # A subsequent save should preserve the refreshed values
+        mgr.save()
+        data = json.loads(state_path.read_text())
+        slot_data = data["slots"][0]
+        assert slot_data["stage"] == "review"
+        assert slot_data["stage_iteration"] == 2
+
+    def test_refresh_only_affects_busy_slots(self, tmp_path: Path):
+        """Free slots should not have their stage fields refreshed."""
+        state_path = tmp_path / "state.json"
+        mgr = SlotManager(state_path=state_path)
+        mgr.register_slot("proj", 1)
+        mgr.save()
+
+        # Manually write stage to the file for a free slot
+        data = json.loads(state_path.read_text())
+        data["slots"][0]["stage"] = "bogus"
+        state_path.write_text(json.dumps(data))
+
+        # Refresh — free slot should NOT pick up the bogus stage
+        mgr.refresh_stages_from_disk()
+        assert mgr.get_slot("proj", 1).stage is None

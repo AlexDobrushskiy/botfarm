@@ -65,6 +65,7 @@ def _worker_entry(
     slot_id: int,
     cwd: str,
     db_path: str,
+    state_path: str,
     result_queue: multiprocessing.Queue,
     max_turns: dict[str, int] | None,
     max_review_iterations: int = 3,
@@ -92,6 +93,9 @@ def _worker_entry(
             task_id=task_id,
             cwd=cwd,
             conn=conn,
+            state_path=state_path,
+            project=project_name,
+            slot_id=slot_id,
             max_turns=max_turns,
             max_review_iterations=max_review_iterations,
             max_ci_retries=max_ci_retries,
@@ -575,6 +579,9 @@ class Supervisor:
 
     def _tick(self) -> None:
         """One iteration of the supervisor loop."""
+        # Merge worker-written stage updates from disk before any state writes
+        self._slot_manager.refresh_stages_from_disk()
+
         for phase in (
             self._reconcile_workers,
             self._check_timeouts,
@@ -1176,6 +1183,7 @@ class Supervisor:
                 "slot_id": slot.slot_id,
                 "cwd": cwd,
                 "db_path": self._db_path,
+                "state_path": str(self._slot_manager.state_path),
                 "result_queue": self._result_queue,
                 "max_turns": None,
                 "max_review_iterations": self._config.agents.max_review_iterations,
@@ -1344,6 +1352,7 @@ class Supervisor:
                 "slot_id": slot.slot_id,
                 "cwd": cwd,
                 "db_path": self._db_path,
+                "state_path": str(self._slot_manager.state_path),
                 "result_queue": self._result_queue,
                 "max_turns": None,
                 "max_review_iterations": self._config.agents.max_review_iterations,

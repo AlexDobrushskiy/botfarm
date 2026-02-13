@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from botfarm.db import insert_event, insert_stage_run, update_task
+from botfarm.slots import update_slot_stage
 
 logger = logging.getLogger(__name__)
 
@@ -316,6 +317,7 @@ def run_pipeline(
     slot_manager=None,
     project: str | None = None,
     slot_id: int | None = None,
+    state_path: str | Path | None = None,
     max_turns: dict[str, int] | None = None,
     pr_checks_timeout: int = 600,
     max_review_iterations: int = 3,
@@ -389,6 +391,7 @@ def run_pipeline(
         slot_manager=slot_manager,
         project=project,
         slot_id=slot_id,
+        state_path=state_path,
     )
 
     for stage in STAGES:
@@ -527,6 +530,7 @@ class _PipelineContext:
     slot_manager: object | None = None
     project: str | None = None
     slot_id: int | None = None
+    state_path: str | Path | None = None
 
     def run_and_record(
         self,
@@ -540,7 +544,14 @@ class _PipelineContext:
         Returns the ``StageResult`` on success, or ``None`` if the stage
         failed (in which case ``pipeline`` is updated with the failure).
         """
-        if self.slot_manager and self.project and self.slot_id is not None:
+        if self.state_path and self.project and self.slot_id is not None:
+            update_slot_stage(
+                self.state_path,
+                self.project,
+                self.slot_id,
+                stage=stage,
+            )
+        elif self.slot_manager and self.project and self.slot_id is not None:
             self.slot_manager.update_stage(self.project, self.slot_id, stage=stage)
 
         wall_start = time.monotonic()
