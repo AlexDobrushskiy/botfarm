@@ -29,6 +29,7 @@ from types import FrameType
 from botfarm.config import BotfarmConfig, ProjectConfig
 from botfarm.db import get_task, init_db, insert_event, insert_task, update_task
 from botfarm.linear import LinearPoller, create_pollers
+from botfarm.notifications import Notifier
 from botfarm.slots import SlotManager, SlotState, _is_pid_alive
 from botfarm.usage import DEFAULT_PAUSE_5H_THRESHOLD, DEFAULT_PAUSE_7D_THRESHOLD, UsagePoller
 from botfarm.worker import PipelineResult, run_pipeline
@@ -197,6 +198,10 @@ class Supervisor:
 
         # Usage poller
         self._usage_poller = UsagePoller()
+
+        # Webhook notifier
+        self._notifier = Notifier(config.notifications)
+        self._was_busy = False  # Track busy→idle transition for notifications
 
         # Track child processes: (project, slot_id) -> Process
         self._workers: dict[tuple[str, int], multiprocessing.Process] = {}
@@ -843,6 +848,9 @@ class Supervisor:
             if linear_cfg.comment_on_completion:
                 self._post_completion_comment(poller, slot)
 
+        # Webhook notification
+        self._notify_task_completed(slot)
+
         insert_event(
             self._conn,
             event_type="slot_completed",
@@ -875,6 +883,9 @@ class Supervisor:
 
             if linear_cfg.comment_on_failure:
                 self._post_failure_comment(poller, slot)
+
+        # Webhook notification
+        self._notify_task_failed(slot)
 
         insert_event(
             self._conn,
@@ -950,6 +961,52 @@ class Supervisor:
             logger.exception(
                 "Failed to post completion comment on %s", slot.ticket_id,
             )
+
+    # ------------------------------------------------------------------
+    # Webhook notification helpers
+    # ------------------------------------------------------------------
+
+    def _notify_task_completed(self, slot: SlotState) -> None:
+        """Send a webhook notification for a completed task."""
+        task_id = self._find_task_id(slot.ticket_id)
+        cost = None
+        duration = None
+        if task_id is not None:
+            task = get_task(self._conn, task_id)
+            if task:
+                cost = task["cost_usd"]
+                if task["started_at"] and task["completed_at"]:
+                    try:
+                        started = datetime.fromisoformat(
+                            task["started_at"].replace("Z", "+00:00"),
+                        )
+                        completed = datetime.fromisoformat(
+                            task["completed_at"].replace("Z", "+00:00"),
+                        )
+                        duration = (completed - started).total_seconds()
+                    except (ValueError, TypeError):
+                        pass
+        self._notifier.notify_task_completed(
+            ticket_id=slot.ticket_id or "unknown",
+            title=slot.ticket_title or "unknown",
+            cost_usd=cost,
+            duration_seconds=duration,
+            pr_url=slot.pr_url,
+        )
+
+    def _notify_task_failed(self, slot: SlotState) -> None:
+        """Send a webhook notification for a failed task."""
+        reason = None
+        task_id = self._find_task_id(slot.ticket_id)
+        if task_id is not None:
+            task = get_task(self._conn, task_id)
+            if task:
+                reason = task["failure_reason"]
+        self._notifier.notify_task_failed(
+            ticket_id=slot.ticket_id or "unknown",
+            title=slot.ticket_title or "unknown",
+            failure_reason=reason,
+        )
 
     # ------------------------------------------------------------------
     # Limit interruption handling
@@ -1169,6 +1226,7 @@ class Supervisor:
                 )
                 self._conn.commit()
                 self._slot_manager.set_dispatch_paused(True, reason)
+                self._notifier.notify_limit_hit(reason=reason)
             return
 
         # Utilization is below thresholds — resume if previously paused
@@ -1182,6 +1240,7 @@ class Supervisor:
                 detail=f"previous_reason={prev_reason}",
             )
             self._conn.commit()
+            self._notifier.notify_limit_cleared()
 
         active_ids = self._slot_manager.active_ticket_ids()
 
@@ -1206,6 +1265,16 @@ class Supervisor:
             self._dispatch_worker(project_name, slot, issue, poller)
             # Update active IDs so subsequent projects don't pick same ticket
             active_ids.add(issue.identifier)
+
+        # Notify only on busy→idle transition (not every idle tick)
+        currently_busy = bool(
+            self._slot_manager.busy_slots() or self._slot_manager.paused_limit_slots()
+        )
+        if currently_busy:
+            self._was_busy = True
+        elif self._was_busy:
+            self._was_busy = False
+            self._notifier.notify_all_idle()
 
     def _dispatch_worker(
         self,
@@ -1302,6 +1371,7 @@ class Supervisor:
         # Persist state
         self._slot_manager.save()
         self._usage_poller.close()
+        self._notifier.close()
 
         # Log running workers (we don't kill them)
         running = [
