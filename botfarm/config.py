@@ -63,6 +63,11 @@ agents:
     fix: 60
   timeout_grace_seconds: 10
 
+# notifications:
+#   webhook_url: https://hooks.slack.com/services/...
+#   webhook_format: slack  # or "discord"
+#   rate_limit_seconds: 300
+
 state_file: ~/.botfarm/state.json
 """
 
@@ -125,6 +130,13 @@ class AgentsConfig:
 
 
 @dataclass
+class NotificationsConfig:
+    webhook_url: str = ""
+    webhook_format: str = "slack"  # "slack" or "discord"
+    rate_limit_seconds: int = 300
+
+
+@dataclass
 class BotfarmConfig:
     projects: list[ProjectConfig]
     max_total_slots: int = 5
@@ -133,6 +145,7 @@ class BotfarmConfig:
     usage_limits: UsageLimitsConfig = field(default_factory=UsageLimitsConfig)
     dashboard: DashboardConfig = field(default_factory=DashboardConfig)
     agents: AgentsConfig = field(default_factory=AgentsConfig)
+    notifications: NotificationsConfig = field(default_factory=NotificationsConfig)
     state_file: str = "~/.botfarm/state.json"
 
 
@@ -262,6 +275,15 @@ def _validate_config(config: BotfarmConfig) -> None:
     if config.agents.timeout_grace_seconds < 0:
         raise ConfigError("agents.timeout_grace_seconds must be at least 0")
 
+    if config.notifications.webhook_format not in ("slack", "discord"):
+        raise ConfigError(
+            f"notifications.webhook_format must be 'slack' or 'discord', "
+            f"got: {config.notifications.webhook_format!r}"
+        )
+
+    if config.notifications.rate_limit_seconds < 0:
+        raise ConfigError("notifications.rate_limit_seconds must be at least 0")
+
 
 def _parse_bool(data: dict, key: str, default: bool) -> bool:
     """Parse a boolean config value, rejecting non-boolean types."""
@@ -336,6 +358,13 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         timeout_grace_seconds=int(agents_data.get("timeout_grace_seconds", 10)),
     )
 
+    notif_data = data.get("notifications", {})
+    notifications = NotificationsConfig(
+        webhook_url=str(notif_data.get("webhook_url", "")),
+        webhook_format=str(notif_data.get("webhook_format", "slack")),
+        rate_limit_seconds=int(notif_data.get("rate_limit_seconds", 300)),
+    )
+
     config = BotfarmConfig(
         projects=projects,
         max_total_slots=data.get("max_total_slots", 5),
@@ -344,6 +373,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         usage_limits=usage_limits,
         dashboard=dashboard,
         agents=agents,
+        notifications=notifications,
         state_file=data.get("state_file", "~/.botfarm/state.json"),
     )
 
