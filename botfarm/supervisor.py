@@ -440,23 +440,52 @@ class Supervisor:
         """Check whether a PR exists for the slot's branch.
 
         Returns ``"merged"``, ``"open"``, ``"closed"``, or ``None``
-        (no PR found).  Uses the PR URL from state if available,
-        otherwise checks via ``gh pr view`` in the project working
-        directory.
+        (no PR found).
+
+        PR URL resolution order:
+        1. Tasks DB record (persisted by worker cross-process)
+        2. Slot state (``slot.pr_url``)
+        3. ``gh pr view`` branch lookup in the project working directory
         """
-        # Try the stored PR URL first
-        pr_ref = slot.pr_url
+        pr_ref: str | None = None
+        source: str | None = None
+
+        # 1. Try tasks DB (most reliable — persisted cross-process by worker)
+        if slot.ticket_id:
+            task_id = self._find_task_id(slot.ticket_id)
+            if task_id is not None:
+                task = get_task(self._conn, task_id)
+                if task and task["pr_url"]:
+                    pr_ref = task["pr_url"]
+                    source = "tasks_db"
+
+        # 2. Fall back to slot state
+        if not pr_ref and slot.pr_url:
+            pr_ref = slot.pr_url
+            source = "slot_state"
+
+        # 3. Fall back to gh pr view branch lookup
         if not pr_ref:
-            # Fall back to checking via gh in the project directory
             project_cfg = self._projects.get(slot.project)
             if project_cfg:
                 cwd = str(Path(project_cfg.base_dir).expanduser())
                 pr_ref = self._gh_pr_url_for_branch(slot.branch, cwd)
+                if pr_ref:
+                    source = "gh_branch_lookup"
 
         if not pr_ref:
+            logger.debug(
+                "No PR URL found for %s/%d (ticket %s)",
+                slot.project, slot.slot_id, slot.ticket_id,
+            )
             return None
 
-        return self._gh_pr_state(pr_ref)
+        state = self._gh_pr_state(pr_ref)
+        logger.info(
+            "PR status for %s/%d: url=%s, source=%s, state=%s",
+            slot.project, slot.slot_id, pr_ref, source, state,
+        )
+        return state
 
     @staticmethod
     def _gh_pr_url_for_branch(branch: str | None, cwd: str) -> str | None:
@@ -959,8 +988,14 @@ class Supervisor:
                     except (ValueError, TypeError):
                         pass
 
-        if slot.pr_url:
-            lines.append(f"- **PR:** {slot.pr_url}")
+        # PR URL: prefer DB (cross-process reliable), fall back to slot state
+        pr_url = None
+        if task_id is not None and task and task["pr_url"]:
+            pr_url = task["pr_url"]
+        elif slot.pr_url:
+            pr_url = slot.pr_url
+        if pr_url:
+            lines.append(f"- **PR:** {pr_url}")
 
         try:
             poller.add_comment(slot.ticket_id, "\n".join(lines))
@@ -993,12 +1028,20 @@ class Supervisor:
                         duration = (completed - started).total_seconds()
                     except (ValueError, TypeError):
                         pass
+        # PR URL: prefer DB, fall back to slot state
+        pr_url = None
+        if task_id is not None:
+            task = get_task(self._conn, task_id)
+            if task and task["pr_url"]:
+                pr_url = task["pr_url"]
+        if not pr_url:
+            pr_url = slot.pr_url
         self._notifier.notify_task_completed(
             ticket_id=slot.ticket_id or "unknown",
             title=slot.ticket_title or "unknown",
             cost_usd=cost,
             duration_seconds=duration,
-            pr_url=slot.pr_url,
+            pr_url=pr_url,
         )
 
     def _notify_task_failed(self, slot: SlotState) -> None:

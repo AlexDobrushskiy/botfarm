@@ -1978,6 +1978,88 @@ class TestCheckPrStatus:
 
         assert result is None
 
+    def test_prefers_db_pr_url_over_slot_state(self, supervisor):
+        """PR URL from tasks DB takes priority over slot.pr_url."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        # Set a different URL on slot state
+        sm.set_pr_url("test-project", 1, "https://github.com/org/repo/pull/slot-url")
+        slot = sm.get_slot("test-project", 1)
+
+        # Store a different URL in the tasks DB
+        db_pr_url = "https://github.com/org/repo/pull/db-url"
+        task_id = insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+        )
+        update_task(supervisor._conn, task_id, pr_url=db_pr_url)
+        supervisor._conn.commit()
+
+        with patch.object(
+            Supervisor, "_gh_pr_state", return_value="merged",
+        ) as mock_state:
+            result = supervisor._check_pr_status(slot)
+
+        assert result == "merged"
+        # Verify it used the DB URL, not the slot URL
+        mock_state.assert_called_once_with(db_pr_url)
+
+    def test_falls_back_to_slot_pr_url_when_db_has_none(self, supervisor):
+        """When DB has no pr_url, falls back to slot.pr_url."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        slot_url = "https://github.com/org/repo/pull/slot-url"
+        sm.set_pr_url("test-project", 1, slot_url)
+        slot = sm.get_slot("test-project", 1)
+
+        # DB task exists but has no pr_url
+        task_id = insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+        )
+        supervisor._conn.commit()
+
+        with patch.object(
+            Supervisor, "_gh_pr_state", return_value="open",
+        ) as mock_state:
+            result = supervisor._check_pr_status(slot)
+
+        assert result == "open"
+        mock_state.assert_called_once_with(slot_url)
+
+    def test_db_pr_url_used_for_merged_detection(self, supervisor):
+        """_handle_completed_slot uses DB pr_url to detect merged PR and move to Done."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.mark_completed("test-project", 1)
+
+        # Store pr_url in DB (simulating what worker does cross-process)
+        task_id = insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+        )
+        update_task(supervisor._conn, task_id, pr_url="https://github.com/org/repo/pull/42")
+        supervisor._conn.commit()
+
+        poller = supervisor._pollers["test-project"]
+
+        with patch.object(
+            Supervisor, "_gh_pr_state", return_value="merged",
+        ):
+            supervisor._handle_finished_slots()
+
+        poller.move_issue.assert_called_once_with("TST-1", "Done")
+        assert sm.get_slot("test-project", 1).status == "free"
+
     def test_gh_pr_state_merged(self):
         """_gh_pr_state returns 'merged' for merged PRs."""
         mock_proc = MagicMock()
