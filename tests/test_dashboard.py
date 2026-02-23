@@ -253,6 +253,13 @@ class TestPartialSlots:
 
 
 class TestPartialUsage:
+    @pytest.fixture(autouse=True)
+    def _mock_refresh(self, monkeypatch):
+        """Prevent real API calls during usage partial tests."""
+        monkeypatch.setattr(
+            "botfarm.dashboard.refresh_usage_snapshot", lambda conn: None
+        )
+
     def test_returns_200(self, client):
         resp = client.get("/partials/usage")
         assert resp.status_code == 200
@@ -357,6 +364,13 @@ class TestSlotPanelEnhancements:
 
 
 class TestUsagePanelEnhancements:
+    @pytest.fixture(autouse=True)
+    def _mock_refresh(self, monkeypatch):
+        """Prevent real API calls during usage panel tests."""
+        monkeypatch.setattr(
+            "botfarm.dashboard.refresh_usage_snapshot", lambda conn: None
+        )
+
     def test_progress_bars(self, client):
         resp = client.get("/partials/usage")
         assert "<progress" in resp.text
@@ -838,6 +852,13 @@ class TestDashboardConfig:
 
 
 class TestEdgeCases:
+    @pytest.fixture(autouse=True)
+    def _mock_refresh(self, monkeypatch):
+        """Prevent real API calls during edge case tests."""
+        monkeypatch.setattr(
+            "botfarm.dashboard.refresh_usage_snapshot", lambda conn: None
+        )
+
     def test_corrupt_state_file(self, tmp_path, db_file):
         state = tmp_path / "state.json"
         state.write_text("not valid json {{{")

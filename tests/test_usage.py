@@ -17,6 +17,7 @@ from botfarm.usage import (
     DEFAULT_RETENTION_DAYS,
     UsagePoller,
     UsageState,
+    refresh_usage_snapshot,
 )
 
 # --- Sample API response ---
@@ -377,5 +378,53 @@ class TestSnapshotRetention:
 
         snapshots = get_usage_snapshots(conn, limit=100)
         assert len(snapshots) == 2
+
+
+# ---------------------------------------------------------------------------
+# refresh_usage_snapshot — standalone refresh function
+# ---------------------------------------------------------------------------
+
+
+class TestRefreshUsageSnapshot:
+    def test_returns_fresh_state_on_success(self, conn):
+        with patch("botfarm.usage.UsagePoller.force_poll") as mock_poll:
+            # Simulate a successful poll that sets state
+            def fake_poll(c):
+                pass
+
+            mock_poll.side_effect = fake_poll
+
+            with patch("botfarm.usage.UsagePoller.last_polled_fresh", new_callable=lambda: property(lambda self: True)):
+                with patch("botfarm.usage.UsagePoller.state", new_callable=lambda: property(
+                    lambda self: UsageState(utilization_5h=0.42, utilization_7d=0.15)
+                )):
+                    result = refresh_usage_snapshot(conn)
+
+        assert result is not None
+        assert result.utilization_5h == 0.42
+        assert result.utilization_7d == 0.15
+
+    def test_returns_none_on_api_failure(self, conn):
+        with patch("botfarm.usage.UsagePoller.force_poll", side_effect=Exception("API error")):
+            result = refresh_usage_snapshot(conn)
+        assert result is None
+
+    def test_returns_none_when_not_fresh(self, conn):
+        with patch("botfarm.usage.UsagePoller.force_poll"):
+            with patch("botfarm.usage.UsagePoller.last_polled_fresh", new_callable=lambda: property(lambda self: False)):
+                result = refresh_usage_snapshot(conn)
+        assert result is None
+
+    def test_stores_snapshot_in_db(self, conn):
+        """Verify that a successful refresh stores a new snapshot in the DB."""
+        with patch("botfarm.usage.UsagePoller._fetch", return_value=SAMPLE_USAGE_RESPONSE):
+            with patch("botfarm.usage.CredentialManager.get_token", return_value="test-token"):
+                result = refresh_usage_snapshot(conn)
+
+        assert result is not None
+        assert result.utilization_5h == pytest.approx(0.42)
+        snapshots = get_usage_snapshots(conn, limit=10)
+        assert len(snapshots) == 1
+        assert snapshots[0]["utilization_5h"] == pytest.approx(0.42)
 
 
