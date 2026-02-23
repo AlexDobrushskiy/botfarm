@@ -468,7 +468,7 @@ class Supervisor:
         if not pr_ref:
             project_cfg = self._projects.get(slot.project)
             if project_cfg:
-                cwd = str(Path(project_cfg.base_dir).expanduser())
+                cwd = self._slot_worktree_cwd(project_cfg, slot.slot_id)
                 pr_ref = self._gh_pr_url_for_branch(slot.branch, cwd)
                 if pr_ref:
                     source = "gh_branch_lookup"
@@ -1213,7 +1213,7 @@ class Supervisor:
         # Resume the slot back to busy
         self._slot_manager.resume_slot(project_name, slot.slot_id)
 
-        cwd = str(Path(project_cfg.base_dir).expanduser())
+        cwd = self._slot_worktree_cwd(project_cfg, slot.slot_id)
 
         # Spawn a new worker that resumes from the interrupted stage
         proc = multiprocessing.Process(
@@ -1336,7 +1336,7 @@ class Supervisor:
     ) -> None:
         """Assign a ticket to a slot and spawn a worker subprocess."""
         project_cfg = self._projects[project_name]
-        cwd = str(Path(project_cfg.base_dir).expanduser())
+        cwd = self._slot_worktree_cwd(project_cfg, slot.slot_id)
         branch = f"{project_cfg.worktree_prefix}{slot.slot_id}"
 
         # Move issue to In Progress on Linear
@@ -1451,6 +1451,12 @@ class Supervisor:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _slot_worktree_cwd(project_cfg: ProjectConfig, slot_id: int) -> str:
+        """Compute the working directory for a slot's worktree."""
+        base = Path(project_cfg.base_dir).expanduser()
+        return str(base.parent / f"{project_cfg.worktree_prefix}{slot_id}")
 
     def _sleep(self, seconds: int) -> None:
         """Interruptible sleep — checks shutdown flag each second."""
