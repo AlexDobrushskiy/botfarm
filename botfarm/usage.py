@@ -212,7 +212,7 @@ def refresh_usage_snapshot(conn: sqlite3.Connection) -> UsageState | None:
     except Exception:
         logger.warning("Failed to refresh usage data from API", exc_info=True)
         return None
-    if poller.last_polled_fresh:
+    if poller.last_polled_fresh and poller.state.utilization_5h is not None:
         return poller.state
     return None
 

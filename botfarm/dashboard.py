@@ -173,6 +173,7 @@ def create_app(
         with _usage_refresh_lock:
             if now - _last_usage_refresh["time"] < _USAGE_REFRESH_INTERVAL:
                 return _last_usage_refresh["data"]
+            _last_usage_refresh["time"] = now  # claim the slot eagerly
 
         conn = None
         try:
@@ -181,7 +182,6 @@ def create_app(
             if state is not None:
                 result = state.to_dict()
                 with _usage_refresh_lock:
-                    _last_usage_refresh["time"] = now
                     _last_usage_refresh["data"] = result
                 return result
         except Exception:
