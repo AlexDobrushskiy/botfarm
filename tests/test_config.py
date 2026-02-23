@@ -328,6 +328,34 @@ def test_load_config_cross_project_duplicate_slots(tmp_path):
         load_config(config_path)
 
 
+# --- linear_project config ---
+
+
+def test_load_config_linear_project_default(tmp_path):
+    config_path = _write_config(tmp_path, MINIMAL_CONFIG)
+    config = load_config(config_path)
+    assert config.projects[0].linear_project == ""
+
+
+def test_load_config_linear_project_set(tmp_path):
+    data = {
+        **MINIMAL_CONFIG,
+        "projects": [
+            {
+                "name": "test-project",
+                "linear_team": "TST",
+                "linear_project": "My Project",
+                "base_dir": "~/test",
+                "worktree_prefix": "test-slot-",
+                "slots": [1],
+            }
+        ],
+    }
+    config_path = _write_config(tmp_path, data)
+    config = load_config(config_path)
+    assert config.projects[0].linear_project == "My Project"
+
+
 # --- CLI init command ---
 
 

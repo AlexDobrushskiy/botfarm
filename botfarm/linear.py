@@ -47,6 +47,41 @@ query TeamTodoIssues($teamKey: String!, $statusName: String!, $first: Int!) {
 }
 """
 
+ISSUES_WITH_PROJECT_QUERY = """
+query TeamProjectTodoIssues($teamKey: String!, $statusName: String!, $projectName: String!, $first: Int!) {
+  issues(
+    filter: {
+      team: { key: { eq: $teamKey } }
+      state: { name: { eq: $statusName } }
+      project: { name: { eq: $projectName } }
+    }
+    first: $first
+    orderBy: createdAt
+  ) {
+    nodes {
+      id
+      identifier
+      title
+      priority
+      url
+      assignee {
+        id
+        email
+      }
+      labels {
+        nodes {
+          name
+        }
+      }
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}
+"""
+
 UPDATE_STATE_MUTATION = """
 mutation UpdateIssueState($issueId: String!, $stateId: String!) {
   issueUpdate(id: $issueId, input: { stateId: $stateId }) {
@@ -162,12 +197,29 @@ class LinearClient:
         team_key: str,
         status_name: str = "Todo",
         first: int = 50,
+        project_name: str = "",
     ) -> list[LinearIssue]:
-        """Fetch issues for a team in a given workflow state."""
-        data = self._execute(
-            ISSUES_QUERY,
-            {"teamKey": team_key, "statusName": status_name, "first": first},
-        )
+        """Fetch issues for a team in a given workflow state.
+
+        When *project_name* is non-empty, only issues belonging to that
+        Linear project are returned.
+        """
+        if project_name:
+            query = ISSUES_WITH_PROJECT_QUERY
+            variables: dict = {
+                "teamKey": team_key,
+                "statusName": status_name,
+                "projectName": project_name,
+                "first": first,
+            }
+        else:
+            query = ISSUES_QUERY
+            variables = {
+                "teamKey": team_key,
+                "statusName": status_name,
+                "first": first,
+            }
+        data = self._execute(query, variables)
         nodes = data.get("issues", {}).get("nodes", [])
         issues = []
         for node in nodes:
@@ -264,6 +316,7 @@ class LinearPoller:
         issues = self._client.fetch_team_issues(
             team_key=self._project.linear_team,
             status_name=self._todo_status,
+            project_name=self._project.linear_project,
         )
 
         candidates = []
