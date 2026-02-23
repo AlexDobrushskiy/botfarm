@@ -1230,7 +1230,7 @@ class TestMultiProject:
                     slots=[2],
                 ),
             ],
-                linear=LinearConfig(
+            linear=LinearConfig(
                 api_key="test-key",
                 poll_interval_seconds=10,
             ),
@@ -2232,7 +2232,7 @@ class TestCommentPosting:
                     slots=[1],
                 ),
             ],
-                linear=LinearConfig(
+            linear=LinearConfig(
                 api_key="test-key",
                 poll_interval_seconds=10,
                 comment_on_failure=False,
