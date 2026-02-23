@@ -885,12 +885,17 @@ def _record_failure(conn, task_id: int, pipeline: PipelineResult) -> None:
     conn.commit()
 
 
+_PR_URL_RE = re.compile(
+    r"https://github\.com/([\w.-]+)/([\w.-]+)/pull/(\d+)",
+)
+
+
 def _extract_pr_url(text: str) -> str | None:
     """Try to extract a GitHub PR URL from text.
 
     Looks for patterns like https://github.com/<owner>/<repo>/pull/<number>.
     """
-    match = re.search(r"https://github\.com/[\w.-]+/[\w.-]+/pull/\d+", text)
+    match = _PR_URL_RE.search(text)
     return match.group(0) if match else None
 
 
@@ -899,9 +904,7 @@ def _parse_pr_url(pr_url: str) -> tuple[str, str, str]:
 
     Raises ``ValueError`` if the URL doesn't match the expected pattern.
     """
-    match = re.match(
-        r"https://github\.com/([\w.-]+)/([\w.-]+)/pull/(\d+)", pr_url,
-    )
+    match = _PR_URL_RE.match(pr_url)
     if not match:
         raise ValueError(f"Cannot parse PR URL: {pr_url}")
     return match.group(1), match.group(2), match.group(3)
