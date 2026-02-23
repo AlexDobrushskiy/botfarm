@@ -47,7 +47,6 @@ def _make_config(tmp_path: Path) -> BotfarmConfig:
                 slots=[1, 2],
             ),
         ],
-        max_total_slots=5,
         linear=LinearConfig(
             api_key="test-key",
             poll_interval_seconds=10,
@@ -1231,7 +1230,6 @@ class TestMultiProject:
                     slots=[2],
                 ),
             ],
-            max_total_slots=5,
             linear=LinearConfig(
                 api_key="test-key",
                 poll_interval_seconds=10,
@@ -2069,7 +2067,6 @@ def _make_config_custom_statuses(tmp_path: Path) -> BotfarmConfig:
                 slots=[1, 2],
             ),
         ],
-        max_total_slots=5,
         linear=LinearConfig(
             api_key="test-key",
             poll_interval_seconds=10,
@@ -2235,7 +2232,6 @@ class TestCommentPosting:
                     slots=[1],
                 ),
             ],
-            max_total_slots=5,
             linear=LinearConfig(
                 api_key="test-key",
                 poll_interval_seconds=10,

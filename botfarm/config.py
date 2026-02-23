@@ -23,8 +23,6 @@ projects:
     worktree_prefix: my-project-slot-
     slots: [1, 2]
 
-max_total_slots: 5
-
 linear:
   api_key: ${LINEAR_API_KEY}
   workspace: my-workspace
@@ -140,7 +138,6 @@ class NotificationsConfig:
 @dataclass
 class BotfarmConfig:
     projects: list[ProjectConfig]
-    max_total_slots: int = 5
     linear: LinearConfig = field(default_factory=LinearConfig)
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     usage_limits: UsageLimitsConfig = field(default_factory=UsageLimitsConfig)
@@ -222,9 +219,6 @@ def _parse_project(data: dict) -> ProjectConfig:
 
 def _validate_config(config: BotfarmConfig) -> None:
     """Validate cross-field constraints."""
-    if config.max_total_slots < 1:
-        raise ConfigError("max_total_slots must be at least 1")
-
     if not config.linear.api_key:
         raise ConfigError("linear.api_key must be set")
 
@@ -237,19 +231,6 @@ def _validate_config(config: BotfarmConfig) -> None:
     names = [p.name for p in config.projects]
     if len(names) != len(set(names)):
         raise ConfigError("Duplicate project names found")
-
-    all_slots = []
-    for p in config.projects:
-        all_slots.extend(p.slots)
-    if len(all_slots) != len(set(all_slots)):
-        raise ConfigError("Duplicate slot assignments found across projects")
-
-    total_slots = sum(len(p.slots) for p in config.projects)
-    if total_slots > config.max_total_slots:
-        raise ConfigError(
-            f"Total assigned slots ({total_slots}) exceeds "
-            f"max_total_slots ({config.max_total_slots})"
-        )
 
     for attr in ("pause_five_hour_threshold", "pause_seven_day_threshold"):
         val = getattr(config.usage_limits, attr)
@@ -369,7 +350,6 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
 
     config = BotfarmConfig(
         projects=projects,
-        max_total_slots=data.get("max_total_slots", 5),
         linear=linear,
         database=database,
         usage_limits=usage_limits,

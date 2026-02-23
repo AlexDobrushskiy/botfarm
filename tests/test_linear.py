@@ -497,7 +497,6 @@ class TestCreatePollers:
                 _make_project(name="proj-a", team="SMA", slots=[1]),
                 _make_project(name="proj-b", team="TPP", slots=[2]),
             ],
-            max_total_slots=5,
             linear=LinearConfig(api_key="test-key", exclude_tags=["Human", "Skip"]),
             database=DatabaseConfig(),
         )
@@ -514,7 +513,6 @@ class TestCreatePollers:
                 _make_project(name="a", slots=[1]),
                 _make_project(name="b", slots=[2]),
             ],
-            max_total_slots=5,
             linear=LinearConfig(api_key="key"),
             database=DatabaseConfig(),
         )
@@ -524,7 +522,6 @@ class TestCreatePollers:
     def test_exclude_tags_passed(self):
         config = BotfarmConfig(
             projects=[_make_project(slots=[1])],
-            max_total_slots=5,
             linear=LinearConfig(api_key="key", exclude_tags=["Human", "Bot"]),
             database=DatabaseConfig(),
         )
@@ -534,7 +531,6 @@ class TestCreatePollers:
     def test_todo_status_passed(self):
         config = BotfarmConfig(
             projects=[_make_project(slots=[1])],
-            max_total_slots=5,
             linear=LinearConfig(api_key="key", todo_status="Backlog"),
             database=DatabaseConfig(),
         )
@@ -544,7 +540,6 @@ class TestCreatePollers:
     def test_todo_status_default(self):
         config = BotfarmConfig(
             projects=[_make_project(slots=[1])],
-            max_total_slots=5,
             linear=LinearConfig(api_key="key"),
             database=DatabaseConfig(),
         )
