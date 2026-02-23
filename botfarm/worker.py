@@ -179,8 +179,10 @@ def _run_review(pr_url: str, *, cwd: str | Path, max_turns: int) -> StageResult:
         "After posting all inline comments, submit your overall assessment "
         "using 'gh pr review' with either --approve or --request-changes "
         "and a summary body.\n\n"
-        "At the end of your response, state clearly whether you APPROVE the PR "
-        "or REQUEST CHANGES."
+        "At the very end of your response, output exactly one of these verdict "
+        "markers on its own line:\n"
+        "  VERDICT: APPROVED\n"
+        "  VERDICT: CHANGES_REQUESTED"
     )
     result = run_claude(prompt, cwd=cwd, max_turns=max_turns)
 
@@ -500,6 +502,8 @@ def run_pipeline(
         if stage == "implement" and result.pr_url:
             pr_url = result.pr_url
             pipeline.pr_url = pr_url
+            update_task(conn, task_id, pr_url=pr_url)
+            conn.commit()
             if slot_manager and project and slot_id is not None:
                 slot_manager.set_pr_url(project, slot_id, pr_url)
 
@@ -570,6 +574,9 @@ class _PipelineContext:
             self.slot_manager.update_stage(
                 self.project, self.slot_id, stage=stage, iteration=iteration,
             )
+
+        update_task(self.conn, self.task_id, pipeline_stage=stage)
+        self.conn.commit()
 
         wall_start = time.monotonic()
 
@@ -678,6 +685,10 @@ def _run_review_fix_loop(
         review_result = ctx.run_and_record("review", pr_url=pr_url, iteration=iteration)
         if review_result is None:
             return False  # failure recorded by run_and_record
+
+        review_state = "approved" if review_result.review_approved else "changes_requested"
+        update_task(ctx.conn, ctx.task_id, review_state=review_state)
+        ctx.conn.commit()
 
         if review_result.review_approved:
             insert_event(
@@ -913,16 +924,22 @@ def _parse_pr_url(pr_url: str) -> tuple[str, str, str]:
 def _parse_review_approved(text: str) -> bool:
     """Determine whether a review result indicates approval or changes requested.
 
-    Only inspects the last 500 characters of *text* to avoid false positives
-    from quoted PR content earlier in the output.  The reviewer prompt
-    instructs Claude to state its verdict at the end of the response.
+    First checks for structured verdict markers (``VERDICT: APPROVED`` or
+    ``VERDICT: CHANGES_REQUESTED``) anywhere in the last 500 characters.
+    Falls back to heuristic keyword matching if no marker is found.
 
-    Returns ``True`` if the review text signals approval (e.g. ``--approve``
-    or "APPROVE"), ``False`` if changes are requested, and ``False`` as a
-    conservative default when the signal is ambiguous.
+    Returns ``True`` if the review text signals approval, ``False`` if
+    changes are requested, and ``False`` as a conservative default when
+    the signal is ambiguous.
     """
-    lower = text[-500:].lower()
-    # gh pr review --approve is the strongest signal
+    tail = text[-500:]
+    # Structured verdict marker — strongest signal
+    verdict_match = re.search(r"VERDICT:\s*(APPROVED|CHANGES_REQUESTED)", tail)
+    if verdict_match:
+        return verdict_match.group(1) == "APPROVED"
+
+    lower = tail.lower()
+    # gh pr review --approve is a strong signal
     if "--approve" in lower:
         return True
     # Explicit approval phrases

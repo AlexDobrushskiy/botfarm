@@ -447,6 +447,69 @@ class TestRunPipeline:
         assert task["completed_at"] is not None
 
     @patch("botfarm.worker._execute_stage")
+    def test_pr_url_persisted_to_db(self, mock_exec, conn, task_id, tmp_path):
+        """PR URL from implement stage is written to tasks DB."""
+        mock_exec.side_effect = [
+            _mock_stage_result("implement", pr_url=PR_URL, cost=0.5, turns=10),
+            _mock_stage_result("review", review_approved=True),
+            _mock_stage_result("pr_checks"),
+            _mock_stage_result("merge"),
+        ]
+        run_pipeline(
+            ticket_id="SMA-99",
+            task_id=task_id,
+            cwd=tmp_path,
+            conn=conn,
+            max_review_iterations=3,
+        )
+        task = get_task(conn, task_id)
+        assert task["pr_url"] == PR_URL
+
+    @patch("botfarm.worker._execute_stage")
+    def test_pipeline_stage_persisted_to_db(self, mock_exec, conn, task_id, tmp_path):
+        """pipeline_stage is written to DB at each stage transition."""
+        stages_in_db = []
+
+        def capture_stage(stage, **kwargs):
+            task = get_task(conn, task_id)
+            stages_in_db.append(task["pipeline_stage"])
+            return _mock_stage_result(stage, pr_url=PR_URL if stage == "implement" else None)
+
+        mock_exec.side_effect = capture_stage
+        run_pipeline(
+            ticket_id="SMA-99",
+            task_id=task_id,
+            cwd=tmp_path,
+            conn=conn,
+            max_review_iterations=1,
+        )
+        # Each stage should have been written before execution
+        assert "implement" in stages_in_db
+        assert "review" in stages_in_db
+        assert "merge" in stages_in_db
+
+    @patch("botfarm.worker._execute_stage")
+    def test_review_state_persisted_to_db(self, mock_exec, conn, task_id, tmp_path):
+        """review_state is written to DB after review stage."""
+        mock_exec.side_effect = [
+            _mock_stage_result("implement", pr_url=PR_URL),
+            _mock_stage_result("review", review_approved=False),
+            _mock_stage_result("fix"),
+            _mock_stage_result("review", review_approved=True),
+            _mock_stage_result("pr_checks"),
+            _mock_stage_result("merge"),
+        ]
+        run_pipeline(
+            ticket_id="SMA-99",
+            task_id=task_id,
+            cwd=tmp_path,
+            conn=conn,
+            max_review_iterations=3,
+        )
+        task = get_task(conn, task_id)
+        assert task["review_state"] == "approved"
+
+    @patch("botfarm.worker._execute_stage")
     def test_implement_no_pr_url_fails(self, mock_exec, conn, task_id, tmp_path):
         """Implement succeeds but produces no PR URL → pipeline fails."""
         mock_exec.return_value = _mock_stage_result("implement", pr_url=None)
@@ -916,6 +979,20 @@ class TestParseReviewApproved:
         # Approval signal in the last 500 chars is detected
         long_prefix = "Reviewing code... " + ("x" * 600)
         assert _parse_review_approved(long_prefix + " I ran gh pr review --approve") is True
+
+    def test_verdict_marker_approved(self):
+        assert _parse_review_approved("Review complete.\nVERDICT: APPROVED") is True
+
+    def test_verdict_marker_changes_requested(self):
+        assert _parse_review_approved("Issues found.\nVERDICT: CHANGES_REQUESTED") is False
+
+    def test_verdict_marker_takes_priority_over_heuristics(self):
+        # Even if heuristic keywords suggest approval, the marker wins
+        text = "LGTM overall but VERDICT: CHANGES_REQUESTED"
+        assert _parse_review_approved(text) is False
+
+    def test_verdict_marker_approved_with_whitespace(self):
+        assert _parse_review_approved("VERDICT:  APPROVED") is True
 
 
 # ---------------------------------------------------------------------------
@@ -1478,6 +1555,17 @@ class TestPromptContent:
         assert "gh api repos/owner/repo/pulls/42/comments" in prompt
         assert "inline" in prompt
         assert "{{" not in prompt
+
+    @patch("botfarm.worker.run_claude")
+    def test_review_prompt_contains_verdict_instruction(self, mock_claude, tmp_path):
+        mock_claude.return_value = ClaudeResult(
+            session_id="s", num_turns=1, duration_seconds=1.0,
+            cost_usd=0.0, exit_subtype="", result_text="done",
+        )
+        _run_review(PR_URL, cwd=tmp_path, max_turns=10)
+        prompt = mock_claude.call_args.args[0]
+        assert "VERDICT: APPROVED" in prompt
+        assert "VERDICT: CHANGES_REQUESTED" in prompt
 
     @patch("botfarm.worker.run_claude")
     def test_fix_prompt_contains_inline_comment_api(self, mock_claude, tmp_path):

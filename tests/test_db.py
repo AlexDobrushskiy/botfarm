@@ -64,7 +64,7 @@ class TestInitDb:
 
     def test_schema_version_recorded(self, conn):
         row = conn.execute("SELECT version FROM schema_version").fetchone()
-        assert row[0] == 1
+        assert row[0] == SCHEMA_VERSION
 
     def test_idempotent_init(self, tmp_path):
         db_file = tmp_path / "botfarm.db"
@@ -72,17 +72,100 @@ class TestInitDb:
         c1.close()
         c2 = init_db(db_file)
         row = c2.execute("SELECT version FROM schema_version").fetchone()
-        assert row[0] == 1
+        assert row[0] == SCHEMA_VERSION
         c2.close()
 
-    def test_schema_version_mismatch_raises(self, tmp_path):
+    def test_schema_version_future_raises(self, tmp_path):
         db_file = tmp_path / "botfarm.db"
         c = init_db(db_file)
         c.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION + 99,))
         c.commit()
         c.close()
-        with pytest.raises(RuntimeError, match="schema version mismatch"):
+        with pytest.raises(RuntimeError, match="Cannot downgrade"):
             init_db(db_file)
+
+    def test_migration_v1_to_v2(self, tmp_path):
+        """Simulate a v1 database and verify migration adds new columns."""
+        db_file = tmp_path / "botfarm.db"
+        conn = sqlite3.connect(str(db_file))
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        # Create v1 schema (without pr_url, pipeline_stage, review_state)
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS tasks (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticket_id       TEXT NOT NULL UNIQUE,
+                title           TEXT NOT NULL,
+                project         TEXT NOT NULL,
+                slot            INTEGER NOT NULL,
+                status          TEXT NOT NULL DEFAULT 'pending',
+                created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                started_at      TEXT,
+                completed_at    TEXT,
+                cost_usd        REAL NOT NULL DEFAULT 0.0,
+                turns           INTEGER NOT NULL DEFAULT 0,
+                review_iterations INTEGER NOT NULL DEFAULT 0,
+                comments        TEXT NOT NULL DEFAULT '',
+                limit_interruptions INTEGER NOT NULL DEFAULT 0,
+                failure_reason  TEXT
+            );
+            CREATE TABLE IF NOT EXISTS stage_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id INTEGER NOT NULL REFERENCES tasks(id),
+                stage TEXT NOT NULL,
+                iteration INTEGER NOT NULL DEFAULT 1,
+                session_id TEXT,
+                turns INTEGER NOT NULL DEFAULT 0,
+                duration_seconds REAL,
+                cost_usd REAL NOT NULL DEFAULT 0.0,
+                exit_subtype TEXT,
+                was_limit_restart INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            );
+            CREATE TABLE IF NOT EXISTS usage_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                utilization_5h REAL,
+                utilization_7d REAL,
+                resets_at TEXT,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            );
+            CREATE TABLE IF NOT EXISTS task_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id INTEGER REFERENCES tasks(id),
+                event_type TEXT NOT NULL,
+                detail TEXT,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            );
+        """)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)"
+        )
+        conn.execute("INSERT INTO schema_version (version) VALUES (1)")
+        # Insert a task to verify data survives migration
+        conn.execute(
+            "INSERT INTO tasks (ticket_id, title, project, slot) VALUES (?, ?, ?, ?)",
+            ("SMA-1", "Old task", "proj", 1),
+        )
+        conn.commit()
+        conn.close()
+
+        # Re-open via init_db — should migrate
+        c2 = init_db(db_file)
+        row = c2.execute("SELECT version FROM schema_version").fetchone()
+        assert row[0] == SCHEMA_VERSION
+
+        # New columns should exist and be NULL for pre-existing rows
+        task = c2.execute("SELECT pr_url, pipeline_stage, review_state FROM tasks WHERE ticket_id = 'SMA-1'").fetchone()
+        assert task[0] is None
+        assert task[1] is None
+        assert task[2] is None
+
+        # Should be able to update new columns
+        c2.execute("UPDATE tasks SET pr_url = 'https://example.com/pr/1' WHERE ticket_id = 'SMA-1'")
+        c2.commit()
+        task = c2.execute("SELECT pr_url FROM tasks WHERE ticket_id = 'SMA-1'").fetchone()
+        assert task[0] == "https://example.com/pr/1"
+        c2.close()
 
 
 # ---------------------------------------------------------------------------
@@ -163,6 +246,27 @@ class TestTasks:
         row = get_task(conn, tid)
         assert row["status"] == "in_progress"
         assert row["turns"] == 5
+
+    def test_update_task_new_columns(self, conn):
+        tid = insert_task(
+            conn, ticket_id="SMA-NC", title="New cols", project="p", slot=1
+        )
+        update_task(conn, tid, pr_url="https://github.com/o/r/pull/1")
+        update_task(conn, tid, pipeline_stage="review")
+        update_task(conn, tid, review_state="approved")
+        row = get_task(conn, tid)
+        assert row["pr_url"] == "https://github.com/o/r/pull/1"
+        assert row["pipeline_stage"] == "review"
+        assert row["review_state"] == "approved"
+
+    def test_new_columns_null_by_default(self, conn):
+        tid = insert_task(
+            conn, ticket_id="SMA-NULL", title="Null cols", project="p", slot=1
+        )
+        row = get_task(conn, tid)
+        assert row["pr_url"] is None
+        assert row["pipeline_stage"] is None
+        assert row["review_state"] is None
 
     def test_update_task_disallowed_column(self, conn):
         tid = insert_task(
