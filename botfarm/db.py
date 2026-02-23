@@ -6,7 +6,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS tasks (
@@ -24,7 +24,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     review_iterations INTEGER NOT NULL DEFAULT 0,
     comments        TEXT NOT NULL DEFAULT '',
     limit_interruptions INTEGER NOT NULL DEFAULT 0,
-    failure_reason  TEXT
+    failure_reason  TEXT,
+    pr_url          TEXT,
+    pipeline_stage  TEXT,
+    review_state    TEXT
 );
 
 CREATE TABLE IF NOT EXISTS stage_runs (
@@ -69,6 +72,20 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
+def _migrate(conn: sqlite3.Connection, from_version: int) -> None:
+    """Run schema migrations from *from_version* up to SCHEMA_VERSION."""
+    if from_version < 2:
+        # v1→v2: add pr_url, pipeline_stage, review_state to tasks
+        existing = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(tasks)").fetchall()
+        }
+        for col in ("pr_url", "pipeline_stage", "review_state"):
+            if col not in existing:
+                conn.execute(f"ALTER TABLE tasks ADD COLUMN {col} TEXT")  # noqa: S608
+    conn.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION,))
+
+
 def init_db(db_path: str | Path) -> sqlite3.Connection:
     """Open (or create) the database and ensure the schema exists.
 
@@ -90,10 +107,12 @@ def init_db(db_path: str | Path) -> sqlite3.Connection:
     row = conn.execute("SELECT version FROM schema_version").fetchone()
     if row is None:
         conn.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
-    elif row[0] != SCHEMA_VERSION:
+    elif row[0] < SCHEMA_VERSION:
+        _migrate(conn, row[0])
+    elif row[0] > SCHEMA_VERSION:
         raise RuntimeError(
             f"Database schema version mismatch: expected {SCHEMA_VERSION}, got {row[0]}. "
-            "Manual migration required."
+            "Cannot downgrade."
         )
     conn.commit()
     return conn
@@ -135,7 +154,10 @@ def insert_task(
             review_iterations = 0,
             comments = '',
             limit_interruptions = 0,
-            failure_reason = NULL
+            failure_reason = NULL,
+            pr_url = NULL,
+            pipeline_stage = NULL,
+            review_state = NULL
         """,
         (ticket_id, title, project, slot, status, _now_iso()),
     )
@@ -169,6 +191,9 @@ def update_task(
         "comments",
         "limit_interruptions",
         "failure_reason",
+        "pr_url",
+        "pipeline_stage",
+        "review_state",
     }
     bad = set(fields) - allowed
     if bad:
