@@ -45,6 +45,8 @@ def _make_issue(
     priority: int = 2,
     labels: list[str] | None = None,
     assignee_id: str | None = None,
+    sort_order: float = 0.0,
+    blocked_by: list[str] | None = None,
 ) -> LinearIssue:
     return LinearIssue(
         id=id,
@@ -54,6 +56,8 @@ def _make_issue(
         url=f"https://linear.app/test/{identifier}",
         assignee_id=assignee_id,
         labels=labels or [],
+        sort_order=sort_order,
+        blocked_by=blocked_by,
     )
 
 
@@ -197,18 +201,22 @@ class TestFetchTeamIssues:
                 "identifier": "SMA-10",
                 "title": "First",
                 "priority": 1,
+                "sortOrder": 1.5,
                 "url": "https://linear.app/SMA-10",
                 "assignee": {"id": "u1", "email": "bot@example.com"},
                 "labels": {"nodes": [{"name": "Feature"}, {"name": "Human"}]},
+                "relations": {"nodes": []},
             },
             {
                 "id": "id-2",
                 "identifier": "SMA-11",
                 "title": "Second",
                 "priority": 3,
+                "sortOrder": 2.0,
                 "url": "https://linear.app/SMA-11",
                 "assignee": None,
                 "labels": {"nodes": []},
+                "relations": {"nodes": []},
             },
         ]
         with patch.object(
@@ -220,12 +228,15 @@ class TestFetchTeamIssues:
         assert issues[0].id == "id-1"
         assert issues[0].identifier == "SMA-10"
         assert issues[0].priority == 1
+        assert issues[0].sort_order == 1.5
         assert issues[0].assignee_id == "u1"
         assert issues[0].assignee_email == "bot@example.com"
         assert issues[0].labels == ["Feature", "Human"]
+        assert issues[0].blocked_by is None
 
         assert issues[1].assignee_id is None
         assert issues[1].labels == []
+        assert issues[1].sort_order == 2.0
 
     def test_empty_response(self):
         client = LinearClient(api_key="key")
@@ -244,6 +255,7 @@ class TestFetchTeamIssues:
                 "title": "Minimal",
                 "assignee": None,
                 "labels": {"nodes": []},
+                "relations": {"nodes": []},
             }
         ]
         with patch.object(
@@ -252,6 +264,83 @@ class TestFetchTeamIssues:
             issues = client.fetch_team_issues("SMA")
         assert issues[0].priority == 4  # default
         assert issues[0].url == ""
+        assert issues[0].sort_order == 0.0
+
+    def test_parses_blocked_by_relations(self):
+        client = LinearClient(api_key="key")
+        nodes = [
+            {
+                "id": "id-1",
+                "identifier": "SMA-10",
+                "title": "Blocked issue",
+                "priority": 2,
+                "sortOrder": 1.0,
+                "url": "https://linear.app/SMA-10",
+                "assignee": None,
+                "labels": {"nodes": []},
+                "relations": {
+                    "nodes": [
+                        {
+                            "type": "isBlockedBy",
+                            "relatedIssue": {
+                                "identifier": "SMA-9",
+                                "state": {"type": "started"},
+                            },
+                        },
+                        {
+                            "type": "blocks",
+                            "relatedIssue": {
+                                "identifier": "SMA-11",
+                                "state": {"type": "unstarted"},
+                            },
+                        },
+                    ]
+                },
+            }
+        ]
+        with patch.object(
+            httpx, "post", return_value=self._issues_response(nodes)
+        ):
+            issues = client.fetch_team_issues("SMA")
+        assert issues[0].blocked_by == ["SMA-9"]
+
+    def test_resolved_blockers_not_included(self):
+        client = LinearClient(api_key="key")
+        nodes = [
+            {
+                "id": "id-1",
+                "identifier": "SMA-10",
+                "title": "Was blocked",
+                "priority": 2,
+                "sortOrder": 1.0,
+                "url": "https://linear.app/SMA-10",
+                "assignee": None,
+                "labels": {"nodes": []},
+                "relations": {
+                    "nodes": [
+                        {
+                            "type": "isBlockedBy",
+                            "relatedIssue": {
+                                "identifier": "SMA-9",
+                                "state": {"type": "completed"},
+                            },
+                        },
+                        {
+                            "type": "isBlockedBy",
+                            "relatedIssue": {
+                                "identifier": "SMA-8",
+                                "state": {"type": "canceled"},
+                            },
+                        },
+                    ]
+                },
+            }
+        ]
+        with patch.object(
+            httpx, "post", return_value=self._issues_response(nodes)
+        ):
+            issues = client.fetch_team_issues("SMA")
+        assert issues[0].blocked_by is None
 
 
 # ---------------------------------------------------------------------------
@@ -372,25 +461,45 @@ class TestLinearPollerPoll:
             exclude_tags=exclude_tags or ["Human"],
         )
 
-    def test_returns_sorted_by_priority(self):
+    def test_returns_sorted_by_sort_order(self):
         poller = self._make_poller()
         poller._client.fetch_team_issues.return_value = [
-            _make_issue(id="a", identifier="SMA-1", priority=3),
-            _make_issue(id="b", identifier="SMA-2", priority=1),
-            _make_issue(id="c", identifier="SMA-3", priority=2),
+            _make_issue(id="a", identifier="SMA-1", sort_order=3.0),
+            _make_issue(id="b", identifier="SMA-2", sort_order=1.0),
+            _make_issue(id="c", identifier="SMA-3", sort_order=2.0),
         ]
         candidates = poller.poll()
         assert [c.identifier for c in candidates] == ["SMA-2", "SMA-3", "SMA-1"]
 
-    def test_no_priority_sorts_last(self):
+    def test_sort_order_ignores_priority(self):
         poller = self._make_poller()
         poller._client.fetch_team_issues.return_value = [
-            _make_issue(id="a", identifier="SMA-1", priority=0),
-            _make_issue(id="b", identifier="SMA-2", priority=4),
-            _make_issue(id="c", identifier="SMA-3", priority=1),
+            _make_issue(id="a", identifier="SMA-1", priority=1, sort_order=3.0),
+            _make_issue(id="b", identifier="SMA-2", priority=4, sort_order=1.0),
+            _make_issue(id="c", identifier="SMA-3", priority=2, sort_order=2.0),
         ]
         candidates = poller.poll()
-        assert [c.identifier for c in candidates] == ["SMA-3", "SMA-2", "SMA-1"]
+        # Sort is by sort_order, not priority
+        assert [c.identifier for c in candidates] == ["SMA-2", "SMA-3", "SMA-1"]
+
+    def test_filters_blocked_tickets(self):
+        poller = self._make_poller()
+        poller._client.fetch_team_issues.return_value = [
+            _make_issue(id="a", identifier="SMA-1", sort_order=1.0),
+            _make_issue(id="b", identifier="SMA-2", sort_order=2.0, blocked_by=["SMA-1"]),
+            _make_issue(id="c", identifier="SMA-3", sort_order=3.0),
+        ]
+        candidates = poller.poll()
+        assert [c.identifier for c in candidates] == ["SMA-1", "SMA-3"]
+
+    def test_unblocked_tickets_not_filtered(self):
+        poller = self._make_poller()
+        poller._client.fetch_team_issues.return_value = [
+            _make_issue(id="a", identifier="SMA-1", sort_order=1.0, blocked_by=None),
+            _make_issue(id="b", identifier="SMA-2", sort_order=2.0, blocked_by=[]),
+        ]
+        candidates = poller.poll()
+        assert len(candidates) == 2
 
     def test_excludes_tags(self):
         poller = self._make_poller(exclude_tags=["Human", "Manual"])
