@@ -2451,3 +2451,109 @@ class TestCommentPosting:
         supervisor._handle_finished_slots()
 
         assert sm.get_slot("test-project", 1).status == "free"
+
+
+# ---------------------------------------------------------------------------
+# Worktree cwd computation (SMA-102)
+# ---------------------------------------------------------------------------
+
+
+class TestSlotWorktreeCwd:
+    """Tests for _slot_worktree_cwd and its usage in dispatch/resume/PR check."""
+
+    def test_computes_worktree_path_from_base_dir_parent(self):
+        """Worktree cwd = base_dir's parent / worktree_prefix + slot_id."""
+        cfg = ProjectConfig(
+            name="proj",
+            linear_team="T",
+            base_dir="/home/user/myproject",
+            worktree_prefix="myproject-slot-",
+            slots=[1],
+        )
+        result = Supervisor._slot_worktree_cwd(cfg, 1)
+        assert result == "/home/user/myproject-slot-1"
+
+    def test_computes_worktree_path_with_tilde(self):
+        """Tilde in base_dir is expanded before computing worktree path."""
+        cfg = ProjectConfig(
+            name="proj",
+            linear_team="T",
+            base_dir="~/myproject",
+            worktree_prefix="myproject-slot-",
+            slots=[2],
+        )
+        result = Supervisor._slot_worktree_cwd(cfg, 2)
+        home = str(Path.home())
+        assert result == f"{home}/myproject-slot-2"
+
+    def test_dispatch_worker_uses_worktree_cwd(self, supervisor, tmp_path):
+        """_dispatch_worker passes the slot worktree path, not base_dir."""
+        issue = _make_issue()
+        slot = supervisor.slot_manager.get_slot("test-project", 1)
+        poller = supervisor._pollers["test-project"]
+
+        with patch("botfarm.supervisor.multiprocessing.Process") as MockProc:
+            mock_proc = MagicMock()
+            mock_proc.pid = 12345
+            MockProc.return_value = mock_proc
+
+            supervisor._dispatch_worker("test-project", slot, issue, poller)
+
+            call_kwargs = MockProc.call_args.kwargs["kwargs"]
+            expected_cwd = str(tmp_path / "test-project-slot-1")
+            assert call_kwargs["cwd"] == expected_cwd
+
+    def test_resume_paused_worker_uses_worktree_cwd(self, supervisor, tmp_path):
+        """_resume_paused_worker passes the slot worktree path, not base_dir."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.update_stage("test-project", 1, stage="implement", session_id="sess-1")
+        sm.mark_paused_limit(
+            "test-project", 1,
+            resume_after="2020-01-01T00:00:00+00:00",
+        )
+
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        supervisor._usage_poller._state.utilization_5h = 0.10
+        supervisor._usage_poller._state.utilization_7d = 0.10
+
+        with patch("botfarm.supervisor.multiprocessing.Process") as MockProc:
+            mock_proc = MagicMock()
+            mock_proc.pid = 555
+            MockProc.return_value = mock_proc
+
+            supervisor._handle_paused_slots()
+
+            call_kwargs = MockProc.call_args.kwargs["kwargs"]
+            expected_cwd = str(tmp_path / "test-project-slot-1")
+            assert call_kwargs["cwd"] == expected_cwd
+
+    def test_check_pr_status_uses_worktree_cwd_for_branch_lookup(self, supervisor, tmp_path):
+        """_check_pr_status passes the slot worktree cwd to gh pr view."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        slot = sm.get_slot("test-project", 1)
+
+        with (
+            patch.object(
+                Supervisor, "_gh_pr_url_for_branch",
+                return_value="https://github.com/org/repo/pull/99",
+            ) as mock_branch_lookup,
+            patch.object(Supervisor, "_gh_pr_state", return_value="open"),
+        ):
+            supervisor._check_pr_status(slot)
+
+            expected_cwd = str(tmp_path / "test-project-slot-1")
+            mock_branch_lookup.assert_called_once_with("b1", expected_cwd)
