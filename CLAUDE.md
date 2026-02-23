@@ -2,18 +2,28 @@
 
 ## Project Context
 - Botfarm: autonomous Linear ticket dispatcher for Claude Code agents
-- Pure Python CLI project — no frontend, no database migrations, no run.sh/stop.sh
+- Pure Python CLI project — optional web dashboard, no database migrations, no run.sh/stop.sh
 - This CLAUDE.md primarily covers the implementer workflow. Reviewer and review-addresser agents receive instructions via prompt.
 
 ## Architecture
-Planned modules (under `botfarm/`):
-- `cli.py` — Click CLI entry point (status, history, limits commands)
-- `config.py` — YAML config loading and validation
-- `supervisor.py` — Main loop: poll Linear, dispatch workers, manage slots
-- `worker.py` — Single-ticket agent lifecycle (implement → review → validate → merge)
-- `db.py` — SQLite via aiosqlite for task history and state
-- `linear.py` — Linear API client (fetch tickets, update status)
-- `usage.py` — Token/cost tracking and rate-limit awareness
+Modules under `botfarm/`:
+- `cli.py` — Click/Rich CLI (status, history, limits, init, run)
+- `config.py` — YAML config loading with `${ENV_VAR}` expansion and validation
+- `supervisor.py` — Main loop: poll Linear, dispatch workers via multiprocessing, manage timeouts, crash recovery
+- `worker.py` — Stage pipeline: implement → review → fix → pr_checks → merge (iterates review/CI fix loops)
+- `slots.py` — Slot lifecycle & JSON state persistence (free/busy/paused_limit/failed/completed_pending_cleanup)
+- `db.py` — SQLite (sync, WAL mode) for tasks, stage_runs, usage_snapshots, task_events
+- `linear.py` — Linear GraphQL client with priority-sorted polling and state caching
+- `usage.py` — Anthropic usage API polling, threshold-based dispatch pausing
+- `credentials.py` — OAuth token retrieval (macOS keychain / Linux ~/.claude/.credentials.json)
+- `notifications.py` — Slack/Discord webhook notifications with rate limiting
+- `dashboard.py` — Optional FastAPI + htmx web dashboard (background thread in supervisor)
+
+Key patterns:
+- Workers run as subprocesses; communicate results via `multiprocessing.Queue`
+- All state persists to `state.json` after every mutation — supervisor survives crashes
+- Usage limits pause slots mid-pipeline and resume from interrupted stage
+- Claude invoked via `claude -p --output-format json` subprocess
 
 ## Workflow: Linear Tickets
 When working on a Linear ticket:
