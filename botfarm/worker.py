@@ -165,16 +165,17 @@ def _run_implement(ticket_id: str, *, cwd: str | Path, max_turns: int) -> StageR
 
 def _run_review(pr_url: str, *, cwd: str | Path, max_turns: int) -> StageResult:
     """REVIEW stage — Fresh Claude Code reviews the PR and posts comments."""
+    owner, repo, number = _parse_pr_url(pr_url)
     prompt = (
         f"Review the pull request at {pr_url}. "
         "Read the PR diff carefully. Be thorough but constructive.\n\n"
         "For file-specific feedback, post inline review comments on the exact "
-        "lines where changes are needed using:\n"
-        "  gh api repos/{{owner}}/{{repo}}/pulls/{{number}}/comments "
+        "lines where changes are needed. First get the head SHA with:\n"
+        f"  gh pr view {number} --json headRefOid --jq .headRefOid\n"
+        "Then post each inline comment using:\n"
+        f"  gh api repos/{owner}/{repo}/pulls/{number}/comments "
         "-f body='comment' -f commit_id='HEAD_SHA' -f path='file.py' "
-        "-F line=42 -f side='RIGHT'\n"
-        "Get the PR details (owner, repo, number, head SHA) from "
-        "'gh pr view --json number,headRefOid,url' first.\n\n"
+        "-F line=42 -f side='RIGHT'\n\n"
         "After posting all inline comments, submit your overall assessment "
         "using 'gh pr review' with either --approve or --request-changes "
         "and a summary body.\n\n"
@@ -203,10 +204,11 @@ def _run_review(pr_url: str, *, cwd: str | Path, max_turns: int) -> StageResult:
 
 def _run_fix(pr_url: str, *, cwd: str | Path, max_turns: int) -> StageResult:
     """FIX stage — Fresh Claude Code addresses review comments and pushes fixes."""
+    owner, repo, number = _parse_pr_url(pr_url)
     prompt = (
         f"Address the review comments on PR {pr_url}. "
         "Read both the top-level review comment and any inline review comments "
-        "on specific files/lines. Use 'gh api repos/{{owner}}/{{repo}}/pulls/{{number}}/comments' "
+        f"on specific files/lines. Use 'gh api repos/{owner}/{repo}/pulls/{number}/comments' "
         "to list inline comments. "
         "Make the necessary code changes for each comment, run tests, "
         "commit and push the fixes."
@@ -890,6 +892,19 @@ def _extract_pr_url(text: str) -> str | None:
     """
     match = re.search(r"https://github\.com/[\w.-]+/[\w.-]+/pull/\d+", text)
     return match.group(0) if match else None
+
+
+def _parse_pr_url(pr_url: str) -> tuple[str, str, str]:
+    """Extract (owner, repo, number) from a GitHub PR URL.
+
+    Raises ``ValueError`` if the URL doesn't match the expected pattern.
+    """
+    match = re.match(
+        r"https://github\.com/([\w.-]+)/([\w.-]+)/pull/(\d+)", pr_url,
+    )
+    if not match:
+        raise ValueError(f"Cannot parse PR URL: {pr_url}")
+    return match.group(1), match.group(2), match.group(3)
 
 
 def _parse_review_approved(text: str) -> bool:

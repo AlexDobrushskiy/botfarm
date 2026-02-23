@@ -20,6 +20,7 @@ from botfarm.worker import (
     run_claude,
     run_pipeline,
     _extract_pr_url,
+    _parse_pr_url,
     _parse_review_approved,
     _recover_pr_url,
     _run_implement,
@@ -1427,3 +1428,64 @@ class TestCiRetryLoop:
         )
         assert result.success is True
         assert mock_ci_fix.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# _parse_pr_url
+# ---------------------------------------------------------------------------
+
+
+class TestParsePrUrl:
+    def test_valid_url(self):
+        owner, repo, number = _parse_pr_url("https://github.com/owner/repo/pull/42")
+        assert owner == "owner"
+        assert repo == "repo"
+        assert number == "42"
+
+    def test_complex_names(self):
+        owner, repo, number = _parse_pr_url(
+            "https://github.com/my-org/my.repo-name/pull/123"
+        )
+        assert owner == "my-org"
+        assert repo == "my.repo-name"
+        assert number == "123"
+
+    def test_invalid_url_raises(self):
+        with pytest.raises(ValueError, match="Cannot parse PR URL"):
+            _parse_pr_url("https://example.com/not-a-pr")
+
+    def test_missing_number_raises(self):
+        with pytest.raises(ValueError):
+            _parse_pr_url("https://github.com/owner/repo/pull/")
+
+
+# ---------------------------------------------------------------------------
+# Prompt content smoke tests
+# ---------------------------------------------------------------------------
+
+
+class TestPromptContent:
+    """Verify that review and fix prompts contain expected substrings."""
+
+    @patch("botfarm.worker.run_claude")
+    def test_review_prompt_contains_inline_comment_api(self, mock_claude, tmp_path):
+        mock_claude.return_value = ClaudeResult(
+            session_id="s", num_turns=1, duration_seconds=1.0,
+            cost_usd=0.0, exit_subtype="", result_text="done",
+        )
+        _run_review(PR_URL, cwd=tmp_path, max_turns=10)
+        prompt = mock_claude.call_args.args[0]
+        assert "gh api repos/owner/repo/pulls/42/comments" in prompt
+        assert "inline" in prompt
+        assert "{{" not in prompt
+
+    @patch("botfarm.worker.run_claude")
+    def test_fix_prompt_contains_inline_comment_api(self, mock_claude, tmp_path):
+        mock_claude.return_value = ClaudeResult(
+            session_id="s", num_turns=1, duration_seconds=1.0,
+            cost_usd=0.0, exit_subtype="", result_text="done",
+        )
+        _run_fix(PR_URL, cwd=tmp_path, max_turns=10)
+        prompt = mock_claude.call_args.args[0]
+        assert "gh api repos/owner/repo/pulls/42/comments" in prompt
+        assert "{{" not in prompt
