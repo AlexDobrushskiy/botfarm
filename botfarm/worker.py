@@ -167,8 +167,17 @@ def _run_review(pr_url: str, *, cwd: str | Path, max_turns: int) -> StageResult:
     """REVIEW stage — Fresh Claude Code reviews the PR and posts comments."""
     prompt = (
         f"Review the pull request at {pr_url}. "
-        "Read the PR diff carefully. Post your review comments directly on the PR "
-        "using 'gh pr review'. Be thorough but constructive. "
+        "Read the PR diff carefully. Be thorough but constructive.\n\n"
+        "For file-specific feedback, post inline review comments on the exact "
+        "lines where changes are needed using:\n"
+        "  gh api repos/{{owner}}/{{repo}}/pulls/{{number}}/comments "
+        "-f body='comment' -f commit_id='HEAD_SHA' -f path='file.py' "
+        "-F line=42 -f side='RIGHT'\n"
+        "Get the PR details (owner, repo, number, head SHA) from "
+        "'gh pr view --json number,headRefOid,url' first.\n\n"
+        "After posting all inline comments, submit your overall assessment "
+        "using 'gh pr review' with either --approve or --request-changes "
+        "and a summary body.\n\n"
         "At the end of your response, state clearly whether you APPROVE the PR "
         "or REQUEST CHANGES."
     )
@@ -196,7 +205,10 @@ def _run_fix(pr_url: str, *, cwd: str | Path, max_turns: int) -> StageResult:
     """FIX stage — Fresh Claude Code addresses review comments and pushes fixes."""
     prompt = (
         f"Address the review comments on PR {pr_url}. "
-        "Read each comment, make the necessary code changes, run tests, "
+        "Read both the top-level review comment and any inline review comments "
+        "on specific files/lines. Use 'gh api repos/{{owner}}/{{repo}}/pulls/{{number}}/comments' "
+        "to list inline comments. "
+        "Make the necessary code changes for each comment, run tests, "
         "commit and push the fixes."
     )
     result = run_claude(prompt, cwd=cwd, max_turns=max_turns)
