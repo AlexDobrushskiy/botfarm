@@ -62,18 +62,8 @@ projects:
 
 **Rules:**
 - `name` must be unique across all projects
-- `slots` must be a list of integers with no duplicates across the entire config
-- Total slots assigned must not exceed `max_total_slots`
-
----
-
-### `max_total_slots`
-
-Upper bound on total concurrent workers across all projects.
-
-```yaml
-max_total_slots: 5  # default: 5
-```
+- `slots` must be a list of integers with no duplicates within each project
+- Slot IDs are per-project — different projects can reuse the same IDs
 
 ---
 
@@ -194,8 +184,6 @@ projects:
     worktree_prefix: my-app-slot-
     slots: [1]
 
-max_total_slots: 1
-
 linear:
   api_key: ${LINEAR_API_KEY}
   workspace: my-workspace
@@ -227,10 +215,8 @@ projects:
     linear_team: FE
     base_dir: ~/code/frontend
     worktree_prefix: frontend-slot-
-    slots: [4, 5]
+    slots: [1, 2]
     linear_project: "Web App"
-
-max_total_slots: 5
 
 linear:
   api_key: ${LINEAR_API_KEY}

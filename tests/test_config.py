@@ -27,7 +27,6 @@ MINIMAL_CONFIG = {
             "slots": [1],
         }
     ],
-    "max_total_slots": 5,
     "linear": {"api_key": "test-key"},
 }
 
@@ -78,7 +77,7 @@ def test_create_default_config(tmp_path):
     assert config_path.exists()
     content = config_path.read_text()
     assert "projects:" in content
-    assert "max_total_slots:" in content
+    assert "linear:" in content
 
 
 def test_create_default_config_no_overwrite(tmp_path):
@@ -98,7 +97,6 @@ def test_load_config_minimal(tmp_path):
     assert len(config.projects) == 1
     assert config.projects[0].name == "test-project"
     assert config.projects[0].slots == [1]
-    assert config.max_total_slots == 5
 
 
 def test_load_config_file_not_found(tmp_path):
@@ -114,14 +112,14 @@ def test_load_config_invalid_yaml(tmp_path):
 
 
 def test_load_config_missing_projects(tmp_path):
-    config_path = _write_config(tmp_path, {"max_total_slots": 5})
+    config_path = _write_config(tmp_path, {"linear": {"api_key": "k"}})
     with pytest.raises(ConfigError, match="projects"):
         load_config(config_path)
 
 
 def test_load_config_empty_projects(tmp_path):
     config_path = _write_config(
-        tmp_path, {"projects": [], "max_total_slots": 5, "linear": {"api_key": "k"}}
+        tmp_path, {"projects": [], "linear": {"api_key": "k"}}
     )
     with pytest.raises(ConfigError, match="At least one project"):
         load_config(config_path)
@@ -130,7 +128,6 @@ def test_load_config_empty_projects(tmp_path):
 def test_load_config_project_missing_fields(tmp_path):
     data = {
         "projects": [{"name": "incomplete"}],
-        "max_total_slots": 5,
     }
     config_path = _write_config(tmp_path, data)
     with pytest.raises(ConfigError, match="missing required fields"):
@@ -171,32 +168,6 @@ def test_load_config_duplicate_slots(tmp_path):
         load_config(config_path)
 
 
-def test_load_config_exceeds_max_slots(tmp_path):
-    data = {
-        "projects": [
-            {
-                "name": "project-a",
-                "linear_team": "TST",
-                "base_dir": "~/a",
-                "worktree_prefix": "a-slot-",
-                "slots": [1, 2, 3],
-            },
-            {
-                "name": "project-b",
-                "linear_team": "TST",
-                "base_dir": "~/b",
-                "worktree_prefix": "b-slot-",
-                "slots": [4, 5, 6],
-            },
-        ],
-        "max_total_slots": 5,
-        "linear": {"api_key": "test-key"},
-    }
-    config_path = _write_config(tmp_path, data)
-    with pytest.raises(ConfigError, match="exceeds max_total_slots"):
-        load_config(config_path)
-
-
 def test_load_config_duplicate_project_names(tmp_path):
     data = {
         "projects": [
@@ -215,7 +186,6 @@ def test_load_config_duplicate_project_names(tmp_path):
                 "slots": [2],
             },
         ],
-        "max_total_slots": 5,
         "linear": {"api_key": "test-key"},
     }
     config_path = _write_config(tmp_path, data)
@@ -246,7 +216,6 @@ def test_load_config_full(tmp_path, monkeypatch):
                 "slots": [1, 2],
             }
         ],
-        "max_total_slots": 5,
         "linear": {
             "api_key": "${TEST_KEY}",
             "poll_interval_seconds": 60,
@@ -274,13 +243,6 @@ def test_load_config_defaults(tmp_path):
     assert config.database.path == "~/.botfarm/botfarm.db"
 
 
-def test_load_config_max_total_slots_zero(tmp_path):
-    data = {**MINIMAL_CONFIG, "max_total_slots": 0}
-    config_path = _write_config(tmp_path, data)
-    with pytest.raises(ConfigError, match="at least 1"):
-        load_config(config_path)
-
-
 def test_load_config_poll_interval_zero(tmp_path):
     data = {**MINIMAL_CONFIG, "linear": {"api_key": "k", "poll_interval_seconds": 0}}
     config_path = _write_config(tmp_path, data)
@@ -302,7 +264,8 @@ def test_load_config_missing_api_key(tmp_path):
         load_config(config_path)
 
 
-def test_load_config_cross_project_duplicate_slots(tmp_path):
+def test_load_config_cross_project_duplicate_slots_allowed(tmp_path):
+    """Slot IDs are per-project, so the same ID can appear in different projects."""
     data = {
         "projects": [
             {
@@ -317,15 +280,16 @@ def test_load_config_cross_project_duplicate_slots(tmp_path):
                 "linear_team": "TST",
                 "base_dir": "~/b",
                 "worktree_prefix": "b-slot-",
-                "slots": [2, 3],
+                "slots": [1, 2],
             },
         ],
-        "max_total_slots": 10,
         "linear": {"api_key": "test-key"},
     }
     config_path = _write_config(tmp_path, data)
-    with pytest.raises(ConfigError, match="Duplicate slot assignments"):
-        load_config(config_path)
+    config = load_config(config_path)
+    assert len(config.projects) == 2
+    assert config.projects[0].slots == [1, 2]
+    assert config.projects[1].slots == [1, 2]
 
 
 # --- linear_project config ---
