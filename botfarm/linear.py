@@ -13,6 +13,33 @@ logger = logging.getLogger(__name__)
 
 LINEAR_API_URL = "https://api.linear.app/graphql"
 
+_ISSUE_FIELDS = """
+      id
+      identifier
+      title
+      priority
+      sortOrder
+      url
+      assignee {
+        id
+        email
+      }
+      labels {
+        nodes {
+          name
+        }
+      }
+      relations {
+        nodes {
+          type
+          relatedIssue {
+            identifier
+            state { type }
+          }
+        }
+      }
+"""
+
 ISSUES_QUERY = """
 query TeamTodoIssues($teamKey: String!, $statusName: String!, $first: Int!) {
   issues(
@@ -24,20 +51,7 @@ query TeamTodoIssues($teamKey: String!, $statusName: String!, $first: Int!) {
     orderBy: createdAt
   ) {
     nodes {
-      id
-      identifier
-      title
-      priority
-      url
-      assignee {
-        id
-        email
-      }
-      labels {
-        nodes {
-          name
-        }
-      }
+""" + _ISSUE_FIELDS + """
     }
     pageInfo {
       hasNextPage
@@ -59,20 +73,7 @@ query TeamProjectTodoIssues($teamKey: String!, $statusName: String!, $projectNam
     orderBy: createdAt
   ) {
     nodes {
-      id
-      identifier
-      title
-      priority
-      url
-      assignee {
-        id
-        email
-      }
-      labels {
-        nodes {
-          name
-        }
-      }
+""" + _ISSUE_FIELDS + """
     }
     pageInfo {
       hasNextPage
@@ -136,6 +137,8 @@ class LinearIssue:
     assignee_id: str | None = None
     assignee_email: str | None = None
     labels: list[str] | None = None
+    sort_order: float = 0.0
+    blocked_by: list[str] | None = None
 
 
 class LinearAPIError(Exception):
@@ -225,6 +228,21 @@ class LinearClient:
         for node in nodes:
             assignee = node.get("assignee") or {}
             label_nodes = node.get("labels", {}).get("nodes", [])
+            # Parse blocking relations: find issues that block this one.
+            # In Linear's relations model, if issue A has a relation with
+            # type="blocks" pointing to issue B, then B is blocked by A.
+            # Conversely, relations on this issue with type="blocks" mean
+            # this issue blocks the relatedIssue — we don't need those.
+            # We need relations where type="isBlockedBy" on this issue.
+            blocked_by = []
+            for rel in node.get("relations", {}).get("nodes", []):
+                if rel.get("type") != "isBlockedBy":
+                    continue
+                related = rel.get("relatedIssue") or {}
+                state_type = (related.get("state") or {}).get("type", "")
+                # Only count as blocked if the blocker is not resolved
+                if state_type not in ("completed", "canceled"):
+                    blocked_by.append(related.get("identifier", ""))
             issues.append(
                 LinearIssue(
                     id=node["id"],
@@ -235,6 +253,8 @@ class LinearClient:
                     assignee_id=assignee.get("id"),
                     assignee_email=assignee.get("email"),
                     labels=[ln["name"] for ln in label_nodes if "name" in ln],
+                    sort_order=node.get("sortOrder", 0.0),
+                    blocked_by=blocked_by if blocked_by else None,
                 )
             )
         return issues
@@ -301,14 +321,15 @@ class LinearPoller:
         return self._project.linear_team
 
     def poll(self, active_ticket_ids: set[str] | None = None) -> list[LinearIssue]:
-        """Fetch Todo issues, filter, and return sorted by priority (highest first).
+        """Fetch Todo issues, filter, and return sorted by manual sort order.
 
         Args:
             active_ticket_ids: Set of Linear issue IDs already being worked on
                 across all slots. These will be excluded from the results.
 
         Returns:
-            List of LinearIssue sorted by priority (lower number = higher priority).
+            List of LinearIssue sorted by sortOrder ascending (matching
+            the manual drag-and-drop order in the Linear UI).
         """
         if active_ticket_ids is None:
             active_ticket_ids = set()
@@ -339,11 +360,19 @@ class LinearPoller:
                 )
                 continue
 
+            if issue.blocked_by:
+                logger.debug(
+                    "Skipping %s: blocked by unresolved issue(s) %s",
+                    issue.identifier,
+                    issue.blocked_by,
+                )
+                continue
+
             candidates.append(issue)
 
-        # Sort by priority: Linear uses 0=No priority, 1=Urgent, 2=High, 3=Medium, 4=Low.
-        # 0 (no priority) should sort last.
-        candidates.sort(key=lambda i: i.priority if i.priority > 0 else 5)
+        # Sort by sortOrder ascending — lower value = higher in the Linear UI list.
+        # This respects the manual drag-and-drop ordering set by the user.
+        candidates.sort(key=lambda i: i.sort_order)
 
         logger.info(
             "Polled %s: %d Todo issues, %d candidates after filtering",
