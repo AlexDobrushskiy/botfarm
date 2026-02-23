@@ -572,6 +572,7 @@ class TestLinearPollerCustomTodoStatus:
         client.fetch_team_issues.assert_called_once_with(
             team_key="SMA",
             status_name="Backlog",
+            project_name="",
         )
 
     def test_poll_uses_default_todo_status(self):
@@ -587,4 +588,103 @@ class TestLinearPollerCustomTodoStatus:
         client.fetch_team_issues.assert_called_once_with(
             team_key="SMA",
             status_name="Todo",
+            project_name="",
+        )
+
+
+# ---------------------------------------------------------------------------
+# LinearClient.fetch_team_issues with project_name
+# ---------------------------------------------------------------------------
+
+
+class TestFetchTeamIssuesWithProject:
+    def _issues_response(self, nodes: list[dict]) -> httpx.Response:
+        return _graphql_response({
+            "issues": {
+                "nodes": nodes,
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+            }
+        })
+
+    def test_uses_project_query_when_project_set(self):
+        from botfarm.linear import ISSUES_WITH_PROJECT_QUERY
+
+        client = LinearClient(api_key="key")
+        with patch.object(
+            httpx, "post", return_value=self._issues_response([])
+        ) as mock_post:
+            client.fetch_team_issues("SMA", project_name="Botfarm")
+
+        call_args = mock_post.call_args
+        sent_query = call_args.kwargs.get("json", call_args[1].get("json", {}))["query"]
+        assert sent_query == ISSUES_WITH_PROJECT_QUERY
+        sent_vars = call_args.kwargs.get("json", call_args[1].get("json", {}))["variables"]
+        assert sent_vars["projectName"] == "Botfarm"
+
+    def test_uses_default_query_when_project_empty(self):
+        from botfarm.linear import ISSUES_QUERY
+
+        client = LinearClient(api_key="key")
+        with patch.object(
+            httpx, "post", return_value=self._issues_response([])
+        ) as mock_post:
+            client.fetch_team_issues("SMA", project_name="")
+
+        call_args = mock_post.call_args
+        sent_query = call_args.kwargs.get("json", call_args[1].get("json", {}))["query"]
+        assert sent_query == ISSUES_QUERY
+        sent_vars = call_args.kwargs.get("json", call_args[1].get("json", {}))["variables"]
+        assert "projectName" not in sent_vars
+
+    def test_uses_default_query_when_project_omitted(self):
+        from botfarm.linear import ISSUES_QUERY
+
+        client = LinearClient(api_key="key")
+        with patch.object(
+            httpx, "post", return_value=self._issues_response([])
+        ) as mock_post:
+            client.fetch_team_issues("SMA")
+
+        call_args = mock_post.call_args
+        sent_query = call_args.kwargs.get("json", call_args[1].get("json", {}))["query"]
+        assert sent_query == ISSUES_QUERY
+
+
+# ---------------------------------------------------------------------------
+# LinearPoller.poll with linear_project filter
+# ---------------------------------------------------------------------------
+
+
+class TestLinearPollerProjectFilter:
+    def test_poll_passes_project_name(self):
+        client = MagicMock(spec=LinearClient)
+        client.fetch_team_issues.return_value = []
+        project = _make_project()
+        project.linear_project = "Botfarm"
+        poller = LinearPoller(
+            client=client,
+            project=project,
+            exclude_tags=["Human"],
+        )
+        poller.poll()
+        client.fetch_team_issues.assert_called_once_with(
+            team_key="SMA",
+            status_name="Todo",
+            project_name="Botfarm",
+        )
+
+    def test_poll_passes_empty_project_when_unset(self):
+        client = MagicMock(spec=LinearClient)
+        client.fetch_team_issues.return_value = []
+        project = _make_project()
+        poller = LinearPoller(
+            client=client,
+            project=project,
+            exclude_tags=["Human"],
+        )
+        poller.poll()
+        client.fetch_team_issues.assert_called_once_with(
+            team_key="SMA",
+            status_name="Todo",
+            project_name="",
         )

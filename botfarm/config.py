@@ -79,6 +79,7 @@ class ProjectConfig:
     base_dir: str
     worktree_prefix: str
     slots: list[int]
+    linear_project: str = ""
 
 
 @dataclass
@@ -215,6 +216,7 @@ def _parse_project(data: dict) -> ProjectConfig:
         base_dir=data["base_dir"],
         worktree_prefix=data["worktree_prefix"],
         slots=slots,
+        linear_project=str(data.get("linear_project", "")),
     )
 
 
