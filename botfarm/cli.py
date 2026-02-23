@@ -17,6 +17,7 @@ from botfarm.config import (
     load_config,
 )
 from botfarm.db import get_task_history, init_db
+from botfarm.usage import refresh_usage_snapshot
 
 ENV_FILE_PATH = DEFAULT_CONFIG_DIR / ".env"
 
@@ -291,6 +292,9 @@ def limits(config_path):
         raise click.ClickException(f"Failed to open database: {exc}") from exc
 
     try:
+        # Refresh usage data from the API before displaying
+        refresh_usage_snapshot(conn)
+
         row = conn.execute(
             "SELECT * FROM usage_snapshots ORDER BY created_at DESC LIMIT 1"
         ).fetchone()

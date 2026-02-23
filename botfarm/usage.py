@@ -199,6 +199,24 @@ class UsagePoller:
         )
 
 
+def refresh_usage_snapshot(conn: sqlite3.Connection) -> UsageState | None:
+    """Fetch fresh usage data from the API and store a snapshot.
+
+    Returns the new ``UsageState`` on success, or ``None`` if the API call
+    fails (e.g. no credentials, network error).  Callers can fall back to
+    the latest DB snapshot when ``None`` is returned.
+    """
+    poller = UsagePoller()
+    try:
+        poller.force_poll(conn)
+    except Exception:
+        logger.warning("Failed to refresh usage data from API", exc_info=True)
+        return None
+    if poller.last_polled_fresh and poller.state.utilization_5h is not None:
+        return poller.state
+    return None
+
+
 def _get_or_create_event_loop() -> asyncio.AbstractEventLoop:
     """Return the running event loop, or create a new one if none exists."""
     try:

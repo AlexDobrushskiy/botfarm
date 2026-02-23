@@ -25,7 +25,9 @@ from botfarm.db import (
     get_stage_runs,
     get_task,
     get_task_history,
+    init_db,
 )
+from botfarm.usage import refresh_usage_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -155,10 +157,46 @@ def create_app(
             "linear_url": _linear_url,
         })
 
+    _usage_refresh_lock = threading.Lock()
+    _last_usage_refresh: dict = {"time": 0.0, "data": None}
+    _USAGE_REFRESH_INTERVAL = 60  # seconds — rate-limit API calls
+
+    def _refresh_and_get_usage() -> dict | None:
+        """Call the usage API and return fresh data as a dict, or None on failure.
+
+        Rate-limited to at most one API call per ``_USAGE_REFRESH_INTERVAL``
+        seconds to avoid hammering the API (htmx polls every 5 s).
+        """
+        import time
+
+        now = time.monotonic()
+        with _usage_refresh_lock:
+            if now - _last_usage_refresh["time"] < _USAGE_REFRESH_INTERVAL:
+                return _last_usage_refresh["data"]
+            _last_usage_refresh["time"] = now  # claim the slot eagerly
+
+        conn = None
+        try:
+            conn = init_db(app.state.db_path)
+            state = refresh_usage_snapshot(conn)
+            if state is not None:
+                result = state.to_dict()
+                with _usage_refresh_lock:
+                    _last_usage_refresh["data"] = result
+                return result
+        except Exception:
+            logger.debug("Dashboard usage refresh failed", exc_info=True)
+        finally:
+            if conn is not None:
+                conn.close()
+        return None
+
     @app.get("/partials/usage", response_class=HTMLResponse)
     def partial_usage(request: Request):
         state = _read_state()
-        usage = state.get("usage", {})
+        # Try to get fresh data from the API; fall back to state.json
+        fresh = _refresh_and_get_usage()
+        usage = fresh if fresh is not None else state.get("usage", {})
         dispatch_paused = state.get("dispatch_paused", False)
         dispatch_pause_reason = state.get("dispatch_pause_reason")
         last_usage_check = state.get("last_usage_check")
@@ -343,7 +381,8 @@ def create_app(
     @app.get("/usage", response_class=HTMLResponse)
     def usage_page(request: Request):
         state = _read_state()
-        usage = state.get("usage", {})
+        fresh = _refresh_and_get_usage()
+        usage = fresh if fresh is not None else state.get("usage", {})
         time_range = request.query_params.get("range", "7d")
         if time_range not in USAGE_RANGE_HOURS:
             time_range = "7d"

@@ -2,12 +2,14 @@
 
 import json
 import sqlite3
+from unittest.mock import patch
 
 import pytest
 from click.testing import CliRunner
 
 from botfarm.cli import _elapsed, main
 from botfarm.db import SCHEMA_SQL, insert_task, insert_usage_snapshot, update_task
+from botfarm.usage import UsageState
 
 
 @pytest.fixture()
@@ -538,6 +540,13 @@ class TestHistoryCommand:
 
 
 class TestLimitsCommand:
+    @pytest.fixture(autouse=True)
+    def _mock_refresh(self, monkeypatch):
+        """Prevent real API calls during limits command tests."""
+        monkeypatch.setattr(
+            "botfarm.cli.refresh_usage_snapshot", lambda conn: None
+        )
+
     def test_no_database(self, runner, tmp_path, monkeypatch):
         monkeypatch.setattr(
             "botfarm.cli._resolve_paths",
@@ -677,3 +686,55 @@ class TestLimitsCommand:
         # Should show the latest values
         assert "65.0%" in result.output
         assert "50.0%" in result.output
+
+    def test_calls_refresh_before_display(self, runner, db_file, monkeypatch):
+        """limits command refreshes usage from API before reading DB."""
+        monkeypatch.setattr(
+            "botfarm.cli._resolve_paths",
+            lambda _: (db_file.parent / "state.json", db_file, None),
+        )
+        refresh_called = []
+
+        def fake_refresh(conn):
+            refresh_called.append(True)
+            # Simulate a refresh that stores a fresh snapshot
+            conn.execute(
+                "INSERT INTO usage_snapshots (utilization_5h, utilization_7d, "
+                "resets_at, created_at) VALUES (?, ?, ?, datetime('now'))",
+                (0.77, 0.55, "2026-02-23T20:00:00Z"),
+            )
+            conn.commit()
+            return UsageState(utilization_5h=0.77, utilization_7d=0.55)
+
+        monkeypatch.setattr("botfarm.cli.refresh_usage_snapshot", fake_refresh)
+        result = runner.invoke(main, ["limits"])
+        assert result.exit_code == 0
+        assert len(refresh_called) == 1
+        assert "77.0%" in result.output
+        assert "55.0%" in result.output
+
+    def test_falls_back_to_db_on_refresh_failure(self, runner, db_file, monkeypatch):
+        """If API refresh fails, limits command still shows stale DB data."""
+        conn = sqlite3.connect(str(db_file))
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys=ON")
+        insert_usage_snapshot(
+            conn,
+            utilization_5h=0.33,
+            utilization_7d=0.22,
+            resets_at="2026-02-20T10:00:00Z",
+        )
+        conn.commit()
+        conn.close()
+
+        monkeypatch.setattr(
+            "botfarm.cli._resolve_paths",
+            lambda _: (db_file.parent / "state.json", db_file, None),
+        )
+        monkeypatch.setattr(
+            "botfarm.cli.refresh_usage_snapshot", lambda conn: None
+        )
+        result = runner.invoke(main, ["limits"])
+        assert result.exit_code == 0
+        assert "33.0%" in result.output
+        assert "22.0%" in result.output
