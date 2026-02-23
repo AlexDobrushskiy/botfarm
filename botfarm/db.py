@@ -179,7 +179,8 @@ def update_task(
 
     Only the columns passed as keyword arguments are updated.
     Allowed columns: status, started_at, completed_at, cost_usd, turns,
-    review_iterations, comments, limit_interruptions, failure_reason.
+    review_iterations, comments, limit_interruptions, failure_reason,
+    pr_url, pipeline_stage, review_state.
     """
     allowed = {
         "status",
