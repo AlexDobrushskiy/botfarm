@@ -1186,8 +1186,8 @@ class TestLimitHitHandling:
         # Should be 2 minutes after resets_at
         assert "22:02" in slot.resume_after
 
-    def test_handle_limit_hit_force_polls_before_resume_after(self, supervisor):
-        """force_poll is called so resume_after uses fresh usage data."""
+    def test_reconcile_force_polls_before_handle_limit_hit(self, supervisor):
+        """force_poll is called before _handle_limit_hit so resume_after uses fresh data."""
         sm = supervisor.slot_manager
         sm.assign_ticket(
             "test-project", 1,
@@ -1200,16 +1200,17 @@ class TestLimitHitHandling:
         )
         supervisor._conn.commit()
 
+        supervisor._result_queue.put(_WorkerResult(
+            project="test-project", slot_id=1, success=False,
+            failure_stage="implement", failure_reason="rate limit hit",
+            limit_hit=True,
+        ))
+
         with patch.object(
             supervisor._usage_poller, "force_poll",
             wraps=supervisor._usage_poller.force_poll,
         ) as mock_fp:
-            wr = _WorkerResult(
-                project="test-project", slot_id=1, success=False,
-                failure_stage="implement", failure_reason="rate limit hit",
-                limit_hit=True,
-            )
-            supervisor._handle_limit_hit(wr)
+            supervisor._reconcile_workers()
             mock_fp.assert_called_once_with(supervisor._conn)
 
     def test_usage_api_detects_limit_when_string_match_misses(self, supervisor):

@@ -686,6 +686,7 @@ class Supervisor:
                     "Worker result: %s/%d completed", wr.project, wr.slot_id,
                 )
             elif wr.limit_hit:
+                self._usage_poller.force_poll(self._conn)
                 self._handle_limit_hit(wr)
             else:
                 # String matching didn't flag a limit hit — verify via
@@ -1151,11 +1152,12 @@ class Supervisor:
         return should_pause
 
     def _handle_limit_hit(self, wr: _WorkerResult) -> None:
-        """Handle a worker result that indicates a usage limit hit."""
-        slot = self._slot_manager.get_slot(wr.project, wr.slot_id)
+        """Handle a worker result that indicates a usage limit hit.
 
-        # Force-poll usage API so resume_after is based on fresh data
-        self._usage_poller.force_poll(self._conn)
+        Callers must call ``force_poll`` before invoking this method so that
+        ``_compute_resume_after`` uses fresh usage data.
+        """
+        slot = self._slot_manager.get_slot(wr.project, wr.slot_id)
 
         # Compute resume_after from usage state
         resume_after = self._compute_resume_after()
@@ -1249,12 +1251,15 @@ class Supervisor:
         now = datetime.now(timezone.utc)
         paused = self._slot_manager.paused_limit_slots()
 
+        polled = False
         for slot in paused:
             if not self._is_ready_to_resume(slot, now):
                 continue
 
-            # Force-poll usage API so the resume decision uses fresh data
-            self._usage_poller.force_poll(self._conn)
+            # Force-poll once so all resume decisions use fresh data
+            if not polled:
+                self._usage_poller.force_poll(self._conn)
+                polled = True
 
             # Re-check usage API to confirm limits have actually reset
             thresholds = self._config.usage_limits
