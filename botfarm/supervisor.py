@@ -1358,18 +1358,39 @@ class Supervisor:
         active_ids = self._slot_manager.active_ticket_ids()
 
         for project_name, poller in self._pollers.items():
-            slot = self._slot_manager.find_free_slot_for_project(project_name)
-            if slot is None:
-                continue
-
             try:
-                candidates = poller.poll(active_ticket_ids=active_ids)
+                poll_result = poller.poll(active_ticket_ids=active_ids)
             except Exception:
                 logger.exception(
                     "Failed to poll Linear for project %s", project_name,
                 )
                 continue
 
+            # Auto-close parent issues whose children are all done.
+            done_status = self._config.linear.done_status
+            for parent in poll_result.auto_close_parents:
+                try:
+                    poller.move_issue(parent.identifier, done_status)
+                    logger.info(
+                        "Auto-closed parent %s — all children done",
+                        parent.identifier,
+                    )
+                    insert_event(
+                        self._conn,
+                        event_type="parent_auto_closed",
+                        detail=f"ticket={parent.identifier}, title={parent.title}",
+                    )
+                    self._conn.commit()
+                except Exception:
+                    logger.exception(
+                        "Failed to auto-close parent %s", parent.identifier,
+                    )
+
+            slot = self._slot_manager.find_free_slot_for_project(project_name)
+            if slot is None:
+                continue
+
+            candidates = poll_result.candidates
             if not candidates:
                 logger.debug("No candidates for %s", project_name)
                 continue

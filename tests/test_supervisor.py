@@ -18,7 +18,7 @@ from botfarm.config import (
     ProjectConfig,
 )
 from botfarm.db import get_events, get_task, init_db, insert_task, update_task
-from botfarm.linear import LinearIssue
+from botfarm.linear import LinearIssue, PollResult
 from botfarm.supervisor import (
     DEFAULT_LOG_DIR,
     Supervisor,
@@ -86,7 +86,7 @@ def supervisor(tmp_config, tmp_path):
     """Create a Supervisor with mocked pollers (no real Linear calls)."""
     mock_poller = MagicMock()
     mock_poller.project_name = "test-project"
-    mock_poller.poll.return_value = []
+    mock_poller.poll.return_value = PollResult(candidates=[], auto_close_parents=[])
 
     with patch("botfarm.supervisor.create_pollers", return_value=[mock_poller]):
         sup = Supervisor(tmp_config, log_dir=tmp_path / "logs")
@@ -390,7 +390,7 @@ class TestDispatchPauseResume:
         supervisor._usage_poller._state.utilization_7d = 0.50
 
         poller = supervisor._pollers["test-project"]
-        poller.poll.return_value = [_make_issue()]
+        poller.poll.return_value = PollResult(candidates=[_make_issue()], auto_close_parents=[])
 
         with patch.object(supervisor, "_dispatch_worker") as mock_dispatch:
             supervisor._poll_and_dispatch()
@@ -441,7 +441,7 @@ class TestDispatchPauseResume:
         supervisor._usage_poller._state.utilization_7d = 0.60
 
         poller = supervisor._pollers["test-project"]
-        poller.poll.return_value = [_make_issue()]
+        poller.poll.return_value = PollResult(candidates=[_make_issue()], auto_close_parents=[])
 
         with patch.object(supervisor, "_dispatch_worker"):
             supervisor._poll_and_dispatch()
@@ -454,7 +454,7 @@ class TestDispatchPauseResume:
         supervisor._usage_poller._state.utilization_7d = None
 
         poller = supervisor._pollers["test-project"]
-        poller.poll.return_value = [_make_issue()]
+        poller.poll.return_value = PollResult(candidates=[_make_issue()], auto_close_parents=[])
 
         with patch.object(supervisor, "_dispatch_worker") as mock_dispatch:
             supervisor._poll_and_dispatch()
@@ -464,7 +464,7 @@ class TestDispatchPauseResume:
 class TestPollAndDispatch:
     def test_no_candidates_no_dispatch(self, supervisor):
         poller = supervisor._pollers["test-project"]
-        poller.poll.return_value = []
+        poller.poll.return_value = PollResult(candidates=[], auto_close_parents=[])
 
         with patch.object(supervisor, "_dispatch_worker") as mock_dispatch:
             supervisor._poll_and_dispatch()
@@ -482,7 +482,7 @@ class TestPollAndDispatch:
         )
 
         poller = supervisor._pollers["test-project"]
-        poller.poll.return_value = [_make_issue()]
+        poller.poll.return_value = PollResult(candidates=[_make_issue()], auto_close_parents=[])
 
         with patch.object(supervisor, "_dispatch_worker") as mock_dispatch:
             supervisor._poll_and_dispatch()
@@ -491,7 +491,7 @@ class TestPollAndDispatch:
     def test_dispatches_to_free_slot(self, supervisor):
         issue = _make_issue()
         poller = supervisor._pollers["test-project"]
-        poller.poll.return_value = [issue]
+        poller.poll.return_value = PollResult(candidates=[issue], auto_close_parents=[])
 
         with patch.object(supervisor, "_dispatch_worker") as mock_dispatch:
             supervisor._poll_and_dispatch()
@@ -506,6 +506,77 @@ class TestPollAndDispatch:
 
         # Should not raise
         supervisor._poll_and_dispatch()
+
+
+class TestParentAutoClose:
+    def test_auto_closes_parent_with_all_children_done(self, supervisor):
+        """Parent issues with all children done are auto-moved to Done."""
+        parent_issue = _make_issue(identifier="TST-100", title="Parent")
+        poller = supervisor._pollers["test-project"]
+        poller.poll.return_value = PollResult(
+            candidates=[],
+            auto_close_parents=[parent_issue],
+        )
+
+        with patch.object(supervisor, "_dispatch_worker") as mock_dispatch:
+            supervisor._poll_and_dispatch()
+            mock_dispatch.assert_not_called()
+
+        poller.move_issue.assert_called_once_with("TST-100", "Done")
+
+        events = get_events(supervisor._conn, event_type="parent_auto_closed")
+        assert len(events) == 1
+        assert "TST-100" in events[0]["detail"]
+
+    def test_auto_close_failure_does_not_crash(self, supervisor):
+        """If auto-close fails, dispatch continues normally."""
+        parent = _make_issue(identifier="TST-100", title="Parent")
+        normal = _make_issue(identifier="TST-1", title="Normal")
+        poller = supervisor._pollers["test-project"]
+        poller.poll.return_value = PollResult(
+            candidates=[normal],
+            auto_close_parents=[parent],
+        )
+        poller.move_issue.side_effect = Exception("API error")
+
+        with patch.object(supervisor, "_dispatch_worker") as mock_dispatch:
+            supervisor._poll_and_dispatch()
+            mock_dispatch.assert_called_once()
+
+    def test_auto_close_does_not_consume_slot(self, supervisor):
+        """Auto-closing a parent doesn't use a worker slot."""
+        parent = _make_issue(identifier="TST-100", title="Parent")
+        normal = _make_issue(identifier="TST-1", title="Normal")
+        poller = supervisor._pollers["test-project"]
+        poller.poll.return_value = PollResult(
+            candidates=[normal],
+            auto_close_parents=[parent],
+        )
+
+        with patch.object(supervisor, "_dispatch_worker") as mock_dispatch:
+            supervisor._poll_and_dispatch()
+            mock_dispatch.assert_called_once()
+            # Dispatched the normal issue, not the parent
+            assert mock_dispatch.call_args[0][2] == normal
+
+    def test_multiple_parents_auto_closed(self, supervisor):
+        """Multiple auto-closeable parents are all processed."""
+        p1 = _make_issue(identifier="TST-100", title="Parent 1")
+        p2 = _make_issue(identifier="TST-200", title="Parent 2")
+        poller = supervisor._pollers["test-project"]
+        poller.poll.return_value = PollResult(
+            candidates=[],
+            auto_close_parents=[p1, p2],
+        )
+
+        supervisor._poll_and_dispatch()
+
+        assert poller.move_issue.call_count == 2
+        poller.move_issue.assert_any_call("TST-100", "Done")
+        poller.move_issue.assert_any_call("TST-200", "Done")
+
+        events = get_events(supervisor._conn, event_type="parent_auto_closed")
+        assert len(events) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -1347,11 +1418,11 @@ class TestMultiProject:
 
         mock_alpha = MagicMock()
         mock_alpha.project_name = "alpha"
-        mock_alpha.poll.return_value = [_make_issue(id="a1", identifier="A-1")]
+        mock_alpha.poll.return_value = PollResult(candidates=[_make_issue(id="a1", identifier="A-1")], auto_close_parents=[])
 
         mock_beta = MagicMock()
         mock_beta.project_name = "beta"
-        mock_beta.poll.return_value = [_make_issue(id="b1", identifier="B-1")]
+        mock_beta.poll.return_value = PollResult(candidates=[_make_issue(id="b1", identifier="B-1")], auto_close_parents=[])
 
         with patch(
             "botfarm.supervisor.create_pollers",
@@ -1603,7 +1674,7 @@ class TestCheckTimeouts:
 
         mock_poller = MagicMock()
         mock_poller.project_name = "test-project"
-        mock_poller.poll.return_value = []
+        mock_poller.poll.return_value = PollResult(candidates=[], auto_close_parents=[])
 
         with patch("botfarm.supervisor.create_pollers", return_value=[mock_poller]):
             sup = Supervisor(config, log_dir=tmp_path / "logs")
@@ -2280,7 +2351,7 @@ def supervisor_custom_statuses(tmp_path):
 
     mock_poller = MagicMock()
     mock_poller.project_name = "test-project"
-    mock_poller.poll.return_value = []
+    mock_poller.poll.return_value = PollResult(candidates=[], auto_close_parents=[])
 
     with patch("botfarm.supervisor.create_pollers", return_value=[mock_poller]):
         sup = Supervisor(config, log_dir=tmp_path / "logs")

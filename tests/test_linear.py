@@ -14,6 +14,7 @@ from botfarm.linear import (
     LinearClient,
     LinearIssue,
     LinearPoller,
+    PollResult,
     create_pollers,
 )
 
@@ -47,6 +48,7 @@ def _make_issue(
     assignee_id: str | None = None,
     sort_order: float = 0.0,
     blocked_by: list[str] | None = None,
+    children_states: list[tuple[str, str]] | None = None,
 ) -> LinearIssue:
     return LinearIssue(
         id=id,
@@ -58,6 +60,7 @@ def _make_issue(
         labels=labels or [],
         sort_order=sort_order,
         blocked_by=blocked_by,
+        children_states=children_states,
     )
 
 
@@ -342,6 +345,85 @@ class TestFetchTeamIssues:
             issues = client.fetch_team_issues("SMA")
         assert issues[0].blocked_by is None
 
+    def test_parses_children(self):
+        client = LinearClient(api_key="key")
+        nodes = [
+            {
+                "id": "id-1",
+                "identifier": "SMA-10",
+                "title": "Parent issue",
+                "priority": 2,
+                "sortOrder": 1.0,
+                "url": "https://linear.app/SMA-10",
+                "assignee": None,
+                "labels": {"nodes": []},
+                "relations": {"nodes": []},
+                "children": {
+                    "nodes": [
+                        {
+                            "identifier": "SMA-11",
+                            "state": {"type": "completed", "name": "Done"},
+                        },
+                        {
+                            "identifier": "SMA-12",
+                            "state": {"type": "started", "name": "In Progress"},
+                        },
+                    ]
+                },
+            }
+        ]
+        with patch.object(
+            httpx, "post", return_value=self._issues_response(nodes)
+        ):
+            issues = client.fetch_team_issues("SMA")
+        assert issues[0].children_states == [
+            ("SMA-11", "completed"),
+            ("SMA-12", "started"),
+        ]
+
+    def test_no_children_returns_none(self):
+        client = LinearClient(api_key="key")
+        nodes = [
+            {
+                "id": "id-1",
+                "identifier": "SMA-10",
+                "title": "Normal issue",
+                "priority": 2,
+                "sortOrder": 1.0,
+                "url": "https://linear.app/SMA-10",
+                "assignee": None,
+                "labels": {"nodes": []},
+                "relations": {"nodes": []},
+                "children": {"nodes": []},
+            }
+        ]
+        with patch.object(
+            httpx, "post", return_value=self._issues_response(nodes)
+        ):
+            issues = client.fetch_team_issues("SMA")
+        assert issues[0].children_states is None
+
+    def test_missing_children_field_returns_none(self):
+        client = LinearClient(api_key="key")
+        nodes = [
+            {
+                "id": "id-1",
+                "identifier": "SMA-10",
+                "title": "Normal issue",
+                "priority": 2,
+                "sortOrder": 1.0,
+                "url": "https://linear.app/SMA-10",
+                "assignee": None,
+                "labels": {"nodes": []},
+                "relations": {"nodes": []},
+            }
+        ]
+        with patch.object(
+            httpx, "post", return_value=self._issues_response(nodes)
+        ):
+            issues = client.fetch_team_issues("SMA")
+        assert issues[0].children_states is None
+
 
 # ---------------------------------------------------------------------------
 # LinearClient.get_team_states
@@ -468,8 +550,8 @@ class TestLinearPollerPoll:
             _make_issue(id="b", identifier="SMA-2", sort_order=1.0),
             _make_issue(id="c", identifier="SMA-3", sort_order=2.0),
         ]
-        candidates = poller.poll()
-        assert [c.identifier for c in candidates] == ["SMA-2", "SMA-3", "SMA-1"]
+        result = poller.poll()
+        assert [c.identifier for c in result.candidates] == ["SMA-2", "SMA-3", "SMA-1"]
 
     def test_sort_order_ignores_priority(self):
         poller = self._make_poller()
@@ -478,9 +560,9 @@ class TestLinearPollerPoll:
             _make_issue(id="b", identifier="SMA-2", priority=4, sort_order=1.0),
             _make_issue(id="c", identifier="SMA-3", priority=2, sort_order=2.0),
         ]
-        candidates = poller.poll()
+        result = poller.poll()
         # Sort is by sort_order, not priority
-        assert [c.identifier for c in candidates] == ["SMA-2", "SMA-3", "SMA-1"]
+        assert [c.identifier for c in result.candidates] == ["SMA-2", "SMA-3", "SMA-1"]
 
     def test_filters_blocked_tickets(self):
         poller = self._make_poller()
@@ -489,8 +571,8 @@ class TestLinearPollerPoll:
             _make_issue(id="b", identifier="SMA-2", sort_order=2.0, blocked_by=["SMA-1"]),
             _make_issue(id="c", identifier="SMA-3", sort_order=3.0),
         ]
-        candidates = poller.poll()
-        assert [c.identifier for c in candidates] == ["SMA-1", "SMA-3"]
+        result = poller.poll()
+        assert [c.identifier for c in result.candidates] == ["SMA-1", "SMA-3"]
 
     def test_unblocked_tickets_not_filtered(self):
         poller = self._make_poller()
@@ -498,8 +580,8 @@ class TestLinearPollerPoll:
             _make_issue(id="a", identifier="SMA-1", sort_order=1.0, blocked_by=None),
             _make_issue(id="b", identifier="SMA-2", sort_order=2.0, blocked_by=[]),
         ]
-        candidates = poller.poll()
-        assert len(candidates) == 2
+        result = poller.poll()
+        assert len(result.candidates) == 2
 
     def test_excludes_tags(self):
         poller = self._make_poller(exclude_tags=["Human", "Manual"])
@@ -508,9 +590,9 @@ class TestLinearPollerPoll:
             _make_issue(id="b", identifier="SMA-2", labels=["Human"]),
             _make_issue(id="c", identifier="SMA-3", labels=["Bug", "manual"]),
         ]
-        candidates = poller.poll()
-        assert len(candidates) == 1
-        assert candidates[0].identifier == "SMA-1"
+        result = poller.poll()
+        assert len(result.candidates) == 1
+        assert result.candidates[0].identifier == "SMA-1"
 
     def test_exclude_tags_case_insensitive(self):
         poller = self._make_poller(exclude_tags=["human"])
@@ -518,9 +600,9 @@ class TestLinearPollerPoll:
             _make_issue(id="a", identifier="SMA-1", labels=["HUMAN"]),
             _make_issue(id="b", identifier="SMA-2", labels=["Feature"]),
         ]
-        candidates = poller.poll()
-        assert len(candidates) == 1
-        assert candidates[0].identifier == "SMA-2"
+        result = poller.poll()
+        assert len(result.candidates) == 1
+        assert result.candidates[0].identifier == "SMA-2"
 
     def test_excludes_active_ticket_ids(self):
         poller = self._make_poller()
@@ -528,27 +610,136 @@ class TestLinearPollerPoll:
             _make_issue(id="active-1", identifier="SMA-1"),
             _make_issue(id="new-1", identifier="SMA-2"),
         ]
-        candidates = poller.poll(active_ticket_ids={"SMA-1"})
-        assert len(candidates) == 1
-        assert candidates[0].identifier == "SMA-2"
+        result = poller.poll(active_ticket_ids={"SMA-1"})
+        assert len(result.candidates) == 1
+        assert result.candidates[0].identifier == "SMA-2"
 
     def test_empty_poll(self):
         poller = self._make_poller()
         poller._client.fetch_team_issues.return_value = []
-        assert poller.poll() == []
+        result = poller.poll()
+        assert result.candidates == []
+        assert result.auto_close_parents == []
 
     def test_none_labels_handled(self):
         poller = self._make_poller()
         poller._client.fetch_team_issues.return_value = [
             _make_issue(id="a", identifier="SMA-1", labels=None),
         ]
-        candidates = poller.poll()
-        assert len(candidates) == 1
+        result = poller.poll()
+        assert len(result.candidates) == 1
 
     def test_properties(self):
         poller = self._make_poller()
         assert poller.project_name == "proj-a"
         assert poller.team_key == "SMA"
+
+
+# ---------------------------------------------------------------------------
+# LinearPoller.poll — parent issue handling
+# ---------------------------------------------------------------------------
+
+
+class TestLinearPollerParentHandling:
+    def _make_poller(self, exclude_tags: list[str] | None = None) -> LinearPoller:
+        client = MagicMock(spec=LinearClient)
+        project = _make_project()
+        return LinearPoller(
+            client=client,
+            project=project,
+            exclude_tags=exclude_tags or ["Human"],
+        )
+
+    def test_parent_all_children_done_auto_close(self):
+        """Parent with all children completed goes to auto_close_parents."""
+        poller = self._make_poller()
+        poller._client.fetch_team_issues.return_value = [
+            _make_issue(
+                id="p1", identifier="SMA-100",
+                children_states=[("SMA-101", "completed"), ("SMA-102", "completed")],
+            ),
+        ]
+        result = poller.poll()
+        assert len(result.candidates) == 0
+        assert len(result.auto_close_parents) == 1
+        assert result.auto_close_parents[0].identifier == "SMA-100"
+
+    def test_parent_children_mixed_canceled_completed(self):
+        """Parent with children in completed/canceled goes to auto_close."""
+        poller = self._make_poller()
+        poller._client.fetch_team_issues.return_value = [
+            _make_issue(
+                id="p1", identifier="SMA-100",
+                children_states=[("SMA-101", "completed"), ("SMA-102", "canceled")],
+            ),
+        ]
+        result = poller.poll()
+        assert len(result.candidates) == 0
+        assert len(result.auto_close_parents) == 1
+
+    def test_parent_some_children_not_done_skipped(self):
+        """Parent with some open children is skipped entirely."""
+        poller = self._make_poller()
+        poller._client.fetch_team_issues.return_value = [
+            _make_issue(
+                id="p1", identifier="SMA-100",
+                children_states=[("SMA-101", "completed"), ("SMA-102", "started")],
+            ),
+        ]
+        result = poller.poll()
+        assert len(result.candidates) == 0
+        assert len(result.auto_close_parents) == 0
+
+    def test_parent_all_children_open_skipped(self):
+        """Parent with all children still open is skipped."""
+        poller = self._make_poller()
+        poller._client.fetch_team_issues.return_value = [
+            _make_issue(
+                id="p1", identifier="SMA-100",
+                children_states=[("SMA-101", "unstarted"), ("SMA-102", "started")],
+            ),
+        ]
+        result = poller.poll()
+        assert len(result.candidates) == 0
+        assert len(result.auto_close_parents) == 0
+
+    def test_no_children_treated_as_normal(self):
+        """Issue with no children (children_states=None) is a normal candidate."""
+        poller = self._make_poller()
+        poller._client.fetch_team_issues.return_value = [
+            _make_issue(id="a", identifier="SMA-1"),
+        ]
+        result = poller.poll()
+        assert len(result.candidates) == 1
+        assert len(result.auto_close_parents) == 0
+
+    def test_mixed_parents_and_normal(self):
+        """Mix of parent and normal issues are properly separated."""
+        poller = self._make_poller()
+        poller._client.fetch_team_issues.return_value = [
+            _make_issue(id="a", identifier="SMA-1", sort_order=1.0),
+            _make_issue(
+                id="p1", identifier="SMA-100", sort_order=2.0,
+                children_states=[("SMA-101", "completed")],
+            ),
+            _make_issue(
+                id="p2", identifier="SMA-200", sort_order=3.0,
+                children_states=[("SMA-201", "started")],
+            ),
+            _make_issue(id="b", identifier="SMA-2", sort_order=4.0),
+        ]
+        result = poller.poll()
+        assert [c.identifier for c in result.candidates] == ["SMA-1", "SMA-2"]
+        assert [p.identifier for p in result.auto_close_parents] == ["SMA-100"]
+
+    def test_poll_returns_poll_result(self):
+        """poll() returns a PollResult dataclass."""
+        poller = self._make_poller()
+        poller._client.fetch_team_issues.return_value = []
+        result = poller.poll()
+        assert isinstance(result, PollResult)
+        assert result.candidates == []
+        assert result.auto_close_parents == []
 
 
 # ---------------------------------------------------------------------------
