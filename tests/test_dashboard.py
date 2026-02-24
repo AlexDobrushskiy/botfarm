@@ -1355,3 +1355,141 @@ class TestStructuralConfigUpdate:
         })
         assert resp.status_code == 400
         assert "config file path" in resp.text.lower() or "Cannot save" in resp.text
+
+
+class TestConfigViewPage:
+    @pytest.fixture()
+    def config_client(self, state_file, db_file, tmp_path):
+        config = BotfarmConfig(
+            projects=[
+                ProjectConfig(
+                    name="test-project", linear_team="TST",
+                    base_dir="~/test", worktree_prefix="test-slot-",
+                    slots=[1, 2], linear_project="My Project",
+                ),
+            ],
+            linear=LinearConfig(
+                api_key="lin_api_1234567890abcdef",
+                workspace="my-workspace",
+                poll_interval_seconds=60,
+                exclude_tags=["Human", "Manual"],
+                comment_on_failure=True,
+            ),
+            notifications=NotificationsConfig(
+                webhook_url="https://hooks.slack.com/services/T00/B00/xxx",
+                webhook_format="slack",
+                rate_limit_seconds=300,
+            ),
+        )
+        config.source_path = str(tmp_path / "config.yaml")
+        app = create_app(
+            state_file=state_file, db_path=db_file,
+            botfarm_config=config,
+        )
+        return TestClient(app)
+
+    def test_config_view_returns_200(self, config_client):
+        resp = config_client.get("/config/view")
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers["content-type"]
+
+    def test_config_view_contains_all_sections(self, config_client):
+        resp = config_client.get("/config/view")
+        body = resp.text
+        for section in [
+            "Projects", "Linear", "Agents", "Usage Limits",
+            "Notifications", "Dashboard", "Database", "State File",
+        ]:
+            assert section in body
+
+    def test_config_view_shows_project_details(self, config_client):
+        resp = config_client.get("/config/view")
+        body = resp.text
+        assert "test-project" in body
+        assert "TST" in body
+        assert "~/test" in body
+        assert "test-slot-" in body
+        assert "My Project" in body
+
+    def test_config_view_masks_api_key(self, config_client):
+        resp = config_client.get("/config/view")
+        body = resp.text
+        # Should show masked key (first 4 + **** + last 4)
+        assert "lin_****cdef" in body
+        # Full key must not appear
+        assert "lin_api_1234567890abcdef" not in body
+
+    def test_config_view_masks_webhook_url(self, config_client):
+        resp = config_client.get("/config/view")
+        body = resp.text
+        # Full URL must not appear
+        assert "https://hooks.slack.com/services/T00/B00/xxx" not in body
+        # Should show masked version
+        assert "http****/xxx" in body
+
+    def test_config_view_shows_linear_settings(self, config_client):
+        resp = config_client.get("/config/view")
+        body = resp.text
+        assert "my-workspace" in body
+        assert "60" in body  # poll_interval_seconds
+        assert "Human" in body
+        assert "Manual" in body
+
+    def test_config_view_shows_boolean_values(self, config_client):
+        resp = config_client.get("/config/view")
+        body = resp.text
+        assert "Yes" in body  # comment_on_failure = True
+        assert "No" in body   # comment_on_completion = False
+
+    def test_config_view_nav_link(self, config_client):
+        resp = config_client.get("/")
+        assert "Configuration" in resp.text
+        assert "/config/view" in resp.text
+
+    def test_config_view_disabled_without_config(self, state_file, db_file):
+        app = create_app(state_file=state_file, db_path=db_file)
+        client = TestClient(app)
+        resp = client.get("/config/view")
+        assert resp.status_code == 200
+        assert "not available" in resp.text
+
+    def test_config_view_masks_short_api_key(self, state_file, db_file, tmp_path):
+        config = BotfarmConfig(
+            projects=[
+                ProjectConfig(
+                    name="p", linear_team="T",
+                    base_dir="~/p", worktree_prefix="p-", slots=[1],
+                ),
+            ],
+            linear=LinearConfig(api_key="short"),
+        )
+        config.source_path = str(tmp_path / "config.yaml")
+        app = create_app(
+            state_file=state_file, db_path=db_file,
+            botfarm_config=config,
+        )
+        client = TestClient(app)
+        resp = client.get("/config/view")
+        body = resp.text
+        assert "short" not in body
+        assert "****" in body
+
+    def test_config_view_empty_webhook_shows_dash(self, state_file, db_file, tmp_path):
+        config = BotfarmConfig(
+            projects=[
+                ProjectConfig(
+                    name="p", linear_team="T",
+                    base_dir="~/p", worktree_prefix="p-", slots=[1],
+                ),
+            ],
+        )
+        config.source_path = str(tmp_path / "config.yaml")
+        app = create_app(
+            state_file=state_file, db_path=db_file,
+            botfarm_config=config,
+        )
+        client = TestClient(app)
+        resp = client.get("/config/view")
+        body = resp.text
+        # Empty webhook_url should show "-"
+        assert "Webhook URL" in body
