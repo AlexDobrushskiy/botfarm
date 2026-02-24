@@ -560,22 +560,24 @@ def update_slot_stage(
     now = _now_iso()
     try:
         conn = sqlite3.connect(str(path))
-        conn.execute("PRAGMA journal_mode=WAL")
-        if session_id is not None:
-            conn.execute(
-                """UPDATE slots SET stage=?, stage_iteration=?, stage_started_at=?,
-                   current_session_id=?, updated_at=?
-                   WHERE project=? AND slot_id=?""",
-                (stage, iteration, now, session_id, now, project, slot_id),
-            )
-        else:
-            conn.execute(
-                """UPDATE slots SET stage=?, stage_iteration=?, stage_started_at=?,
-                   updated_at=?
-                   WHERE project=? AND slot_id=?""",
-                (stage, iteration, now, now, project, slot_id),
-            )
-        conn.commit()
-        conn.close()
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            if session_id is not None:
+                conn.execute(
+                    """UPDATE slots SET stage=?, stage_iteration=?, stage_started_at=?,
+                       current_session_id=?, updated_at=?
+                       WHERE project=? AND slot_id=?""",
+                    (stage, iteration, now, session_id, now, project, slot_id),
+                )
+            else:
+                conn.execute(
+                    """UPDATE slots SET stage=?, stage_iteration=?, stage_started_at=?,
+                       updated_at=?
+                       WHERE project=? AND slot_id=?""",
+                    (stage, iteration, now, now, project, slot_id),
+                )
+            conn.commit()
+        finally:
+            conn.close()
     except sqlite3.Error as exc:
         logger.warning("Failed to update slot stage in database: %s", exc)
