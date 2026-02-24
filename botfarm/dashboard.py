@@ -146,7 +146,8 @@ def create_app(
         dispatch_pause_reason = state.get("dispatch_pause_reason")
         usage = state.get("usage", {})
         queue = state.get("queue")
-        last_usage_check = state.get("last_usage_check")
+        dashboard_checked = _dashboard_last_fresh["time"]
+        last_usage_check = dashboard_checked or state.get("last_usage_check")
         return templates.TemplateResponse("index.html", {
             "request": request,
             "slots": slots,
@@ -155,6 +156,7 @@ def create_app(
             "usage": usage,
             "queue": queue,
             "last_usage_check": last_usage_check,
+            "usage_stale": _usage_is_stale(last_usage_check),
             "elapsed": _elapsed,
             "linear_url": _linear_url,
         })
@@ -177,6 +179,8 @@ def create_app(
     _usage_refresh_lock = threading.Lock()
     _last_usage_refresh: dict = {"time": 0.0, "data": None}
     _USAGE_REFRESH_INTERVAL = 60  # seconds — rate-limit API calls
+    # Track when the dashboard itself last got fresh data (wall-clock ISO str)
+    _dashboard_last_fresh: dict = {"time": None}
 
     def _refresh_and_get_usage() -> dict | None:
         """Call the usage API and return fresh data as a dict, or None on failure.
@@ -190,7 +194,8 @@ def create_app(
         with _usage_refresh_lock:
             if now - _last_usage_refresh["time"] < _USAGE_REFRESH_INTERVAL:
                 return _last_usage_refresh["data"]
-            _last_usage_refresh["time"] = now  # claim the slot eagerly
+            # Don't claim the slot yet — wait for the API call to succeed
+            in_flight_time = now
 
         conn = None
         try:
@@ -199,14 +204,31 @@ def create_app(
             if state is not None:
                 result = state.to_dict()
                 with _usage_refresh_lock:
+                    _last_usage_refresh["time"] = in_flight_time
                     _last_usage_refresh["data"] = result
+                _dashboard_last_fresh["time"] = (
+                    datetime.now(timezone.utc).isoformat()
+                )
                 return result
         except Exception:
-            logger.debug("Dashboard usage refresh failed", exc_info=True)
+            logger.warning("Dashboard usage refresh failed", exc_info=True)
         finally:
             if conn is not None:
                 conn.close()
         return None
+
+    def _usage_is_stale(last_fresh_iso: str | None) -> bool:
+        """Return True when dashboard usage data is older than 2x refresh."""
+        if not last_fresh_iso:
+            return False
+        try:
+            last_dt = datetime.fromisoformat(
+                last_fresh_iso.replace("Z", "+00:00")
+            )
+            age = (datetime.now(timezone.utc) - last_dt).total_seconds()
+            return age > _USAGE_REFRESH_INTERVAL * 2
+        except (ValueError, TypeError):
+            return False
 
     @app.get("/partials/usage", response_class=HTMLResponse)
     def partial_usage(request: Request):
@@ -216,13 +238,17 @@ def create_app(
         usage = fresh if fresh is not None else state.get("usage", {})
         dispatch_paused = state.get("dispatch_paused", False)
         dispatch_pause_reason = state.get("dispatch_pause_reason")
-        last_usage_check = state.get("last_usage_check")
+        # Use the dashboard's own refresh timestamp; fall back to supervisor's
+        dashboard_checked = _dashboard_last_fresh["time"]
+        last_usage_check = dashboard_checked or state.get("last_usage_check")
+        stale = _usage_is_stale(last_usage_check)
         return templates.TemplateResponse("partials/usage.html", {
             "request": request,
             "usage": usage,
             "dispatch_paused": dispatch_paused,
             "dispatch_pause_reason": dispatch_pause_reason,
             "last_usage_check": last_usage_check,
+            "usage_stale": stale,
             "elapsed": _elapsed,
         })
 
