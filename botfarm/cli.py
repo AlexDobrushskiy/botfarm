@@ -1,4 +1,6 @@
 import json
+import os
+import signal
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -409,3 +411,176 @@ def run(config_path, log_dir):
 
     supervisor = Supervisor(config, log_dir=log_dir or DEFAULT_LOG_DIR)
     supervisor.run()
+
+
+# Fields to clear when resetting a slot to "free" (mirrors SlotManager.free_slot)
+_FREE_SLOT_FIELDS = {
+    "status": "free",
+    "ticket_id": None,
+    "ticket_title": None,
+    "branch": None,
+    "pr_url": None,
+    "stage": None,
+    "stage_iteration": 0,
+    "current_session_id": None,
+    "started_at": None,
+    "stage_started_at": None,
+    "sigterm_sent_at": None,
+    "pid": None,
+    "interrupted_by_limit": False,
+    "resume_after": None,
+    "stages_completed": [],
+}
+
+
+def _is_pid_alive(pid: int) -> bool:
+    """Check whether a process with the given PID is still running."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except (OSError, ProcessLookupError):
+        return False
+
+
+@main.command()
+@click.argument("project", required=False, default=None)
+@click.option(
+    "--all",
+    "reset_all",
+    is_flag=True,
+    default=False,
+    help="Reset all slots across all projects.",
+)
+@click.option(
+    "--force",
+    is_flag=True,
+    default=False,
+    help="Skip confirmation and send SIGTERM to live processes without asking.",
+)
+@click.option(
+    "--config",
+    "config_path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help="Path to config file.",
+)
+def reset(project, reset_all, force, config_path):
+    """Reset stuck slots back to free for a given project.
+
+    Resets all non-free slots for PROJECT to free, sending SIGTERM to any
+    slots with live worker processes. Use --all to reset all projects.
+    """
+    if not project and not reset_all:
+        raise click.UsageError(
+            "Provide a project name or use --all to reset all projects."
+        )
+
+    state_path, _, _ = _resolve_paths(config_path)
+
+    if not state_path.exists():
+        click.echo("No state file found. Nothing to reset.")
+        return
+
+    try:
+        raw = state_path.read_text()
+        data = json.loads(raw)
+    except (json.JSONDecodeError, OSError) as exc:
+        raise click.ClickException(f"Failed to read state file: {exc}") from exc
+
+    # Support both formats
+    if isinstance(data, dict):
+        slot_list = data.get("slots", [])
+    elif isinstance(data, list):
+        slot_list = data
+    else:
+        click.echo("No slots found in state file.")
+        return
+
+    if not slot_list:
+        click.echo("No slots found in state file.")
+        return
+
+    # Check that the project exists in state if a specific project was given
+    if project and not reset_all:
+        known_projects = {s.get("project") for s in slot_list if isinstance(s, dict)}
+        if project not in known_projects:
+            click.echo(
+                f"Project '{project}' not found in state file. "
+                f"Known projects: {', '.join(sorted(known_projects)) or '(none)'}"
+            )
+            return
+
+    # Find non-free slots matching the filter
+    targets = []
+    for slot in slot_list:
+        if not isinstance(slot, dict):
+            continue
+        if slot.get("status", "free") == "free":
+            continue
+        if not reset_all and slot.get("project") != project:
+            continue
+        targets.append(slot)
+
+    if not targets:
+        scope = "all projects" if reset_all else f"project '{project}'"
+        click.echo(f"All slots already free for {scope}. Nothing to reset.")
+        return
+
+    # Handle live PIDs
+    live_pid_slots = [
+        s for s in targets
+        if s.get("pid") is not None and _is_pid_alive(s["pid"])
+    ]
+
+    if live_pid_slots and not force:
+        click.echo("The following slots have live worker processes:")
+        for s in live_pid_slots:
+            click.echo(
+                f"  ({s.get('project')}, {s.get('slot_id')}) "
+                f"PID {s['pid']} — {s.get('ticket_id', '?')}"
+            )
+        if not click.confirm(
+            "Send SIGTERM to these processes and reset slots?"
+        ):
+            click.echo("Aborted.")
+            return
+
+    # Send SIGTERM to live PIDs
+    for s in live_pid_slots:
+        pid = s["pid"]
+        try:
+            os.kill(pid, signal.SIGTERM)
+            click.echo(f"  Sent SIGTERM to PID {pid}")
+        except OSError:
+            pass  # Process may have exited between check and signal
+
+    # Reset slots
+    console = Console()
+    table = Table(title="Reset Slots")
+    table.add_column("Project", style="bold")
+    table.add_column("Slot", justify="right")
+    table.add_column("Previous Status")
+    table.add_column("Ticket")
+
+    for slot in targets:
+        prev_status = slot.get("status", "?")
+        ticket = slot.get("ticket_id") or "-"
+        table.add_row(
+            slot.get("project", "?"),
+            str(slot.get("slot_id", "?")),
+            prev_status,
+            ticket,
+        )
+        # Apply free_slot fields
+        slot.update(_FREE_SLOT_FIELDS)
+
+    # Write back atomically
+    tmp_path = state_path.with_suffix(".tmp")
+    try:
+        tmp_path.write_text(json.dumps(data, indent=2) + "\n")
+        tmp_path.replace(state_path)
+    except OSError as exc:
+        raise click.ClickException(f"Failed to write state file: {exc}") from exc
+
+    console.print(table)
+    click.echo(f"Reset {len(targets)} slot(s) to free.")
