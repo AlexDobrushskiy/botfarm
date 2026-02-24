@@ -23,6 +23,71 @@
     .config-feedback ul { margin: 0.25rem 0 0 1.25rem; padding: 0; }
     .config-section { margin-bottom: 2rem; }
     .config-section fieldset { margin-bottom: 0; }
+    .restart-banner {
+        background: rgba(245, 158, 11, 0.2);
+        border: 1px solid var(--pico-color-yellow-500, #eab308);
+        color: var(--pico-color-yellow-500, #eab308);
+        padding: 0.75rem 1rem;
+        border-radius: var(--pico-border-radius);
+        margin-bottom: 1.5rem;
+        font-weight: bold;
+    }
+    .slot-chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        margin-bottom: 0.75rem;
+    }
+    .slot-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.25rem;
+        background: var(--pico-card-background-color);
+        border: 1px solid var(--pico-muted-border-color);
+        border-radius: 1rem;
+        padding: 0.25rem 0.75rem;
+        font-size: 0.9rem;
+    }
+    .slot-chip button {
+        background: none;
+        border: none;
+        color: var(--pico-del-color);
+        cursor: pointer;
+        padding: 0;
+        margin: 0;
+        font-size: 1rem;
+        line-height: 1;
+        width: auto;
+    }
+    .slot-chip button:hover { opacity: 0.7; }
+    .add-slot-row {
+        display: flex;
+        gap: 0.5rem;
+        align-items: flex-end;
+        margin-bottom: 0.75rem;
+    }
+    .add-slot-row input {
+        width: 6rem;
+        margin-bottom: 0;
+    }
+    .add-slot-row button {
+        margin-bottom: 0;
+        white-space: nowrap;
+        width: auto;
+        padding: 0.5rem 1rem;
+    }
+    .project-card {
+        border: 1px solid var(--pico-muted-border-color);
+        border-radius: var(--pico-border-radius);
+        padding: 1rem;
+        margin-bottom: 1rem;
+    }
+    .project-card h3 { margin-bottom: 0.75rem; }
+    .structural-note {
+        color: var(--pico-muted-color);
+        font-size: 0.85rem;
+        margin-bottom: 0.5rem;
+    }
 </style>
 
 <h1>Runtime Config</h1>
@@ -30,6 +95,12 @@
 {% if not config_enabled %}
 <p>Config editing is not available (no config object provided).</p>
 {% else %}
+
+{% if restart_required %}
+<div class="restart-banner" role="alert" id="restart-banner">
+    Restart required to apply changes. Structural config has been modified but the supervisor is still using the previous settings.
+</div>
+{% endif %}
 
 <p>These settings take effect immediately without restarting the supervisor.</p>
 
@@ -124,6 +195,68 @@
     </form>
 </section>
 
+{# --- Projects section (structural — restart required) --- #}
+<section class="config-section">
+    <h2>Projects</h2>
+    <p class="structural-note">Changes to projects require a supervisor restart to take effect.</p>
+    <div id="feedback-projects"></div>
+    {% for project in config_values.projects %}
+    <div class="project-card" data-project-name="{{ project.name }}">
+        <h3>{{ project.name }}</h3>
+
+        <label for="project-{{ loop.index0 }}-linear_project">
+            Linear project filter
+            <input type="text" id="project-{{ loop.index0 }}-linear_project"
+                   value="{{ project.linear_project }}" placeholder="(none)">
+        </label>
+
+        <label>Slots</label>
+        <div class="slot-chips" id="slots-{{ loop.index0 }}">
+            {% for slot in project.slots %}
+            <span class="slot-chip" data-slot="{{ slot }}">
+                {{ slot }}
+                <button type="button" onclick="removeSlot({{ loop.index0 }}, {{ slot }})" aria-label="Remove slot {{ slot }}">&times;</button>
+            </span>
+            {% endfor %}
+        </div>
+        <div class="add-slot-row">
+            <input type="number" id="new-slot-{{ loop.index0 }}" min="1" placeholder="Slot #">
+            <button type="button" class="outline" onclick="addSlot({{ loop.index0 }})">Add Slot</button>
+        </div>
+    </div>
+    {% endfor %}
+    <button type="button" onclick="saveProjects()">Save Project Settings</button>
+</section>
+
+{# --- Notifications section (structural — restart required) --- #}
+<section class="config-section">
+    <h2>Notifications</h2>
+    <p class="structural-note">Changes to notifications require a supervisor restart to take effect.</p>
+    <div id="feedback-notifications"></div>
+    <form onsubmit="return saveSection(event, 'notifications')">
+        <label for="notifications-webhook_url">
+            Webhook URL
+            <input type="text" id="notifications-webhook_url" name="webhook_url"
+                   value="{{ config_values.notifications.webhook_url }}" placeholder="https://hooks.slack.com/services/...">
+        </label>
+        <div class="grid">
+            <label for="notifications-webhook_format">
+                Webhook format
+                <select id="notifications-webhook_format" name="webhook_format">
+                    <option value="slack" {% if config_values.notifications.webhook_format == "slack" %}selected{% endif %}>slack</option>
+                    <option value="discord" {% if config_values.notifications.webhook_format == "discord" %}selected{% endif %}>discord</option>
+                </select>
+            </label>
+            <label for="notifications-rate_limit_seconds">
+                Rate limit (seconds)
+                <input type="number" id="notifications-rate_limit_seconds" name="rate_limit_seconds"
+                       value="{{ config_values.notifications.rate_limit_seconds }}" min="0" required>
+            </label>
+        </div>
+        <button type="submit">Save Notification Settings</button>
+    </form>
+</section>
+
 <script>
 function saveSection(event, section) {
     event.preventDefault();
@@ -132,7 +265,7 @@ function saveSection(event, section) {
     var payload = {};
     payload[section] = {};
 
-    var inputs = form.querySelectorAll("input");
+    var inputs = form.querySelectorAll("input, select");
     for (var i = 0; i < inputs.length; i++) {
         var input = inputs[i];
         var name = input.name;
@@ -146,6 +279,8 @@ function saveSection(event, section) {
             } else {
                 value = parseInt(input.value, 10);
             }
+        } else if (input.tagName === "SELECT") {
+            value = input.value;
         } else {
             value = input.value;
         }
@@ -175,6 +310,7 @@ function saveSection(event, section) {
         feedbackEl.innerHTML = result.html;
         btn.removeAttribute("aria-busy");
         if (result.ok) {
+            showRestartBannerIfStructural(section);
             setTimeout(function() { feedbackEl.innerHTML = ""; }, 3000);
         }
     })
@@ -184,6 +320,108 @@ function saveSection(event, section) {
     });
 
     return false;
+}
+
+function showRestartBannerIfStructural(section) {
+    var structural = ["notifications", "projects"];
+    if (structural.indexOf(section) !== -1) {
+        var banner = document.getElementById("restart-banner");
+        if (!banner) {
+            var h1 = document.querySelector("h1");
+            banner = document.createElement("div");
+            banner.className = "restart-banner";
+            banner.setAttribute("role", "alert");
+            banner.id = "restart-banner";
+            banner.textContent = "Restart required to apply changes. Structural config has been modified but the supervisor is still using the previous settings.";
+            h1.parentNode.insertBefore(banner, h1.nextSibling);
+        }
+    }
+}
+
+function removeSlot(projectIdx, slotNum) {
+    var container = document.getElementById("slots-" + projectIdx);
+    var chips = container.querySelectorAll(".slot-chip");
+    for (var i = 0; i < chips.length; i++) {
+        if (parseInt(chips[i].dataset.slot) === slotNum) {
+            container.removeChild(chips[i]);
+            break;
+        }
+    }
+}
+
+function addSlot(projectIdx) {
+    var input = document.getElementById("new-slot-" + projectIdx);
+    var slotNum = parseInt(input.value, 10);
+    if (isNaN(slotNum) || slotNum < 1) {
+        input.setAttribute("aria-invalid", "true");
+        return;
+    }
+    input.removeAttribute("aria-invalid");
+
+    var container = document.getElementById("slots-" + projectIdx);
+    var existing = container.querySelectorAll(".slot-chip");
+    for (var i = 0; i < existing.length; i++) {
+        if (parseInt(existing[i].dataset.slot) === slotNum) {
+            input.setAttribute("aria-invalid", "true");
+            return;
+        }
+    }
+
+    var chip = document.createElement("span");
+    chip.className = "slot-chip";
+    chip.dataset.slot = slotNum;
+    chip.innerHTML = slotNum + ' <button type="button" onclick="removeSlot(' + projectIdx + ', ' + slotNum + ')" aria-label="Remove slot ' + slotNum + '">&times;</button>';
+    container.appendChild(chip);
+    input.value = "";
+}
+
+function saveProjects() {
+    var feedbackEl = document.getElementById("feedback-projects");
+    var cards = document.querySelectorAll(".project-card");
+    var projects = [];
+
+    for (var i = 0; i < cards.length; i++) {
+        var card = cards[i];
+        var name = card.dataset.projectName;
+        var lpInput = card.querySelector("input[type=text]");
+        var linearProject = lpInput ? lpInput.value : "";
+
+        var slotsContainer = document.getElementById("slots-" + i);
+        var chips = slotsContainer.querySelectorAll(".slot-chip");
+        var slots = [];
+        for (var j = 0; j < chips.length; j++) {
+            slots.push(parseInt(chips[j].dataset.slot, 10));
+        }
+
+        projects.push({
+            name: name,
+            slots: slots,
+            linear_project: linearProject
+        });
+    }
+
+    feedbackEl.innerHTML = "";
+    var btn = feedbackEl.parentElement.querySelector("button[onclick='saveProjects()']");
+    if (btn) btn.setAttribute("aria-busy", "true");
+
+    fetch("/config", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({projects: projects})
+    })
+    .then(function(resp) { return resp.text().then(function(html) { return {ok: resp.ok, html: html}; }); })
+    .then(function(result) {
+        feedbackEl.innerHTML = result.html;
+        if (btn) btn.removeAttribute("aria-busy");
+        if (result.ok) {
+            showRestartBannerIfStructural("projects");
+            setTimeout(function() { feedbackEl.innerHTML = ""; }, 3000);
+        }
+    })
+    .catch(function() {
+        feedbackEl.innerHTML = '<div class="config-feedback error" role="alert">Network error.</div>';
+        if (btn) btn.removeAttribute("aria-busy");
+    });
 }
 </script>
 

@@ -387,6 +387,14 @@ EDITABLE_FIELDS: dict[tuple[str, str], dict] = {
     ("agents", "timeout_grace_seconds"): {"type": "int", "min": 0},
 }
 
+# Fields that require a supervisor restart to take effect.
+# Changes are written to YAML only — NOT applied to in-memory config.
+STRUCTURAL_FIELDS: dict[tuple[str, str], dict] = {
+    ("notifications", "webhook_url"): {"type": "str"},
+    ("notifications", "webhook_format"): {"type": "choice", "choices": ["slack", "discord"]},
+    ("notifications", "rate_limit_seconds"): {"type": "int", "min": 0},
+}
+
 
 def validate_config_updates(updates: dict) -> list[str]:
     """Validate a partial config update dict.
@@ -512,7 +520,11 @@ def write_config_updates(config_path: Path, updates: dict) -> None:
             else:
                 section_data[key] = value
 
-    # Atomic write: write to temp file then rename
+    _write_yaml_atomic(config_path, data)
+
+
+def _write_yaml_atomic(config_path: Path, data: dict) -> None:
+    """Write a dict to a YAML file atomically via temp file + rename."""
     fd, tmp_path = tempfile.mkstemp(
         dir=str(config_path.parent), suffix=".yaml.tmp",
     )
@@ -527,3 +539,163 @@ def write_config_updates(config_path: Path, updates: dict) -> None:
         except OSError:
             pass
         raise
+
+
+# ---------------------------------------------------------------------------
+# Structural config editing (restart required)
+# ---------------------------------------------------------------------------
+
+
+def validate_structural_config_updates(
+    updates: dict, config: BotfarmConfig,
+) -> list[str]:
+    """Validate structural config updates (projects and notifications).
+
+    ``updates`` may contain a ``"notifications"`` dict and/or a
+    ``"projects"`` list.  Returns a list of error messages (empty = valid).
+    """
+    errors: list[str] = []
+
+    if "notifications" in updates:
+        notif = updates["notifications"]
+        if not isinstance(notif, dict):
+            errors.append("'notifications' must be a mapping")
+        else:
+            for key, value in notif.items():
+                path = ("notifications", key)
+                spec = STRUCTURAL_FIELDS.get(path)
+                if spec is None:
+                    errors.append(
+                        f"'notifications.{key}' is not an editable field"
+                    )
+                    continue
+                errors.extend(
+                    _validate_structural_field("notifications", key, value, spec)
+                )
+
+    if "projects" in updates:
+        errors.extend(_validate_project_updates(updates["projects"], config))
+
+    return errors
+
+
+def _validate_structural_field(
+    section: str, key: str, value: object, spec: dict,
+) -> list[str]:
+    """Validate a single structural field value against its spec."""
+    errors: list[str] = []
+    field_name = f"{section}.{key}"
+
+    if spec["type"] == "str":
+        if not isinstance(value, str):
+            errors.append(
+                f"'{field_name}' must be a string, got {type(value).__name__}"
+            )
+
+    elif spec["type"] == "int":
+        if not isinstance(value, int) or isinstance(value, bool):
+            errors.append(
+                f"'{field_name}' must be an integer, got {type(value).__name__}"
+            )
+        elif "min" in spec and value < spec["min"]:
+            errors.append(f"'{field_name}' must be at least {spec['min']}")
+
+    elif spec["type"] == "choice":
+        if value not in spec["choices"]:
+            errors.append(
+                f"'{field_name}' must be one of {spec['choices']}, "
+                f"got {value!r}"
+            )
+
+    return errors
+
+
+def _validate_project_updates(
+    project_updates: object, config: BotfarmConfig,
+) -> list[str]:
+    """Validate project-level structural updates (slots, linear_project)."""
+    errors: list[str] = []
+
+    if not isinstance(project_updates, list):
+        errors.append("'projects' must be a list")
+        return errors
+
+    existing_names = {p.name for p in config.projects}
+
+    for i, proj in enumerate(project_updates):
+        if not isinstance(proj, dict):
+            errors.append(f"projects[{i}]: must be a mapping")
+            continue
+
+        name = proj.get("name")
+        if not name or not isinstance(name, str):
+            errors.append(f"projects[{i}]: 'name' is required")
+            continue
+
+        if name not in existing_names:
+            errors.append(
+                f"projects[{i}]: project '{name}' does not exist"
+            )
+            continue
+
+        if "slots" in proj:
+            slots = proj["slots"]
+            if not isinstance(slots, list):
+                errors.append(f"projects[{i}] '{name}': slots must be a list")
+            elif not all(isinstance(s, int) and not isinstance(s, bool) for s in slots):
+                errors.append(
+                    f"projects[{i}] '{name}': slots must be a list of integers"
+                )
+            elif len(slots) != len(set(slots)):
+                errors.append(
+                    f"projects[{i}] '{name}': slots contains duplicate values"
+                )
+
+        if "linear_project" in proj:
+            lp = proj["linear_project"]
+            if not isinstance(lp, str):
+                errors.append(
+                    f"projects[{i}] '{name}': linear_project must be a string"
+                )
+
+        allowed_keys = {"name", "slots", "linear_project"}
+        extra = set(proj.keys()) - allowed_keys
+        if extra:
+            errors.append(
+                f"projects[{i}] '{name}': "
+                f"cannot edit fields: {sorted(extra)}"
+            )
+
+    return errors
+
+
+def write_structural_config_updates(config_path: Path, updates: dict) -> None:
+    """Write structural config changes to YAML without mutating in-memory config.
+
+    Handles ``"notifications"`` (simple key-value merge) and ``"projects"``
+    (merge editable fields into existing project entries matched by name).
+    """
+    raw = config_path.read_text()
+    data = yaml.safe_load(raw)
+    if not isinstance(data, dict):
+        raise ConfigError("Config file must contain a YAML mapping")
+
+    if "notifications" in updates:
+        if "notifications" not in data:
+            data["notifications"] = {}
+        if isinstance(data["notifications"], dict):
+            data["notifications"].update(updates["notifications"])
+
+    if "projects" in updates:
+        existing_projects = data.get("projects", [])
+        by_name = {p["name"]: p for p in existing_projects if isinstance(p, dict)}
+        for proj_update in updates["projects"]:
+            name = proj_update["name"]
+            if name in by_name:
+                target = by_name[name]
+                if "slots" in proj_update:
+                    target["slots"] = proj_update["slots"]
+                if "linear_project" in proj_update:
+                    target["linear_project"] = proj_update["linear_project"]
+
+    _write_yaml_atomic(config_path, data)

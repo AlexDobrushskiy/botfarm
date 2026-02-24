@@ -11,6 +11,7 @@ from botfarm.config import (
     BotfarmConfig,
     ConfigError,
     LinearConfig,
+    NotificationsConfig,
     ProjectConfig,
     UsageLimitsConfig,
     apply_config_updates,
@@ -18,7 +19,9 @@ from botfarm.config import (
     expand_env_vars,
     load_config,
     validate_config_updates,
+    validate_structural_config_updates,
     write_config_updates,
+    write_structural_config_updates,
 )
 
 
@@ -851,3 +854,256 @@ class TestWriteConfigUpdates:
         data = yaml.safe_load(config_path.read_text())
         assert data["linear"]["poll_interval_seconds"] == 60
         assert data["agents"]["max_review_iterations"] == 5
+
+
+# --- Structural config validation ---
+
+
+def _make_config_for_structural():
+    """Create a BotfarmConfig for structural validation tests."""
+    return BotfarmConfig(
+        projects=[
+            ProjectConfig(
+                name="project-a", linear_team="TST",
+                base_dir="~/a", worktree_prefix="a-slot-",
+                slots=[1, 2],
+            ),
+            ProjectConfig(
+                name="project-b", linear_team="TST",
+                base_dir="~/b", worktree_prefix="b-slot-",
+                slots=[3], linear_project="My Filter",
+            ),
+        ],
+        notifications=NotificationsConfig(
+            webhook_url="https://hooks.example.com/test",
+            webhook_format="slack",
+            rate_limit_seconds=300,
+        ),
+    )
+
+
+class TestValidateStructuralConfigUpdates:
+    def test_valid_notifications(self):
+        config = _make_config_for_structural()
+        updates = {
+            "notifications": {
+                "webhook_url": "https://new-url.example.com",
+                "webhook_format": "discord",
+                "rate_limit_seconds": 60,
+            },
+        }
+        errors = validate_structural_config_updates(updates, config)
+        assert errors == []
+
+    def test_valid_projects(self):
+        config = _make_config_for_structural()
+        updates = {
+            "projects": [
+                {"name": "project-a", "slots": [1, 2, 3]},
+            ],
+        }
+        errors = validate_structural_config_updates(updates, config)
+        assert errors == []
+
+    def test_valid_project_linear_project(self):
+        config = _make_config_for_structural()
+        updates = {
+            "projects": [
+                {"name": "project-b", "linear_project": "New Filter"},
+            ],
+        }
+        errors = validate_structural_config_updates(updates, config)
+        assert errors == []
+
+    def test_notifications_not_mapping(self):
+        config = _make_config_for_structural()
+        updates = {"notifications": "bad"}
+        errors = validate_structural_config_updates(updates, config)
+        assert any("must be a mapping" in e for e in errors)
+
+    def test_notifications_unknown_field(self):
+        config = _make_config_for_structural()
+        updates = {"notifications": {"unknown_field": "val"}}
+        errors = validate_structural_config_updates(updates, config)
+        assert any("not an editable field" in e for e in errors)
+
+    def test_notifications_invalid_format(self):
+        config = _make_config_for_structural()
+        updates = {"notifications": {"webhook_format": "teams"}}
+        errors = validate_structural_config_updates(updates, config)
+        assert any("must be one of" in e for e in errors)
+
+    def test_notifications_rate_limit_negative(self):
+        config = _make_config_for_structural()
+        updates = {"notifications": {"rate_limit_seconds": -1}}
+        errors = validate_structural_config_updates(updates, config)
+        assert any("at least 0" in e for e in errors)
+
+    def test_notifications_webhook_url_not_string(self):
+        config = _make_config_for_structural()
+        updates = {"notifications": {"webhook_url": 123}}
+        errors = validate_structural_config_updates(updates, config)
+        assert any("must be a string" in e for e in errors)
+
+    def test_projects_not_list(self):
+        config = _make_config_for_structural()
+        updates = {"projects": "bad"}
+        errors = validate_structural_config_updates(updates, config)
+        assert any("must be a list" in e for e in errors)
+
+    def test_projects_unknown_project(self):
+        config = _make_config_for_structural()
+        updates = {"projects": [{"name": "nonexistent", "slots": [1]}]}
+        errors = validate_structural_config_updates(updates, config)
+        assert any("does not exist" in e for e in errors)
+
+    def test_projects_missing_name(self):
+        config = _make_config_for_structural()
+        updates = {"projects": [{"slots": [1]}]}
+        errors = validate_structural_config_updates(updates, config)
+        assert any("'name' is required" in e for e in errors)
+
+    def test_projects_duplicate_slots(self):
+        config = _make_config_for_structural()
+        updates = {"projects": [{"name": "project-a", "slots": [1, 1]}]}
+        errors = validate_structural_config_updates(updates, config)
+        assert any("duplicate" in e for e in errors)
+
+    def test_projects_slots_not_integers(self):
+        config = _make_config_for_structural()
+        updates = {"projects": [{"name": "project-a", "slots": ["a"]}]}
+        errors = validate_structural_config_updates(updates, config)
+        assert any("list of integers" in e for e in errors)
+
+    def test_projects_slots_not_list(self):
+        config = _make_config_for_structural()
+        updates = {"projects": [{"name": "project-a", "slots": 1}]}
+        errors = validate_structural_config_updates(updates, config)
+        assert any("must be a list" in e for e in errors)
+
+    def test_projects_linear_project_not_string(self):
+        config = _make_config_for_structural()
+        updates = {
+            "projects": [{"name": "project-a", "linear_project": 123}],
+        }
+        errors = validate_structural_config_updates(updates, config)
+        assert any("must be a string" in e for e in errors)
+
+    def test_projects_reject_non_editable_fields(self):
+        config = _make_config_for_structural()
+        updates = {
+            "projects": [{"name": "project-a", "base_dir": "/tmp/hacked"}],
+        }
+        errors = validate_structural_config_updates(updates, config)
+        assert any("cannot edit" in e for e in errors)
+
+    def test_projects_entry_not_mapping(self):
+        config = _make_config_for_structural()
+        updates = {"projects": ["bad"]}
+        errors = validate_structural_config_updates(updates, config)
+        assert any("must be a mapping" in e for e in errors)
+
+    def test_projects_bool_rejected_as_slot(self):
+        config = _make_config_for_structural()
+        updates = {"projects": [{"name": "project-a", "slots": [True]}]}
+        errors = validate_structural_config_updates(updates, config)
+        assert any("list of integers" in e for e in errors)
+
+
+# --- write_structural_config_updates ---
+
+
+class TestWriteStructuralConfigUpdates:
+    def test_write_notifications(self, tmp_path):
+        config_path = _write_config(tmp_path, {
+            **MINIMAL_CONFIG,
+            "notifications": {
+                "webhook_url": "https://old.example.com",
+                "webhook_format": "slack",
+                "rate_limit_seconds": 300,
+            },
+        })
+        write_structural_config_updates(config_path, {
+            "notifications": {
+                "webhook_url": "https://new.example.com",
+                "rate_limit_seconds": 60,
+            },
+        })
+        data = yaml.safe_load(config_path.read_text())
+        assert data["notifications"]["webhook_url"] == "https://new.example.com"
+        assert data["notifications"]["rate_limit_seconds"] == 60
+        # webhook_format preserved
+        assert data["notifications"]["webhook_format"] == "slack"
+
+    def test_write_notifications_creates_section(self, tmp_path):
+        config_path = _write_config(tmp_path, MINIMAL_CONFIG)
+        write_structural_config_updates(config_path, {
+            "notifications": {"webhook_url": "https://new.example.com"},
+        })
+        data = yaml.safe_load(config_path.read_text())
+        assert data["notifications"]["webhook_url"] == "https://new.example.com"
+
+    def test_write_project_slots(self, tmp_path):
+        config_path = _write_config(tmp_path, {
+            **MINIMAL_CONFIG,
+            "projects": [
+                {
+                    "name": "test-project",
+                    "linear_team": "TST",
+                    "base_dir": "~/test",
+                    "worktree_prefix": "test-slot-",
+                    "slots": [1],
+                },
+            ],
+        })
+        write_structural_config_updates(config_path, {
+            "projects": [{"name": "test-project", "slots": [1, 2, 3]}],
+        })
+        data = yaml.safe_load(config_path.read_text())
+        assert data["projects"][0]["slots"] == [1, 2, 3]
+        # Other fields preserved
+        assert data["projects"][0]["base_dir"] == "~/test"
+
+    def test_write_project_linear_project(self, tmp_path):
+        config_path = _write_config(tmp_path, {
+            **MINIMAL_CONFIG,
+            "projects": [
+                {
+                    "name": "test-project",
+                    "linear_team": "TST",
+                    "base_dir": "~/test",
+                    "worktree_prefix": "test-slot-",
+                    "slots": [1],
+                },
+            ],
+        })
+        write_structural_config_updates(config_path, {
+            "projects": [
+                {"name": "test-project", "linear_project": "My Project"},
+            ],
+        })
+        data = yaml.safe_load(config_path.read_text())
+        assert data["projects"][0]["linear_project"] == "My Project"
+
+    def test_write_project_unknown_name_ignored(self, tmp_path):
+        config_path = _write_config(tmp_path, MINIMAL_CONFIG)
+        original = yaml.safe_load(config_path.read_text())
+        write_structural_config_updates(config_path, {
+            "projects": [{"name": "nonexistent", "slots": [99]}],
+        })
+        data = yaml.safe_load(config_path.read_text())
+        assert data["projects"] == original["projects"]
+
+    def test_write_preserves_env_vars(self, tmp_path):
+        raw_config = {
+            **MINIMAL_CONFIG,
+            "linear": {"api_key": "${LINEAR_API_KEY}"},
+            "notifications": {"webhook_url": "https://old.example.com"},
+        }
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.dump(raw_config, sort_keys=False))
+        write_structural_config_updates(config_path, {
+            "notifications": {"webhook_url": "https://new.example.com"},
+        })
+        data = yaml.safe_load(config_path.read_text())
+        assert data["linear"]["api_key"] == "${LINEAR_API_KEY}"

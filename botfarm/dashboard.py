@@ -22,9 +22,12 @@ from botfarm.config import (
     BotfarmConfig,
     DashboardConfig,
     EDITABLE_FIELDS,
+    STRUCTURAL_FIELDS,
     apply_config_updates,
     validate_config_updates,
+    validate_structural_config_updates,
     write_config_updates,
+    write_structural_config_updates,
 )
 from botfarm.db import (
     count_tasks,
@@ -71,6 +74,7 @@ def create_app(
     app.state.db_path = Path(db_path).expanduser()
     app.state.linear_workspace = linear_workspace
     app.state.botfarm_config = botfarm_config
+    app.state.restart_required = False
 
     # --- Helpers ---
 
@@ -565,6 +569,19 @@ def create_app(
                 "timeout_minutes": dict(cfg.agents.timeout_minutes),
                 "timeout_grace_seconds": cfg.agents.timeout_grace_seconds,
             },
+            "notifications": {
+                "webhook_url": cfg.notifications.webhook_url,
+                "webhook_format": cfg.notifications.webhook_format,
+                "rate_limit_seconds": cfg.notifications.rate_limit_seconds,
+            },
+            "projects": [
+                {
+                    "name": p.name,
+                    "slots": list(p.slots),
+                    "linear_project": p.linear_project,
+                }
+                for p in cfg.projects
+            ],
         }
 
     @app.get("/config", response_class=HTMLResponse)
@@ -576,6 +593,7 @@ def create_app(
             "config_enabled": enabled,
             "config_values": _config_values(),
             "editable_fields": EDITABLE_FIELDS,
+            "restart_required": app.state.restart_required,
         })
 
     @app.post("/config", response_class=HTMLResponse)
@@ -604,35 +622,84 @@ def create_app(
                 status_code=400,
             )
 
-        errors = validate_config_updates(updates)
-        if errors:
-            error_html = "".join(f"<li>{html.escape(e)}</li>" for e in errors)
+        # Split into runtime-editable and structural updates
+        structural_sections = {"notifications", "projects"}
+        runtime_updates = {
+            k: v for k, v in updates.items() if k not in structural_sections
+        }
+        structural_updates = {
+            k: v for k, v in updates.items() if k in structural_sections
+        }
+
+        # Validate runtime updates
+        all_errors: list[str] = []
+        if runtime_updates:
+            all_errors.extend(validate_config_updates(runtime_updates))
+
+        # Validate structural updates
+        if structural_updates:
+            all_errors.extend(
+                validate_structural_config_updates(structural_updates, cfg)
+            )
+
+        if all_errors:
+            error_html = "".join(
+                f"<li>{html.escape(e)}</li>" for e in all_errors
+            )
             return HTMLResponse(
                 '<div class="config-feedback error" role="alert">'
                 f"<strong>Validation errors:</strong><ul>{error_html}</ul></div>",
                 status_code=422,
             )
 
-        # Apply to in-memory config
-        apply_config_updates(cfg, updates)
-
-        # Write back to YAML file (preserving env var references)
         config_path = Path(cfg.source_path) if cfg.source_path else None
-        if config_path and config_path.exists():
-            try:
-                write_config_updates(config_path, updates)
-            except Exception:
-                logger.exception("Failed to write config file")
+
+        # Apply runtime updates to in-memory config + YAML
+        if runtime_updates:
+            apply_config_updates(cfg, runtime_updates)
+            if config_path and config_path.exists():
+                try:
+                    write_config_updates(config_path, runtime_updates)
+                except Exception:
+                    logger.exception("Failed to write config file")
+                    return HTMLResponse(
+                        '<div class="config-feedback warning" role="alert">'
+                        "Applied to running config but failed to save to file. "
+                        "Changes will be lost on restart.</div>",
+                        status_code=200,
+                    )
+
+        # Write structural updates to YAML only (NOT in-memory)
+        if structural_updates:
+            if config_path and config_path.exists():
+                try:
+                    write_structural_config_updates(
+                        config_path, structural_updates,
+                    )
+                    app.state.restart_required = True
+                except Exception:
+                    logger.exception("Failed to write structural config")
+                    return HTMLResponse(
+                        '<div class="config-feedback error" role="alert">'
+                        "Failed to save structural changes to file.</div>",
+                        status_code=500,
+                    )
+            else:
                 return HTMLResponse(
-                    '<div class="config-feedback warning" role="alert">'
-                    "Applied to running config but failed to save to file. "
-                    "Changes will be lost on restart.</div>",
-                    status_code=200,
+                    '<div class="config-feedback error" role="alert">'
+                    "Cannot save structural changes: no config file path.</div>",
+                    status_code=400,
                 )
 
+        msg = "Config updated successfully."
+        if structural_updates:
+            msg = (
+                "Config saved to file. "
+                "Restart required to apply structural changes."
+            )
         return HTMLResponse(
-            '<div class="config-feedback success" role="alert">'
-            "Config updated successfully.</div>",
+            f'<div class="config-feedback success" role="alert">'
+            f"{msg}</div>",
             status_code=200,
         )
 
