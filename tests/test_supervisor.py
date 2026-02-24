@@ -2771,13 +2771,14 @@ class TestSlotWorktreeCwd:
 
     def test_cleanup_slot_db_removes_directory(self, supervisor, tmp_path):
         """_cleanup_slot_db removes the slot DB directory."""
-        # Create the slot DB dir manually
-        slot_dir = Path.home() / ".botfarm" / "slots" / "test-project-1"
+        # Create the slot DB dir under tmp_path instead of real home
+        slot_dir = tmp_path / ".botfarm" / "slots" / "test-project-1"
         slot_dir.mkdir(parents=True, exist_ok=True)
         (slot_dir / "botfarm.db").write_text("fake")
         assert slot_dir.exists()
 
-        supervisor._cleanup_slot_db("test-project", 1)
+        with patch("botfarm.supervisor.Path.home", return_value=tmp_path):
+            supervisor._cleanup_slot_db("test-project", 1)
         assert not slot_dir.exists()
 
     def test_cleanup_slot_db_noop_when_missing(self, supervisor, tmp_path):

@@ -158,6 +158,10 @@ def init_db(db_path: str | Path) -> sqlite3.Connection:
 
     Returns a sqlite3.Connection with WAL mode and foreign keys enabled.
     """
+    # SAFETY: This env var is only set in the Claude subprocess's environment
+    # (via subprocess.run(env=...)) — never in the supervisor/worker process.
+    # If it were set in the parent process, all init_db() calls would silently
+    # redirect to the wrong database.
     env_override = os.environ.get("BOTFARM_DB_PATH")
     if env_override:
         db_path = env_override

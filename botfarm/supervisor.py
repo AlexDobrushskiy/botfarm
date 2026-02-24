@@ -1573,7 +1573,8 @@ class Supervisor:
         """Return the placeholder branch name for a slot."""
         return f"slot-{slot_id}-placeholder"
 
-    def _slot_db_path(self, project_name: str, slot_id: int) -> str:
+    @staticmethod
+    def _slot_db_path(project_name: str, slot_id: int) -> str:
         """Compute the sandboxed DB path for a slot.
 
         Returns ``~/.botfarm/slots/<project>-<slot_id>/botfarm.db``.
@@ -1590,7 +1591,11 @@ class Supervisor:
         slot_db.parent.mkdir(parents=True, exist_ok=True)
         prod_db = Path(self._db_path)
         if prod_db.exists():
-            shutil.copy2(str(prod_db), str(slot_db))
+            src = sqlite3.connect(str(prod_db))
+            dst = sqlite3.connect(str(slot_db))
+            src.backup(dst)
+            dst.close()
+            src.close()
             logger.info(
                 "Seeded slot DB for %s/%d: %s", project_name, slot_id, slot_db,
             )
