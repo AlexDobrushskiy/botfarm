@@ -62,13 +62,11 @@ def build_pipeline_state(
             stage_info[name] = {
                 "count": 0,
                 "has_limit_restart": False,
-                "last_exit": None,
             }
         info = stage_info[name]
         info["count"] += 1
         if run.get("was_limit_restart"):
             info["has_limit_restart"] = True
-        info["last_exit"] = run.get("exit_subtype")
 
     # Find the last stage that has runs (by canonical order)
     last_run_idx = -1
@@ -80,8 +78,8 @@ def build_pipeline_state(
     for i, stage_name in enumerate(STAGES):
         info = stage_info.get(stage_name)
         if info is None:
-            # No runs for this stage
-            status = "pending"
+            # No runs for this stage — but may have been skipped
+            status = "completed" if i < last_run_idx else "pending"
         elif i < last_run_idx:
             # A later stage has runs, so this one completed
             status = "completed"

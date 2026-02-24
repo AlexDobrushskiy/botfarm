@@ -1717,6 +1717,19 @@ class TestBuildPipelineState:
         assert result[0]["has_limit_restart"] is True
         assert result[1]["has_limit_restart"] is False
 
+    def test_skipped_stage_shows_completed(self):
+        """fix is skipped when review approves on first try."""
+        runs = [
+            {"stage": "implement", "exit_subtype": "done", "was_limit_restart": 0},
+            {"stage": "review", "exit_subtype": "approved", "was_limit_restart": 0},
+            {"stage": "pr_checks", "exit_subtype": "passed", "was_limit_restart": 0},
+            {"stage": "merge", "exit_subtype": "merged", "was_limit_restart": 0},
+        ]
+        result = build_pipeline_state(runs, "completed")
+        assert result[2]["name"] == "fix"
+        assert result[2]["status"] == "completed"  # skipped but should show completed
+        assert result[2]["iteration_count"] == 0
+
     def test_stage_names_match_canonical_order(self):
         result = build_pipeline_state([], None)
         names = [s["name"] for s in result]
