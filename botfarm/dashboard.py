@@ -188,6 +188,23 @@ def create_app(
             return f"https://linear.app/{ws}/issue/{ticket_id}"
         return f"https://linear.app/issue/{ticket_id}"
 
+    HEARTBEAT_STALE_SECONDS = 30
+
+    def _supervisor_status(state: dict) -> dict:
+        """Compute supervisor liveness from the heartbeat field.
+
+        Returns a dict with 'running' (bool) and 'heartbeat' (ISO str or None).
+        """
+        heartbeat = state.get("supervisor_heartbeat")
+        if not heartbeat:
+            return {"running": False, "heartbeat": None}
+        try:
+            hb_dt = datetime.fromisoformat(heartbeat.replace("Z", "+00:00"))
+            age = (datetime.now(timezone.utc) - hb_dt).total_seconds()
+            return {"running": age <= HEARTBEAT_STALE_SECONDS, "heartbeat": heartbeat}
+        except (ValueError, TypeError):
+            return {"running": False, "heartbeat": None}
+
     # Make helpers available to templates
     @app.middleware("http")
     async def add_template_globals(request: Request, call_next):
@@ -218,6 +235,7 @@ def create_app(
             "usage_stale": _usage_is_stale(last_usage_check),
             "elapsed": _elapsed,
             "linear_url": _linear_url,
+            "supervisor": _supervisor_status(state),
         })
 
     @app.get("/partials/slots", response_class=HTMLResponse)
@@ -233,6 +251,7 @@ def create_app(
             "dispatch_pause_reason": dispatch_pause_reason,
             "elapsed": _elapsed,
             "linear_url": _linear_url,
+            "supervisor": _supervisor_status(state),
         })
 
     _usage_refresh_lock = threading.Lock()
@@ -437,6 +456,7 @@ def create_app(
             "sort_by": hp["sort_by"],
             "sort_dir": hp["sort_dir"],
             "linear_url": _linear_url,
+            "supervisor": _supervisor_status(_read_state()),
         }
 
     @app.get("/history", response_class=HTMLResponse)
@@ -482,6 +502,7 @@ def create_app(
             "pipeline": pipeline,
             "linear_url": _linear_url,
             "format_duration": _format_duration,
+            "supervisor": _supervisor_status(_read_state()),
         })
 
     USAGE_RANGE_HOURS = {"24h": 24, "7d": 168, "30d": 720}
@@ -515,6 +536,7 @@ def create_app(
             "usage": usage,
             "snapshots": snapshots,
             "time_range": time_range,
+            "supervisor": _supervisor_status(state),
         })
 
     def _compute_metrics(
@@ -634,6 +656,7 @@ def create_app(
             "projects": projects,
             "filter_project": filter_project,
             "format_duration": _format_duration,
+            "supervisor": _supervisor_status(_read_state()),
         })
 
     # --- Read-only config view ---
@@ -711,6 +734,7 @@ def create_app(
             "request": request,
             "config_enabled": enabled,
             "config_values": _full_config_values(),
+            "supervisor": _supervisor_status(_read_state()),
         })
 
     # --- Config editing ---
@@ -762,6 +786,7 @@ def create_app(
             "config_values": _config_values(),
             "editable_fields": EDITABLE_FIELDS,
             "restart_required": app.state.restart_required,
+            "supervisor": _supervisor_status(_read_state()),
         })
 
     @app.post("/config", response_class=HTMLResponse)

@@ -422,6 +422,15 @@ class TestPersistence:
         assert len(data["slots"]) == 1
         assert data["slots"][0]["project"] == "proj"
 
+    def test_save_includes_supervisor_heartbeat(self, mgr: SlotManager):
+        mgr.register_slot("proj", 1)
+        mgr.save()
+        data = json.loads(mgr.state_path.read_text())
+        assert "supervisor_heartbeat" in data
+        # Should be a valid ISO timestamp
+        from datetime import datetime
+        datetime.fromisoformat(data["supervisor_heartbeat"].replace("Z", "+00:00"))
+
     def test_state_saved_on_assign(self, mgr: SlotManager):
         mgr.register_slot("proj", 1)
         mgr.assign_ticket(
