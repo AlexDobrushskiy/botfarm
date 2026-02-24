@@ -287,6 +287,67 @@ class TestHandleFinishedSlots:
 
         assert sm.get_slot("test-project", 1).status == "free"
 
+    def test_failed_slot_with_merged_pr_treated_as_completed(self, supervisor):
+        """Failed slot whose PR is merged should be treated as completed, not retried."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.mark_failed("test-project", 1, reason="post-merge checkout failed")
+
+        poller = supervisor._pollers["test-project"]
+
+        with patch.object(supervisor, "_check_pr_status", return_value="merged"):
+            supervisor._handle_finished_slots()
+
+        # Should move to Done (not Todo/failed_status)
+        poller.move_issue.assert_called_once_with("TST-1", "Done")
+        assert sm.get_slot("test-project", 1).status == "free"
+
+    def test_failed_slot_no_merged_pr_moves_to_failed_status(self, supervisor):
+        """Failed slot without a merged PR should move to failed_status as before."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.mark_failed("test-project", 1, reason="crash")
+
+        poller = supervisor._pollers["test-project"]
+
+        with patch.object(supervisor, "_check_pr_status", return_value=None):
+            supervisor._handle_finished_slots()
+
+        poller.move_issue.assert_called_once_with("TST-1", "Todo")
+        assert sm.get_slot("test-project", 1).status == "free"
+
+    def test_failed_slot_merged_pr_updates_task_to_completed(self, supervisor):
+        """Failed slot with merged PR should update the DB task status to completed."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.mark_failed("test-project", 1, reason="post-merge checkout failed")
+
+        # Insert a task so we can verify it gets updated
+        task_id = insert_task(
+            supervisor._conn,
+            ticket_id="TST-1",
+            title="Test task",
+            project="test-project",
+            slot=1,
+            status="failed",
+        )
+        supervisor._conn.commit()
+
+        with patch.object(supervisor, "_check_pr_status", return_value="merged"):
+            supervisor._handle_finished_slots()
+
+        task = get_task(supervisor._conn, task_id)
+        assert task["status"] == "completed"
+
     def test_events_recorded_for_completed(self, supervisor):
         sm = supervisor.slot_manager
         sm.assign_ticket(
