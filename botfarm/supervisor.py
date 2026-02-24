@@ -686,29 +686,41 @@ class Supervisor:
                     "Worker result: %s/%d completed", wr.project, wr.slot_id,
                 )
             elif wr.limit_hit:
+                self._usage_poller.force_poll(self._conn)
                 self._handle_limit_hit(wr)
             else:
-                reason = f"{wr.failure_stage}: {wr.failure_reason}"
-                # Capture ticket_id before mark_failed in case it
-                # ever clears ticket state (like free_slot does).
-                slot = self._slot_manager.get_slot(wr.project, wr.slot_id)
-                ticket_id = slot.ticket_id if slot else None
-                self._slot_manager.mark_failed(
-                    wr.project, wr.slot_id, reason=reason,
-                )
-                # Update DB task with failure info
-                task_id = self._find_task_id(ticket_id)
-                if task_id is not None:
-                    update_task(
-                        self._conn, task_id,
-                        status="failed",
-                        failure_reason=reason,
+                # String matching didn't flag a limit hit — verify via
+                # the usage API in case the error message was unexpected.
+                limit_detected = self._check_usage_api_for_limit()
+                if limit_detected:
+                    logger.info(
+                        "Worker %s/%d: usage API confirms limit hit "
+                        "(not detected by string matching)",
+                        wr.project, wr.slot_id,
                     )
-                    self._conn.commit()
-                logger.warning(
-                    "Worker result: %s/%d failed — %s",
-                    wr.project, wr.slot_id, reason,
-                )
+                    self._handle_limit_hit(wr)
+                else:
+                    reason = f"{wr.failure_stage}: {wr.failure_reason}"
+                    # Capture ticket_id before mark_failed in case it
+                    # ever clears ticket state (like free_slot does).
+                    slot = self._slot_manager.get_slot(wr.project, wr.slot_id)
+                    ticket_id = slot.ticket_id if slot else None
+                    self._slot_manager.mark_failed(
+                        wr.project, wr.slot_id, reason=reason,
+                    )
+                    # Update DB task with failure info
+                    task_id = self._find_task_id(ticket_id)
+                    if task_id is not None:
+                        update_task(
+                            self._conn, task_id,
+                            status="failed",
+                            failure_reason=reason,
+                        )
+                        self._conn.commit()
+                    logger.warning(
+                        "Worker result: %s/%d failed — %s",
+                        wr.project, wr.slot_id, reason,
+                    )
 
         # Clean up any tracked processes that have exited
         finished = []
@@ -1129,8 +1141,22 @@ class Supervisor:
     # Limit interruption handling
     # ------------------------------------------------------------------
 
+    def _check_usage_api_for_limit(self) -> bool:
+        """Force-poll the usage API and return True if thresholds are exceeded."""
+        self._usage_poller.force_poll(self._conn)
+        thresholds = self._config.usage_limits
+        should_pause, _ = self._usage_poller.state.should_pause_with_thresholds(
+            five_hour_threshold=thresholds.pause_five_hour_threshold,
+            seven_day_threshold=thresholds.pause_seven_day_threshold,
+        )
+        return should_pause
+
     def _handle_limit_hit(self, wr: _WorkerResult) -> None:
-        """Handle a worker result that indicates a usage limit hit."""
+        """Handle a worker result that indicates a usage limit hit.
+
+        Callers must call ``force_poll`` before invoking this method so that
+        ``_compute_resume_after`` uses fresh usage data.
+        """
         slot = self._slot_manager.get_slot(wr.project, wr.slot_id)
 
         # Compute resume_after from usage state
@@ -1225,9 +1251,15 @@ class Supervisor:
         now = datetime.now(timezone.utc)
         paused = self._slot_manager.paused_limit_slots()
 
+        polled = False
         for slot in paused:
             if not self._is_ready_to_resume(slot, now):
                 continue
+
+            # Force-poll once so all resume decisions use fresh data
+            if not polled:
+                self._usage_poller.force_poll(self._conn)
+                polled = True
 
             # Re-check usage API to confirm limits have actually reset
             thresholds = self._config.usage_limits

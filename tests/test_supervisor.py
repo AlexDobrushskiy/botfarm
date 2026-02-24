@@ -1177,12 +1177,106 @@ class TestLimitHitHandling:
             limit_hit=True,
         ))
 
-        supervisor._reconcile_workers()
+        # Mock force_poll to preserve pre-set state (avoid real API call)
+        with patch.object(supervisor._usage_poller, "force_poll"):
+            supervisor._reconcile_workers()
 
         slot = sm.get_slot("test-project", 1)
         assert slot.resume_after is not None
         # Should be 2 minutes after resets_at
         assert "22:02" in slot.resume_after
+
+    def test_reconcile_force_polls_before_handle_limit_hit(self, supervisor):
+        """force_poll is called before _handle_limit_hit so resume_after uses fresh data."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        supervisor._result_queue.put(_WorkerResult(
+            project="test-project", slot_id=1, success=False,
+            failure_stage="implement", failure_reason="rate limit hit",
+            limit_hit=True,
+        ))
+
+        with patch.object(
+            supervisor._usage_poller, "force_poll",
+            wraps=supervisor._usage_poller.force_poll,
+        ) as mock_fp:
+            supervisor._reconcile_workers()
+            mock_fp.assert_called_once_with(supervisor._conn)
+
+    def test_usage_api_detects_limit_when_string_match_misses(self, supervisor):
+        """Worker failure without limit strings is caught by usage API check."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        # Usage API indicates limits are exceeded
+        supervisor._usage_poller._state.utilization_5h = 0.95
+        supervisor._usage_poller._state.resets_at_5h = "2026-02-24T22:00:00Z"
+
+        supervisor._result_queue.put(_WorkerResult(
+            project="test-project", slot_id=1, success=False,
+            failure_stage="implement",
+            failure_reason="Unexpected process exit code 1",
+            limit_hit=False,  # String matching did NOT detect it
+        ))
+
+        # Mock force_poll to preserve pre-set state (avoid real API call)
+        with patch.object(supervisor._usage_poller, "force_poll"):
+            supervisor._reconcile_workers()
+
+        # Should be treated as limit hit, not a normal failure
+        slot = sm.get_slot("test-project", 1)
+        assert slot.status == "paused_limit"
+        assert slot.interrupted_by_limit is True
+
+    def test_normal_failure_when_usage_api_shows_low_utilization(self, supervisor):
+        """Worker failure is treated as normal when usage is below thresholds."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        # Usage API shows low utilization
+        supervisor._usage_poller._state.utilization_5h = 0.10
+        supervisor._usage_poller._state.utilization_7d = 0.10
+
+        supervisor._result_queue.put(_WorkerResult(
+            project="test-project", slot_id=1, success=False,
+            failure_stage="implement",
+            failure_reason="PR URL not found in output",
+            limit_hit=False,
+        ))
+
+        supervisor._reconcile_workers()
+
+        # Should be treated as a normal failure
+        slot = sm.get_slot("test-project", 1)
+        assert slot.status == "failed"
 
 
 # ---------------------------------------------------------------------------
@@ -1259,7 +1353,9 @@ class TestHandlePausedSlots:
         # Usage still high
         supervisor._usage_poller._state.utilization_5h = 0.95
 
-        supervisor._handle_paused_slots()
+        # Mock force_poll to preserve pre-set state (avoid real API call)
+        with patch.object(supervisor._usage_poller, "force_poll"):
+            supervisor._handle_paused_slots()
 
         assert sm.get_slot("test-project", 1).status == "paused_limit"
 
@@ -1359,6 +1455,44 @@ class TestHandlePausedSlots:
             mock_proc.start.assert_called_once()
 
         assert sm.get_slot("test-project", 1).status == "busy"
+
+    def test_handle_paused_slots_force_polls_before_threshold_check(self, supervisor):
+        """force_poll is called so the resume decision uses fresh usage data."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.update_stage("test-project", 1, stage="implement")
+        sm.mark_paused_limit(
+            "test-project", 1,
+            resume_after="2020-01-01T00:00:00+00:00",
+        )
+
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        supervisor._usage_poller._state.utilization_5h = 0.10
+        supervisor._usage_poller._state.utilization_7d = 0.10
+
+        with (
+            patch.object(
+                supervisor._usage_poller, "force_poll",
+                wraps=supervisor._usage_poller.force_poll,
+            ) as mock_fp,
+            patch("botfarm.supervisor.multiprocessing.Process") as MockProc,
+        ):
+            mock_proc = MagicMock()
+            mock_proc.pid = 555
+            MockProc.return_value = mock_proc
+
+            supervisor._handle_paused_slots()
+
+            mock_fp.assert_called_once_with(supervisor._conn)
 
 
 # ---------------------------------------------------------------------------
