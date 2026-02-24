@@ -24,6 +24,7 @@ from botfarm.supervisor import (
     Supervisor,
     _WorkerResult,
     _check_limit_hit,
+    _setup_worker_logging,
     _worker_entry,
     setup_logging,
 )
@@ -840,6 +841,49 @@ class TestSetupLogging:
                 and not isinstance(h, logging.FileHandler)
                 for h in root.handlers
             )
+        finally:
+            root.handlers = original_handlers
+
+
+# ---------------------------------------------------------------------------
+# _setup_worker_logging
+# ---------------------------------------------------------------------------
+
+
+class TestSetupWorkerLogging:
+    def test_creates_worker_log_file(self, tmp_path):
+        log_dir = tmp_path / "logs" / "SMA-99"
+        root = logging.getLogger()
+        original_handlers = root.handlers[:]
+        try:
+            root.handlers = []
+            _setup_worker_logging(log_dir)
+            log_file = log_dir / "worker.log"
+            assert log_file.exists()
+        finally:
+            root.handlers = original_handlers
+
+    def test_adds_file_handler(self, tmp_path):
+        log_dir = tmp_path / "logs" / "SMA-99"
+        root = logging.getLogger()
+        original_handlers = root.handlers[:]
+        try:
+            root.handlers = []
+            _setup_worker_logging(log_dir)
+            assert any(
+                isinstance(h, logging.FileHandler) for h in root.handlers
+            )
+        finally:
+            root.handlers = original_handlers
+
+    def test_creates_parent_dirs(self, tmp_path):
+        log_dir = tmp_path / "a" / "b" / "c"
+        root = logging.getLogger()
+        original_handlers = root.handlers[:]
+        try:
+            root.handlers = []
+            _setup_worker_logging(log_dir)
+            assert log_dir.exists()
         finally:
             root.handlers = original_handlers
 

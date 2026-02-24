@@ -78,8 +78,12 @@ def run_claude(
     *,
     cwd: str | Path,
     max_turns: int,
+    log_file: Path | None = None,
 ) -> ClaudeResult:
     """Run ``claude`` as a subprocess and return the parsed result.
+
+    If *log_file* is provided, the raw stdout and stderr from the claude
+    subprocess are written to that file for later inspection.
 
     Raises ``subprocess.CalledProcessError`` if the process exits non-zero,
     or ``json.JSONDecodeError`` / ``KeyError`` if the output is unexpected.
@@ -100,6 +104,11 @@ def run_claude(
         text=True,
         cwd=str(cwd),
     )
+
+    # Persist raw subprocess output to disk when a log file is configured
+    if log_file is not None:
+        _write_subprocess_log(log_file, proc.stdout, proc.stderr)
+
     if proc.returncode != 0:
         logger.error(
             "claude exited with code %d\nstderr: %s",
@@ -135,14 +144,20 @@ class StageResult:
 # ---------------------------------------------------------------------------
 
 
-def _run_implement(ticket_id: str, *, cwd: str | Path, max_turns: int) -> StageResult:
+def _run_implement(
+    ticket_id: str,
+    *,
+    cwd: str | Path,
+    max_turns: int,
+    log_file: Path | None = None,
+) -> StageResult:
     """IMPLEMENT stage — Claude Code implements the ticket and creates a PR."""
     prompt = (
         f"Work on Linear ticket {ticket_id}. "
         "Follow the Linear Tickets workflow in CLAUDE.md. "
         "Complete all steps through PR creation. Do not stop until the PR is created."
     )
-    result = run_claude(prompt, cwd=cwd, max_turns=max_turns)
+    result = run_claude(prompt, cwd=cwd, max_turns=max_turns, log_file=log_file)
 
     if result.is_error:
         return StageResult(
@@ -163,7 +178,13 @@ def _run_implement(ticket_id: str, *, cwd: str | Path, max_turns: int) -> StageR
     )
 
 
-def _run_review(pr_url: str, *, cwd: str | Path, max_turns: int) -> StageResult:
+def _run_review(
+    pr_url: str,
+    *,
+    cwd: str | Path,
+    max_turns: int,
+    log_file: Path | None = None,
+) -> StageResult:
     """REVIEW stage — Fresh Claude Code reviews the PR and posts comments."""
     owner, repo, number = _parse_pr_url(pr_url)
     prompt = (
@@ -184,7 +205,7 @@ def _run_review(pr_url: str, *, cwd: str | Path, max_turns: int) -> StageResult:
         "  VERDICT: APPROVED\n"
         "  VERDICT: CHANGES_REQUESTED"
     )
-    result = run_claude(prompt, cwd=cwd, max_turns=max_turns)
+    result = run_claude(prompt, cwd=cwd, max_turns=max_turns, log_file=log_file)
 
     if result.is_error:
         return StageResult(
@@ -204,7 +225,13 @@ def _run_review(pr_url: str, *, cwd: str | Path, max_turns: int) -> StageResult:
     )
 
 
-def _run_fix(pr_url: str, *, cwd: str | Path, max_turns: int) -> StageResult:
+def _run_fix(
+    pr_url: str,
+    *,
+    cwd: str | Path,
+    max_turns: int,
+    log_file: Path | None = None,
+) -> StageResult:
     """FIX stage — Fresh Claude Code addresses review comments and pushes fixes."""
     owner, repo, number = _parse_pr_url(pr_url)
     prompt = (
@@ -215,7 +242,7 @@ def _run_fix(pr_url: str, *, cwd: str | Path, max_turns: int) -> StageResult:
         "Make the necessary code changes for each comment, run tests, "
         "commit and push the fixes."
     )
-    result = run_claude(prompt, cwd=cwd, max_turns=max_turns)
+    result = run_claude(prompt, cwd=cwd, max_turns=max_turns, log_file=log_file)
 
     if result.is_error:
         return StageResult(
@@ -232,7 +259,13 @@ def _run_fix(pr_url: str, *, cwd: str | Path, max_turns: int) -> StageResult:
     )
 
 
-def _run_pr_checks(pr_url: str, *, cwd: str | Path, timeout: int = 600) -> StageResult:
+def _run_pr_checks(
+    pr_url: str,
+    *,
+    cwd: str | Path,
+    timeout: int = 600,
+    log_file: Path | None = None,
+) -> StageResult:
     """PR_CHECKS stage — Wait for CI checks to pass. No Claude Code invocation."""
     start = time.monotonic()
     try:
@@ -243,6 +276,8 @@ def _run_pr_checks(pr_url: str, *, cwd: str | Path, timeout: int = 600) -> Stage
             cwd=str(cwd),
             timeout=timeout,
         )
+        if log_file is not None:
+            _write_subprocess_log(log_file, proc.stdout, proc.stderr)
         success = proc.returncode == 0
         if success:
             logger.info("CI checks passed in %.1fs", time.monotonic() - start)
@@ -261,7 +296,12 @@ def _run_pr_checks(pr_url: str, *, cwd: str | Path, timeout: int = 600) -> Stage
 
 
 def _run_ci_fix(
-    pr_url: str, *, ci_failure_output: str, cwd: str | Path, max_turns: int,
+    pr_url: str,
+    *,
+    ci_failure_output: str,
+    cwd: str | Path,
+    max_turns: int,
+    log_file: Path | None = None,
 ) -> StageResult:
     """FIX stage variant — Claude Code fixes CI failures using CI output context."""
     prompt = (
@@ -270,7 +310,7 @@ def _run_ci_fix(
         "then run tests locally, commit and push the fixes.\n\n"
         f"CI failure output:\n{ci_failure_output[:2000]}"
     )
-    result = run_claude(prompt, cwd=cwd, max_turns=max_turns)
+    result = run_claude(prompt, cwd=cwd, max_turns=max_turns, log_file=log_file)
 
     if result.is_error:
         return StageResult(
@@ -287,7 +327,12 @@ def _run_ci_fix(
     )
 
 
-def _run_merge(pr_url: str, *, cwd: str | Path) -> StageResult:
+def _run_merge(
+    pr_url: str,
+    *,
+    cwd: str | Path,
+    log_file: Path | None = None,
+) -> StageResult:
     """MERGE stage — Squash merge the PR and delete the remote branch."""
     proc = subprocess.run(
         ["gh", "pr", "merge", pr_url, "--squash", "--delete-branch"],
@@ -295,6 +340,8 @@ def _run_merge(pr_url: str, *, cwd: str | Path) -> StageResult:
         text=True,
         cwd=str(cwd),
     )
+    if log_file is not None:
+        _write_subprocess_log(log_file, proc.stdout, proc.stderr)
     success = proc.returncode == 0
     error = None if success else proc.stderr[:500] if proc.stderr else proc.stdout[:500]
     return StageResult(
@@ -334,6 +381,7 @@ def run_pipeline(
     project: str | None = None,
     slot_id: int | None = None,
     state_path: str | Path | None = None,
+    log_dir: str | Path | None = None,
     max_turns: dict[str, int] | None = None,
     pr_checks_timeout: int = 600,
     max_review_iterations: int = 3,
@@ -360,6 +408,8 @@ def run_pipeline(
         slot_manager: Optional SlotManager for updating slot state.
         project: Project name (required if slot_manager is provided).
         slot_id: Slot ID (required if slot_manager is provided).
+        log_dir: Per-ticket log directory. When set, each stage writes
+            raw subprocess output to ``<log_dir>/<stage>-<timestamp>.log``.
         max_turns: Per-stage max_turns overrides.
         pr_checks_timeout: Seconds to wait for CI checks.
         max_review_iterations: Maximum review→fix iterations before
@@ -408,6 +458,7 @@ def run_pipeline(
         project=project,
         slot_id=slot_id,
         state_path=state_path,
+        log_dir=Path(log_dir) if log_dir else None,
     )
 
     for stage in STAGES:
@@ -549,6 +600,7 @@ class _PipelineContext:
     project: str | None = None
     slot_id: int | None = None
     state_path: str | Path | None = None
+    log_dir: Path | None = None
 
     def run_and_record(
         self,
@@ -578,6 +630,7 @@ class _PipelineContext:
         update_task(self.conn, self.task_id, pipeline_stage=stage)
         self.conn.commit()
 
+        log_file = _make_stage_log_path(self.log_dir, stage, iteration)
         wall_start = time.monotonic()
 
         try:
@@ -588,6 +641,7 @@ class _PipelineContext:
                 cwd=self.cwd,
                 max_turns=self.turns_cfg.get(stage, 100),
                 pr_checks_timeout=self.pr_checks_timeout,
+                log_file=log_file,
             )
         except Exception as exc:
             logger.error("Stage '%s' raised: %s", stage, exc)
@@ -765,11 +819,13 @@ def _run_ci_retry_loop(
         ctx.conn.commit()
 
         # --- FIX (with CI context) — call _run_ci_fix directly ---
+        log_file = _make_stage_log_path(ctx.log_dir, "ci_fix", retry)
         wall_start = time.monotonic()
         try:
             fix_result = _run_ci_fix(
                 pr_url, ci_failure_output=ci_failure_output,
                 cwd=ctx.cwd, max_turns=ctx.turns_cfg.get("fix", 100),
+                log_file=log_file,
             )
         except Exception as exc:
             logger.error("CI fix stage raised: %s", exc)
@@ -833,26 +889,27 @@ def _execute_stage(
     cwd: str | Path,
     max_turns: int,
     pr_checks_timeout: int,
+    log_file: Path | None = None,
 ) -> StageResult:
     """Dispatch to the appropriate stage runner."""
     if stage == "implement":
-        return _run_implement(ticket_id, cwd=cwd, max_turns=max_turns)
+        return _run_implement(ticket_id, cwd=cwd, max_turns=max_turns, log_file=log_file)
     elif stage == "review":
         if not pr_url:
             raise ValueError(f"{stage} stage requires pr_url")
-        return _run_review(pr_url, cwd=cwd, max_turns=max_turns)
+        return _run_review(pr_url, cwd=cwd, max_turns=max_turns, log_file=log_file)
     elif stage == "fix":
         if not pr_url:
             raise ValueError(f"{stage} stage requires pr_url")
-        return _run_fix(pr_url, cwd=cwd, max_turns=max_turns)
+        return _run_fix(pr_url, cwd=cwd, max_turns=max_turns, log_file=log_file)
     elif stage == "pr_checks":
         if not pr_url:
             raise ValueError(f"{stage} stage requires pr_url")
-        return _run_pr_checks(pr_url, cwd=cwd, timeout=pr_checks_timeout)
+        return _run_pr_checks(pr_url, cwd=cwd, timeout=pr_checks_timeout, log_file=log_file)
     elif stage == "merge":
         if not pr_url:
             raise ValueError(f"{stage} stage requires pr_url")
-        return _run_merge(pr_url, cwd=cwd)
+        return _run_merge(pr_url, cwd=cwd, log_file=log_file)
     else:
         raise ValueError(f"Unknown stage: {stage}")
 
@@ -967,6 +1024,42 @@ def _parse_review_approved(text: str) -> bool:
             return True
     # Conservative default: assume changes are needed
     return False
+
+
+def _make_stage_log_path(
+    log_dir: Path | None,
+    stage: str,
+    iteration: int = 1,
+) -> Path | None:
+    """Build a timestamped log file path for a pipeline stage.
+
+    Returns ``None`` when *log_dir* is not configured, which disables
+    per-stage log file writing.
+    """
+    if log_dir is None:
+        return None
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    suffix = f"-iter{iteration}" if iteration > 1 else ""
+    return log_dir / f"{stage}{suffix}-{ts}.log"
+
+
+def _write_subprocess_log(
+    log_file: Path,
+    stdout: str | None,
+    stderr: str | None,
+) -> None:
+    """Write captured subprocess stdout/stderr to *log_file*."""
+    try:
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        with log_file.open("w") as fh:
+            if stdout:
+                fh.write(stdout)
+            if stderr:
+                fh.write("\n--- STDERR ---\n")
+                fh.write(stderr)
+        logger.info("Wrote subprocess log to %s", log_file)
+    except OSError:
+        logger.warning("Failed to write subprocess log to %s", log_file, exc_info=True)
 
 
 def _recover_pr_url(conn, task_id: int, cwd: str | Path) -> str | None:
