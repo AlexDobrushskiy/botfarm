@@ -177,7 +177,7 @@ def create_app(
         })
 
     _usage_refresh_lock = threading.Lock()
-    _last_usage_refresh: dict = {"time": 0.0, "data": None}
+    _last_usage_refresh: dict = {"time": None, "data": None}
     _USAGE_REFRESH_INTERVAL = 60  # seconds — rate-limit API calls
     # Track when the dashboard itself last got fresh data (wall-clock ISO str)
     _dashboard_last_fresh: dict = {"time": None}
@@ -192,7 +192,8 @@ def create_app(
 
         now = time.monotonic()
         with _usage_refresh_lock:
-            if now - _last_usage_refresh["time"] < _USAGE_REFRESH_INTERVAL:
+            last = _last_usage_refresh["time"]
+            if last is not None and now - last < _USAGE_REFRESH_INTERVAL:
                 return _last_usage_refresh["data"]
             # Don't claim the slot yet — wait for the API call to succeed
             in_flight_time = now
