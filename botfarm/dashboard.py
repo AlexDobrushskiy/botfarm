@@ -6,6 +6,7 @@ polling. Designed to run inside the supervisor process as a background thread.
 
 from __future__ import annotations
 
+import html
 import json
 import logging
 import sqlite3
@@ -605,7 +606,7 @@ def create_app(
 
         errors = validate_config_updates(updates)
         if errors:
-            error_html = "".join(f"<li>{e}</li>" for e in errors)
+            error_html = "".join(f"<li>{html.escape(e)}</li>" for e in errors)
             return HTMLResponse(
                 '<div class="config-feedback error" role="alert">'
                 f"<strong>Validation errors:</strong><ul>{error_html}</ul></div>",

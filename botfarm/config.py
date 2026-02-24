@@ -219,6 +219,9 @@ def _parse_project(data: dict) -> ProjectConfig:
     )
 
 
+_KNOWN_TIMEOUT_STAGES = {"implement", "review", "fix", "pr_checks", "merge"}
+
+
 def _validate_config(config: BotfarmConfig) -> None:
     """Validate cross-field constraints."""
     if not config.linear.api_key:
@@ -245,12 +248,11 @@ def _validate_config(config: BotfarmConfig) -> None:
     if config.agents.max_ci_retries < 0:
         raise ConfigError("agents.max_ci_retries must be at least 0")
 
-    known_stages = {"implement", "review", "fix", "pr_checks", "merge"}
     for stage, minutes in config.agents.timeout_minutes.items():
-        if stage not in known_stages:
+        if stage not in _KNOWN_TIMEOUT_STAGES:
             raise ConfigError(
                 f"agents.timeout_minutes: unknown stage '{stage}'. "
-                f"Valid stages: {sorted(known_stages)}"
+                f"Valid stages: {sorted(_KNOWN_TIMEOUT_STAGES)}"
             )
         if minutes < 1:
             raise ConfigError(
@@ -385,8 +387,6 @@ EDITABLE_FIELDS: dict[tuple[str, str], dict] = {
     ("agents", "timeout_grace_seconds"): {"type": "int", "min": 0},
 }
 
-_KNOWN_TIMEOUT_STAGES = {"implement", "review", "fix", "pr_checks", "merge"}
-
 
 def validate_config_updates(updates: dict) -> list[str]:
     """Validate a partial config update dict.
@@ -458,6 +458,12 @@ def apply_config_updates(config: BotfarmConfig, updates: dict) -> None:
     """Apply validated updates to the in-memory config object.
 
     ``updates`` must already be validated via ``validate_config_updates()``.
+
+    Thread safety: this is called from the dashboard (uvicorn) thread while
+    the supervisor reads the config from the main thread.  CPython's GIL
+    makes simple ``setattr`` and ``dict.update()`` effectively atomic, so
+    no explicit lock is needed.  If the runtime ever moves to free-threaded
+    Python, a lock should be added here.
     """
     section_map = {
         "linear": config.linear,
