@@ -30,6 +30,96 @@
         .metric-card h2 { margin-bottom: 0.25rem; }
         .metric-card p { margin-bottom: 0; color: var(--pico-muted-color); }
         progress { width: 100%; height: 0.5rem; margin-top: 0.25rem; }
+
+        /* Pipeline stepper */
+        .pipeline-stepper {
+            display: flex;
+            align-items: flex-start;
+            justify-content: center;
+            margin: 1.5rem 0;
+            padding: 1rem 0;
+        }
+        .pipeline-stage {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            position: relative;
+            flex: 1;
+            min-width: 0;
+        }
+        .pipeline-node {
+            width: 2.5rem;
+            height: 2.5rem;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            font-size: 1rem;
+            border: 3px solid var(--pico-muted-color);
+            background: transparent;
+            color: var(--pico-muted-color);
+            position: relative;
+            z-index: 1;
+        }
+        .pipeline-node-completed {
+            background: var(--pico-ins-color);
+            border-color: var(--pico-ins-color);
+            color: #fff;
+        }
+        .pipeline-node-failed {
+            background: var(--pico-del-color);
+            border-color: var(--pico-del-color);
+            color: #fff;
+        }
+        .pipeline-node-active {
+            border-color: var(--pico-color-yellow-500, #eab308);
+            color: var(--pico-color-yellow-500, #eab308);
+            animation: pulse-border 1.5s ease-in-out infinite;
+        }
+        .pipeline-node-pending {
+            border-color: var(--pico-muted-color);
+            color: var(--pico-muted-color);
+        }
+        @keyframes pulse-border {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(234, 179, 8, 0.4); }
+            50% { box-shadow: 0 0 0 6px rgba(234, 179, 8, 0); }
+        }
+        .pipeline-connector {
+            position: absolute;
+            top: 1.25rem;
+            right: 50%;
+            width: 100%;
+            height: 3px;
+            z-index: 0;
+        }
+        .pipeline-connector-completed { background: var(--pico-ins-color); }
+        .pipeline-connector-failed { background: var(--pico-del-color); }
+        .pipeline-connector-active { background: var(--pico-color-yellow-500, #eab308); }
+        .pipeline-connector-pending { background: var(--pico-muted-color); }
+        .pipeline-label {
+            margin-top: 0.5rem;
+            font-size: 0.8rem;
+            color: var(--pico-muted-color);
+            text-align: center;
+            white-space: nowrap;
+        }
+        .pipeline-badge {
+            margin-top: 0.25rem;
+            font-size: 0.7rem;
+            background: var(--pico-muted-color);
+            color: #fff;
+            padding: 0.1rem 0.4rem;
+            border-radius: 0.75rem;
+        }
+        .pipeline-badge-limit {
+            background: var(--pico-color-purple-400, #c084fc);
+        }
+        @media (max-width: 480px) {
+            .pipeline-node { width: 1.8rem; height: 1.8rem; font-size: 0.75rem; }
+            .pipeline-connector { top: 0.9rem; }
+            .pipeline-label { font-size: 0.65rem; }
+        }
     </style>
     <script>
     function updateCountdowns() {

@@ -15,7 +15,7 @@ from botfarm.config import (
     NotificationsConfig,
     ProjectConfig,
 )
-from botfarm.dashboard import create_app, start_dashboard
+from botfarm.dashboard import build_pipeline_state, create_app, start_dashboard
 from botfarm.db import (
     count_tasks,
     get_distinct_projects,
@@ -1648,3 +1648,113 @@ class TestConfigViewPage:
         body = resp.text
         # Empty webhook_url should show "-"
         assert "Webhook URL" in body
+
+
+# --- Pipeline stepper ---
+
+
+class TestBuildPipelineState:
+    def test_no_stage_runs(self):
+        result = build_pipeline_state([], None)
+        assert len(result) == 5
+        assert all(s["status"] == "pending" for s in result)
+        assert all(s["iteration_count"] == 0 for s in result)
+
+    def test_completed_task_all_stages(self):
+        runs = [
+            {"stage": "implement", "exit_subtype": "done", "was_limit_restart": 0},
+            {"stage": "review", "exit_subtype": "approved", "was_limit_restart": 0},
+            {"stage": "fix", "exit_subtype": "done", "was_limit_restart": 0},
+            {"stage": "pr_checks", "exit_subtype": "passed", "was_limit_restart": 0},
+            {"stage": "merge", "exit_subtype": "merged", "was_limit_restart": 0},
+        ]
+        result = build_pipeline_state(runs, "completed")
+        assert all(s["status"] == "completed" for s in result)
+
+    def test_failed_at_review(self):
+        runs = [
+            {"stage": "implement", "exit_subtype": "done", "was_limit_restart": 0},
+            {"stage": "review", "exit_subtype": "rejected", "was_limit_restart": 0},
+        ]
+        result = build_pipeline_state(runs, "failed")
+        assert result[0]["status"] == "completed"  # implement
+        assert result[1]["status"] == "failed"  # review
+        assert result[2]["status"] == "pending"  # fix
+        assert result[3]["status"] == "pending"  # pr_checks
+        assert result[4]["status"] == "pending"  # merge
+
+    def test_active_in_progress(self):
+        runs = [
+            {"stage": "implement", "exit_subtype": "done", "was_limit_restart": 0},
+            {"stage": "review", "exit_subtype": None, "was_limit_restart": 0},
+        ]
+        result = build_pipeline_state(runs, "in_progress")
+        assert result[0]["status"] == "completed"  # implement
+        assert result[1]["status"] == "active"  # review
+        assert result[2]["status"] == "pending"  # fix
+
+    def test_iteration_count(self):
+        runs = [
+            {"stage": "implement", "exit_subtype": "done", "was_limit_restart": 0},
+            {"stage": "review", "exit_subtype": "changes_requested", "was_limit_restart": 0},
+            {"stage": "fix", "exit_subtype": "done", "was_limit_restart": 0},
+            {"stage": "review", "exit_subtype": "approved", "was_limit_restart": 0},
+            {"stage": "fix", "exit_subtype": "done", "was_limit_restart": 0},
+            {"stage": "pr_checks", "exit_subtype": None, "was_limit_restart": 0},
+        ]
+        result = build_pipeline_state(runs, "in_progress")
+        assert result[0]["iteration_count"] == 1  # implement
+        assert result[1]["iteration_count"] == 2  # review
+        assert result[2]["iteration_count"] == 2  # fix
+        assert result[3]["iteration_count"] == 1  # pr_checks
+
+    def test_limit_restart_flag(self):
+        runs = [
+            {"stage": "implement", "exit_subtype": "done", "was_limit_restart": 1},
+            {"stage": "review", "exit_subtype": None, "was_limit_restart": 0},
+        ]
+        result = build_pipeline_state(runs, "in_progress")
+        assert result[0]["has_limit_restart"] is True
+        assert result[1]["has_limit_restart"] is False
+
+    def test_skipped_stage_shows_completed(self):
+        """fix is skipped when review approves on first try."""
+        runs = [
+            {"stage": "implement", "exit_subtype": "done", "was_limit_restart": 0},
+            {"stage": "review", "exit_subtype": "approved", "was_limit_restart": 0},
+            {"stage": "pr_checks", "exit_subtype": "passed", "was_limit_restart": 0},
+            {"stage": "merge", "exit_subtype": "merged", "was_limit_restart": 0},
+        ]
+        result = build_pipeline_state(runs, "completed")
+        assert result[2]["name"] == "fix"
+        assert result[2]["status"] == "completed"  # skipped but should show completed
+        assert result[2]["iteration_count"] == 0
+
+    def test_stage_names_match_canonical_order(self):
+        result = build_pipeline_state([], None)
+        names = [s["name"] for s in result]
+        assert names == ["implement", "review", "fix", "pr_checks", "merge"]
+
+
+class TestTaskDetailPipeline:
+    def test_stepper_renders_on_task_page(self, client):
+        resp = client.get("/task/1")
+        assert resp.status_code == 200
+        body = resp.text
+        assert "pipeline-stepper" in body
+        assert "pipeline-node" in body
+
+    def test_stepper_shows_stage_labels(self, client):
+        resp = client.get("/task/1")
+        body = resp.text
+        assert "implement" in body
+        assert "review" in body
+        assert "pr checks" in body
+        assert "merge" in body
+
+    def test_stepper_not_shown_for_missing_task(self, client):
+        resp = client.get("/task/9999")
+        assert resp.status_code == 200
+        body = resp.text
+        # The CSS class exists in <style>, but the actual stepper div should not render
+        assert 'class="pipeline-stepper"' not in body

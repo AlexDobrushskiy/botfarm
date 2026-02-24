@@ -38,11 +38,70 @@ from botfarm.db import (
     get_task_history,
     init_db,
 )
+from botfarm.worker import STAGES
 from botfarm.usage import refresh_usage_snapshot
 
 logger = logging.getLogger(__name__)
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
+
+
+def build_pipeline_state(
+    stage_runs: list[dict], task_status: str | None,
+) -> list[dict]:
+    """Aggregate stage runs into per-stage pipeline state for the stepper.
+
+    Returns a list of dicts (one per canonical stage) with keys:
+        name, status, iteration_count, has_limit_restart
+    """
+    # Collect info per stage
+    stage_info: dict[str, dict] = {}
+    for run in stage_runs:
+        name = run["stage"]
+        if name not in stage_info:
+            stage_info[name] = {
+                "count": 0,
+                "has_limit_restart": False,
+            }
+        info = stage_info[name]
+        info["count"] += 1
+        if run.get("was_limit_restart"):
+            info["has_limit_restart"] = True
+
+    # Find the last stage that has runs (by canonical order)
+    last_run_idx = -1
+    for i, stage_name in enumerate(STAGES):
+        if stage_name in stage_info:
+            last_run_idx = i
+
+    result = []
+    for i, stage_name in enumerate(STAGES):
+        info = stage_info.get(stage_name)
+        if info is None:
+            # No runs for this stage — but may have been skipped
+            status = "completed" if i < last_run_idx else "pending"
+        elif i < last_run_idx:
+            # A later stage has runs, so this one completed
+            status = "completed"
+        elif i == last_run_idx:
+            # This is the last stage with runs — depends on task status
+            if task_status == "completed":
+                status = "completed"
+            elif task_status == "failed":
+                status = "failed"
+            else:
+                status = "active"
+        else:
+            status = "pending"
+
+        result.append({
+            "name": stage_name,
+            "status": status,
+            "iteration_count": info["count"] if info else 0,
+            "has_limit_restart": info["has_limit_restart"] if info else False,
+        })
+
+    return result
 
 
 def create_app(
@@ -397,6 +456,7 @@ def create_app(
         task = None
         stages: list[dict] = []
         events: list[dict] = []
+        pipeline: list[dict] = []
         conn = _get_db()
         if conn:
             try:
@@ -409,6 +469,9 @@ def create_app(
                     )]
                     # Events come newest-first from DB; reverse for chronological display
                     events.reverse()
+                    pipeline = build_pipeline_state(
+                        stages, task.get("status"),
+                    )
             finally:
                 conn.close()
         return templates.TemplateResponse("task_detail.html", {
@@ -416,6 +479,7 @@ def create_app(
             "task": task,
             "stages": stages,
             "events": events,
+            "pipeline": pipeline,
             "linear_url": _linear_url,
             "format_duration": _format_duration,
         })
