@@ -7,11 +7,18 @@ import pytest
 import yaml
 
 from botfarm.config import (
+    AgentsConfig,
     BotfarmConfig,
     ConfigError,
+    LinearConfig,
+    ProjectConfig,
+    UsageLimitsConfig,
+    apply_config_updates,
     create_default_config,
     expand_env_vars,
     load_config,
+    validate_config_updates,
+    write_config_updates,
 )
 
 
@@ -613,3 +620,234 @@ def test_cli_init_already_exists(tmp_path):
     result = runner.invoke(main, ["init", "--path", str(config_path)])
     assert result.exit_code == 0
     assert "already exists" in result.output
+
+
+# --- source_path ---
+
+
+def test_load_config_sets_source_path(tmp_path):
+    config_path = _write_config(tmp_path, MINIMAL_CONFIG)
+    config = load_config(config_path)
+    assert config.source_path == str(config_path)
+
+
+# --- validate_config_updates ---
+
+
+class TestValidateConfigUpdates:
+    def test_valid_linear_updates(self):
+        updates = {
+            "linear": {
+                "poll_interval_seconds": 60,
+                "comment_on_failure": False,
+            },
+        }
+        assert validate_config_updates(updates) == []
+
+    def test_valid_usage_limits_updates(self):
+        updates = {
+            "usage_limits": {
+                "pause_five_hour_threshold": 0.75,
+                "pause_seven_day_threshold": 0.80,
+            },
+        }
+        assert validate_config_updates(updates) == []
+
+    def test_valid_agents_updates(self):
+        updates = {
+            "agents": {
+                "max_review_iterations": 5,
+                "max_ci_retries": 0,
+                "timeout_minutes": {"implement": 90, "review": 15},
+                "timeout_grace_seconds": 30,
+            },
+        }
+        assert validate_config_updates(updates) == []
+
+    def test_non_editable_field_rejected(self):
+        updates = {"linear": {"api_key": "new-key"}}
+        errors = validate_config_updates(updates)
+        assert any("not an editable field" in e for e in errors)
+
+    def test_unknown_section_field_rejected(self):
+        updates = {"database": {"path": "/tmp/db"}}
+        errors = validate_config_updates(updates)
+        assert len(errors) > 0
+
+    def test_section_not_mapping(self):
+        updates = {"linear": "not a dict"}
+        errors = validate_config_updates(updates)
+        assert any("must be a mapping" in e for e in errors)
+
+    def test_poll_interval_too_low(self):
+        updates = {"linear": {"poll_interval_seconds": 0}}
+        errors = validate_config_updates(updates)
+        assert any("at least 1" in e for e in errors)
+
+    def test_bool_field_rejects_string(self):
+        updates = {"linear": {"comment_on_failure": "true"}}
+        errors = validate_config_updates(updates)
+        assert any("boolean" in e for e in errors)
+
+    def test_int_field_rejects_bool(self):
+        updates = {"linear": {"poll_interval_seconds": True}}
+        errors = validate_config_updates(updates)
+        assert any("integer" in e for e in errors)
+
+    def test_float_out_of_range(self):
+        updates = {"usage_limits": {"pause_five_hour_threshold": 1.5}}
+        errors = validate_config_updates(updates)
+        assert any("at most 1.0" in e for e in errors)
+
+    def test_float_negative(self):
+        updates = {"usage_limits": {"pause_five_hour_threshold": -0.1}}
+        errors = validate_config_updates(updates)
+        assert any("at least 0.0" in e for e in errors)
+
+    def test_timeout_unknown_stage(self):
+        updates = {"agents": {"timeout_minutes": {"bogus": 60}}}
+        errors = validate_config_updates(updates)
+        assert any("unknown stage" in e for e in errors)
+
+    def test_timeout_minutes_too_low(self):
+        updates = {"agents": {"timeout_minutes": {"implement": 0}}}
+        errors = validate_config_updates(updates)
+        assert any("at least 1" in e for e in errors)
+
+    def test_timeout_minutes_not_dict(self):
+        updates = {"agents": {"timeout_minutes": 60}}
+        errors = validate_config_updates(updates)
+        assert any("mapping" in e for e in errors)
+
+    def test_max_review_iterations_too_low(self):
+        updates = {"agents": {"max_review_iterations": 0}}
+        errors = validate_config_updates(updates)
+        assert any("at least 1" in e for e in errors)
+
+    def test_max_ci_retries_negative(self):
+        updates = {"agents": {"max_ci_retries": -1}}
+        errors = validate_config_updates(updates)
+        assert any("at least 0" in e for e in errors)
+
+    def test_int_accepts_zero_for_retries(self):
+        updates = {"agents": {"max_ci_retries": 0}}
+        assert validate_config_updates(updates) == []
+
+    def test_float_accepts_int_value(self):
+        updates = {"usage_limits": {"pause_five_hour_threshold": 1}}
+        assert validate_config_updates(updates) == []
+
+
+# --- apply_config_updates ---
+
+
+class TestApplyConfigUpdates:
+    def _make_config(self):
+        return BotfarmConfig(
+            projects=[
+                ProjectConfig(
+                    name="test", linear_team="T", base_dir="~/t",
+                    worktree_prefix="t-", slots=[1],
+                ),
+            ],
+        )
+
+    def test_apply_linear_updates(self):
+        config = self._make_config()
+        apply_config_updates(config, {
+            "linear": {"poll_interval_seconds": 60, "comment_on_failure": False},
+        })
+        assert config.linear.poll_interval_seconds == 60
+        assert config.linear.comment_on_failure is False
+
+    def test_apply_usage_limits(self):
+        config = self._make_config()
+        apply_config_updates(config, {
+            "usage_limits": {"pause_five_hour_threshold": 0.5},
+        })
+        assert config.usage_limits.pause_five_hour_threshold == 0.5
+
+    def test_apply_agents_timeout_merges(self):
+        config = self._make_config()
+        original_fix = config.agents.timeout_minutes.get("fix")
+        apply_config_updates(config, {
+            "agents": {"timeout_minutes": {"implement": 90}},
+        })
+        assert config.agents.timeout_minutes["implement"] == 90
+        # Other stages unchanged
+        assert config.agents.timeout_minutes.get("fix") == original_fix
+
+    def test_apply_coerces_float(self):
+        config = self._make_config()
+        apply_config_updates(config, {
+            "usage_limits": {"pause_five_hour_threshold": 1},
+        })
+        assert isinstance(config.usage_limits.pause_five_hour_threshold, float)
+
+    def test_apply_unknown_section_ignored(self):
+        config = self._make_config()
+        apply_config_updates(config, {"unknown": {"key": "value"}})
+        # No error, config unchanged
+
+
+# --- write_config_updates ---
+
+
+class TestWriteConfigUpdates:
+    def test_basic_write(self, tmp_path):
+        config_path = _write_config(tmp_path, MINIMAL_CONFIG)
+        write_config_updates(config_path, {
+            "linear": {"poll_interval_seconds": 60},
+        })
+        data = yaml.safe_load(config_path.read_text())
+        assert data["linear"]["poll_interval_seconds"] == 60
+
+    def test_preserves_env_var_refs(self, tmp_path):
+        """Env var references like ${API_KEY} must survive write-back."""
+        raw_config = {
+            **MINIMAL_CONFIG,
+            "linear": {"api_key": "${LINEAR_API_KEY}", "poll_interval_seconds": 120},
+        }
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.dump(raw_config, sort_keys=False))
+
+        write_config_updates(config_path, {
+            "linear": {"poll_interval_seconds": 60},
+        })
+
+        data = yaml.safe_load(config_path.read_text())
+        assert data["linear"]["api_key"] == "${LINEAR_API_KEY}"
+        assert data["linear"]["poll_interval_seconds"] == 60
+
+    def test_timeout_minutes_merges(self, tmp_path):
+        data = {
+            **MINIMAL_CONFIG,
+            "agents": {"timeout_minutes": {"implement": 120, "review": 30}},
+        }
+        config_path = _write_config(tmp_path, data)
+        write_config_updates(config_path, {
+            "agents": {"timeout_minutes": {"implement": 90}},
+        })
+        result = yaml.safe_load(config_path.read_text())
+        assert result["agents"]["timeout_minutes"]["implement"] == 90
+        assert result["agents"]["timeout_minutes"]["review"] == 30
+
+    def test_creates_section_if_missing(self, tmp_path):
+        config_path = _write_config(tmp_path, MINIMAL_CONFIG)
+        write_config_updates(config_path, {
+            "agents": {"max_ci_retries": 5},
+        })
+        data = yaml.safe_load(config_path.read_text())
+        assert data["agents"]["max_ci_retries"] == 5
+
+    def test_atomic_write_no_corruption(self, tmp_path):
+        """File should be fully valid YAML after write."""
+        config_path = _write_config(tmp_path, MINIMAL_CONFIG)
+        write_config_updates(config_path, {
+            "linear": {"poll_interval_seconds": 60},
+            "agents": {"max_review_iterations": 5},
+        })
+        # Should parse without error
+        data = yaml.safe_load(config_path.read_text())
+        assert data["linear"]["poll_interval_seconds"] == 60
+        assert data["agents"]["max_review_iterations"] == 5

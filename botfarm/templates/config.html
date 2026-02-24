@@ -1,0 +1,191 @@
+{% extends "base.html" %}
+{% set active_page = "config" %}
+{% block title %}Config - Botfarm{% endblock %}
+{% block content %}
+<style>
+    .config-feedback {
+        padding: 0.75rem 1rem;
+        border-radius: var(--pico-border-radius);
+        margin-bottom: 1rem;
+    }
+    .config-feedback.success {
+        background: rgba(34, 197, 94, 0.15);
+        color: var(--pico-ins-color);
+    }
+    .config-feedback.error {
+        background: rgba(239, 68, 68, 0.15);
+        color: var(--pico-del-color);
+    }
+    .config-feedback.warning {
+        background: rgba(245, 158, 11, 0.15);
+        color: var(--pico-color-yellow-500, #eab308);
+    }
+    .config-feedback ul { margin: 0.25rem 0 0 1.25rem; padding: 0; }
+    .config-section { margin-bottom: 2rem; }
+    .config-section fieldset { margin-bottom: 0; }
+</style>
+
+<h1>Runtime Config</h1>
+
+{% if not config_enabled %}
+<p>Config editing is not available (no config object provided).</p>
+{% else %}
+
+<p>These settings take effect immediately without restarting the supervisor.</p>
+
+{# --- Linear section --- #}
+<section class="config-section">
+    <h2>Linear</h2>
+    <div id="feedback-linear"></div>
+    <form onsubmit="return saveSection(event, 'linear')">
+        <label for="linear-poll_interval_seconds">
+            Poll interval (seconds)
+            <input type="number" id="linear-poll_interval_seconds" name="poll_interval_seconds"
+                   value="{{ config_values.linear.poll_interval_seconds }}" min="1" required>
+        </label>
+        <fieldset>
+            <label>
+                <input type="checkbox" id="linear-comment_on_failure" name="comment_on_failure" role="switch"
+                       {% if config_values.linear.comment_on_failure %}checked{% endif %}>
+                Comment on failure
+            </label>
+            <label>
+                <input type="checkbox" id="linear-comment_on_completion" name="comment_on_completion" role="switch"
+                       {% if config_values.linear.comment_on_completion %}checked{% endif %}>
+                Comment on completion
+            </label>
+            <label>
+                <input type="checkbox" id="linear-comment_on_limit_pause" name="comment_on_limit_pause" role="switch"
+                       {% if config_values.linear.comment_on_limit_pause %}checked{% endif %}>
+                Comment on limit pause
+            </label>
+        </fieldset>
+        <button type="submit">Save Linear Settings</button>
+    </form>
+</section>
+
+{# --- Usage Limits section --- #}
+<section class="config-section">
+    <h2>Usage Limits</h2>
+    <div id="feedback-usage_limits"></div>
+    <form onsubmit="return saveSection(event, 'usage_limits')">
+        <div class="grid">
+            <label for="usage_limits-pause_five_hour_threshold">
+                5-hour pause threshold
+                <input type="number" id="usage_limits-pause_five_hour_threshold" name="pause_five_hour_threshold"
+                       value="{{ config_values.usage_limits.pause_five_hour_threshold }}"
+                       min="0" max="1" step="0.01" required>
+            </label>
+            <label for="usage_limits-pause_seven_day_threshold">
+                7-day pause threshold
+                <input type="number" id="usage_limits-pause_seven_day_threshold" name="pause_seven_day_threshold"
+                       value="{{ config_values.usage_limits.pause_seven_day_threshold }}"
+                       min="0" max="1" step="0.01" required>
+            </label>
+        </div>
+        <button type="submit">Save Usage Limits</button>
+    </form>
+</section>
+
+{# --- Agents section --- #}
+<section class="config-section">
+    <h2>Agents</h2>
+    <div id="feedback-agents"></div>
+    <form onsubmit="return saveSection(event, 'agents')">
+        <div class="grid">
+            <label for="agents-max_review_iterations">
+                Max review iterations
+                <input type="number" id="agents-max_review_iterations" name="max_review_iterations"
+                       value="{{ config_values.agents.max_review_iterations }}" min="1" required>
+            </label>
+            <label for="agents-max_ci_retries">
+                Max CI retries
+                <input type="number" id="agents-max_ci_retries" name="max_ci_retries"
+                       value="{{ config_values.agents.max_ci_retries }}" min="0" required>
+            </label>
+            <label for="agents-timeout_grace_seconds">
+                Timeout grace (seconds)
+                <input type="number" id="agents-timeout_grace_seconds" name="timeout_grace_seconds"
+                       value="{{ config_values.agents.timeout_grace_seconds }}" min="0" required>
+            </label>
+        </div>
+
+        <h3>Timeout Minutes per Stage</h3>
+        <div class="grid">
+            {% for stage, minutes in config_values.agents.timeout_minutes.items() %}
+            <label for="agents-timeout-{{ stage }}">
+                {{ stage }}
+                <input type="number" id="agents-timeout-{{ stage }}" name="timeout_minutes.{{ stage }}"
+                       value="{{ minutes }}" min="1" required>
+            </label>
+            {% endfor %}
+        </div>
+        <button type="submit">Save Agent Settings</button>
+    </form>
+</section>
+
+<script>
+function saveSection(event, section) {
+    event.preventDefault();
+    var form = event.target;
+    var feedbackEl = document.getElementById("feedback-" + section);
+    var payload = {};
+    payload[section] = {};
+
+    var inputs = form.querySelectorAll("input");
+    for (var i = 0; i < inputs.length; i++) {
+        var input = inputs[i];
+        var name = input.name;
+        var value;
+
+        if (input.type === "checkbox") {
+            value = input.checked;
+        } else if (input.type === "number") {
+            if (input.step && parseFloat(input.step) < 1) {
+                value = parseFloat(input.value);
+            } else {
+                value = parseInt(input.value, 10);
+            }
+        } else {
+            value = input.value;
+        }
+
+        if (name.startsWith("timeout_minutes.")) {
+            var stage = name.split(".")[1];
+            if (!payload[section]["timeout_minutes"]) {
+                payload[section]["timeout_minutes"] = {};
+            }
+            payload[section]["timeout_minutes"][stage] = value;
+        } else {
+            payload[section][name] = value;
+        }
+    }
+
+    feedbackEl.innerHTML = "";
+    var btn = form.querySelector("button[type=submit]");
+    btn.setAttribute("aria-busy", "true");
+
+    fetch("/config", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(payload)
+    })
+    .then(function(resp) { return resp.text().then(function(html) { return {ok: resp.ok, html: html}; }); })
+    .then(function(result) {
+        feedbackEl.innerHTML = result.html;
+        btn.removeAttribute("aria-busy");
+        if (result.ok) {
+            setTimeout(function() { feedbackEl.innerHTML = ""; }, 3000);
+        }
+    })
+    .catch(function() {
+        feedbackEl.innerHTML = '<div class="config-feedback error" role="alert">Network error.</div>';
+        btn.removeAttribute("aria-busy");
+    });
+
+    return false;
+}
+</script>
+
+{% endif %}
+{% endblock %}
