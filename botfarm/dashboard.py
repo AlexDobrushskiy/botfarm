@@ -545,6 +545,83 @@ def create_app(
             "format_duration": _format_duration,
         })
 
+    # --- Read-only config view ---
+
+    def _mask_secret(value: str) -> str:
+        """Mask a secret string, showing first 4 + last 4 chars."""
+        if not value:
+            return ""
+        if len(value) <= 8:
+            return "****"
+        return value[:4] + "****" + value[-4:]
+
+    def _full_config_values() -> dict:
+        """Extract the full running config as a nested dict for display."""
+        cfg = app.state.botfarm_config
+        if cfg is None:
+            return {}
+        return {
+            "projects": [
+                {
+                    "name": p.name,
+                    "linear_team": p.linear_team,
+                    "linear_project": p.linear_project,
+                    "base_dir": p.base_dir,
+                    "worktree_prefix": p.worktree_prefix,
+                    "slots": list(p.slots),
+                }
+                for p in cfg.projects
+            ],
+            "linear": {
+                "api_key": _mask_secret(cfg.linear.api_key),
+                "workspace": cfg.linear.workspace,
+                "poll_interval_seconds": cfg.linear.poll_interval_seconds,
+                "exclude_tags": list(cfg.linear.exclude_tags),
+                "todo_status": cfg.linear.todo_status,
+                "in_progress_status": cfg.linear.in_progress_status,
+                "done_status": cfg.linear.done_status,
+                "in_review_status": cfg.linear.in_review_status,
+                "failed_status": cfg.linear.failed_status,
+                "comment_on_failure": cfg.linear.comment_on_failure,
+                "comment_on_completion": cfg.linear.comment_on_completion,
+                "comment_on_limit_pause": cfg.linear.comment_on_limit_pause,
+            },
+            "agents": {
+                "max_review_iterations": cfg.agents.max_review_iterations,
+                "max_ci_retries": cfg.agents.max_ci_retries,
+                "timeout_minutes": dict(cfg.agents.timeout_minutes),
+                "timeout_grace_seconds": cfg.agents.timeout_grace_seconds,
+            },
+            "usage_limits": {
+                "pause_five_hour_threshold": cfg.usage_limits.pause_five_hour_threshold,
+                "pause_seven_day_threshold": cfg.usage_limits.pause_seven_day_threshold,
+            },
+            "notifications": {
+                "webhook_url": _mask_secret(cfg.notifications.webhook_url),
+                "webhook_format": cfg.notifications.webhook_format,
+                "rate_limit_seconds": cfg.notifications.rate_limit_seconds,
+            },
+            "dashboard": {
+                "enabled": cfg.dashboard.enabled,
+                "host": cfg.dashboard.host,
+                "port": cfg.dashboard.port,
+            },
+            "database": {
+                "path": cfg.database.path,
+            },
+            "state_file": cfg.state_file,
+        }
+
+    @app.get("/config/view", response_class=HTMLResponse)
+    def config_view_page(request: Request):
+        cfg = app.state.botfarm_config
+        enabled = cfg is not None
+        return templates.TemplateResponse("config_view.html", {
+            "request": request,
+            "config_enabled": enabled,
+            "config_values": _full_config_values(),
+        })
+
     # --- Config editing ---
 
     def _config_values() -> dict:
