@@ -49,6 +49,30 @@
     </article>
 </div>
 
+<!-- Pipeline stepper -->
+{% if pipeline %}
+<div class="pipeline-stepper" role="img" aria-label="Pipeline progress">
+    {% for stage in pipeline %}
+    <div class="pipeline-stage">
+        {% if not loop.first %}
+        <div class="pipeline-connector pipeline-connector-{{ stage.status }}"></div>
+        {% endif %}
+        <div class="pipeline-node pipeline-node-{{ stage.status }}"
+             {% if stage.status == 'active' %}aria-current="step"{% endif %}>
+            {% if stage.status == 'completed' %}&#10003;{% elif stage.status == 'failed' %}&#10005;{% endif %}
+        </div>
+        <div class="pipeline-label">{{ stage.name | replace("_", " ") }}</div>
+        {% if stage.iteration_count > 1 %}
+        <div class="pipeline-badge">&times;{{ stage.iteration_count }}</div>
+        {% endif %}
+        {% if stage.has_limit_restart %}
+        <div class="pipeline-badge pipeline-badge-limit">limit</div>
+        {% endif %}
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
+
 <details open>
     <summary><strong>Task Info</strong></summary>
     <table>
