@@ -66,6 +66,7 @@ def _worker_entry(
     cwd: str,
     db_path: str,
     state_path: str,
+    log_dir: str | None = None,
     result_queue: multiprocessing.Queue,
     max_turns: dict[str, int] | None,
     max_review_iterations: int = 3,
@@ -85,6 +86,11 @@ def _worker_entry(
     # Ignore SIGINT so only the supervisor handles Ctrl-C
     signal.signal(signal.SIGINT, signal.SIG_IGN)
 
+    # Set up per-ticket Python logging to a file so worker log messages
+    # (info, warnings, errors) are captured alongside the subprocess logs.
+    if log_dir:
+        _setup_worker_logging(Path(log_dir))
+
     conn = init_db(db_path)
 
     try:
@@ -96,6 +102,7 @@ def _worker_entry(
             state_path=state_path,
             project=project_name,
             slot_id=slot_id,
+            log_dir=log_dir,
             max_turns=max_turns,
             max_review_iterations=max_review_iterations,
             max_ci_retries=max_ci_retries,
@@ -141,6 +148,29 @@ def _worker_entry(
         ))
     finally:
         conn.close()
+
+
+def _setup_worker_logging(log_dir: Path) -> None:
+    """Configure a file handler for the worker subprocess.
+
+    Writes worker-level Python log messages to ``<log_dir>/worker.log``
+    so they persist alongside the per-stage subprocess logs.
+    """
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / "worker.log"
+
+    fmt = logging.Formatter(
+        "%(asctime)s %(levelname)-8s [%(name)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    handler = logging.FileHandler(str(log_file))
+    handler.setFormatter(fmt)
+    handler.setLevel(logging.DEBUG)
+
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG)
+    root.addHandler(handler)
 
 
 def _check_limit_hit(result: PipelineResult) -> bool:
@@ -1215,6 +1245,10 @@ class Supervisor:
 
         cwd = self._slot_worktree_cwd(project_cfg, slot.slot_id)
 
+        # Create per-ticket log directory (may already exist from prior run)
+        ticket_log_dir = self._log_dir / slot.ticket_id
+        ticket_log_dir.mkdir(parents=True, exist_ok=True)
+
         # Spawn a new worker that resumes from the interrupted stage
         proc = multiprocessing.Process(
             target=_worker_entry,
@@ -1227,6 +1261,7 @@ class Supervisor:
                 "cwd": cwd,
                 "db_path": self._db_path,
                 "state_path": str(self._slot_manager.state_path),
+                "log_dir": str(ticket_log_dir),
                 "result_queue": self._result_queue,
                 "max_turns": None,
                 "max_review_iterations": self._config.agents.max_review_iterations,
@@ -1384,6 +1419,10 @@ class Supervisor:
         )
         self._conn.commit()
 
+        # Create per-ticket log directory
+        ticket_log_dir = self._log_dir / issue.identifier
+        ticket_log_dir.mkdir(parents=True, exist_ok=True)
+
         # Spawn worker subprocess
         proc = multiprocessing.Process(
             target=_worker_entry,
@@ -1396,6 +1435,7 @@ class Supervisor:
                 "cwd": cwd,
                 "db_path": self._db_path,
                 "state_path": str(self._slot_manager.state_path),
+                "log_dir": str(ticket_log_dir),
                 "result_queue": self._result_queue,
                 "max_turns": None,
                 "max_review_iterations": self._config.agents.max_review_iterations,

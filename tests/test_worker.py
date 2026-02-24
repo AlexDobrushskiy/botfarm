@@ -20,6 +20,7 @@ from botfarm.worker import (
     run_claude,
     run_pipeline,
     _extract_pr_url,
+    _make_stage_log_path,
     _parse_pr_url,
     _parse_review_approved,
     _recover_pr_url,
@@ -29,6 +30,7 @@ from botfarm.worker import (
     _run_ci_fix,
     _run_pr_checks,
     _run_merge,
+    _write_subprocess_log,
 )
 
 
@@ -187,6 +189,108 @@ class TestRunClaude:
         with pytest.raises(subprocess.CalledProcessError) as exc_info:
             run_claude("do stuff", cwd=tmp_path, max_turns=10)
         assert exc_info.value.returncode == 1
+
+    @patch("botfarm.worker.subprocess.run")
+    def test_writes_log_file_on_success(self, mock_run, tmp_path):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["claude"],
+            returncode=0,
+            stdout=_make_claude_json(),
+            stderr="some warning",
+        )
+        log_file = tmp_path / "logs" / "test.log"
+        run_claude("do stuff", cwd=tmp_path, max_turns=10, log_file=log_file)
+        assert log_file.exists()
+        content = log_file.read_text()
+        assert "sess-abc" in content  # stdout (JSON) was written
+        assert "some warning" in content  # stderr was written
+
+    @patch("botfarm.worker.subprocess.run")
+    def test_writes_log_file_on_failure(self, mock_run, tmp_path):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["claude"],
+            returncode=1,
+            stdout="partial output",
+            stderr="error occurred",
+        )
+        log_file = tmp_path / "logs" / "test.log"
+        with pytest.raises(subprocess.CalledProcessError):
+            run_claude("do stuff", cwd=tmp_path, max_turns=10, log_file=log_file)
+        # Log file should still be written even when the process fails
+        assert log_file.exists()
+        content = log_file.read_text()
+        assert "partial output" in content
+        assert "error occurred" in content
+
+    @patch("botfarm.worker.subprocess.run")
+    def test_no_log_file_when_none(self, mock_run, tmp_path):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["claude"],
+            returncode=0,
+            stdout=_make_claude_json(),
+            stderr="",
+        )
+        # Should work without log_file (default None)
+        result = run_claude("do stuff", cwd=tmp_path, max_turns=10)
+        assert result.session_id == "sess-abc"
+
+
+# ---------------------------------------------------------------------------
+# _write_subprocess_log / _make_stage_log_path
+# ---------------------------------------------------------------------------
+
+
+class TestWriteSubprocessLog:
+    def test_writes_stdout_and_stderr(self, tmp_path):
+        log_file = tmp_path / "test.log"
+        _write_subprocess_log(log_file, "hello stdout", "hello stderr")
+        content = log_file.read_text()
+        assert "hello stdout" in content
+        assert "hello stderr" in content
+        assert "--- STDERR ---" in content
+
+    def test_creates_parent_dirs(self, tmp_path):
+        log_file = tmp_path / "a" / "b" / "test.log"
+        _write_subprocess_log(log_file, "output", None)
+        assert log_file.exists()
+        content = log_file.read_text()
+        assert "output" in content
+
+    def test_empty_stderr_omits_marker(self, tmp_path):
+        log_file = tmp_path / "test.log"
+        _write_subprocess_log(log_file, "output", None)
+        content = log_file.read_text()
+        assert "output" in content
+        # No stderr section when stderr is None
+        assert "STDERR" not in content
+
+    def test_empty_stdout(self, tmp_path):
+        log_file = tmp_path / "test.log"
+        _write_subprocess_log(log_file, None, "error only")
+        content = log_file.read_text()
+        assert "error only" in content
+
+
+class TestMakeStageLogPath:
+    def test_returns_none_when_no_log_dir(self):
+        assert _make_stage_log_path(None, "implement") is None
+
+    def test_returns_path_with_stage_and_timestamp(self, tmp_path):
+        result = _make_stage_log_path(tmp_path, "implement")
+        assert result is not None
+        assert result.parent == tmp_path
+        assert result.name.startswith("implement-")
+        assert result.suffix == ".log"
+
+    def test_includes_iteration_suffix(self, tmp_path):
+        result = _make_stage_log_path(tmp_path, "review", iteration=2)
+        assert result is not None
+        assert "-iter2-" in result.name
+
+    def test_no_iteration_suffix_for_first(self, tmp_path):
+        result = _make_stage_log_path(tmp_path, "review", iteration=1)
+        assert result is not None
+        assert "iter" not in result.name
 
 
 # ---------------------------------------------------------------------------
@@ -721,6 +825,52 @@ class TestRunPipeline:
         # pr_checks is the 4th call (index 3)
         pr_checks_call = mock_exec.call_args_list[3]
         assert pr_checks_call.kwargs["pr_checks_timeout"] == 300
+
+    @patch("botfarm.worker._execute_stage")
+    def test_log_dir_passed_to_execute_stage(self, mock_exec, conn, task_id, tmp_path):
+        """When log_dir is set, _execute_stage receives a log_file path."""
+        log_dir = tmp_path / "logs" / "SMA-99"
+        log_dir.mkdir(parents=True)
+
+        mock_exec.side_effect = [
+            _mock_stage_result("implement", pr_url=PR_URL, cost=0.5, turns=10),
+            _mock_stage_result("review", review_approved=True),
+            _mock_stage_result("pr_checks"),
+            _mock_stage_result("merge"),
+        ]
+        run_pipeline(
+            ticket_id="SMA-99",
+            task_id=task_id,
+            cwd=tmp_path,
+            conn=conn,
+            log_dir=str(log_dir),
+            max_review_iterations=3,
+        )
+        # Every call to _execute_stage should have a log_file kwarg
+        for call in mock_exec.call_args_list:
+            log_file = call.kwargs.get("log_file")
+            assert log_file is not None
+            assert str(log_dir) in str(log_file)
+            assert log_file.suffix == ".log"
+
+    @patch("botfarm.worker._execute_stage")
+    def test_no_log_dir_passes_none(self, mock_exec, conn, task_id, tmp_path):
+        """When log_dir is not set, _execute_stage receives log_file=None."""
+        mock_exec.side_effect = [
+            _mock_stage_result("implement", pr_url=PR_URL, cost=0.5, turns=10),
+            _mock_stage_result("review", review_approved=True),
+            _mock_stage_result("pr_checks"),
+            _mock_stage_result("merge"),
+        ]
+        run_pipeline(
+            ticket_id="SMA-99",
+            task_id=task_id,
+            cwd=tmp_path,
+            conn=conn,
+            max_review_iterations=3,
+        )
+        for call in mock_exec.call_args_list:
+            assert call.kwargs.get("log_file") is None
 
 
 # ---------------------------------------------------------------------------
