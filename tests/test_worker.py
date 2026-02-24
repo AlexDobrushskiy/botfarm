@@ -63,7 +63,7 @@ def task_id(conn):
 
 @pytest.fixture()
 def slot_manager(tmp_path):
-    mgr = SlotManager(state_path=tmp_path / "state.json")
+    mgr = SlotManager(db_path=tmp_path / "slots.db")
     mgr.register_slot("test-project", 1)
     mgr.assign_ticket(
         "test-project",
@@ -781,12 +781,12 @@ class TestRunPipeline:
         assert slot.pr_url == PR_URL
 
     @patch("botfarm.worker._execute_stage")
-    def test_state_path_updates_stage_in_file(self, mock_exec, conn, task_id, tmp_path):
-        """When state_path is provided, pipeline writes stage to the state file."""
+    def test_db_path_updates_stage_in_db(self, mock_exec, conn, task_id, tmp_path):
+        """When db_path is provided, pipeline writes stage to the database."""
         from botfarm.slots import SlotManager
 
-        state_path = tmp_path / "state.json"
-        mgr = SlotManager(state_path=state_path)
+        db_path = tmp_path / "slots.db"
+        mgr = SlotManager(db_path=db_path)
         mgr.register_slot("test-project", 1)
         mgr.assign_ticket(
             "test-project", 1,
@@ -796,10 +796,14 @@ class TestRunPipeline:
         stages_seen = []
 
         def capture_stage(stage, **kwargs):
-            import json
-            data = json.loads(state_path.read_text())
-            slot_data = data["slots"][0]
-            stages_seen.append(slot_data.get("stage"))
+            import sqlite3 as _sqlite3
+            _conn = _sqlite3.connect(str(db_path))
+            _conn.row_factory = _sqlite3.Row
+            row = _conn.execute(
+                "SELECT stage FROM slots WHERE project='test-project' AND slot_id=1"
+            ).fetchone()
+            stages_seen.append(row["stage"] if row else None)
+            _conn.close()
             return _mock_stage_result(stage, pr_url=PR_URL if stage == "implement" else None)
 
         mock_exec.side_effect = capture_stage
@@ -809,13 +813,13 @@ class TestRunPipeline:
             task_id=task_id,
             cwd=tmp_path,
             conn=conn,
-            state_path=state_path,
+            db_path=str(db_path),
             project="test-project",
             slot_id=1,
             max_review_iterations=1,
         )
         assert result.success is True
-        # Each stage should have been written to the file before execution
+        # Each stage should have been written to the DB before execution
         assert "implement" in stages_seen
         assert "review" in stages_seen
 

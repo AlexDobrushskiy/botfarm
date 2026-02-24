@@ -65,7 +65,6 @@ def _worker_entry(
     slot_id: int,
     cwd: str,
     db_path: str,
-    state_path: str,
     log_dir: str | None = None,
     result_queue: multiprocessing.Queue,
     max_turns: dict[str, int] | None,
@@ -100,7 +99,7 @@ def _worker_entry(
             task_id=task_id,
             cwd=cwd,
             conn=conn,
-            state_path=state_path,
+            db_path=db_path,
             project=project_name,
             slot_id=slot_id,
             log_dir=log_dir,
@@ -218,19 +217,22 @@ class Supervisor:
             p.project_name: p for p in pollers
         }
 
-        # Slot manager
+        # Database
+        db_path = Path(config.database.path).expanduser()
+        self._db_path = str(db_path)
+        self._conn: sqlite3.Connection = init_db(db_path)
+
+        # Slot manager (shares the supervisor's DB connection; keeps writing
+        # state.json for backward compatibility with the dashboard and CLI)
         self._slot_manager = SlotManager(
+            db_path=self._db_path,
             state_path=config.state_file,
+            conn=self._conn,
         )
         for project in config.projects:
             for sid in project.slots:
                 self._slot_manager.register_slot(project.name, sid)
         self._slot_manager.load()
-
-        # Database
-        db_path = Path(config.database.path).expanduser()
-        self._db_path = str(db_path)
-        self._conn: sqlite3.Connection = init_db(db_path)
 
         # Usage poller
         self._usage_poller = UsagePoller()
@@ -1290,7 +1292,6 @@ class Supervisor:
                 "slot_id": slot.slot_id,
                 "cwd": cwd,
                 "db_path": self._db_path,
-                "state_path": str(self._slot_manager.state_path),
                 "log_dir": str(ticket_log_dir),
                 "result_queue": self._result_queue,
                 "max_turns": None,
@@ -1486,7 +1487,6 @@ class Supervisor:
                 "slot_id": slot.slot_id,
                 "cwd": cwd,
                 "db_path": self._db_path,
-                "state_path": str(self._slot_manager.state_path),
                 "log_dir": str(ticket_log_dir),
                 "result_queue": self._result_queue,
                 "max_turns": None,

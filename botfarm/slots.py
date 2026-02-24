@@ -2,6 +2,11 @@
 
 Slots are the core resource — the supervisor tracks which slots are free,
 busy, paused, or failed. Each slot is bound to a specific project (worktree).
+
+Runtime state is persisted to the SQLite database (``slots`` and
+``dispatch_state`` tables). An optional ``state_path`` can be provided
+for backward-compatible JSON writes so that the dashboard and CLI
+continue to work until they are migrated to read from the DB directly.
 """
 
 from __future__ import annotations
@@ -9,10 +14,18 @@ from __future__ import annotations
 import json
 import logging
 import os
-import tempfile
+import sqlite3
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+
+from botfarm.db import (
+    init_db,
+    load_all_slots,
+    load_dispatch_state,
+    save_dispatch_state,
+    upsert_slot,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +69,31 @@ class SlotState:
         filtered = {k: v for k, v in data.items() if k in known}
         return cls(**filtered)
 
+    @classmethod
+    def from_db_row(cls, row: sqlite3.Row) -> SlotState:
+        """Reconstruct a SlotState from a database row."""
+        stages_raw = row["stages_completed"]
+        stages = json.loads(stages_raw) if stages_raw else []
+        return cls(
+            project=row["project"],
+            slot_id=row["slot_id"],
+            status=row["status"],
+            ticket_id=row["ticket_id"],
+            ticket_title=row["ticket_title"],
+            branch=row["branch"],
+            pr_url=row["pr_url"],
+            stage=row["stage"],
+            stage_iteration=row["stage_iteration"],
+            current_session_id=row["current_session_id"],
+            started_at=row["started_at"],
+            stage_started_at=row["stage_started_at"],
+            sigterm_sent_at=row["sigterm_sent_at"],
+            pid=row["pid"],
+            interrupted_by_limit=bool(row["interrupted_by_limit"]),
+            resume_after=row["resume_after"],
+            stages_completed=stages,
+        )
+
 
 def _is_pid_alive(pid: int) -> bool:
     """Check whether a process with the given PID is still running."""
@@ -70,19 +108,40 @@ class SlotManager:
     """Manages slot lifecycle, state transitions, and persistence.
 
     Each slot is identified by (project_name, slot_id). The manager
-    persists state to a JSON file after every mutation so the supervisor
-    can recover from crashes.
+    persists state to the SQLite database after every mutation so the
+    supervisor can recover from crashes.
+
+    An optional ``state_path`` enables backward-compatible JSON writes
+    so that the dashboard and CLI continue to work during the migration
+    period.
     """
 
-    def __init__(self, state_path: str | Path = DEFAULT_STATE_PATH) -> None:
-        self._state_path = Path(state_path).expanduser()
+    def __init__(
+        self,
+        db_path: str | Path,
+        state_path: str | Path | None = None,
+        conn: sqlite3.Connection | None = None,
+    ) -> None:
+        self._db_path = Path(db_path).expanduser()
+        if conn is not None:
+            self._conn = conn
+        else:
+            self._conn = init_db(self._db_path)
+        self._state_path: Path | None = (
+            Path(state_path).expanduser() if state_path else None
+        )
         self._slots: dict[tuple[str, int], SlotState] = {}
         self._usage: dict | None = None
         self._dispatch_paused: bool = False
         self._dispatch_pause_reason: str | None = None
 
     @property
-    def state_path(self) -> Path:
+    def db_path(self) -> Path:
+        return self._db_path
+
+    @property
+    def state_path(self) -> Path | None:
+        """Backward-compat JSON path (may be None)."""
         return self._state_path
 
     @property
@@ -268,48 +327,52 @@ class SlotManager:
     # ------------------------------------------------------------------
 
     def save(self) -> None:
-        """Persist current state to disk (public API for explicit saves)."""
+        """Persist current state to DB (public API for explicit saves)."""
         self._save()
 
     def refresh_stages_from_disk(self) -> None:
-        """Read the state file and merge worker-written stage fields.
+        """Read the database and merge worker-written stage fields.
 
-        Worker subprocesses update stage fields directly in the state
-        file via ``update_slot_stage``.  The supervisor should call
-        this periodically (e.g. at the start of each tick) so that
-        in-memory state reflects worker progress before any writes.
+        Worker subprocesses update stage fields directly in the database
+        via ``update_slot_stage``.  The supervisor should call this
+        periodically (e.g. at the start of each tick) so that in-memory
+        state reflects worker progress before any writes.
         Only busy slots are refreshed.
         """
-        if not self._state_path.exists():
-            return
-
-        try:
-            raw = self._state_path.read_text()
-            data = json.loads(raw)
-        except (json.JSONDecodeError, OSError):
-            return
-
-        slot_list = data.get("slots", []) if isinstance(data, dict) else data
-        disk_map: dict[tuple[str, int], dict] = {}
-        for entry in slot_list:
-            if isinstance(entry, dict):
-                key = (entry.get("project"), entry.get("slot_id"))
-                disk_map[key] = entry
+        rows = load_all_slots(self._conn)
+        row_map: dict[tuple[str, int], sqlite3.Row] = {}
+        for row in rows:
+            row_map[(row["project"], row["slot_id"])] = row
 
         stage_fields = ("stage", "stage_iteration", "stage_started_at", "current_session_id")
         for key, slot in self._slots.items():
             if slot.status != "busy":
                 continue
-            disk_entry = disk_map.get(key)
-            if not disk_entry:
+            db_row = row_map.get(key)
+            if not db_row:
                 continue
-            for field in stage_fields:
-                disk_val = disk_entry.get(field)
-                if disk_val is not None:
-                    setattr(slot, field, disk_val)
+            for fld in stage_fields:
+                db_val = db_row[fld]
+                if db_val is not None:
+                    setattr(slot, fld, db_val)
 
     def _save(self) -> None:
-        """Write state.json atomically (write-then-rename)."""
+        """Persist slot and dispatch state to the database."""
+        for slot in self._slots.values():
+            upsert_slot(self._conn, slot.to_dict())
+        save_dispatch_state(
+            self._conn,
+            paused=self._dispatch_paused,
+            reason=self._dispatch_pause_reason,
+        )
+        self._conn.commit()
+
+        # Backward compat: also write state.json for dashboard/CLI
+        if self._state_path:
+            self._write_state_json()
+
+    def _write_state_json(self) -> None:
+        """Write state.json for backward compatibility with dashboard/CLI."""
         self._state_path.parent.mkdir(parents=True, exist_ok=True)
         payload: dict = {
             "slots": [s.to_dict() for s in self._slots.values()],
@@ -325,11 +388,36 @@ class SlotManager:
         tmp_path.replace(self._state_path)
 
     def load(self) -> None:
-        """Load state from disk if it exists. Merges with registered slots."""
-        if not self._state_path.exists():
-            logger.info("No state file found at %s — starting fresh", self._state_path)
+        """Load state from DB if it exists. Falls back to state.json migration."""
+        # Try loading from database first
+        rows = load_all_slots(self._conn)
+        if rows:
+            self._load_from_db(rows)
             return
 
+        # DB is empty — check for state.json to auto-migrate
+        if self._state_path and self._state_path.exists():
+            logger.info(
+                "Migrating slot state from %s to database", self._state_path,
+            )
+            self._migrate_from_state_json()
+            return
+
+        logger.info("No existing state found — starting fresh")
+
+    def _load_from_db(self, rows: list[sqlite3.Row]) -> None:
+        """Populate in-memory slots from database rows."""
+        for row in rows:
+            key = (row["project"], row["slot_id"])
+            if key in self._slots:
+                self._slots[key] = SlotState.from_db_row(row)
+
+        paused, reason = load_dispatch_state(self._conn)
+        self._dispatch_paused = paused
+        self._dispatch_pause_reason = reason
+
+    def _migrate_from_state_json(self) -> None:
+        """One-time migration: read state.json, populate DB, then proceed."""
         try:
             raw = self._state_path.read_text()
             data = json.loads(raw)
@@ -358,8 +446,11 @@ class SlotManager:
                 continue
             key = (project, slot_id)
             if key in self._slots:
-                # Overwrite the registered placeholder with persisted state
                 self._slots[key] = SlotState.from_dict(entry)
+
+        # Persist migrated state to DB
+        self._save()
+        logger.info("Migration from state.json to database complete")
 
     def reconcile(self) -> list[str]:
         """Check persisted state against reality after a restart.
@@ -395,7 +486,7 @@ class SlotManager:
     # ------------------------------------------------------------------
 
     def set_usage(self, usage: dict) -> None:
-        """Store current usage data (written to state.json on next save)."""
+        """Store current usage data (written to state.json for dashboard compat)."""
         self._usage = usage
         self._save()
 
@@ -447,7 +538,7 @@ def _now_iso() -> str:
 
 
 def update_slot_stage(
-    state_path: str | Path,
+    db_path: str | Path,
     project: str,
     slot_id: int,
     *,
@@ -455,53 +546,38 @@ def update_slot_stage(
     iteration: int = 1,
     session_id: str | None = None,
 ) -> None:
-    """Update the stage field of a specific slot directly in the state file.
+    """Update the stage fields of a specific slot directly in the database.
 
     This is designed for use by worker subprocesses that don't have access
-    to the full SlotManager. It reads the state file, updates only the
-    matching slot's stage fields, and writes it back atomically.
+    to the full SlotManager. It opens its own DB connection for safe
+    concurrent access via WAL mode.
     """
-    path = Path(state_path)
+    path = Path(db_path).expanduser()
     if not path.exists():
-        logger.warning("State file %s does not exist — skipping stage update", path)
+        logger.warning("Database %s does not exist — skipping stage update", path)
         return
 
+    now = _now_iso()
     try:
-        raw = path.read_text()
-        data = json.loads(raw)
-    except (json.JSONDecodeError, OSError) as exc:
-        logger.warning("Failed to read state file for stage update: %s", exc)
-        return
-
-    slot_list = data.get("slots", []) if isinstance(data, dict) else data
-    updated = False
-    for entry in slot_list:
-        if (
-            isinstance(entry, dict)
-            and entry.get("project") == project
-            and entry.get("slot_id") == slot_id
-        ):
-            entry["stage"] = stage
-            entry["stage_iteration"] = iteration
-            entry["stage_started_at"] = _now_iso()
+        conn = sqlite3.connect(str(path))
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
             if session_id is not None:
-                entry["current_session_id"] = session_id
-            updated = True
-            break
-
-    if not updated:
-        logger.warning(
-            "Slot (%s, %d) not found in state file — skipping stage update",
-            project, slot_id,
-        )
-        return
-
-    fd, tmp_name = tempfile.mkstemp(dir=path.parent, suffix=".tmp.worker")
-    try:
-        with os.fdopen(fd, "w") as f:
-            json.dump(data, f, indent=2)
-            f.write("\n")
-        Path(tmp_name).replace(path)
-    except BaseException:
-        Path(tmp_name).unlink(missing_ok=True)
-        raise
+                conn.execute(
+                    """UPDATE slots SET stage=?, stage_iteration=?, stage_started_at=?,
+                       current_session_id=?, updated_at=?
+                       WHERE project=? AND slot_id=?""",
+                    (stage, iteration, now, session_id, now, project, slot_id),
+                )
+            else:
+                conn.execute(
+                    """UPDATE slots SET stage=?, stage_iteration=?, stage_started_at=?,
+                       updated_at=?
+                       WHERE project=? AND slot_id=?""",
+                    (stage, iteration, now, now, project, slot_id),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        logger.warning("Failed to update slot stage in database: %s", exc)
