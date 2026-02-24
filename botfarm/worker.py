@@ -1021,25 +1021,42 @@ def _parse_pr_url(pr_url: str) -> tuple[str, str, str]:
 def _parse_review_approved(text: str) -> bool:
     """Determine whether a review result indicates approval or changes requested.
 
-    First checks for structured verdict markers (``VERDICT: APPROVED`` or
-    ``VERDICT: CHANGES_REQUESTED``) anywhere in the last 500 characters.
-    Falls back to heuristic keyword matching if no marker is found.
+    Searches the **entire** ``text`` for structured verdict markers
+    (``VERDICT: APPROVED`` or ``VERDICT: CHANGES_REQUESTED``) using a
+    case-insensitive regex.  Falls back to ``gh pr review`` command
+    detection, then keyword heuristics on the last 500 characters.
 
     Returns ``True`` if the review text signals approval, ``False`` if
     changes are requested, and ``False`` as a conservative default when
     the signal is ambiguous.
     """
-    tail = text[-500:]
-    # Structured verdict marker — strongest signal
-    verdict_match = re.search(r"VERDICT:\s*(APPROVED|CHANGES_REQUESTED)", tail)
-    if verdict_match:
-        return verdict_match.group(1) == "APPROVED"
+    # 1. Structured verdict marker — strongest signal, full text, case-insensitive.
+    #    Use findall + last match so early occurrences (e.g. quoted from test code
+    #    the reviewer is discussing) don't shadow the real verdict at the end.
+    verdict_matches = re.findall(
+        r"VERDICT:\s*(APPROVED|CHANGES_REQUESTED)", text, re.IGNORECASE
+    )
+    if verdict_matches:
+        return verdict_matches[-1].upper() == "APPROVED"
 
+    # 2. gh pr review command — search full text, check reject first (conservative)
+    if re.search(r"gh\s+pr\s+review\s+.*--request-changes", text):
+        return False
+    if re.search(r"gh\s+pr\s+review\s+.*--approve", text):
+        return True
+
+    logger.warning(
+        "No VERDICT marker or gh pr review command found; "
+        "falling back to keyword heuristics"
+    )
+
+    # 3. Keyword heuristics on the tail to avoid false positives from
+    #    quoted content earlier in the output.
+    tail = text[-500:]
     lower = tail.lower()
-    # gh pr review --approve is a strong signal
+    # gh --approve/--request-changes without the full command prefix
     if "--approve" in lower:
         return True
-    # Explicit approval phrases
     approve_patterns = [
         "approve the pr",
         "i approve",
