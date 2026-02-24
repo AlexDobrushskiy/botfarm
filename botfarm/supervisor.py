@@ -284,7 +284,7 @@ class Supervisor:
         For each slot that was paused_limit:
           - These will be handled by ``_handle_paused_slots`` in the
             normal tick loop — no special startup action needed.
-        Finally, reconcile SQLite task records with state.json.
+        Finally, reconcile SQLite task records.
         """
         # NOTE: SlotManager.reconcile() (called every tick via _reconcile_workers)
         # also handles dead PIDs for busy/paused slots. After this startup

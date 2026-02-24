@@ -459,100 +459,102 @@ def reset(project, reset_all, force, config_path):
         raise click.ClickException(f"Failed to open database: {exc}") from exc
 
     try:
-        rows = load_all_slots(conn)
-    except sqlite3.OperationalError as exc:
-        conn.close()
-        raise click.ClickException(f"Database query failed: {exc}") from exc
-
-    slot_list = [dict(r) for r in rows]
-
-    if not slot_list:
-        conn.close()
-        click.echo("No slots found in database.")
-        return
-
-    # Check that the project exists if a specific project was given
-    if project and not reset_all:
-        known_projects = {s["project"] for s in slot_list}
-        if project not in known_projects:
-            conn.close()
-            click.echo(
-                f"Project '{project}' not found in database. "
-                f"Known projects: {', '.join(sorted(known_projects)) or '(none)'}"
-            )
-            return
-
-    # Find non-free slots matching the filter
-    targets = []
-    for slot in slot_list:
-        if slot.get("status", "free") == "free":
-            continue
-        if not reset_all and slot.get("project") != project:
-            continue
-        targets.append(slot)
-
-    if not targets:
-        conn.close()
-        scope = "all projects" if reset_all else f"project '{project}'"
-        click.echo(f"All slots already free for {scope}. Nothing to reset.")
-        return
-
-    # Handle live PIDs
-    live_pid_slots = [
-        s for s in targets
-        if s.get("pid") is not None and _is_pid_alive(s["pid"])
-    ]
-
-    if live_pid_slots and not force:
-        click.echo("The following slots have live worker processes:")
-        for s in live_pid_slots:
-            click.echo(
-                f"  ({s.get('project')}, {s.get('slot_id')}) "
-                f"PID {s['pid']} — {s.get('ticket_id', '?')}"
-            )
-        if not click.confirm(
-            "Send SIGTERM to these processes and reset slots?"
-        ):
-            conn.close()
-            click.echo("Aborted.")
-            return
-
-    # Send SIGTERM to live PIDs
-    for s in live_pid_slots:
-        pid = s["pid"]
         try:
-            os.kill(pid, signal.SIGTERM)
-            click.echo(f"  Sent SIGTERM to PID {pid}")
-        except OSError:
-            pass  # Process may have exited between check and signal
+            rows = load_all_slots(conn)
+        except sqlite3.OperationalError as exc:
+            raise click.ClickException(
+                f"Database query failed: {exc}"
+            ) from exc
 
-    # Reset slots
-    console = Console()
-    table = Table(title="Reset Slots")
-    table.add_column("Project", style="bold")
-    table.add_column("Slot", justify="right")
-    table.add_column("Previous Status")
-    table.add_column("Ticket")
+        slot_list = [dict(r) for r in rows]
 
-    for slot in targets:
-        prev_status = slot.get("status", "?")
-        ticket = slot.get("ticket_id") or "-"
-        table.add_row(
-            slot.get("project", "?"),
-            str(slot.get("slot_id", "?")),
-            prev_status,
-            ticket,
-        )
-        # Apply free_slot fields and write to DB
-        slot.update(_FREE_SLOT_FIELDS)
-        upsert_slot(conn, slot)
+        if not slot_list:
+            click.echo("No slots found in database.")
+            return
 
-    try:
-        conn.commit()
-    except sqlite3.Error as exc:
-        raise click.ClickException(f"Failed to write database: {exc}") from exc
+        # Check that the project exists if a specific project was given
+        if project and not reset_all:
+            known_projects = {s["project"] for s in slot_list}
+            if project not in known_projects:
+                click.echo(
+                    f"Project '{project}' not found in database. "
+                    f"Known projects: {', '.join(sorted(known_projects)) or '(none)'}"
+                )
+                return
+
+        # Find non-free slots matching the filter
+        targets = []
+        for slot in slot_list:
+            if slot.get("status", "free") == "free":
+                continue
+            if not reset_all and slot.get("project") != project:
+                continue
+            targets.append(slot)
+
+        if not targets:
+            scope = "all projects" if reset_all else f"project '{project}'"
+            click.echo(
+                f"All slots already free for {scope}. Nothing to reset."
+            )
+            return
+
+        # Handle live PIDs
+        live_pid_slots = [
+            s for s in targets
+            if s.get("pid") is not None and _is_pid_alive(s["pid"])
+        ]
+
+        if live_pid_slots and not force:
+            click.echo("The following slots have live worker processes:")
+            for s in live_pid_slots:
+                click.echo(
+                    f"  ({s.get('project')}, {s.get('slot_id')}) "
+                    f"PID {s['pid']} — {s.get('ticket_id', '?')}"
+                )
+            if not click.confirm(
+                "Send SIGTERM to these processes and reset slots?"
+            ):
+                click.echo("Aborted.")
+                return
+
+        # Send SIGTERM to live PIDs
+        for s in live_pid_slots:
+            pid = s["pid"]
+            try:
+                os.kill(pid, signal.SIGTERM)
+                click.echo(f"  Sent SIGTERM to PID {pid}")
+            except OSError:
+                pass  # Process may have exited between check and signal
+
+        # Reset slots
+        console = Console()
+        table = Table(title="Reset Slots")
+        table.add_column("Project", style="bold")
+        table.add_column("Slot", justify="right")
+        table.add_column("Previous Status")
+        table.add_column("Ticket")
+
+        for slot in targets:
+            prev_status = slot.get("status", "?")
+            ticket = slot.get("ticket_id") or "-"
+            table.add_row(
+                slot.get("project", "?"),
+                str(slot.get("slot_id", "?")),
+                prev_status,
+                ticket,
+            )
+            # Apply free_slot fields and write to DB
+            slot.update(_FREE_SLOT_FIELDS)
+            upsert_slot(conn, slot)
+
+        try:
+            conn.commit()
+        except sqlite3.Error as exc:
+            raise click.ClickException(
+                f"Failed to write database: {exc}"
+            ) from exc
+
+        console.print(table)
+        click.echo(f"Reset {len(targets)} slot(s) to free.")
     finally:
         conn.close()
-
-    console.print(table)
-    click.echo(f"Reset {len(targets)} slot(s) to free.")
