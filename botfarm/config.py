@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -145,6 +146,7 @@ class BotfarmConfig:
     agents: AgentsConfig = field(default_factory=AgentsConfig)
     notifications: NotificationsConfig = field(default_factory=NotificationsConfig)
     state_file: str = "~/.botfarm/state.json"
+    source_path: str = ""  # Set by load_config to the source file path
 
 
 class ConfigError(Exception):
@@ -360,4 +362,162 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
     )
 
     _validate_config(config)
+    config.source_path = str(config_path)
     return config
+
+
+# ---------------------------------------------------------------------------
+# Runtime config editing
+# ---------------------------------------------------------------------------
+
+# Fields that can be edited at runtime without a restart.
+# Each key is a tuple path (section, field) with validation metadata.
+EDITABLE_FIELDS: dict[tuple[str, str], dict] = {
+    ("linear", "poll_interval_seconds"): {"type": "int", "min": 1},
+    ("linear", "comment_on_failure"): {"type": "bool"},
+    ("linear", "comment_on_completion"): {"type": "bool"},
+    ("linear", "comment_on_limit_pause"): {"type": "bool"},
+    ("usage_limits", "pause_five_hour_threshold"): {"type": "float", "min": 0.0, "max": 1.0},
+    ("usage_limits", "pause_seven_day_threshold"): {"type": "float", "min": 0.0, "max": 1.0},
+    ("agents", "max_review_iterations"): {"type": "int", "min": 1},
+    ("agents", "max_ci_retries"): {"type": "int", "min": 0},
+    ("agents", "timeout_minutes"): {"type": "timeout_dict"},
+    ("agents", "timeout_grace_seconds"): {"type": "int", "min": 0},
+}
+
+_KNOWN_TIMEOUT_STAGES = {"implement", "review", "fix", "pr_checks", "merge"}
+
+
+def validate_config_updates(updates: dict) -> list[str]:
+    """Validate a partial config update dict.
+
+    ``updates`` is a nested dict like ``{"linear": {"poll_interval_seconds": 60}}``.
+    Returns a list of error messages (empty means valid).
+    """
+    errors: list[str] = []
+    for section, fields in updates.items():
+        if not isinstance(fields, dict):
+            errors.append(f"'{section}' must be a mapping")
+            continue
+        for key, value in fields.items():
+            path = (section, key)
+            spec = EDITABLE_FIELDS.get(path)
+            if spec is None:
+                errors.append(f"'{section}.{key}' is not an editable field")
+                continue
+            errors.extend(_validate_field(section, key, value, spec))
+    return errors
+
+
+def _validate_field(
+    section: str, key: str, value: object, spec: dict,
+) -> list[str]:
+    """Validate a single field value against its spec."""
+    errors: list[str] = []
+    field_name = f"{section}.{key}"
+
+    if spec["type"] == "bool":
+        if not isinstance(value, bool):
+            errors.append(f"'{field_name}' must be a boolean, got {type(value).__name__}")
+
+    elif spec["type"] == "int":
+        if not isinstance(value, int) or isinstance(value, bool):
+            errors.append(f"'{field_name}' must be an integer, got {type(value).__name__}")
+        elif "min" in spec and value < spec["min"]:
+            errors.append(f"'{field_name}' must be at least {spec['min']}")
+
+    elif spec["type"] == "float":
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            errors.append(f"'{field_name}' must be a number, got {type(value).__name__}")
+        else:
+            fval = float(value)
+            if "min" in spec and fval < spec["min"]:
+                errors.append(f"'{field_name}' must be at least {spec['min']}")
+            if "max" in spec and fval > spec["max"]:
+                errors.append(f"'{field_name}' must be at most {spec['max']}")
+
+    elif spec["type"] == "timeout_dict":
+        if not isinstance(value, dict):
+            errors.append(f"'{field_name}' must be a mapping of stage → minutes")
+        else:
+            for stage, minutes in value.items():
+                if stage not in _KNOWN_TIMEOUT_STAGES:
+                    errors.append(
+                        f"'{field_name}': unknown stage '{stage}'. "
+                        f"Valid stages: {sorted(_KNOWN_TIMEOUT_STAGES)}"
+                    )
+                elif not isinstance(minutes, int) or isinstance(minutes, bool):
+                    errors.append(f"'{field_name}.{stage}' must be an integer")
+                elif minutes < 1:
+                    errors.append(f"'{field_name}.{stage}' must be at least 1")
+
+    return errors
+
+
+def apply_config_updates(config: BotfarmConfig, updates: dict) -> None:
+    """Apply validated updates to the in-memory config object.
+
+    ``updates`` must already be validated via ``validate_config_updates()``.
+    """
+    section_map = {
+        "linear": config.linear,
+        "usage_limits": config.usage_limits,
+        "agents": config.agents,
+    }
+    for section, fields in updates.items():
+        obj = section_map.get(section)
+        if obj is None:
+            continue
+        for key, value in fields.items():
+            if key == "timeout_minutes":
+                # Merge into existing dict rather than replacing entirely
+                obj.timeout_minutes.update(value)
+            elif hasattr(obj, key):
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    # Coerce to the field's declared type
+                    current = getattr(obj, key)
+                    if isinstance(current, float):
+                        value = float(value)
+                    elif isinstance(current, int):
+                        value = int(value)
+                setattr(obj, key, value)
+
+
+def write_config_updates(config_path: Path, updates: dict) -> None:
+    """Read the raw YAML config, apply updates, and write back atomically.
+
+    Preserves ``${ENV_VAR}`` references by operating on the raw YAML dict
+    (before environment variable expansion).
+    """
+    raw = config_path.read_text()
+    data = yaml.safe_load(raw)
+    if not isinstance(data, dict):
+        raise ConfigError("Config file must contain a YAML mapping")
+
+    for section, fields in updates.items():
+        if section not in data:
+            data[section] = {}
+        section_data = data[section]
+        if not isinstance(section_data, dict):
+            continue
+        for key, value in fields.items():
+            if key == "timeout_minutes" and isinstance(section_data.get(key), dict):
+                section_data[key].update(value)
+            else:
+                section_data[key] = value
+
+    # Atomic write: write to temp file then rename
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(config_path.parent), suffix=".yaml.tmp",
+    )
+    try:
+        with os.fdopen(fd, "w") as f:
+            yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+        os.replace(tmp_path, str(config_path))
+    except BaseException:
+        # Clean up temp file on failure
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise

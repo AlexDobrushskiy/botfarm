@@ -5,9 +5,15 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+import yaml
 from fastapi.testclient import TestClient
 
-from botfarm.config import DashboardConfig
+from botfarm.config import (
+    BotfarmConfig,
+    DashboardConfig,
+    LinearConfig,
+    ProjectConfig,
+)
 from botfarm.dashboard import create_app, start_dashboard
 from botfarm.db import (
     count_tasks,
@@ -900,3 +906,219 @@ class TestEdgeCases:
         client = TestClient(app)
         resp = client.get("/partials/usage")
         assert resp.status_code == 200
+
+
+# --- Config page ---
+
+
+def _make_botfarm_config(tmp_path):
+    """Create a BotfarmConfig with a real YAML source file for testing."""
+    config_data = {
+        "projects": [
+            {
+                "name": "test-project",
+                "linear_team": "TST",
+                "base_dir": "~/test",
+                "worktree_prefix": "test-slot-",
+                "slots": [1],
+            }
+        ],
+        "linear": {
+            "api_key": "${LINEAR_API_KEY}",
+            "poll_interval_seconds": 120,
+            "comment_on_failure": True,
+            "comment_on_completion": False,
+            "comment_on_limit_pause": False,
+        },
+        "usage_limits": {
+            "pause_five_hour_threshold": 0.85,
+            "pause_seven_day_threshold": 0.90,
+        },
+        "agents": {
+            "max_review_iterations": 3,
+            "max_ci_retries": 2,
+            "timeout_minutes": {"implement": 120, "review": 30, "fix": 60},
+            "timeout_grace_seconds": 10,
+        },
+    }
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.dump(config_data, sort_keys=False))
+
+    config = BotfarmConfig(
+        projects=[
+            ProjectConfig(
+                name="test-project", linear_team="TST",
+                base_dir="~/test", worktree_prefix="test-slot-", slots=[1],
+            ),
+        ],
+        linear=LinearConfig(
+            api_key="test-key",
+            poll_interval_seconds=120,
+            comment_on_failure=True,
+            comment_on_completion=False,
+            comment_on_limit_pause=False,
+        ),
+    )
+    config.source_path = str(config_path)
+    return config, config_path
+
+
+class TestConfigPage:
+    @pytest.fixture()
+    def config_client(self, state_file, db_file, tmp_path):
+        config, _ = _make_botfarm_config(tmp_path)
+        app = create_app(
+            state_file=state_file, db_path=db_file,
+            botfarm_config=config,
+        )
+        return TestClient(app)
+
+    def test_config_page_returns_200(self, config_client):
+        resp = config_client.get("/config")
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers["content-type"]
+
+    def test_config_page_contains_sections(self, config_client):
+        resp = config_client.get("/config")
+        body = resp.text
+        assert "Linear" in body
+        assert "Usage Limits" in body
+        assert "Agents" in body
+
+    def test_config_page_contains_current_values(self, config_client):
+        resp = config_client.get("/config")
+        body = resp.text
+        assert "120" in body  # poll_interval_seconds
+        assert "Save" in body
+
+    def test_config_page_contains_nav_link(self, config_client):
+        resp = config_client.get("/")
+        assert "Config" in resp.text
+
+    def test_config_page_disabled_without_config(self, state_file, db_file):
+        app = create_app(state_file=state_file, db_path=db_file)
+        client = TestClient(app)
+        resp = client.get("/config")
+        assert resp.status_code == 200
+        assert "not available" in resp.text
+
+
+class TestConfigUpdate:
+    @pytest.fixture()
+    def setup(self, state_file, db_file, tmp_path):
+        config, config_path = _make_botfarm_config(tmp_path)
+        app = create_app(
+            state_file=state_file, db_path=db_file,
+            botfarm_config=config,
+        )
+        client = TestClient(app)
+        return client, config, config_path
+
+    def test_update_linear_setting(self, setup):
+        client, config, _ = setup
+        resp = client.post("/config", json={
+            "linear": {"poll_interval_seconds": 60},
+        })
+        assert resp.status_code == 200
+        assert "successfully" in resp.text
+        assert config.linear.poll_interval_seconds == 60
+
+    def test_update_bool_setting(self, setup):
+        client, config, _ = setup
+        resp = client.post("/config", json={
+            "linear": {"comment_on_completion": True},
+        })
+        assert resp.status_code == 200
+        assert config.linear.comment_on_completion is True
+
+    def test_update_usage_limits(self, setup):
+        client, config, _ = setup
+        resp = client.post("/config", json={
+            "usage_limits": {"pause_five_hour_threshold": 0.75},
+        })
+        assert resp.status_code == 200
+        assert config.usage_limits.pause_five_hour_threshold == 0.75
+
+    def test_update_agents(self, setup):
+        client, config, _ = setup
+        resp = client.post("/config", json={
+            "agents": {"max_review_iterations": 5},
+        })
+        assert resp.status_code == 200
+        assert config.agents.max_review_iterations == 5
+
+    def test_update_timeout_minutes(self, setup):
+        client, config, _ = setup
+        resp = client.post("/config", json={
+            "agents": {"timeout_minutes": {"implement": 90}},
+        })
+        assert resp.status_code == 200
+        assert config.agents.timeout_minutes["implement"] == 90
+        # Other stages preserved
+        assert config.agents.timeout_minutes["review"] == 30
+
+    def test_update_writes_to_file(self, setup):
+        client, _, config_path = setup
+        client.post("/config", json={
+            "linear": {"poll_interval_seconds": 60},
+        })
+        data = yaml.safe_load(config_path.read_text())
+        assert data["linear"]["poll_interval_seconds"] == 60
+
+    def test_update_preserves_env_vars_in_file(self, setup):
+        client, _, config_path = setup
+        client.post("/config", json={
+            "linear": {"poll_interval_seconds": 60},
+        })
+        data = yaml.safe_load(config_path.read_text())
+        assert data["linear"]["api_key"] == "${LINEAR_API_KEY}"
+
+    def test_validation_error_returns_422(self, setup):
+        client, config, _ = setup
+        resp = client.post("/config", json={
+            "linear": {"poll_interval_seconds": 0},
+        })
+        assert resp.status_code == 422
+        assert "at least 1" in resp.text
+        # Config unchanged
+        assert config.linear.poll_interval_seconds == 120
+
+    def test_non_editable_field_rejected(self, setup):
+        client, _, _ = setup
+        resp = client.post("/config", json={
+            "linear": {"api_key": "hacked"},
+        })
+        assert resp.status_code == 422
+        assert "not an editable field" in resp.text
+
+    def test_invalid_json_returns_400(self, setup):
+        client, _, _ = setup
+        resp = client.post(
+            "/config",
+            content=b"not json",
+            headers={"content-type": "application/json"},
+        )
+        assert resp.status_code == 400
+
+    def test_non_dict_body_returns_400(self, setup):
+        client, _, _ = setup
+        resp = client.post("/config", json=["not", "a", "dict"])
+        assert resp.status_code == 400
+        assert "JSON object" in resp.text
+
+    def test_update_without_config_returns_400(self, state_file, db_file):
+        app = create_app(state_file=state_file, db_path=db_file)
+        client = TestClient(app)
+        resp = client.post("/config", json={"linear": {"poll_interval_seconds": 60}})
+        assert resp.status_code == 400
+        assert "not available" in resp.text
+
+    def test_multiple_sections_in_one_update(self, setup):
+        client, config, _ = setup
+        resp = client.post("/config", json={
+            "linear": {"poll_interval_seconds": 60},
+            "agents": {"max_ci_retries": 5},
+        })
+        assert resp.status_code == 200
+        assert config.linear.poll_interval_seconds == 60
+        assert config.agents.max_ci_retries == 5

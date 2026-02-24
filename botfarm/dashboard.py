@@ -17,7 +17,14 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
-from botfarm.config import DashboardConfig
+from botfarm.config import (
+    BotfarmConfig,
+    DashboardConfig,
+    EDITABLE_FIELDS,
+    apply_config_updates,
+    validate_config_updates,
+    write_config_updates,
+)
 from botfarm.db import (
     count_tasks,
     get_distinct_projects,
@@ -39,6 +46,7 @@ def create_app(
     state_file: str | Path,
     db_path: str | Path,
     linear_workspace: str = "",
+    botfarm_config: BotfarmConfig | None = None,
 ) -> FastAPI:
     """Create the FastAPI dashboard application.
 
@@ -50,6 +58,9 @@ def create_app(
         Path to the SQLite database.
     linear_workspace:
         Linear workspace slug used for building ticket URLs.
+    botfarm_config:
+        Live BotfarmConfig object for runtime editing. If ``None``, the
+        config page is disabled.
     """
     app = FastAPI(title="Botfarm Dashboard", docs_url=None, redoc_url=None)
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
@@ -58,6 +69,7 @@ def create_app(
     app.state.state_file = Path(state_file).expanduser()
     app.state.db_path = Path(db_path).expanduser()
     app.state.linear_workspace = linear_workspace
+    app.state.botfarm_config = botfarm_config
 
     # --- Helpers ---
 
@@ -528,6 +540,101 @@ def create_app(
             "format_duration": _format_duration,
         })
 
+    # --- Config editing ---
+
+    def _config_values() -> dict:
+        """Extract current editable config values as a nested dict."""
+        cfg = app.state.botfarm_config
+        if cfg is None:
+            return {}
+        return {
+            "linear": {
+                "poll_interval_seconds": cfg.linear.poll_interval_seconds,
+                "comment_on_failure": cfg.linear.comment_on_failure,
+                "comment_on_completion": cfg.linear.comment_on_completion,
+                "comment_on_limit_pause": cfg.linear.comment_on_limit_pause,
+            },
+            "usage_limits": {
+                "pause_five_hour_threshold": cfg.usage_limits.pause_five_hour_threshold,
+                "pause_seven_day_threshold": cfg.usage_limits.pause_seven_day_threshold,
+            },
+            "agents": {
+                "max_review_iterations": cfg.agents.max_review_iterations,
+                "max_ci_retries": cfg.agents.max_ci_retries,
+                "timeout_minutes": dict(cfg.agents.timeout_minutes),
+                "timeout_grace_seconds": cfg.agents.timeout_grace_seconds,
+            },
+        }
+
+    @app.get("/config", response_class=HTMLResponse)
+    def config_page(request: Request):
+        cfg = app.state.botfarm_config
+        enabled = cfg is not None
+        return templates.TemplateResponse("config.html", {
+            "request": request,
+            "config_enabled": enabled,
+            "config_values": _config_values(),
+            "editable_fields": EDITABLE_FIELDS,
+        })
+
+    @app.post("/config", response_class=HTMLResponse)
+    async def config_update(request: Request):
+        cfg = app.state.botfarm_config
+        if cfg is None:
+            return HTMLResponse(
+                '<div class="config-feedback error" role="alert">'
+                "Config editing is not available.</div>",
+                status_code=400,
+            )
+
+        try:
+            updates = await request.json()
+        except Exception:
+            return HTMLResponse(
+                '<div class="config-feedback error" role="alert">'
+                "Invalid JSON body.</div>",
+                status_code=400,
+            )
+
+        if not isinstance(updates, dict):
+            return HTMLResponse(
+                '<div class="config-feedback error" role="alert">'
+                "Request body must be a JSON object.</div>",
+                status_code=400,
+            )
+
+        errors = validate_config_updates(updates)
+        if errors:
+            error_html = "".join(f"<li>{e}</li>" for e in errors)
+            return HTMLResponse(
+                '<div class="config-feedback error" role="alert">'
+                f"<strong>Validation errors:</strong><ul>{error_html}</ul></div>",
+                status_code=422,
+            )
+
+        # Apply to in-memory config
+        apply_config_updates(cfg, updates)
+
+        # Write back to YAML file (preserving env var references)
+        config_path = Path(cfg.source_path) if cfg.source_path else None
+        if config_path and config_path.exists():
+            try:
+                write_config_updates(config_path, updates)
+            except Exception:
+                logger.exception("Failed to write config file")
+                return HTMLResponse(
+                    '<div class="config-feedback warning" role="alert">'
+                    "Applied to running config but failed to save to file. "
+                    "Changes will be lost on restart.</div>",
+                    status_code=200,
+                )
+
+        return HTMLResponse(
+            '<div class="config-feedback success" role="alert">'
+            "Config updated successfully.</div>",
+            status_code=200,
+        )
+
     return app
 
 
@@ -537,6 +644,7 @@ def start_dashboard(
     state_file: str | Path,
     db_path: str | Path,
     linear_workspace: str = "",
+    botfarm_config: BotfarmConfig | None = None,
 ) -> threading.Thread | None:
     """Start the dashboard server in a background daemon thread.
 
@@ -548,6 +656,7 @@ def start_dashboard(
     app = create_app(
         state_file=state_file, db_path=db_path,
         linear_workspace=linear_workspace,
+        botfarm_config=botfarm_config,
     )
 
     def _run():

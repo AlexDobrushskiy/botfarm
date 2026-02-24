@@ -622,6 +622,7 @@ class Supervisor:
                 state_file=self._config.state_file,
                 db_path=self._config.database.path,
                 linear_workspace=self._config.linear.workspace,
+                botfarm_config=self._config,
             )
 
         # Initial usage poll so we have data before the first dispatch
