@@ -634,6 +634,30 @@ def test_load_config_sets_source_path(tmp_path):
     assert config.source_path == str(config_path)
 
 
+# --- unknown key warnings ---
+
+
+def test_load_config_warns_on_unknown_keys(tmp_path, caplog):
+    data = {**MINIMAL_CONFIG, "max_total_slots": 2, "bogus_key": "value"}
+    config_path = _write_config(tmp_path, data)
+    import logging
+    with caplog.at_level(logging.WARNING, logger="botfarm.config"):
+        config = load_config(config_path)
+    assert "Unknown config keys" in caplog.text
+    assert "bogus_key" in caplog.text
+    assert "max_total_slots" in caplog.text
+    # Config still loads successfully
+    assert isinstance(config, BotfarmConfig)
+
+
+def test_load_config_no_warning_for_known_keys(tmp_path, caplog):
+    config_path = _write_config(tmp_path, MINIMAL_CONFIG)
+    import logging
+    with caplog.at_level(logging.WARNING, logger="botfarm.config"):
+        load_config(config_path)
+    assert "Unknown config keys" not in caplog.text
+
+
 # --- validate_config_updates ---
 
 

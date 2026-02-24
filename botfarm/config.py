@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import tempfile
@@ -9,6 +10,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_CONFIG_DIR = Path.home() / ".botfarm"
 DEFAULT_CONFIG_PATH = DEFAULT_CONFIG_DIR / "config.yaml"
@@ -294,6 +297,16 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         raise ConfigError("Config file must contain a YAML mapping")
 
     data = _expand_env_recursive(data)
+
+    known_keys = {
+        "projects", "linear", "database", "usage_limits",
+        "dashboard", "agents", "notifications", "state_file",
+    }
+    unknown = set(data.keys()) - known_keys
+    if unknown:
+        logger.warning(
+            "Unknown config keys (ignored): %s", ", ".join(sorted(unknown))
+        )
 
     if "projects" not in data or not isinstance(data.get("projects"), list):
         raise ConfigError("Config must contain a 'projects' list")
