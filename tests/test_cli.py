@@ -35,7 +35,7 @@ def db_file(tmp_path):
 
 def _mock_resolve(db_path):
     """Return a monkeypatch-compatible _resolve_paths replacement."""
-    return lambda _: (db_path, db_path, None)
+    return lambda _: (db_path, None)
 
 
 def _seed_slots(db_path, slots, *, dispatch_paused=False, dispatch_pause_reason=None):
@@ -134,7 +134,7 @@ class TestStatusCommand:
     def test_no_database(self, runner, tmp_path, monkeypatch):
         monkeypatch.setattr(
             "botfarm.cli._resolve_paths",
-            lambda _: (tmp_path / "nonexistent.db", tmp_path / "nonexistent.db", None),
+            lambda _: (tmp_path / "nonexistent.db", None),
         )
         result = runner.invoke(main, ["status"])
         assert result.exit_code == 0
@@ -263,7 +263,7 @@ class TestHistoryCommand:
     def test_no_database(self, runner, tmp_path, monkeypatch):
         monkeypatch.setattr(
             "botfarm.cli._resolve_paths",
-            lambda _: (tmp_path / "nonexistent.db", tmp_path / "nonexistent.db", None),
+            lambda _: (tmp_path / "nonexistent.db", None),
         )
         result = runner.invoke(main, ["history"])
         assert result.exit_code == 0
@@ -453,7 +453,7 @@ class TestLimitsCommand:
     def test_no_database(self, runner, tmp_path, monkeypatch):
         monkeypatch.setattr(
             "botfarm.cli._resolve_paths",
-            lambda _: (tmp_path / "nonexistent.db", tmp_path / "nonexistent.db", None),
+            lambda _: (tmp_path / "nonexistent.db", None),
         )
         result = runner.invoke(main, ["limits"])
         assert result.exit_code == 0

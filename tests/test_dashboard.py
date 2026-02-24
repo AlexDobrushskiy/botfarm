@@ -489,6 +489,34 @@ class TestUsageFreshness:
         resp = client.get("/")
         assert "usage data may be stale" in resp.text
 
+    def test_staleness_warning_on_usage_partial_cold_start(
+        self, tmp_path, monkeypatch,
+    ):
+        """The /partials/usage endpoint should show a staleness warning on
+        cold start (before the dashboard refreshes) when the DB snapshot is old.
+        """
+        monkeypatch.setattr(
+            "botfarm.dashboard.refresh_usage_snapshot", lambda conn: None,
+        )
+        from datetime import datetime, timedelta, timezone
+        old_time = (
+            datetime.now(timezone.utc) - timedelta(minutes=5)
+        ).isoformat()
+        db_path = tmp_path / "stale_partial.db"
+        conn = init_db(db_path)
+        conn.execute(
+            "INSERT INTO usage_snapshots (utilization_5h, utilization_7d, resets_at, created_at)"
+            " VALUES (?, ?, ?, ?)",
+            (0.45, 0.72, "2026-02-12T15:00:00+00:00", old_time),
+        )
+        conn.commit()
+        conn.close()
+
+        app = create_app(db_path=db_path)
+        client = TestClient(app)
+        resp = client.get("/partials/usage")
+        assert "usage data may be stale" in resp.text
+
     def test_no_staleness_warning_when_data_fresh(
         self, db_file, monkeypatch,
     ):

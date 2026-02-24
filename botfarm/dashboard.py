@@ -371,9 +371,9 @@ def create_app(
         usage = fresh if fresh is not None else state.get("usage", {})
         dispatch_paused = state.get("dispatch_paused", False)
         dispatch_pause_reason = state.get("dispatch_pause_reason")
-        # Use the dashboard's own refresh timestamp
+        # Use the dashboard's own refresh timestamp; fall back to DB snapshot
         dashboard_checked = _dashboard_last_fresh["time"]
-        last_usage_check = dashboard_checked
+        last_usage_check = dashboard_checked or state.get("last_usage_check")
         stale = _usage_is_stale(last_usage_check)
         return templates.TemplateResponse("partials/usage.html", {
             "request": request,

@@ -36,12 +36,10 @@ DEFAULT_DB_PATH = DEFAULT_CONFIG_DIR / "botfarm.db"
 
 def _resolve_paths(
     config_path: Path | None,
-) -> tuple[Path, Path, "BotfarmConfig | None"]:
+) -> tuple[Path, "BotfarmConfig | None"]:
     """Resolve database path from config, falling back to defaults.
 
-    Returns (db_path, db_path, config_or_None).
-    The first element is kept for backward compatibility but is now the same
-    as db_path.
+    Returns (db_path, config_or_None).
     """
     db_path = DEFAULT_DB_PATH
     config = None
@@ -51,7 +49,7 @@ def _resolve_paths(
         config = load_config(cfg_path)
         db_path = Path(config.database.path).expanduser()
 
-    return db_path, db_path, config
+    return db_path, config
 
 
 def _format_duration(total_seconds: int) -> str:
@@ -105,7 +103,7 @@ def main():
 )
 def status(config_path):
     """Show current slot states across all projects."""
-    _, db_path, _ = _resolve_paths(config_path)
+    db_path, _ = _resolve_paths(config_path)
 
     if not db_path.exists():
         click.echo("No database found. Is the supervisor running?")
@@ -177,7 +175,7 @@ def status(config_path):
 @click.option("--status", "status_filter", default=None, help="Filter by status.")
 def history(config_path, limit, project, status_filter):
     """Show recent completed/failed tasks with key metrics."""
-    _, db_path, _ = _resolve_paths(config_path)
+    db_path, _ = _resolve_paths(config_path)
 
     if not db_path.exists():
         click.echo("No database found. No tasks have been run yet.")
@@ -263,7 +261,7 @@ def history(config_path, limit, project, status_filter):
 )
 def limits(config_path):
     """Show current usage limit utilization."""
-    _, db_path, cfg = _resolve_paths(config_path)
+    db_path, cfg = _resolve_paths(config_path)
 
     # Load thresholds from config (fall back to defaults)
     from botfarm.config import UsageLimitsConfig
@@ -449,7 +447,7 @@ def reset(project, reset_all, force, config_path):
             "Provide a project name or use --all to reset all projects."
         )
 
-    _, db_path, _ = _resolve_paths(config_path)
+    db_path, _ = _resolve_paths(config_path)
 
     if not db_path.exists():
         click.echo("No database found. Nothing to reset.")
