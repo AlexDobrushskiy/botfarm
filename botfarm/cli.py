@@ -1,4 +1,3 @@
-import json
 import os
 import signal
 import sqlite3
@@ -18,35 +17,41 @@ from botfarm.config import (
     create_default_config,
     load_config,
 )
-from botfarm.db import get_task_history, init_db
+from botfarm.db import (
+    get_task_history,
+    init_db,
+    load_all_slots,
+    load_dispatch_state,
+    save_dispatch_state,
+    upsert_slot,
+)
 from botfarm.slots import SlotState, _is_pid_alive
 from botfarm.usage import refresh_usage_snapshot
 
 ENV_FILE_PATH = DEFAULT_CONFIG_DIR / ".env"
 
 # Default paths (match config.py defaults)
-DEFAULT_STATE_FILE = DEFAULT_CONFIG_DIR / "state.json"
 DEFAULT_DB_PATH = DEFAULT_CONFIG_DIR / "botfarm.db"
 
 
 def _resolve_paths(
     config_path: Path | None,
 ) -> tuple[Path, Path, "BotfarmConfig | None"]:
-    """Resolve state file and database paths from config, falling back to defaults.
+    """Resolve database path from config, falling back to defaults.
 
-    Returns (state_path, db_path, config_or_None).
+    Returns (db_path, db_path, config_or_None).
+    The first element is kept for backward compatibility but is now the same
+    as db_path.
     """
-    state_path = DEFAULT_STATE_FILE
     db_path = DEFAULT_DB_PATH
     config = None
 
     cfg_path = config_path or DEFAULT_CONFIG_PATH
     if cfg_path.exists():
         config = load_config(cfg_path)
-        state_path = Path(config.state_file).expanduser()
         db_path = Path(config.database.path).expanduser()
 
-    return state_path, db_path, config
+    return db_path, db_path, config
 
 
 def _format_duration(total_seconds: int) -> str:
@@ -100,36 +105,34 @@ def main():
 )
 def status(config_path):
     """Show current slot states across all projects."""
-    state_path, _, _ = _resolve_paths(config_path)
+    _, db_path, _ = _resolve_paths(config_path)
 
-    if not state_path.exists():
-        click.echo("No state file found. Is the supervisor running?")
+    if not db_path.exists():
+        click.echo("No database found. Is the supervisor running?")
         return
 
     try:
-        data = json.loads(state_path.read_text())
-    except (json.JSONDecodeError, OSError) as exc:
-        raise click.ClickException(f"Failed to read state file: {exc}") from exc
+        conn = init_db(db_path)
+    except sqlite3.Error as exc:
+        raise click.ClickException(f"Failed to open database: {exc}") from exc
 
-    # Support both old format (bare list) and new format (dict with "slots" key)
-    if isinstance(data, dict):
-        slot_list = data.get("slots", [])
-    elif isinstance(data, list):
-        slot_list = data
-    else:
-        click.echo("No slots configured.")
-        return
+    try:
+        rows = load_all_slots(conn)
+        paused, reason, _heartbeat = load_dispatch_state(conn)
+    except sqlite3.OperationalError as exc:
+        raise click.ClickException(f"Database query failed: {exc}") from exc
+    finally:
+        conn.close()
 
-    if not slot_list:
+    if not rows:
         click.echo("No slots configured.")
         return
 
     console = Console()
 
     # Show dispatch pause banner if active
-    if isinstance(data, dict) and data.get("dispatch_paused"):
-        reason = data.get("dispatch_pause_reason", "unknown")
-        console.print(f"[bold red]DISPATCH PAUSED:[/bold red] {reason}\n")
+    if paused:
+        console.print(f"[bold red]DISPATCH PAUSED:[/bold red] {reason or 'unknown'}\n")
 
     table = Table(title="Slot Status")
     table.add_column("Project", style="bold")
@@ -139,23 +142,23 @@ def status(config_path):
     table.add_column("Stage")
     table.add_column("Elapsed")
 
-    for slot in slot_list:
-        status_val = slot.get("status", "unknown")
+    for row in rows:
+        status_val = row["status"]
         color = _STATUS_COLORS.get(status_val, "white")
-        ticket = slot.get("ticket_id") or "-"
-        if slot.get("ticket_title") and slot.get("ticket_id"):
-            ticket = f"{slot['ticket_id']} ({slot['ticket_title']})"
-        stage = slot.get("stage") or "-"
-        if slot.get("stage_iteration", 0) > 1:
-            stage = f"{stage} (iter {slot['stage_iteration']})"
+        ticket = row["ticket_id"] or "-"
+        if row["ticket_title"] and row["ticket_id"]:
+            ticket = f"{row['ticket_id']} ({row['ticket_title']})"
+        stage = row["stage"] or "-"
+        if (row["stage_iteration"] or 0) > 1:
+            stage = f"{stage} (iter {row['stage_iteration']})"
 
         table.add_row(
-            slot.get("project", "?"),
-            str(slot.get("slot_id", "?")),
+            row["project"],
+            str(row["slot_id"]),
             f"[{color}]{status_val}[/{color}]",
             ticket,
             stage,
-            _elapsed(slot.get("started_at")),
+            _elapsed(row["started_at"]),
         )
 
     console.print(table)
@@ -260,7 +263,7 @@ def history(config_path, limit, project, status_filter):
 )
 def limits(config_path):
     """Show current usage limit utilization."""
-    state_path, db_path, cfg = _resolve_paths(config_path)
+    _, db_path, cfg = _resolve_paths(config_path)
 
     # Load thresholds from config (fall back to defaults)
     from botfarm.config import UsageLimitsConfig
@@ -272,18 +275,6 @@ def limits(config_path):
         defaults = UsageLimitsConfig()
         threshold_5h = defaults.pause_five_hour_threshold
         threshold_7d = defaults.pause_seven_day_threshold
-
-    # Read dispatch_paused from state.json if available
-    dispatch_paused_from_state = None
-    dispatch_pause_reason = None
-    if state_path.exists():
-        try:
-            state_data = json.loads(state_path.read_text())
-            if isinstance(state_data, dict):
-                dispatch_paused_from_state = state_data.get("dispatch_paused")
-                dispatch_pause_reason = state_data.get("dispatch_pause_reason")
-        except (json.JSONDecodeError, OSError):
-            pass
 
     if not db_path.exists():
         click.echo("No database found. No usage data available.")
@@ -301,6 +292,9 @@ def limits(config_path):
         row = conn.execute(
             "SELECT * FROM usage_snapshots ORDER BY created_at DESC LIMIT 1"
         ).fetchone()
+
+        # Read dispatch_paused from DB
+        dispatch_paused, dispatch_pause_reason, _heartbeat = load_dispatch_state(conn)
     except sqlite3.OperationalError as exc:
         raise click.ClickException(f"Database query failed: {exc}") from exc
     finally:
@@ -347,10 +341,9 @@ def limits(config_path):
     if resets_at:
         table.add_row("Resets at", resets_at)
 
-    # Use authoritative dispatch_paused state from state.json if available,
-    # otherwise derive from thresholds
-    if dispatch_paused_from_state is not None:
-        paused = dispatch_paused_from_state
+    # Use dispatch_paused from DB if available, else derive from thresholds
+    if dispatch_paused is not None:
+        paused = dispatch_paused
     else:
         paused = (util_5h is not None and util_5h >= threshold_5h) or (
             util_7d is not None and util_7d >= threshold_7d
@@ -456,37 +449,37 @@ def reset(project, reset_all, force, config_path):
             "Provide a project name or use --all to reset all projects."
         )
 
-    state_path, _, _ = _resolve_paths(config_path)
+    _, db_path, _ = _resolve_paths(config_path)
 
-    if not state_path.exists():
-        click.echo("No state file found. Nothing to reset.")
+    if not db_path.exists():
+        click.echo("No database found. Nothing to reset.")
         return
 
     try:
-        raw = state_path.read_text()
-        data = json.loads(raw)
-    except (json.JSONDecodeError, OSError) as exc:
-        raise click.ClickException(f"Failed to read state file: {exc}") from exc
+        conn = init_db(db_path)
+    except sqlite3.Error as exc:
+        raise click.ClickException(f"Failed to open database: {exc}") from exc
 
-    # Support both formats
-    if isinstance(data, dict):
-        slot_list = data.get("slots", [])
-    elif isinstance(data, list):
-        slot_list = data
-    else:
-        click.echo("No slots found in state file.")
-        return
+    try:
+        rows = load_all_slots(conn)
+    except sqlite3.OperationalError as exc:
+        conn.close()
+        raise click.ClickException(f"Database query failed: {exc}") from exc
+
+    slot_list = [dict(r) for r in rows]
 
     if not slot_list:
-        click.echo("No slots found in state file.")
+        conn.close()
+        click.echo("No slots found in database.")
         return
 
-    # Check that the project exists in state if a specific project was given
+    # Check that the project exists if a specific project was given
     if project and not reset_all:
-        known_projects = {s.get("project") for s in slot_list if isinstance(s, dict)} - {None}
+        known_projects = {s["project"] for s in slot_list}
         if project not in known_projects:
+            conn.close()
             click.echo(
-                f"Project '{project}' not found in state file. "
+                f"Project '{project}' not found in database. "
                 f"Known projects: {', '.join(sorted(known_projects)) or '(none)'}"
             )
             return
@@ -494,8 +487,6 @@ def reset(project, reset_all, force, config_path):
     # Find non-free slots matching the filter
     targets = []
     for slot in slot_list:
-        if not isinstance(slot, dict):
-            continue
         if slot.get("status", "free") == "free":
             continue
         if not reset_all and slot.get("project") != project:
@@ -503,6 +494,7 @@ def reset(project, reset_all, force, config_path):
         targets.append(slot)
 
     if not targets:
+        conn.close()
         scope = "all projects" if reset_all else f"project '{project}'"
         click.echo(f"All slots already free for {scope}. Nothing to reset.")
         return
@@ -523,6 +515,7 @@ def reset(project, reset_all, force, config_path):
         if not click.confirm(
             "Send SIGTERM to these processes and reset slots?"
         ):
+            conn.close()
             click.echo("Aborted.")
             return
 
@@ -552,16 +545,16 @@ def reset(project, reset_all, force, config_path):
             prev_status,
             ticket,
         )
-        # Apply free_slot fields
+        # Apply free_slot fields and write to DB
         slot.update(_FREE_SLOT_FIELDS)
+        upsert_slot(conn, slot)
 
-    # Write back atomically
-    tmp_path = state_path.with_suffix(".tmp")
     try:
-        tmp_path.write_text(json.dumps(data, indent=2) + "\n")
-        tmp_path.replace(state_path)
-    except OSError as exc:
-        raise click.ClickException(f"Failed to write state file: {exc}") from exc
+        conn.commit()
+    except sqlite3.Error as exc:
+        raise click.ClickException(f"Failed to write database: {exc}") from exc
+    finally:
+        conn.close()
 
     console.print(table)
     click.echo(f"Reset {len(targets)} slot(s) to free.")

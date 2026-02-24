@@ -37,6 +37,8 @@ from botfarm.db import (
     get_task,
     get_task_history,
     init_db,
+    load_all_slots,
+    load_dispatch_state,
 )
 from botfarm.worker import STAGES
 from botfarm.usage import refresh_usage_snapshot
@@ -106,17 +108,15 @@ def build_pipeline_state(
 
 def create_app(
     *,
-    state_file: str | Path,
     db_path: str | Path,
     linear_workspace: str = "",
     botfarm_config: BotfarmConfig | None = None,
+    state_file: str | Path | None = None,
 ) -> FastAPI:
     """Create the FastAPI dashboard application.
 
     Parameters
     ----------
-    state_file:
-        Path to the supervisor state.json file.
     db_path:
         Path to the SQLite database.
     linear_workspace:
@@ -124,12 +124,14 @@ def create_app(
     botfarm_config:
         Live BotfarmConfig object for runtime editing. If ``None``, the
         config page is disabled.
+    state_file:
+        Deprecated. Ignored. Kept only for backward compatibility during
+        the transition period.
     """
     app = FastAPI(title="Botfarm Dashboard", docs_url=None, redoc_url=None)
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
     # Store paths on app state for route handlers
-    app.state.state_file = Path(state_file).expanduser()
     app.state.db_path = Path(db_path).expanduser()
     app.state.linear_workspace = linear_workspace
     app.state.botfarm_config = botfarm_config
@@ -138,12 +140,64 @@ def create_app(
     # --- Helpers ---
 
     def _read_state() -> dict:
-        """Read the supervisor state.json file."""
-        try:
-            data = json.loads(app.state.state_file.read_text())
-            return data if isinstance(data, dict) else {"slots": data}
-        except (json.JSONDecodeError, OSError):
+        """Read slot and dispatch state from the database."""
+        conn = _get_db()
+        if conn is None:
             return {}
+        try:
+            slots_rows = load_all_slots(conn)
+            slots = []
+            for row in slots_rows:
+                stages_raw = row["stages_completed"]
+                stages = json.loads(stages_raw) if stages_raw else []
+                slots.append({
+                    "project": row["project"],
+                    "slot_id": row["slot_id"],
+                    "status": row["status"],
+                    "ticket_id": row["ticket_id"],
+                    "ticket_title": row["ticket_title"],
+                    "branch": row["branch"],
+                    "pr_url": row["pr_url"],
+                    "stage": row["stage"],
+                    "stage_iteration": row["stage_iteration"],
+                    "current_session_id": row["current_session_id"],
+                    "started_at": row["started_at"],
+                    "stage_started_at": row["stage_started_at"],
+                    "pid": row["pid"],
+                    "interrupted_by_limit": bool(row["interrupted_by_limit"]),
+                    "resume_after": row["resume_after"],
+                    "stages_completed": stages,
+                })
+
+            paused, reason, heartbeat = load_dispatch_state(conn)
+
+            # Read latest usage snapshot as fallback for when API refresh
+            # is unavailable (replaces the old state.json usage field).
+            usage = {}
+            last_usage_check = None
+            usage_row = conn.execute(
+                "SELECT * FROM usage_snapshots ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+            if usage_row:
+                usage = {
+                    "utilization_5h": usage_row["utilization_5h"],
+                    "utilization_7d": usage_row["utilization_7d"],
+                    "resets_at": usage_row["resets_at"],
+                }
+                last_usage_check = usage_row["created_at"]
+
+            return {
+                "slots": slots,
+                "dispatch_paused": paused,
+                "dispatch_pause_reason": reason,
+                "supervisor_heartbeat": heartbeat,
+                "usage": usage,
+                "last_usage_check": last_usage_check,
+            }
+        except sqlite3.OperationalError:
+            return {}
+        finally:
+            conn.close()
 
     def _get_db() -> sqlite3.Connection | None:
         """Open a read-only database connection.
@@ -312,14 +366,14 @@ def create_app(
     @app.get("/partials/usage", response_class=HTMLResponse)
     def partial_usage(request: Request):
         state = _read_state()
-        # Try to get fresh data from the API; fall back to state.json
+        # Try to get fresh data from the API; fall back to DB snapshot
         fresh = _refresh_and_get_usage()
         usage = fresh if fresh is not None else state.get("usage", {})
         dispatch_paused = state.get("dispatch_paused", False)
         dispatch_pause_reason = state.get("dispatch_pause_reason")
-        # Use the dashboard's own refresh timestamp; fall back to supervisor's
+        # Use the dashboard's own refresh timestamp
         dashboard_checked = _dashboard_last_fresh["time"]
-        last_usage_check = dashboard_checked or state.get("last_usage_check")
+        last_usage_check = dashboard_checked
         stale = _usage_is_stale(last_usage_check)
         return templates.TemplateResponse("partials/usage.html", {
             "request": request,
@@ -723,7 +777,6 @@ def create_app(
             "database": {
                 "path": cfg.database.path,
             },
-            "state_file": cfg.state_file,
         }
 
     @app.get("/config/view", response_class=HTMLResponse)
@@ -902,10 +955,10 @@ def create_app(
 def start_dashboard(
     config: DashboardConfig,
     *,
-    state_file: str | Path,
     db_path: str | Path,
     linear_workspace: str = "",
     botfarm_config: BotfarmConfig | None = None,
+    state_file: str | Path | None = None,
 ) -> threading.Thread | None:
     """Start the dashboard server in a background daemon thread.
 
@@ -915,7 +968,7 @@ def start_dashboard(
         return None
 
     app = create_app(
-        state_file=state_file, db_path=db_path,
+        db_path=db_path,
         linear_workspace=linear_workspace,
         botfarm_config=botfarm_config,
     )

@@ -225,11 +225,9 @@ class Supervisor:
         self._db_path = str(db_path)
         self._conn: sqlite3.Connection = init_db(db_path)
 
-        # Slot manager (shares the supervisor's DB connection; keeps writing
-        # state.json for backward compatibility with the dashboard and CLI)
+        # Slot manager (shares the supervisor's DB connection)
         self._slot_manager = SlotManager(
             db_path=self._db_path,
-            state_path=config.state_file,
             conn=self._conn,
         )
         for project in config.projects:
@@ -624,7 +622,6 @@ class Supervisor:
             from botfarm.dashboard import start_dashboard
             self._dashboard_thread = start_dashboard(
                 self._config.dashboard,
-                state_file=self._config.state_file,
                 db_path=self._config.database.path,
                 linear_workspace=self._config.linear.workspace,
                 botfarm_config=self._config,

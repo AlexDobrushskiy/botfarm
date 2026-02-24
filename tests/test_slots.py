@@ -529,20 +529,16 @@ class TestPersistence:
         mgr2.load()
         assert mgr2.get_slot("proj", 1).interrupted_by_limit is True
 
-    def test_backward_compat_state_json(self, tmp_path: Path):
-        """When state_path is provided, state.json is also written."""
-        db_path = tmp_path / "test.db"
-        state_path = tmp_path / "state.json"
-        mgr = SlotManager(db_path=db_path, state_path=state_path)
+    def test_supervisor_heartbeat_written_to_db(self, mgr: SlotManager):
+        """Each save writes a supervisor_heartbeat to dispatch_state."""
+        from botfarm.db import load_dispatch_state
         mgr.register_slot("proj", 1)
         mgr.save()
-
-        assert state_path.exists()
-        data = json.loads(state_path.read_text())
-        assert "slots" in data
-        assert "supervisor_heartbeat" in data
-        assert len(data["slots"]) == 1
-        assert data["slots"][0]["project"] == "proj"
+        _paused, _reason, heartbeat = load_dispatch_state(mgr._conn)
+        assert heartbeat is not None
+        # Should be a valid ISO timestamp
+        from datetime import datetime
+        datetime.fromisoformat(heartbeat.replace("Z", "+00:00"))
 
 
 # ---------------------------------------------------------------------------
@@ -723,7 +719,7 @@ class TestDispatchPaused:
     def test_paused_persisted_in_db(self, mgr: SlotManager):
         mgr.register_slot("proj", 1)
         mgr.set_dispatch_paused(True, "test reason")
-        paused, reason = load_dispatch_state(mgr._conn)
+        paused, reason, _heartbeat = load_dispatch_state(mgr._conn)
         assert paused is True
         assert reason == "test reason"
 
@@ -731,7 +727,7 @@ class TestDispatchPaused:
         mgr.register_slot("proj", 1)
         mgr.set_dispatch_paused(True, "reason")
         mgr.set_dispatch_paused(False)
-        paused, reason = load_dispatch_state(mgr._conn)
+        paused, reason, _heartbeat = load_dispatch_state(mgr._conn)
         assert paused is False
 
     def test_paused_loaded_from_db(self, tmp_path: Path):

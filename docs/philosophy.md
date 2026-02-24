@@ -18,7 +18,7 @@ Every Claude invocation runs as its own OS process in its own git worktree. A ha
 
 ### 3. Survive everything
 
-The supervisor assumes it will crash. State persists to `state.json` after every mutation (atomic write-then-rename). On restart, it reconciles saved state against reality — checking PIDs, PR status, and database records. The system picks up where it left off without human intervention.
+The supervisor assumes it will crash. State persists to the SQLite database after every mutation. On restart, it reconciles saved state against reality — checking PIDs, PR status, and database records. The system picks up where it left off without human intervention.
 
 ### 4. Configuration over code
 
@@ -54,7 +54,7 @@ The pipeline always proceeds forward. After max iterations, it moves to CI check
 ## Trade-offs Accepted
 
 - **Subprocess over SDK**: More overhead, less real-time visibility, but proven reliability and clean isolation.
-- **JSON state file over database for runtime state**: Simpler, atomic, readable with `cat`, but doesn't scale beyond ~10 slots.
+- **SQLite for all state**: Runtime slot state, task history, and usage snapshots all live in one SQLite database. Simple, transactional, and crash-safe.
 - **SQLite over Postgres**: Single-writer, no concurrent access from multiple machines, but zero operational overhead.
 - **Poll-based over event-driven**: The supervisor polls Linear every N seconds rather than receiving webhooks. Simpler, no public endpoint needed, but adds latency between ticket creation and dispatch.
 - **Heuristic limit detection**: Usage limit hits are detected by string matching in error messages. Not 100% reliable, but combined with pre-dispatch usage checks, it works well enough in practice.

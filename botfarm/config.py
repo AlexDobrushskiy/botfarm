@@ -69,8 +69,6 @@ agents:
 #   webhook_url: https://hooks.slack.com/services/...
 #   webhook_format: slack  # or "discord"
 #   rate_limit_seconds: 300
-
-state_file: ~/.botfarm/state.json
 """
 
 
@@ -148,7 +146,6 @@ class BotfarmConfig:
     dashboard: DashboardConfig = field(default_factory=DashboardConfig)
     agents: AgentsConfig = field(default_factory=AgentsConfig)
     notifications: NotificationsConfig = field(default_factory=NotificationsConfig)
-    state_file: str = "~/.botfarm/state.json"
     source_path: str = ""  # Set by load_config to the source file path
 
 
@@ -300,7 +297,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
 
     known_keys = {
         "projects", "linear", "database", "usage_limits",
-        "dashboard", "agents", "notifications", "state_file",
+        "dashboard", "agents", "notifications",
     }
     unknown = set(data.keys()) - known_keys
     if unknown:
@@ -367,9 +364,8 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
 
     if "state_file" in data:
         logger.warning(
-            "The 'state_file' config key is deprecated — slot state is now "
-            "persisted in the SQLite database. state.json is written for "
-            "backward compatibility only and will be removed in a future release."
+            "The 'state_file' config key is deprecated and ignored — all "
+            "state is now persisted in the SQLite database."
         )
 
     config = BotfarmConfig(
@@ -380,7 +376,6 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         dashboard=dashboard,
         agents=agents,
         notifications=notifications,
-        state_file=data.get("state_file", "~/.botfarm/state.json"),
     )
 
     _validate_config(config)

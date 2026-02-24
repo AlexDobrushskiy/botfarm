@@ -54,7 +54,6 @@ def _make_config(tmp_path: Path) -> BotfarmConfig:
             exclude_tags=["Human"],
         ),
         database=DatabaseConfig(path=str(tmp_path / "test.db")),
-        state_file=str(tmp_path / "state.json"),
     )
 
 
@@ -759,11 +758,13 @@ class TestShutdown:
 
         supervisor._shutdown()
 
-        # State file should exist and have the busy slot
-        import json
-        data = json.loads(sm.state_path.read_text())
-        busy = [d for d in data["slots"] if d["status"] == "busy"]
+        # Open fresh connection — shutdown closes the original
+        from botfarm.db import init_db, load_all_slots
+        conn = init_db(sm._db_path)
+        rows = load_all_slots(conn)
+        busy = [dict(r) for r in rows if r["status"] == "busy"]
         assert len(busy) == 1
+        conn.close()
 
     def test_shutdown_logs_running_workers(self, supervisor):
         mock_proc = MagicMock()
@@ -1542,7 +1543,6 @@ class TestMultiProject:
                 poll_interval_seconds=10,
             ),
             database=DatabaseConfig(path=str(tmp_path / "test.db")),
-            state_file=str(tmp_path / "state.json"),
         )
         (tmp_path / "alpha").mkdir()
         (tmp_path / "beta").mkdir()
@@ -2470,7 +2470,6 @@ def _make_config_custom_statuses(tmp_path: Path) -> BotfarmConfig:
             comment_on_limit_pause=True,
         ),
         database=DatabaseConfig(path=str(tmp_path / "test.db")),
-        state_file=str(tmp_path / "state.json"),
     )
 
 
@@ -2627,7 +2626,6 @@ class TestCommentPosting:
                 comment_on_failure=False,
             ),
             database=DatabaseConfig(path=str(tmp_path / "test.db")),
-            state_file=str(tmp_path / "state.json"),
         )
         (tmp_path / "repo").mkdir()
 

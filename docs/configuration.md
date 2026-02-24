@@ -22,8 +22,7 @@ All runtime state lives under `~/.botfarm/` by default:
 |---|---|
 | `config.yaml` | Main configuration |
 | `.env` | Environment variables (loaded automatically) |
-| `state.json` | Live slot state (survives supervisor restarts) |
-| `botfarm.db` | SQLite database (tasks, stage runs, usage snapshots) |
+| `botfarm.db` | SQLite database (slots, tasks, stage runs, usage snapshots) |
 | `logs/` | Supervisor and worker log files |
 
 ## Environment Variables
@@ -160,16 +159,6 @@ notifications:
   webhook_url: https://hooks.slack.com/services/...  # Leave empty to disable
   webhook_format: slack    # "slack" or "discord" (auto-detected from URL if omitted)
   rate_limit_seconds: 300  # Min interval between repeated limit_hit notifications (default: 300)
-```
-
----
-
-### `state_file`
-
-Path to the JSON file that persists live slot state. The supervisor writes this after every state change.
-
-```yaml
-state_file: ~/.botfarm/state.json  # default
 ```
 
 ---
