@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
+from botfarm.db import init_db, load_all_slots, load_dispatch_state
 from botfarm.slots import (
     SLOT_STATUSES,
     SlotError,
@@ -83,6 +85,27 @@ class TestSlotState:
         restored = SlotState.from_dict(original.to_dict())
         assert original == restored
 
+    def test_from_db_row(self, tmp_path: Path):
+        """SlotState.from_db_row reconstructs from a sqlite3.Row."""
+        conn = init_db(tmp_path / "test.db")
+        conn.execute(
+            """INSERT INTO slots (project, slot_id, status, ticket_id,
+               stage_iteration, interrupted_by_limit, stages_completed)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            ("proj", 1, "busy", "SMA-1", 2, 1, '["implement"]'),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM slots WHERE project='proj' AND slot_id=1").fetchone()
+        s = SlotState.from_db_row(row)
+        assert s.project == "proj"
+        assert s.slot_id == 1
+        assert s.status == "busy"
+        assert s.ticket_id == "SMA-1"
+        assert s.stage_iteration == 2
+        assert s.interrupted_by_limit is True
+        assert s.stages_completed == ["implement"]
+        conn.close()
+
 
 # ---------------------------------------------------------------------------
 # SlotManager — registration and queries
@@ -91,8 +114,8 @@ class TestSlotState:
 
 @pytest.fixture()
 def mgr(tmp_path: Path) -> SlotManager:
-    """Return a SlotManager with a temp state file."""
-    return SlotManager(state_path=tmp_path / "state.json")
+    """Return a SlotManager backed by a temp database."""
+    return SlotManager(db_path=tmp_path / "test.db")
 
 
 class TestRegistration:
@@ -407,44 +430,33 @@ class TestResumeSlot:
 
 
 # ---------------------------------------------------------------------------
-# Persistence — save / load
+# Persistence — save / load (database-backed)
 # ---------------------------------------------------------------------------
 
 
 class TestPersistence:
-    def test_save_creates_file(self, mgr: SlotManager):
+    def test_save_writes_to_db(self, mgr: SlotManager):
         mgr.register_slot("proj", 1)
         mgr.save()
-        assert mgr.state_path.exists()
-        data = json.loads(mgr.state_path.read_text())
-        assert isinstance(data, dict)
-        assert "slots" in data
-        assert len(data["slots"]) == 1
-        assert data["slots"][0]["project"] == "proj"
-
-    def test_save_includes_supervisor_heartbeat(self, mgr: SlotManager):
-        mgr.register_slot("proj", 1)
-        mgr.save()
-        data = json.loads(mgr.state_path.read_text())
-        assert "supervisor_heartbeat" in data
-        # Should be a valid ISO timestamp
-        from datetime import datetime
-        datetime.fromisoformat(data["supervisor_heartbeat"].replace("Z", "+00:00"))
+        rows = load_all_slots(mgr._conn)
+        assert len(rows) == 1
+        assert rows[0]["project"] == "proj"
+        assert rows[0]["status"] == "free"
 
     def test_state_saved_on_assign(self, mgr: SlotManager):
         mgr.register_slot("proj", 1)
         mgr.assign_ticket(
             "proj", 1, ticket_id="T-1", ticket_title="T1", branch="b1"
         )
-        data = json.loads(mgr.state_path.read_text())
-        assert data["slots"][0]["status"] == "busy"
-        assert data["slots"][0]["ticket_id"] == "T-1"
+        rows = load_all_slots(mgr._conn)
+        assert rows[0]["status"] == "busy"
+        assert rows[0]["ticket_id"] == "T-1"
 
     def test_load_restores_state(self, tmp_path: Path):
-        state_path = tmp_path / "state.json"
+        db_path = tmp_path / "test.db"
 
         # Create and save
-        mgr1 = SlotManager(state_path=state_path)
+        mgr1 = SlotManager(db_path=db_path)
         mgr1.register_slot("proj", 1)
         mgr1.assign_ticket(
             "proj", 1, ticket_id="T-1", ticket_title="T1", branch="b1"
@@ -453,7 +465,7 @@ class TestPersistence:
         mgr1.update_stage("proj", 1, stage="review", iteration=2)
 
         # Load into a new manager
-        mgr2 = SlotManager(state_path=state_path)
+        mgr2 = SlotManager(db_path=db_path)
         mgr2.register_slot("proj", 1)
         mgr2.load()
 
@@ -464,56 +476,144 @@ class TestPersistence:
         assert slot.stage == "review"
         assert slot.stage_iteration == 2
 
-    def test_load_missing_file(self, mgr: SlotManager):
+    def test_load_empty_db(self, mgr: SlotManager):
         mgr.register_slot("proj", 1)
         mgr.load()  # should not raise
-        assert mgr.get_slot("proj", 1).status == "free"
-
-    def test_load_corrupt_json(self, tmp_path: Path):
-        state_path = tmp_path / "state.json"
-        state_path.write_text("not valid json!!!")
-        mgr = SlotManager(state_path=state_path)
-        mgr.register_slot("proj", 1)
-        mgr.load()  # should not raise
-        assert mgr.get_slot("proj", 1).status == "free"
-
-    def test_load_wrong_format(self, tmp_path: Path):
-        state_path = tmp_path / "state.json"
-        state_path.write_text(json.dumps("just a string"))
-        mgr = SlotManager(state_path=state_path)
-        mgr.register_slot("proj", 1)
-        mgr.load()
         assert mgr.get_slot("proj", 1).status == "free"
 
     def test_load_ignores_unregistered_slots(self, tmp_path: Path):
+        db_path = tmp_path / "test.db"
+
+        # Save a slot for "unknown" project
+        mgr1 = SlotManager(db_path=db_path)
+        mgr1.register_slot("unknown", 99)
+        mgr1.assign_ticket(
+            "unknown", 99, ticket_id="X-1", ticket_title="X", branch="x"
+        )
+
+        # Load into manager with only "proj" registered
+        mgr2 = SlotManager(db_path=db_path)
+        mgr2.register_slot("proj", 1)
+        mgr2.load()
+        assert mgr2.get_slot("unknown", 99) is None
+        assert mgr2.get_slot("proj", 1).status == "free"
+
+    def test_stages_completed_roundtrip(self, tmp_path: Path):
+        """stages_completed (JSON list) survives save/load."""
+        db_path = tmp_path / "test.db"
+        mgr1 = SlotManager(db_path=db_path)
+        mgr1.register_slot("proj", 1)
+        mgr1.assign_ticket(
+            "proj", 1, ticket_id="T-1", ticket_title="T1", branch="b1"
+        )
+        mgr1.complete_stage("proj", 1, "implement")
+        mgr1.complete_stage("proj", 1, "review")
+
+        mgr2 = SlotManager(db_path=db_path)
+        mgr2.register_slot("proj", 1)
+        mgr2.load()
+        assert mgr2.get_slot("proj", 1).stages_completed == ["implement", "review"]
+
+    def test_interrupted_by_limit_roundtrip(self, tmp_path: Path):
+        """interrupted_by_limit (bool↔int) survives save/load."""
+        db_path = tmp_path / "test.db"
+        mgr1 = SlotManager(db_path=db_path)
+        mgr1.register_slot("proj", 1)
+        mgr1.assign_ticket(
+            "proj", 1, ticket_id="T-1", ticket_title="T1", branch="b1"
+        )
+        mgr1.mark_paused_limit("proj", 1)
+
+        mgr2 = SlotManager(db_path=db_path)
+        mgr2.register_slot("proj", 1)
+        mgr2.load()
+        assert mgr2.get_slot("proj", 1).interrupted_by_limit is True
+
+    def test_backward_compat_state_json(self, tmp_path: Path):
+        """When state_path is provided, state.json is also written."""
+        db_path = tmp_path / "test.db"
         state_path = tmp_path / "state.json"
-        data = {"slots": [{"project": "unknown", "slot_id": 99, "status": "busy"}]}
+        mgr = SlotManager(db_path=db_path, state_path=state_path)
+        mgr.register_slot("proj", 1)
+        mgr.save()
+
+        assert state_path.exists()
+        data = json.loads(state_path.read_text())
+        assert "slots" in data
+        assert "supervisor_heartbeat" in data
+        assert len(data["slots"]) == 1
+        assert data["slots"][0]["project"] == "proj"
+
+
+# ---------------------------------------------------------------------------
+# State.json migration
+# ---------------------------------------------------------------------------
+
+
+class TestStateJsonMigration:
+    def test_migrate_from_state_json(self, tmp_path: Path):
+        """If DB is empty and state.json exists, data migrates automatically."""
+        db_path = tmp_path / "test.db"
+        state_path = tmp_path / "state.json"
+
+        # Write a state.json with slot data
+        data = {
+            "slots": [
+                {"project": "proj", "slot_id": 1, "status": "busy", "ticket_id": "T-1",
+                 "stage": "implement", "stages_completed": ["implement"]},
+            ],
+            "dispatch_paused": True,
+            "dispatch_pause_reason": "limit hit",
+        }
         state_path.write_text(json.dumps(data))
 
-        mgr = SlotManager(state_path=state_path)
+        mgr = SlotManager(db_path=db_path, state_path=state_path)
         mgr.register_slot("proj", 1)
         mgr.load()
-        assert mgr.get_slot("unknown", 99) is None
-        assert mgr.get_slot("proj", 1).status == "free"
 
-    def test_load_legacy_list_format(self, tmp_path: Path):
-        """Old state files (bare list) should still load correctly."""
+        slot = mgr.get_slot("proj", 1)
+        assert slot.status == "busy"
+        assert slot.ticket_id == "T-1"
+        assert slot.stage == "implement"
+        assert mgr.dispatch_paused is True
+        assert mgr.dispatch_pause_reason == "limit hit"
+
+        # Data should now be in the DB
+        rows = load_all_slots(mgr._conn)
+        assert len(rows) == 1
+        assert rows[0]["status"] == "busy"
+
+    def test_migrate_legacy_list_format(self, tmp_path: Path):
+        """Old state files (bare list) should still migrate correctly."""
+        db_path = tmp_path / "test.db"
         state_path = tmp_path / "state.json"
         data = [{"project": "proj", "slot_id": 1, "status": "busy", "ticket_id": "T-1"}]
         state_path.write_text(json.dumps(data))
 
-        mgr = SlotManager(state_path=state_path)
+        mgr = SlotManager(db_path=db_path, state_path=state_path)
         mgr.register_slot("proj", 1)
         mgr.load()
         assert mgr.get_slot("proj", 1).status == "busy"
 
-    def test_atomic_write(self, mgr: SlotManager):
-        """Verify the .tmp intermediate file is cleaned up."""
-        mgr.register_slot("proj", 1)
-        mgr.save()
-        tmp_file = mgr.state_path.with_suffix(".tmp")
-        assert not tmp_file.exists()
-        assert mgr.state_path.exists()
+    def test_no_migration_when_db_has_data(self, tmp_path: Path):
+        """If DB already has slot data, state.json is not read."""
+        db_path = tmp_path / "test.db"
+        state_path = tmp_path / "state.json"
+
+        # Populate DB first
+        mgr1 = SlotManager(db_path=db_path)
+        mgr1.register_slot("proj", 1)
+        mgr1.save()
+
+        # Write a conflicting state.json
+        data = {"slots": [{"project": "proj", "slot_id": 1, "status": "busy"}]}
+        state_path.write_text(json.dumps(data))
+
+        # Load from DB — should NOT pick up the busy status from state.json
+        mgr2 = SlotManager(db_path=db_path, state_path=state_path)
+        mgr2.register_slot("proj", 1)
+        mgr2.load()
+        assert mgr2.get_slot("proj", 1).status == "free"
 
 
 # ---------------------------------------------------------------------------
@@ -578,8 +678,9 @@ class TestReconcile:
         with patch("botfarm.slots._is_pid_alive", return_value=False):
             mgr.reconcile()
 
-        data = json.loads(mgr.state_path.read_text())
-        assert data["slots"][0]["status"] == "failed"
+        # Verify persisted to DB
+        rows = load_all_slots(mgr._conn)
+        assert rows[0]["status"] == "failed"
 
 
 # ---------------------------------------------------------------------------
@@ -619,46 +720,46 @@ class TestDispatchPaused:
         assert mgr.dispatch_paused is False
         assert mgr.dispatch_pause_reason is None
 
-    def test_paused_persisted_in_state_file(self, mgr: SlotManager):
+    def test_paused_persisted_in_db(self, mgr: SlotManager):
         mgr.register_slot("proj", 1)
         mgr.set_dispatch_paused(True, "test reason")
-        data = json.loads(mgr.state_path.read_text())
-        assert data["dispatch_paused"] is True
-        assert data["dispatch_pause_reason"] == "test reason"
+        paused, reason = load_dispatch_state(mgr._conn)
+        assert paused is True
+        assert reason == "test reason"
 
-    def test_paused_not_persisted_cleared(self, mgr: SlotManager):
+    def test_paused_cleared_in_db(self, mgr: SlotManager):
         mgr.register_slot("proj", 1)
         mgr.set_dispatch_paused(True, "reason")
         mgr.set_dispatch_paused(False)
-        data = json.loads(mgr.state_path.read_text())
-        assert data["dispatch_paused"] is False
-        assert "dispatch_pause_reason" not in data
+        paused, reason = load_dispatch_state(mgr._conn)
+        assert paused is False
 
-    def test_paused_loaded_from_state(self, tmp_path: Path):
-        state_path = tmp_path / "state.json"
-        data = {
-            "slots": [{"project": "proj", "slot_id": 1, "status": "free"}],
-            "dispatch_paused": True,
-            "dispatch_pause_reason": "7-day utilization 92.0% >= 90% threshold",
-        }
-        state_path.write_text(json.dumps(data))
+    def test_paused_loaded_from_db(self, tmp_path: Path):
+        db_path = tmp_path / "test.db"
 
-        mgr = SlotManager(state_path=state_path)
-        mgr.register_slot("proj", 1)
-        mgr.load()
-        assert mgr.dispatch_paused is True
-        assert "7-day" in mgr.dispatch_pause_reason
+        mgr1 = SlotManager(db_path=db_path)
+        mgr1.register_slot("proj", 1)
+        mgr1.set_dispatch_paused(True, "7-day utilization 92.0% >= 90% threshold")
+
+        mgr2 = SlotManager(db_path=db_path)
+        mgr2.register_slot("proj", 1)
+        mgr2.load()
+        assert mgr2.dispatch_paused is True
+        assert "7-day" in mgr2.dispatch_pause_reason
 
     def test_paused_defaults_on_load_if_missing(self, tmp_path: Path):
-        state_path = tmp_path / "state.json"
-        data = {"slots": [{"project": "proj", "slot_id": 1, "status": "free"}]}
-        state_path.write_text(json.dumps(data))
+        db_path = tmp_path / "test.db"
 
-        mgr = SlotManager(state_path=state_path)
-        mgr.register_slot("proj", 1)
-        mgr.load()
-        assert mgr.dispatch_paused is False
-        assert mgr.dispatch_pause_reason is None
+        # Save without setting dispatch paused
+        mgr1 = SlotManager(db_path=db_path)
+        mgr1.register_slot("proj", 1)
+        mgr1.save()
+
+        mgr2 = SlotManager(db_path=db_path)
+        mgr2.register_slot("proj", 1)
+        mgr2.load()
+        assert mgr2.dispatch_paused is False
+        assert mgr2.dispatch_pause_reason is None
 
 
 class TestSlotStatuses:
@@ -680,8 +781,8 @@ class TestSlotStatuses:
 class TestLifecycleIntegration:
     def test_full_happy_path(self, tmp_path: Path):
         """Simulate a full ticket lifecycle: assign -> stages -> complete -> free."""
-        state_path = tmp_path / "state.json"
-        mgr = SlotManager(state_path=state_path)
+        db_path = tmp_path / "test.db"
+        mgr = SlotManager(db_path=db_path)
         mgr.register_slot("my-project", 1)
         mgr.register_slot("my-project", 2)
 
@@ -755,10 +856,10 @@ class TestLifecycleIntegration:
 
     def test_crash_recovery_roundtrip(self, tmp_path: Path):
         """Simulate crash and recovery via save/load/reconcile."""
-        state_path = tmp_path / "state.json"
+        db_path = tmp_path / "test.db"
 
         # First run: assign and start working
-        mgr1 = SlotManager(state_path=state_path)
+        mgr1 = SlotManager(db_path=db_path)
         mgr1.register_slot("proj", 1)
         mgr1.register_slot("proj", 2)
         mgr1.assign_ticket(
@@ -770,7 +871,7 @@ class TestLifecycleIntegration:
         # "Crash" — just drop the manager
 
         # Second run: load and reconcile
-        mgr2 = SlotManager(state_path=state_path)
+        mgr2 = SlotManager(db_path=db_path)
         mgr2.register_slot("proj", 1)
         mgr2.register_slot("proj", 2)
         mgr2.load()
@@ -786,69 +887,83 @@ class TestLifecycleIntegration:
 
 
 # ---------------------------------------------------------------------------
-# update_slot_stage — file-based stage updates from worker subprocesses
+# update_slot_stage — database-based stage updates from worker subprocesses
 # ---------------------------------------------------------------------------
 
 
 class TestUpdateSlotStage:
-    def test_updates_stage_in_state_file(self, tmp_path: Path):
-        """update_slot_stage should write the stage to the state file."""
-        state_path = tmp_path / "state.json"
-        mgr = SlotManager(state_path=state_path)
+    def test_updates_stage_in_db(self, tmp_path: Path):
+        """update_slot_stage should write the stage to the database."""
+        db_path = tmp_path / "test.db"
+        mgr = SlotManager(db_path=db_path)
         mgr.register_slot("proj", 1)
         mgr.assign_ticket(
             "proj", 1, ticket_id="T-1", ticket_title="T1", branch="b1"
         )
 
-        update_slot_stage(state_path, "proj", 1, stage="implement")
+        update_slot_stage(db_path, "proj", 1, stage="implement")
 
-        data = json.loads(state_path.read_text())
-        slot_data = data["slots"][0]
-        assert slot_data["stage"] == "implement"
-        assert slot_data["stage_iteration"] == 1
-        assert slot_data["stage_started_at"] is not None
+        # Read directly from DB to verify
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM slots WHERE project='proj' AND slot_id=1"
+        ).fetchone()
+        assert row["stage"] == "implement"
+        assert row["stage_iteration"] == 1
+        assert row["stage_started_at"] is not None
+        conn.close()
 
     def test_updates_iteration_and_session_id(self, tmp_path: Path):
-        state_path = tmp_path / "state.json"
-        mgr = SlotManager(state_path=state_path)
+        db_path = tmp_path / "test.db"
+        mgr = SlotManager(db_path=db_path)
         mgr.register_slot("proj", 1)
         mgr.assign_ticket(
             "proj", 1, ticket_id="T-1", ticket_title="T1", branch="b1"
         )
 
         update_slot_stage(
-            state_path, "proj", 1,
+            db_path, "proj", 1,
             stage="review", iteration=2, session_id="sess-123",
         )
 
-        data = json.loads(state_path.read_text())
-        slot_data = data["slots"][0]
-        assert slot_data["stage"] == "review"
-        assert slot_data["stage_iteration"] == 2
-        assert slot_data["current_session_id"] == "sess-123"
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM slots WHERE project='proj' AND slot_id=1"
+        ).fetchone()
+        assert row["stage"] == "review"
+        assert row["stage_iteration"] == 2
+        assert row["current_session_id"] == "sess-123"
+        conn.close()
 
-    def test_no_op_when_file_missing(self, tmp_path: Path):
-        """Should not raise when the state file doesn't exist."""
-        state_path = tmp_path / "nonexistent.json"
-        update_slot_stage(state_path, "proj", 1, stage="implement")
-        assert not state_path.exists()
+    def test_no_op_when_db_missing(self, tmp_path: Path):
+        """Should not raise when the database doesn't exist."""
+        db_path = tmp_path / "nonexistent.db"
+        update_slot_stage(db_path, "proj", 1, stage="implement")
+        assert not db_path.exists()
 
     def test_no_op_when_slot_not_found(self, tmp_path: Path):
-        """Should not raise when the slot isn't in the file."""
-        state_path = tmp_path / "state.json"
-        mgr = SlotManager(state_path=state_path)
+        """Should not raise when the slot isn't in the database."""
+        db_path = tmp_path / "test.db"
+        mgr = SlotManager(db_path=db_path)
         mgr.register_slot("proj", 1)
         mgr.save()
 
-        update_slot_stage(state_path, "other-proj", 99, stage="implement")
+        # Update a non-existent slot — should be a silent no-op
+        update_slot_stage(db_path, "other-proj", 99, stage="implement")
 
-        # File should be unchanged
-        data = json.loads(state_path.read_text())
-        assert data["slots"][0]["stage"] is None
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM slots WHERE project='proj' AND slot_id=1"
+        ).fetchone()
+        assert row["stage"] is None
+        conn.close()
 
     def test_updates_correct_slot_among_multiple(self, tmp_path: Path):
-        state_path = tmp_path / "state.json"
-        mgr = SlotManager(state_path=state_path)
+        db_path = tmp_path / "test.db"
+        mgr = SlotManager(db_path=db_path)
         mgr.register_slot("proj", 1)
         mgr.register_slot("proj", 2)
         mgr.assign_ticket(
@@ -858,17 +973,23 @@ class TestUpdateSlotStage:
             "proj", 2, ticket_id="T-2", ticket_title="T2", branch="b2"
         )
 
-        update_slot_stage(state_path, "proj", 2, stage="review")
+        update_slot_stage(db_path, "proj", 2, stage="review")
 
-        data = json.loads(state_path.read_text())
-        slot1 = next(s for s in data["slots"] if s["slot_id"] == 1)
-        slot2 = next(s for s in data["slots"] if s["slot_id"] == 2)
-        assert slot1["stage"] is None  # unchanged
-        assert slot2["stage"] == "review"
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        row1 = conn.execute(
+            "SELECT * FROM slots WHERE project='proj' AND slot_id=1"
+        ).fetchone()
+        row2 = conn.execute(
+            "SELECT * FROM slots WHERE project='proj' AND slot_id=2"
+        ).fetchone()
+        assert row1["stage"] is None  # unchanged
+        assert row2["stage"] == "review"
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
-# _refresh_stages_from_disk — supervisor preserves worker stage updates
+# refresh_stages_from_disk — supervisor reads worker stage updates from DB
 # ---------------------------------------------------------------------------
 
 
@@ -876,20 +997,20 @@ class TestRefreshStagesFromDisk:
     def test_refresh_merges_worker_stage_into_memory(self, tmp_path: Path):
         """refresh_stages_from_disk should merge worker-written stage data
         into in-memory state so that subsequent saves don't lose it."""
-        state_path = tmp_path / "state.json"
-        mgr = SlotManager(state_path=state_path)
+        db_path = tmp_path / "test.db"
+        mgr = SlotManager(db_path=db_path)
         mgr.register_slot("proj", 1)
         mgr.assign_ticket(
             "proj", 1, ticket_id="T-1", ticket_title="T1", branch="b1"
         )
 
-        # Simulate worker subprocess updating stage directly in the file
-        update_slot_stage(state_path, "proj", 1, stage="review", iteration=2)
+        # Simulate worker subprocess updating stage directly in the DB
+        update_slot_stage(db_path, "proj", 1, stage="review", iteration=2)
 
         # Supervisor's in-memory state still has stage=None
         assert mgr.get_slot("proj", 1).stage is None
 
-        # Refresh from disk (as the supervisor tick would do)
+        # Refresh from DB (as the supervisor tick would do)
         mgr.refresh_stages_from_disk()
 
         # In-memory state should now reflect the worker's update
@@ -898,22 +1019,25 @@ class TestRefreshStagesFromDisk:
 
         # A subsequent save should preserve the refreshed values
         mgr.save()
-        data = json.loads(state_path.read_text())
-        slot_data = data["slots"][0]
-        assert slot_data["stage"] == "review"
-        assert slot_data["stage_iteration"] == 2
+        rows = load_all_slots(mgr._conn)
+        slot_row = [r for r in rows if r["slot_id"] == 1][0]
+        assert slot_row["stage"] == "review"
+        assert slot_row["stage_iteration"] == 2
 
     def test_refresh_only_affects_busy_slots(self, tmp_path: Path):
         """Free slots should not have their stage fields refreshed."""
-        state_path = tmp_path / "state.json"
-        mgr = SlotManager(state_path=state_path)
+        db_path = tmp_path / "test.db"
+        mgr = SlotManager(db_path=db_path)
         mgr.register_slot("proj", 1)
         mgr.save()
 
-        # Manually write stage to the file for a free slot
-        data = json.loads(state_path.read_text())
-        data["slots"][0]["stage"] = "bogus"
-        state_path.write_text(json.dumps(data))
+        # Manually write stage to DB for a free slot
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            "UPDATE slots SET stage='bogus' WHERE project='proj' AND slot_id=1"
+        )
+        conn.commit()
+        conn.close()
 
         # Refresh — free slot should NOT pick up the bogus stage
         mgr.refresh_stages_from_disk()

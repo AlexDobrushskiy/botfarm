@@ -365,6 +365,13 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         rate_limit_seconds=int(notif_data.get("rate_limit_seconds", 300)),
     )
 
+    if "state_file" in data:
+        logger.warning(
+            "The 'state_file' config key is deprecated — slot state is now "
+            "persisted in the SQLite database. state.json is written for "
+            "backward compatibility only and will be removed in a future release."
+        )
+
     config = BotfarmConfig(
         projects=projects,
         linear=linear,

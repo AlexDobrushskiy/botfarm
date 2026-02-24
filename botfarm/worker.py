@@ -415,7 +415,7 @@ def run_pipeline(
     slot_manager=None,
     project: str | None = None,
     slot_id: int | None = None,
-    state_path: str | Path | None = None,
+    db_path: str | Path | None = None,
     log_dir: str | Path | None = None,
     placeholder_branch: str | None = None,
     max_turns: dict[str, int] | None = None,
@@ -493,7 +493,7 @@ def run_pipeline(
         slot_manager=slot_manager,
         project=project,
         slot_id=slot_id,
-        state_path=state_path,
+        db_path=db_path,
         log_dir=Path(log_dir) if log_dir else None,
         placeholder_branch=placeholder_branch,
     )
@@ -636,7 +636,7 @@ class _PipelineContext:
     slot_manager: object | None = None
     project: str | None = None
     slot_id: int | None = None
-    state_path: str | Path | None = None
+    db_path: str | Path | None = None
     log_dir: Path | None = None
     placeholder_branch: str | None = None
 
@@ -652,9 +652,9 @@ class _PipelineContext:
         Returns the ``StageResult`` on success, or ``None`` if the stage
         failed (in which case ``pipeline`` is updated with the failure).
         """
-        if self.state_path and self.project and self.slot_id is not None:
+        if self.db_path and self.project and self.slot_id is not None:
             update_slot_stage(
-                self.state_path,
+                self.db_path,
                 self.project,
                 self.slot_id,
                 stage=stage,

@@ -21,7 +21,11 @@ from botfarm.db import (
     insert_stage_run,
     insert_task,
     insert_usage_snapshot,
+    load_all_slots,
+    load_dispatch_state,
+    save_dispatch_state,
     update_task,
+    upsert_slot,
 )
 
 
@@ -51,7 +55,7 @@ class TestInitDb:
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()
         }
-        assert tables >= {"tasks", "stage_runs", "usage_snapshots", "task_events", "schema_version"}
+        assert tables >= {"tasks", "stage_runs", "usage_snapshots", "task_events", "schema_version", "slots", "dispatch_state"}
         c.close()
 
     def test_wal_mode_enabled(self, conn):
@@ -165,6 +169,95 @@ class TestInitDb:
         c2.commit()
         task = c2.execute("SELECT pr_url FROM tasks WHERE ticket_id = 'SMA-1'").fetchone()
         assert task[0] == "https://example.com/pr/1"
+        c2.close()
+
+    def test_migration_v2_to_v3(self, tmp_path):
+        """Simulate a v2 database and verify migration adds slots and dispatch_state tables."""
+        db_file = tmp_path / "botfarm.db"
+        conn = sqlite3.connect(str(db_file))
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        # Create v2 schema (without slots and dispatch_state)
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS tasks (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticket_id       TEXT NOT NULL UNIQUE,
+                title           TEXT NOT NULL,
+                project         TEXT NOT NULL,
+                slot            INTEGER NOT NULL,
+                status          TEXT NOT NULL DEFAULT 'pending',
+                created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                started_at      TEXT,
+                completed_at    TEXT,
+                cost_usd        REAL NOT NULL DEFAULT 0.0,
+                turns           INTEGER NOT NULL DEFAULT 0,
+                review_iterations INTEGER NOT NULL DEFAULT 0,
+                comments        TEXT NOT NULL DEFAULT '',
+                limit_interruptions INTEGER NOT NULL DEFAULT 0,
+                failure_reason  TEXT,
+                pr_url          TEXT,
+                pipeline_stage  TEXT,
+                review_state    TEXT
+            );
+            CREATE TABLE IF NOT EXISTS stage_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id INTEGER NOT NULL REFERENCES tasks(id),
+                stage TEXT NOT NULL,
+                iteration INTEGER NOT NULL DEFAULT 1,
+                session_id TEXT,
+                turns INTEGER NOT NULL DEFAULT 0,
+                duration_seconds REAL,
+                cost_usd REAL NOT NULL DEFAULT 0.0,
+                exit_subtype TEXT,
+                was_limit_restart INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            );
+            CREATE TABLE IF NOT EXISTS usage_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                utilization_5h REAL,
+                utilization_7d REAL,
+                resets_at TEXT,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            );
+            CREATE TABLE IF NOT EXISTS task_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id INTEGER REFERENCES tasks(id),
+                event_type TEXT NOT NULL,
+                detail TEXT,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            );
+        """)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)"
+        )
+        conn.execute("INSERT INTO schema_version (version) VALUES (2)")
+        conn.commit()
+        conn.close()
+
+        # Re-open via init_db — should migrate to v3
+        c2 = init_db(db_file)
+        row = c2.execute("SELECT version FROM schema_version").fetchone()
+        assert row[0] == SCHEMA_VERSION
+
+        # New tables should exist
+        tables = {
+            r[0]
+            for r in c2.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        assert "slots" in tables
+        assert "dispatch_state" in tables
+
+        # Should be able to insert into new tables
+        c2.execute(
+            "INSERT INTO slots (project, slot_id, status) VALUES (?, ?, ?)",
+            ("proj", 1, "free"),
+        )
+        c2.execute(
+            "INSERT INTO dispatch_state (id, paused) VALUES (1, 0)"
+        )
+        c2.commit()
         c2.close()
 
 
@@ -491,3 +584,88 @@ class TestEvents:
             insert_event(conn, event_type="tick", detail=str(i))
         events = get_events(conn, limit=3)
         assert len(events) == 3
+
+
+# ---------------------------------------------------------------------------
+# Slot runtime state
+# ---------------------------------------------------------------------------
+
+
+class TestSlotRuntimeState:
+    def test_upsert_and_load(self, conn):
+        upsert_slot(conn, {
+            "project": "proj", "slot_id": 1, "status": "busy",
+            "ticket_id": "SMA-1", "stages_completed": ["implement"],
+        })
+        conn.commit()
+        rows = load_all_slots(conn)
+        assert len(rows) == 1
+        assert rows[0]["project"] == "proj"
+        assert rows[0]["slot_id"] == 1
+        assert rows[0]["status"] == "busy"
+        assert rows[0]["ticket_id"] == "SMA-1"
+
+    def test_upsert_updates_existing(self, conn):
+        upsert_slot(conn, {"project": "proj", "slot_id": 1, "status": "free"})
+        conn.commit()
+        upsert_slot(conn, {"project": "proj", "slot_id": 1, "status": "busy", "ticket_id": "T-1"})
+        conn.commit()
+        rows = load_all_slots(conn)
+        assert len(rows) == 1
+        assert rows[0]["status"] == "busy"
+        assert rows[0]["ticket_id"] == "T-1"
+
+    def test_stages_completed_serialized(self, conn):
+        upsert_slot(conn, {
+            "project": "proj", "slot_id": 1,
+            "stages_completed": ["implement", "review"],
+        })
+        conn.commit()
+        rows = load_all_slots(conn)
+        import json
+        stages = json.loads(rows[0]["stages_completed"])
+        assert stages == ["implement", "review"]
+
+    def test_interrupted_by_limit_stored_as_int(self, conn):
+        upsert_slot(conn, {
+            "project": "proj", "slot_id": 1, "interrupted_by_limit": True,
+        })
+        conn.commit()
+        rows = load_all_slots(conn)
+        assert rows[0]["interrupted_by_limit"] == 1
+
+    def test_multiple_slots(self, conn):
+        upsert_slot(conn, {"project": "alpha", "slot_id": 1})
+        upsert_slot(conn, {"project": "alpha", "slot_id": 2})
+        upsert_slot(conn, {"project": "beta", "slot_id": 1})
+        conn.commit()
+        rows = load_all_slots(conn)
+        assert len(rows) == 3
+
+
+# ---------------------------------------------------------------------------
+# Dispatch state
+# ---------------------------------------------------------------------------
+
+
+class TestDispatchState:
+    def test_save_and_load(self, conn):
+        save_dispatch_state(conn, paused=True, reason="limit hit")
+        conn.commit()
+        paused, reason = load_dispatch_state(conn)
+        assert paused is True
+        assert reason == "limit hit"
+
+    def test_update_existing(self, conn):
+        save_dispatch_state(conn, paused=True, reason="first")
+        conn.commit()
+        save_dispatch_state(conn, paused=False)
+        conn.commit()
+        paused, reason = load_dispatch_state(conn)
+        assert paused is False
+        assert reason is None
+
+    def test_defaults_when_empty(self, conn):
+        paused, reason = load_dispatch_state(conn)
+        assert paused is False
+        assert reason is None

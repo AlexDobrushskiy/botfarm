@@ -1,12 +1,13 @@
-"""SQLite database for task history, stage runs, usage snapshots, and event logs."""
+"""SQLite database for task history, stage runs, usage snapshots, event logs, and slot runtime state."""
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS tasks (
@@ -60,6 +61,35 @@ CREATE TABLE IF NOT EXISTS task_events (
     created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
+CREATE TABLE IF NOT EXISTS slots (
+    project             TEXT NOT NULL,
+    slot_id             INTEGER NOT NULL,
+    status              TEXT NOT NULL DEFAULT 'free',
+    ticket_id           TEXT,
+    ticket_title        TEXT,
+    branch              TEXT,
+    pr_url              TEXT,
+    stage               TEXT,
+    stage_iteration     INTEGER NOT NULL DEFAULT 0,
+    current_session_id  TEXT,
+    started_at          TEXT,
+    stage_started_at    TEXT,
+    sigterm_sent_at     TEXT,
+    pid                 INTEGER,
+    interrupted_by_limit INTEGER NOT NULL DEFAULT 0,
+    resume_after        TEXT,
+    stages_completed    TEXT,
+    updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY(project, slot_id)
+);
+
+CREATE TABLE IF NOT EXISTS dispatch_state (
+    id              INTEGER PRIMARY KEY CHECK (id = 1),
+    paused          INTEGER NOT NULL DEFAULT 0,
+    pause_reason    TEXT,
+    updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_stage_runs_task_id ON stage_runs(task_id);
 CREATE INDEX IF NOT EXISTS idx_task_events_task_id ON task_events(task_id);
 CREATE INDEX IF NOT EXISTS idx_task_events_type ON task_events(event_type);
@@ -83,6 +113,37 @@ def _migrate(conn: sqlite3.Connection, from_version: int) -> None:
         for col in ("pr_url", "pipeline_stage", "review_state"):
             if col not in existing:
                 conn.execute(f"ALTER TABLE tasks ADD COLUMN {col} TEXT")  # noqa: S608
+    if from_version < 3:
+        # v2→v3: add slots and dispatch_state tables for runtime state
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS slots (
+                project             TEXT NOT NULL,
+                slot_id             INTEGER NOT NULL,
+                status              TEXT NOT NULL DEFAULT 'free',
+                ticket_id           TEXT,
+                ticket_title        TEXT,
+                branch              TEXT,
+                pr_url              TEXT,
+                stage               TEXT,
+                stage_iteration     INTEGER NOT NULL DEFAULT 0,
+                current_session_id  TEXT,
+                started_at          TEXT,
+                stage_started_at    TEXT,
+                sigterm_sent_at     TEXT,
+                pid                 INTEGER,
+                interrupted_by_limit INTEGER NOT NULL DEFAULT 0,
+                resume_after        TEXT,
+                stages_completed    TEXT,
+                updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                PRIMARY KEY(project, slot_id)
+            );
+            CREATE TABLE IF NOT EXISTS dispatch_state (
+                id              INTEGER PRIMARY KEY CHECK (id = 1),
+                paused          INTEGER NOT NULL DEFAULT 0,
+                pause_reason    TEXT,
+                updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            );
+        """)
     conn.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION,))
 
 
@@ -418,3 +479,97 @@ def get_events(
     query += " ORDER BY created_at DESC LIMIT ?"
     params.append(limit)
     return conn.execute(query, params).fetchall()
+
+
+# ---------------------------------------------------------------------------
+# Slot runtime state helpers
+# ---------------------------------------------------------------------------
+
+def upsert_slot(conn: sqlite3.Connection, slot_data: dict) -> None:
+    """Insert or update a slot runtime state row.
+
+    Accepts a dict matching SlotState.to_dict() format.
+    """
+    stages = json.dumps(slot_data.get("stages_completed") or [])
+    now = _now_iso()
+    conn.execute(
+        """
+        INSERT INTO slots (
+            project, slot_id, status, ticket_id, ticket_title, branch,
+            pr_url, stage, stage_iteration, current_session_id, started_at,
+            stage_started_at, sigterm_sent_at, pid, interrupted_by_limit,
+            resume_after, stages_completed, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(project, slot_id) DO UPDATE SET
+            status=excluded.status,
+            ticket_id=excluded.ticket_id,
+            ticket_title=excluded.ticket_title,
+            branch=excluded.branch,
+            pr_url=excluded.pr_url,
+            stage=excluded.stage,
+            stage_iteration=excluded.stage_iteration,
+            current_session_id=excluded.current_session_id,
+            started_at=excluded.started_at,
+            stage_started_at=excluded.stage_started_at,
+            sigterm_sent_at=excluded.sigterm_sent_at,
+            pid=excluded.pid,
+            interrupted_by_limit=excluded.interrupted_by_limit,
+            resume_after=excluded.resume_after,
+            stages_completed=excluded.stages_completed,
+            updated_at=excluded.updated_at
+        """,
+        (
+            slot_data["project"],
+            slot_data["slot_id"],
+            slot_data.get("status", "free"),
+            slot_data.get("ticket_id"),
+            slot_data.get("ticket_title"),
+            slot_data.get("branch"),
+            slot_data.get("pr_url"),
+            slot_data.get("stage"),
+            slot_data.get("stage_iteration", 0),
+            slot_data.get("current_session_id"),
+            slot_data.get("started_at"),
+            slot_data.get("stage_started_at"),
+            slot_data.get("sigterm_sent_at"),
+            slot_data.get("pid"),
+            int(slot_data.get("interrupted_by_limit", False)),
+            slot_data.get("resume_after"),
+            stages,
+            now,
+        ),
+    )
+
+
+def load_all_slots(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Return all slot runtime state rows."""
+    return conn.execute(
+        "SELECT * FROM slots ORDER BY project, slot_id"
+    ).fetchall()
+
+
+def load_dispatch_state(conn: sqlite3.Connection) -> tuple[bool, str | None]:
+    """Load dispatch pause state. Returns (paused, reason)."""
+    row = conn.execute(
+        "SELECT paused, pause_reason FROM dispatch_state WHERE id = 1"
+    ).fetchone()
+    if row is None:
+        return False, None
+    return bool(row["paused"]), row["pause_reason"]
+
+
+def save_dispatch_state(
+    conn: sqlite3.Connection, *, paused: bool, reason: str | None = None,
+) -> None:
+    """Save dispatch pause state (single-row table)."""
+    conn.execute(
+        """
+        INSERT INTO dispatch_state (id, paused, pause_reason, updated_at)
+        VALUES (1, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            paused=excluded.paused,
+            pause_reason=excluded.pause_reason,
+            updated_at=excluded.updated_at
+        """,
+        (int(paused), reason, _now_iso()),
+    )
