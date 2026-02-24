@@ -1207,6 +1207,45 @@ class TestParseReviewApproved:
     def test_verdict_marker_approved_with_whitespace(self):
         assert _parse_review_approved("VERDICT:  APPROVED") is True
 
+    def test_verdict_case_insensitive_approved(self):
+        assert _parse_review_approved("Verdict: Approved") is True
+
+    def test_verdict_case_insensitive_changes_requested(self):
+        assert _parse_review_approved("verdict: changes_requested") is False
+
+    def test_verdict_mixed_case(self):
+        assert _parse_review_approved("Verdict: APPROVED") is True
+
+    def test_verdict_beyond_500_char_tail(self):
+        # VERDICT marker outside the last 500 chars should still be found
+        text = "VERDICT: APPROVED\n" + ("x" * 600)
+        assert _parse_review_approved(text) is True
+
+    def test_verdict_changes_requested_beyond_tail(self):
+        text = "VERDICT: CHANGES_REQUESTED\n" + ("x" * 600)
+        assert _parse_review_approved(text) is False
+
+    def test_gh_pr_review_approve_full_text(self):
+        text = "I ran gh pr review 42 --approve\n" + ("x" * 600)
+        assert _parse_review_approved(text) is True
+
+    def test_gh_pr_review_request_changes_full_text(self):
+        text = "I ran gh pr review 42 --request-changes\n" + ("x" * 600)
+        assert _parse_review_approved(text) is False
+
+    def test_verdict_takes_priority_over_gh_command(self):
+        # VERDICT marker wins over gh pr review command
+        text = "gh pr review --approve\nVERDICT: CHANGES_REQUESTED"
+        assert _parse_review_approved(text) is False
+
+    def test_fallback_warning_logged(self, caplog):
+        # When no VERDICT or gh command found, warning is logged
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="botfarm.worker"):
+            _parse_review_approved("LGTM, ship it!")
+        assert "falling back to keyword heuristics" in caplog.text
+
 
 # ---------------------------------------------------------------------------
 # run_pipeline — review iteration loop tests
