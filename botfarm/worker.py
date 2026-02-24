@@ -200,6 +200,10 @@ def _run_review(
         "After posting all inline comments, submit your overall assessment "
         "using 'gh pr review' with either --approve or --request-changes "
         "and a summary body.\n\n"
+        "IMPORTANT: If you posted ANY inline comments with suggestions, issues, "
+        "or actionable feedback, you MUST use --request-changes and output "
+        "VERDICT: CHANGES_REQUESTED. Only use --approve and VERDICT: APPROVED "
+        "when there are ZERO actionable inline comments.\n\n"
         "At the very end of your response, output exactly one of these verdict "
         "markers on its own line:\n"
         "  VERDICT: APPROVED\n"
@@ -336,7 +340,7 @@ def _run_merge(
 ) -> StageResult:
     """MERGE stage — Squash merge the PR, then checkout placeholder branch."""
     proc = subprocess.run(
-        ["gh", "pr", "merge", pr_url, "--squash"],
+        ["gh", "pr", "merge", pr_url, "--squash", "--delete-branch"],
         capture_output=True,
         text=True,
         cwd=str(cwd),
@@ -344,8 +348,17 @@ def _run_merge(
     if log_file is not None:
         _write_subprocess_log(log_file, proc.stdout, proc.stderr)
     if proc.returncode != 0:
-        error = proc.stderr[:500] if proc.stderr else proc.stdout[:500]
-        return StageResult(stage="merge", success=False, error=error)
+        # The merge command failed, but the PR may have actually been merged
+        # (e.g. post-merge git checkout fails in worktree environments).
+        # Check the actual PR state before reporting failure.
+        if _check_pr_merged(pr_url, cwd):
+            logger.info(
+                "gh pr merge returned non-zero but PR is actually merged: %s",
+                pr_url,
+            )
+        else:
+            error = proc.stderr[:500] if proc.stderr else proc.stdout[:500]
+            return StageResult(stage="merge", success=False, error=error)
 
     # Switch worktree back to its placeholder branch so it doesn't hold
     # the now-deleted feature branch (which causes issues on next dispatch).
@@ -1080,6 +1093,26 @@ def _write_subprocess_log(
         logger.info("Wrote subprocess log to %s", log_file)
     except OSError:
         logger.warning("Failed to write subprocess log to %s", log_file, exc_info=True)
+
+
+def _check_pr_merged(pr_url: str, cwd: str | Path) -> bool:
+    """Check whether a PR has been merged by querying its state.
+
+    Returns ``True`` if the PR state is ``MERGED``, ``False`` otherwise.
+    """
+    try:
+        proc = subprocess.run(
+            ["gh", "pr", "view", pr_url, "--json", "state", "--jq", ".state"],
+            capture_output=True,
+            text=True,
+            cwd=str(cwd),
+            timeout=15,
+        )
+        if proc.returncode == 0:
+            return proc.stdout.strip().upper() == "MERGED"
+    except Exception:
+        logger.debug("Failed to check PR state for %s", pr_url, exc_info=True)
+    return False
 
 
 def _recover_pr_url(conn, task_id: int, cwd: str | Path) -> str | None:

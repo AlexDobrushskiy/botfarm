@@ -931,7 +931,30 @@ class Supervisor:
         logger.info("Freed slot %s/%d after completion", project, slot.slot_id)
 
     def _handle_failed_slot(self, slot: SlotState) -> None:
-        """Update Linear for a failed slot and free it."""
+        """Update Linear for a failed slot and free it.
+
+        Before moving the ticket to failed status, checks if the PR was
+        actually merged. If so, treats it as a successful completion
+        instead of a failure (prevents infinite retry loops for
+        already-merged PRs).
+        """
+        # Check if the PR was actually merged despite the reported failure.
+        # This prevents infinite retry loops when merge reports failure
+        # but the PR is already merged (e.g. post-merge checkout fails).
+        pr_status = self._check_pr_status(slot)
+        if pr_status == "merged":
+            logger.info(
+                "Failed slot %s/%d has a merged PR — treating as completed",
+                slot.project, slot.slot_id,
+            )
+            # Update task status to completed in DB
+            task_id = self._find_task_id(slot.ticket_id)
+            if task_id is not None:
+                update_task(self._conn, task_id, status="completed")
+                self._conn.commit()
+            self._handle_completed_slot(slot)
+            return
+
         project = slot.project
         linear_cfg = self._config.linear
         poller = self._pollers.get(project)

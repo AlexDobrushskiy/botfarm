@@ -19,6 +19,7 @@ from botfarm.worker import (
     parse_claude_output,
     run_claude,
     run_pipeline,
+    _check_pr_merged,
     _extract_pr_url,
     _make_stage_log_path,
     _parse_pr_url,
@@ -484,6 +485,68 @@ class TestRunMerge:
         result = _run_merge(PR_URL, cwd=tmp_path)
         assert result.success is False
         assert "merge conflict" in result.error
+
+    @patch("botfarm.worker._check_pr_merged", return_value=True)
+    @patch("botfarm.worker.subprocess.run")
+    def test_merge_failure_but_pr_actually_merged(self, mock_run, mock_check, tmp_path):
+        """When gh pr merge fails but PR is actually merged, return success."""
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["gh"], returncode=1, stdout="",
+            stderr="fatal: 'main' is already used by worktree",
+        )
+        result = _run_merge(PR_URL, cwd=tmp_path)
+        assert result.success is True
+        assert result.stage == "merge"
+        mock_check.assert_called_once_with(PR_URL, tmp_path)
+
+    @patch("botfarm.worker._check_pr_merged", return_value=False)
+    @patch("botfarm.worker.subprocess.run")
+    def test_merge_failure_pr_not_merged(self, mock_run, mock_check, tmp_path):
+        """When gh pr merge fails and PR is not merged, return failure."""
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["gh"], returncode=1, stdout="", stderr="merge conflict"
+        )
+        result = _run_merge(PR_URL, cwd=tmp_path)
+        assert result.success is False
+        assert "merge conflict" in result.error
+
+    @patch("botfarm.worker.subprocess.run")
+    def test_merge_uses_delete_branch_flag(self, mock_run, tmp_path):
+        """Merge command includes --delete-branch flag."""
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["gh"], returncode=0, stdout="Merged", stderr=""
+        )
+        _run_merge(PR_URL, cwd=tmp_path)
+        call_args = mock_run.call_args[0][0]
+        assert "--delete-branch" in call_args
+
+
+class TestCheckPrMerged:
+    @patch("botfarm.worker.subprocess.run")
+    def test_pr_merged(self, mock_run, tmp_path):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["gh"], returncode=0, stdout="MERGED\n", stderr=""
+        )
+        assert _check_pr_merged(PR_URL, tmp_path) is True
+
+    @patch("botfarm.worker.subprocess.run")
+    def test_pr_open(self, mock_run, tmp_path):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["gh"], returncode=0, stdout="OPEN\n", stderr=""
+        )
+        assert _check_pr_merged(PR_URL, tmp_path) is False
+
+    @patch("botfarm.worker.subprocess.run")
+    def test_pr_check_fails(self, mock_run, tmp_path):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["gh"], returncode=1, stdout="", stderr="error"
+        )
+        assert _check_pr_merged(PR_URL, tmp_path) is False
+
+    @patch("botfarm.worker.subprocess.run")
+    def test_pr_check_timeout(self, mock_run, tmp_path):
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd="gh", timeout=15)
+        assert _check_pr_merged(PR_URL, tmp_path) is False
 
 
 # ---------------------------------------------------------------------------
@@ -1716,6 +1779,20 @@ class TestPromptContent:
         prompt = mock_claude.call_args.args[0]
         assert "VERDICT: APPROVED" in prompt
         assert "VERDICT: CHANGES_REQUESTED" in prompt
+
+    @patch("botfarm.worker.run_claude")
+    def test_review_prompt_requires_changes_requested_for_inline_comments(
+        self, mock_claude, tmp_path,
+    ):
+        """Review prompt instructs agent to use CHANGES_REQUESTED when inline comments exist."""
+        mock_claude.return_value = ClaudeResult(
+            session_id="s", num_turns=1, duration_seconds=1.0,
+            cost_usd=0.0, exit_subtype="", result_text="done",
+        )
+        _run_review(PR_URL, cwd=tmp_path, max_turns=10)
+        prompt = mock_claude.call_args.args[0]
+        assert "ZERO actionable inline comments" in prompt
+        assert "MUST use --request-changes" in prompt
 
     @patch("botfarm.worker.run_claude")
     def test_fix_prompt_contains_inline_comment_api(self, mock_claude, tmp_path):
