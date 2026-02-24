@@ -2737,7 +2737,8 @@ class TestSlotWorktreeCwd:
         slot = supervisor.slot_manager.get_slot("test-project", 1)
         poller = supervisor._pollers["test-project"]
 
-        with patch("botfarm.supervisor.multiprocessing.Process") as MockProc:
+        with patch("botfarm.supervisor.Path.home", return_value=tmp_path), \
+             patch("botfarm.supervisor.multiprocessing.Process") as MockProc:
             mock_proc = MagicMock()
             mock_proc.pid = 12345
             MockProc.return_value = mock_proc
@@ -2757,7 +2758,8 @@ class TestSlotWorktreeCwd:
         slot = supervisor.slot_manager.get_slot("test-project", 1)
         poller = supervisor._pollers["test-project"]
 
-        with patch("botfarm.supervisor.multiprocessing.Process") as MockProc:
+        with patch("botfarm.supervisor.Path.home", return_value=tmp_path), \
+             patch("botfarm.supervisor.multiprocessing.Process") as MockProc:
             mock_proc = MagicMock()
             mock_proc.pid = 12345
             MockProc.return_value = mock_proc

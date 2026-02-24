@@ -1592,10 +1592,14 @@ class Supervisor:
         prod_db = Path(self._db_path)
         if prod_db.exists():
             src = sqlite3.connect(str(prod_db))
-            dst = sqlite3.connect(str(slot_db))
-            src.backup(dst)
-            dst.close()
-            src.close()
+            try:
+                dst = sqlite3.connect(str(slot_db))
+                try:
+                    src.backup(dst)
+                finally:
+                    dst.close()
+            finally:
+                src.close()
             logger.info(
                 "Seeded slot DB for %s/%d: %s", project_name, slot_id, slot_db,
             )
@@ -1609,7 +1613,7 @@ class Supervisor:
     @staticmethod
     def _cleanup_slot_db(project_name: str, slot_id: int) -> None:
         """Remove the sandboxed DB directory for a slot."""
-        slot_dir = Path.home() / ".botfarm" / "slots" / f"{project_name}-{slot_id}"
+        slot_dir = Path(Supervisor._slot_db_path(project_name, slot_id)).parent
         if slot_dir.exists():
             shutil.rmtree(str(slot_dir), ignore_errors=True)
             logger.info(
