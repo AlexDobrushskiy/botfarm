@@ -57,7 +57,7 @@ def parse_claude_output(raw: str) -> ClaudeResult:
     """Parse the JSON output produced by ``claude -p --output-format json``.
 
     The expected shape is a JSON object with at least:
-    ``session_id``, ``num_turns``, ``duration_ms``, ``cost_usd``,
+    ``session_id``, ``num_turns``, ``duration_ms``, ``total_cost_usd``,
     ``is_error``, ``result``, and ``subtype``.
     """
     data = json.loads(raw)
@@ -66,7 +66,7 @@ def parse_claude_output(raw: str) -> ClaudeResult:
         session_id=data.get("session_id", ""),
         num_turns=data.get("num_turns", 0),
         duration_seconds=duration_ms / 1000.0,
-        cost_usd=data.get("cost_usd", 0.0),
+        cost_usd=data.get("total_cost_usd", 0.0),
         exit_subtype=data.get("subtype", ""),
         result_text=data.get("result", ""),
         is_error=bool(data.get("is_error", False)),

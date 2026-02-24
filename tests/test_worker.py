@@ -89,7 +89,7 @@ def _make_claude_json(
             "session_id": session_id,
             "num_turns": num_turns,
             "duration_ms": duration_ms,
-            "cost_usd": cost_usd,
+            "total_cost_usd": cost_usd,
             "subtype": subtype,
             "result": result,
             "is_error": is_error,
