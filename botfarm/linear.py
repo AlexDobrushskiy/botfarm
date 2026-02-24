@@ -38,6 +38,12 @@ _ISSUE_FIELDS = """
           }
         }
       }
+      children {
+        nodes {
+          identifier
+          state { type name }
+        }
+      }
 """
 
 ISSUES_QUERY = """
@@ -139,6 +145,22 @@ class LinearIssue:
     labels: list[str] | None = None
     sort_order: float = 0.0
     blocked_by: list[str] | None = None
+    # Children info: list of (identifier, state_type) tuples, or None if no children.
+    children_states: list[tuple[str, str]] | None = None
+
+
+@dataclass
+class PollResult:
+    """Result of a LinearPoller.poll() call.
+
+    Attributes:
+        candidates: Issues eligible for dispatch, sorted by sort order.
+        auto_close_parents: Parent issues whose children are all done,
+            ready to be auto-closed by the supervisor.
+    """
+
+    candidates: list[LinearIssue]
+    auto_close_parents: list[LinearIssue]
 
 
 class LinearAPIError(Exception):
@@ -243,6 +265,17 @@ class LinearClient:
                 # Only count as blocked if the blocker is not resolved
                 if state_type not in ("completed", "canceled"):
                     blocked_by.append(related.get("identifier", ""))
+            # Parse children to detect parent issues.
+            child_nodes = node.get("children", {}).get("nodes", [])
+            children_states: list[tuple[str, str]] | None = None
+            if child_nodes:
+                children_states = [
+                    (
+                        ch.get("identifier", ""),
+                        (ch.get("state") or {}).get("type", ""),
+                    )
+                    for ch in child_nodes
+                ]
             issues.append(
                 LinearIssue(
                     id=node["id"],
@@ -255,6 +288,7 @@ class LinearClient:
                     labels=[ln["name"] for ln in label_nodes if "name" in ln],
                     sort_order=node.get("sortOrder", 0.0),
                     blocked_by=blocked_by if blocked_by else None,
+                    children_states=children_states,
                 )
             )
         return issues
@@ -320,7 +354,7 @@ class LinearPoller:
     def team_key(self) -> str:
         return self._project.linear_team
 
-    def poll(self, active_ticket_ids: set[str] | None = None) -> list[LinearIssue]:
+    def poll(self, active_ticket_ids: set[str] | None = None) -> PollResult:
         """Fetch Todo issues, filter, and return sorted by manual sort order.
 
         Args:
@@ -328,8 +362,8 @@ class LinearPoller:
                 across all slots. These will be excluded from the results.
 
         Returns:
-            List of LinearIssue sorted by sortOrder ascending (matching
-            the manual drag-and-drop order in the Linear UI).
+            PollResult with candidates sorted by sortOrder ascending and
+            any parent issues eligible for auto-close.
         """
         if active_ticket_ids is None:
             active_ticket_ids = set()
@@ -340,7 +374,7 @@ class LinearPoller:
             project_name=self._project.linear_project,
         )
 
-        candidates = []
+        pre_parent_candidates = []
         for issue in issues:
             issue_labels = set(
                 label.lower() for label in (issue.labels or [])
@@ -368,19 +402,51 @@ class LinearPoller:
                 )
                 continue
 
-            candidates.append(issue)
+            pre_parent_candidates.append(issue)
+
+        # Separate parent issues from regular candidates.
+        candidates = []
+        auto_close_parents = []
+        for issue in pre_parent_candidates:
+            if issue.children_states is None:
+                # No children — normal issue
+                candidates.append(issue)
+                continue
+
+            # Has children: check if all are done
+            all_done = all(
+                st in ("completed", "canceled")
+                for _, st in issue.children_states
+            )
+            if all_done:
+                auto_close_parents.append(issue)
+                logger.info(
+                    "Parent %s: all children done — eligible for auto-close",
+                    issue.identifier,
+                )
+            else:
+                open_children = [
+                    ident for ident, st in issue.children_states
+                    if st not in ("completed", "canceled")
+                ]
+                logger.debug(
+                    "Skipping parent %s: children still open: %s",
+                    issue.identifier,
+                    open_children,
+                )
 
         # Sort by sortOrder ascending — lower value = higher in the Linear UI list.
         # This respects the manual drag-and-drop ordering set by the user.
         candidates.sort(key=lambda i: i.sort_order)
 
         logger.info(
-            "Polled %s: %d Todo issues, %d candidates after filtering",
+            "Polled %s: %d Todo issues, %d candidates, %d auto-close parents",
             self._project.linear_team,
             len(issues),
             len(candidates),
+            len(auto_close_parents),
         )
-        return candidates
+        return PollResult(candidates=candidates, auto_close_parents=auto_close_parents)
 
     def get_state_id(self, state_name: str) -> str:
         """Look up a workflow state ID by name, caching the result."""
