@@ -12,6 +12,7 @@ from botfarm.config import (
     BotfarmConfig,
     DashboardConfig,
     LinearConfig,
+    NotificationsConfig,
     ProjectConfig,
 )
 from botfarm.dashboard import create_app, start_dashboard
@@ -1122,3 +1123,235 @@ class TestConfigUpdate:
         assert resp.status_code == 200
         assert config.linear.poll_interval_seconds == 60
         assert config.agents.max_ci_retries == 5
+
+
+# --- Structural config editing ---
+
+
+def _make_structural_botfarm_config(tmp_path):
+    """Create a BotfarmConfig with structural fields for testing."""
+    config_data = {
+        "projects": [
+            {
+                "name": "test-project",
+                "linear_team": "TST",
+                "base_dir": "~/test",
+                "worktree_prefix": "test-slot-",
+                "slots": [1, 2],
+                "linear_project": "My Filter",
+            },
+        ],
+        "linear": {
+            "api_key": "${LINEAR_API_KEY}",
+            "poll_interval_seconds": 120,
+        },
+        "notifications": {
+            "webhook_url": "https://hooks.example.com/old",
+            "webhook_format": "slack",
+            "rate_limit_seconds": 300,
+        },
+    }
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.dump(config_data, sort_keys=False))
+
+    config = BotfarmConfig(
+        projects=[
+            ProjectConfig(
+                name="test-project", linear_team="TST",
+                base_dir="~/test", worktree_prefix="test-slot-",
+                slots=[1, 2], linear_project="My Filter",
+            ),
+        ],
+        linear=LinearConfig(api_key="test-key", poll_interval_seconds=120),
+        notifications=NotificationsConfig(
+            webhook_url="https://hooks.example.com/old",
+            webhook_format="slack",
+            rate_limit_seconds=300,
+        ),
+    )
+    config.source_path = str(config_path)
+    return config, config_path
+
+
+class TestStructuralConfigPage:
+    @pytest.fixture()
+    def structural_client(self, state_file, db_file, tmp_path):
+        config, _ = _make_structural_botfarm_config(tmp_path)
+        app = create_app(
+            state_file=state_file, db_path=db_file,
+            botfarm_config=config,
+        )
+        return TestClient(app)
+
+    def test_config_page_contains_projects_section(self, structural_client):
+        resp = structural_client.get("/config")
+        body = resp.text
+        assert "Projects" in body
+        assert "test-project" in body
+        assert "restart" in body.lower()
+
+    def test_config_page_contains_notifications_section(self, structural_client):
+        resp = structural_client.get("/config")
+        body = resp.text
+        assert "Notifications" in body
+        assert "Webhook URL" in body
+        assert "webhook_format" in body.lower() or "Webhook format" in body
+
+    def test_config_page_shows_project_slots(self, structural_client):
+        resp = structural_client.get("/config")
+        body = resp.text
+        # Slot chips for slots [1, 2]
+        assert 'data-slot="1"' in body
+        assert 'data-slot="2"' in body
+
+    def test_config_page_shows_linear_project_filter(self, structural_client):
+        resp = structural_client.get("/config")
+        body = resp.text
+        assert "My Filter" in body
+
+    def test_no_restart_banner_initially(self, structural_client):
+        resp = structural_client.get("/config")
+        assert 'id="restart-banner"' not in resp.text
+
+
+class TestStructuralConfigUpdate:
+    @pytest.fixture()
+    def setup(self, state_file, db_file, tmp_path):
+        config, config_path = _make_structural_botfarm_config(tmp_path)
+        app = create_app(
+            state_file=state_file, db_path=db_file,
+            botfarm_config=config,
+        )
+        client = TestClient(app)
+        return client, config, config_path, app
+
+    def test_update_notifications_writes_yaml_only(self, setup):
+        client, config, config_path, _ = setup
+        resp = client.post("/config", json={
+            "notifications": {"webhook_url": "https://new.example.com"},
+        })
+        assert resp.status_code == 200
+        assert "Restart required" in resp.text
+        # YAML file updated
+        data = yaml.safe_load(config_path.read_text())
+        assert data["notifications"]["webhook_url"] == "https://new.example.com"
+        # In-memory config NOT updated
+        assert config.notifications.webhook_url == "https://hooks.example.com/old"
+
+    def test_update_notifications_sets_restart_flag(self, setup):
+        client, _, _, app = setup
+        assert app.state.restart_required is False
+        client.post("/config", json={
+            "notifications": {"rate_limit_seconds": 60},
+        })
+        assert app.state.restart_required is True
+
+    def test_restart_banner_shown_after_structural_update(self, setup):
+        client, _, _, _ = setup
+        client.post("/config", json={
+            "notifications": {"webhook_url": "https://new.example.com"},
+        })
+        resp = client.get("/config")
+        assert 'id="restart-banner"' in resp.text
+        assert "Restart required" in resp.text
+
+    def test_update_project_slots_writes_yaml_only(self, setup):
+        client, config, config_path, _ = setup
+        resp = client.post("/config", json={
+            "projects": [
+                {"name": "test-project", "slots": [1, 2, 3]},
+            ],
+        })
+        assert resp.status_code == 200
+        # YAML file updated
+        data = yaml.safe_load(config_path.read_text())
+        assert data["projects"][0]["slots"] == [1, 2, 3]
+        # In-memory config NOT updated
+        assert config.projects[0].slots == [1, 2]
+
+    def test_update_project_linear_project_writes_yaml_only(self, setup):
+        client, config, config_path, _ = setup
+        resp = client.post("/config", json={
+            "projects": [
+                {"name": "test-project", "linear_project": "New Filter"},
+            ],
+        })
+        assert resp.status_code == 200
+        data = yaml.safe_load(config_path.read_text())
+        assert data["projects"][0]["linear_project"] == "New Filter"
+        assert config.projects[0].linear_project == "My Filter"
+
+    def test_structural_validation_error_returns_422(self, setup):
+        client, _, _, _ = setup
+        resp = client.post("/config", json={
+            "projects": [
+                {"name": "test-project", "slots": [1, 1]},
+            ],
+        })
+        assert resp.status_code == 422
+        assert "duplicate" in resp.text
+
+    def test_structural_unknown_project_rejected(self, setup):
+        client, _, _, _ = setup
+        resp = client.post("/config", json={
+            "projects": [
+                {"name": "nonexistent", "slots": [1]},
+            ],
+        })
+        assert resp.status_code == 422
+        assert "does not exist" in resp.text
+
+    def test_structural_non_editable_project_field_rejected(self, setup):
+        client, _, _, _ = setup
+        resp = client.post("/config", json={
+            "projects": [
+                {"name": "test-project", "base_dir": "/tmp/hacked"},
+            ],
+        })
+        assert resp.status_code == 422
+        assert "cannot edit" in resp.text
+
+    def test_notifications_invalid_format_rejected(self, setup):
+        client, _, _, _ = setup
+        resp = client.post("/config", json={
+            "notifications": {"webhook_format": "teams"},
+        })
+        assert resp.status_code == 422
+        assert "must be one of" in resp.text
+
+    def test_mixed_runtime_and_structural_update(self, setup):
+        client, config, config_path, app = setup
+        resp = client.post("/config", json={
+            "linear": {"poll_interval_seconds": 60},
+            "notifications": {"webhook_url": "https://new.example.com"},
+        })
+        assert resp.status_code == 200
+        # Runtime applied in-memory
+        assert config.linear.poll_interval_seconds == 60
+        # Structural written to file only
+        data = yaml.safe_load(config_path.read_text())
+        assert data["notifications"]["webhook_url"] == "https://new.example.com"
+        assert config.notifications.webhook_url == "https://hooks.example.com/old"
+        # Restart required because of structural update
+        assert app.state.restart_required is True
+
+    def test_structural_update_no_config_path(self, state_file, db_file):
+        config = BotfarmConfig(
+            projects=[
+                ProjectConfig(
+                    name="test", linear_team="T", base_dir="~/t",
+                    worktree_prefix="t-", slots=[1],
+                ),
+            ],
+        )
+        # No source_path set
+        app = create_app(
+            state_file=state_file, db_path=db_file,
+            botfarm_config=config,
+        )
+        client = TestClient(app)
+        resp = client.post("/config", json={
+            "notifications": {"webhook_url": "https://new.example.com"},
+        })
+        assert resp.status_code == 400
+        assert "config file path" in resp.text.lower() or "Cannot save" in resp.text
