@@ -54,6 +54,9 @@ When working on a Linear ticket:
 - Validate with: `botfarm --help`
 - Branch protection: NEVER delete `main` or `slot-1-placeholder`
 
+## Linear
+- When creating Linear tickets, always use team "Smart AI Coach" and project "Bot farm"
+
 ## PR Process
 - Clear description linking Linear ticket
 - Concise but meaningful
