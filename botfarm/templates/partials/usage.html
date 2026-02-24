@@ -31,6 +31,9 @@
 </div>
 {% if last_usage_check %}
 <small>Last checked: {{ elapsed(last_usage_check) }} ago</small>
+{% if usage_stale %}
+<br><small class="status-failed"><strong>Warning:</strong> usage data may be stale</small>
+{% endif %}
 {% endif %}
 {% else %}
 <p>No usage data available.</p>

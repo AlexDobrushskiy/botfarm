@@ -405,6 +405,161 @@ class TestUsagePanelEnhancements:
         assert "Dispatch paused" not in resp.text
 
 
+# --- Usage freshness & staleness ---
+
+
+class TestUsageFreshness:
+    """Tests for SMA-111: dashboard usage data freshness fixes."""
+
+    def test_rate_limit_slot_not_claimed_on_failure(
+        self, state_file, db_file, monkeypatch,
+    ):
+        """Rate-limit slot should not be consumed when the API call fails.
+
+        After a failed refresh, the next call should retry immediately rather
+        than returning stale cached data for up to 60 seconds.
+        """
+        call_count = 0
+
+        def _failing_refresh(conn):
+            nonlocal call_count
+            call_count += 1
+            raise RuntimeError("API down")
+
+        monkeypatch.setattr(
+            "botfarm.dashboard.refresh_usage_snapshot", _failing_refresh,
+        )
+        app = create_app(state_file=state_file, db_path=db_file)
+        client = TestClient(app)
+
+        # First call — triggers a real refresh attempt which fails
+        resp1 = client.get("/partials/usage")
+        assert resp1.status_code == 200
+        first_call_count = call_count
+
+        # Second call — should also attempt a refresh (slot was not claimed)
+        resp2 = client.get("/partials/usage")
+        assert resp2.status_code == 200
+        assert call_count > first_call_count, (
+            "Expected retry after failure, but rate-limit slot blocked it"
+        )
+
+    def test_dashboard_tracks_own_refresh_timestamp(
+        self, state_file, db_file, monkeypatch,
+    ):
+        """After a successful refresh, 'Last checked' should reflect the
+        dashboard's own timestamp, not the supervisor's."""
+        class FakeState:
+            def to_dict(self):
+                return {"utilization_5h": 0.30, "utilization_7d": 0.60}
+
+        monkeypatch.setattr(
+            "botfarm.dashboard.refresh_usage_snapshot",
+            lambda conn: FakeState(),
+        )
+        # Set supervisor's last_usage_check to something old
+        data = json.loads(state_file.read_text())
+        data["last_usage_check"] = "2020-01-01T00:00:00+00:00"
+        state_file.write_text(json.dumps(data))
+
+        app = create_app(state_file=state_file, db_path=db_file)
+        client = TestClient(app)
+        resp = client.get("/partials/usage")
+        body = resp.text
+        # Should show fresh data from our mock, not the stale state.json usage
+        assert "30.0%" in body
+        # The "Last checked" should NOT show the ~6-year-old supervisor time;
+        # it should be a recent dashboard timestamp (seconds/minutes, not years)
+        assert "Last checked:" in body
+
+    def test_staleness_warning_shown_when_data_old(
+        self, state_file, db_file, monkeypatch,
+    ):
+        """A visual warning should appear when usage data is older than
+        2x the refresh interval (>120 seconds with default 60s interval)."""
+        monkeypatch.setattr(
+            "botfarm.dashboard.refresh_usage_snapshot", lambda conn: None,
+        )
+        # Set last_usage_check to 5 minutes ago (well over 2x60s threshold)
+        from datetime import datetime, timedelta, timezone
+        old_time = (
+            datetime.now(timezone.utc) - timedelta(minutes=5)
+        ).isoformat()
+        data = json.loads(state_file.read_text())
+        data["last_usage_check"] = old_time
+        state_file.write_text(json.dumps(data))
+
+        app = create_app(state_file=state_file, db_path=db_file)
+        client = TestClient(app)
+        resp = client.get("/partials/usage")
+        assert "usage data may be stale" in resp.text
+
+    def test_no_staleness_warning_when_data_fresh(
+        self, state_file, db_file, monkeypatch,
+    ):
+        """No warning when the usage data was refreshed recently."""
+        monkeypatch.setattr(
+            "botfarm.dashboard.refresh_usage_snapshot", lambda conn: None,
+        )
+        from datetime import datetime, timezone
+        fresh_time = datetime.now(timezone.utc).isoformat()
+        data = json.loads(state_file.read_text())
+        data["last_usage_check"] = fresh_time
+        state_file.write_text(json.dumps(data))
+
+        app = create_app(state_file=state_file, db_path=db_file)
+        client = TestClient(app)
+        resp = client.get("/partials/usage")
+        assert "usage data may be stale" not in resp.text
+
+    def test_warning_level_log_on_refresh_failure(
+        self, state_file, db_file, monkeypatch, caplog,
+    ):
+        """Refresh failures should log at WARNING level, not DEBUG."""
+        monkeypatch.setattr(
+            "botfarm.dashboard.refresh_usage_snapshot",
+            lambda conn: (_ for _ in ()).throw(RuntimeError("API error")),
+        )
+        app = create_app(state_file=state_file, db_path=db_file)
+        client = TestClient(app)
+
+        import logging
+        with caplog.at_level(logging.WARNING, logger="botfarm.dashboard"):
+            client.get("/partials/usage")
+        assert any(
+            "Dashboard usage refresh failed" in r.message for r in caplog.records
+        )
+        assert all(
+            r.levelno >= logging.WARNING
+            for r in caplog.records
+            if "Dashboard usage refresh failed" in r.message
+        )
+
+    def test_successful_refresh_updates_cached_data(
+        self, state_file, db_file, monkeypatch,
+    ):
+        """After a successful API refresh, subsequent rate-limited calls
+        should return the fresh data, not None."""
+        class FakeState:
+            def to_dict(self):
+                return {"utilization_5h": 0.55, "utilization_7d": 0.80}
+
+        monkeypatch.setattr(
+            "botfarm.dashboard.refresh_usage_snapshot",
+            lambda conn: FakeState(),
+        )
+        app = create_app(state_file=state_file, db_path=db_file)
+        client = TestClient(app)
+
+        # First call — refreshes from API
+        resp1 = client.get("/partials/usage")
+        assert "55.0%" in resp1.text
+
+        # Second call within rate-limit window — should return cached data
+        resp2 = client.get("/partials/usage")
+        assert "55.0%" in resp2.text
+
+
 # --- Index Queue panel ---
 
 
