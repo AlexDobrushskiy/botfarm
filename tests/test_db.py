@@ -88,6 +88,26 @@ class TestInitDb:
         with pytest.raises(RuntimeError, match="Cannot downgrade"):
             init_db(db_file)
 
+    def test_botfarm_db_path_env_overrides(self, tmp_path, monkeypatch):
+        """When BOTFARM_DB_PATH is set, init_db uses that path instead of the provided one."""
+        real_db = tmp_path / "real.db"
+        override_db = tmp_path / "override" / "botfarm.db"
+        monkeypatch.setenv("BOTFARM_DB_PATH", str(override_db))
+
+        c = init_db(real_db)
+        c.close()
+
+        assert override_db.exists()
+        assert not real_db.exists()
+
+    def test_botfarm_db_path_env_not_set(self, tmp_path, monkeypatch):
+        """Without BOTFARM_DB_PATH, init_db uses the provided path."""
+        monkeypatch.delenv("BOTFARM_DB_PATH", raising=False)
+        db_file = tmp_path / "normal.db"
+        c = init_db(db_file)
+        c.close()
+        assert db_file.exists()
+
     def test_migration_v1_to_v2(self, tmp_path):
         """Simulate a v1 database and verify migration adds new columns."""
         db_file = tmp_path / "botfarm.db"

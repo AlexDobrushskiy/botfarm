@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -150,8 +151,20 @@ def _migrate(conn: sqlite3.Connection, from_version: int) -> None:
 def init_db(db_path: str | Path) -> sqlite3.Connection:
     """Open (or create) the database and ensure the schema exists.
 
+    If the ``BOTFARM_DB_PATH`` environment variable is set, it overrides
+    *db_path*.  This allows worker-spawned Claude subprocesses to use a
+    per-slot sandboxed database so that schema migrations never touch the
+    shared production DB.
+
     Returns a sqlite3.Connection with WAL mode and foreign keys enabled.
     """
+    # SAFETY: This env var is only set in the Claude subprocess's environment
+    # (via subprocess.run(env=...)) — never in the supervisor/worker process.
+    # If it were set in the parent process, all init_db() calls would silently
+    # redirect to the wrong database.
+    env_override = os.environ.get("BOTFARM_DB_PATH")
+    if env_override:
+        db_path = env_override
     db_path = Path(db_path).expanduser()
     db_path.parent.mkdir(parents=True, exist_ok=True)
 

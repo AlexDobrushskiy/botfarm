@@ -235,6 +235,38 @@ class TestRunClaude:
         result = run_claude("do stuff", cwd=tmp_path, max_turns=10)
         assert result.session_id == "sess-abc"
 
+    @patch("botfarm.worker.subprocess.run")
+    def test_env_passed_to_subprocess(self, mock_run, tmp_path):
+        """When env is provided, it is merged into os.environ for the subprocess."""
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["claude"],
+            returncode=0,
+            stdout=_make_claude_json(),
+            stderr="",
+        )
+        env = {"BOTFARM_DB_PATH": "/tmp/slot.db"}
+        run_claude("do stuff", cwd=tmp_path, max_turns=10, env=env)
+
+        call_kwargs = mock_run.call_args.kwargs
+        assert call_kwargs["env"] is not None
+        assert call_kwargs["env"]["BOTFARM_DB_PATH"] == "/tmp/slot.db"
+        # Should also contain inherited env vars
+        assert "PATH" in call_kwargs["env"]
+
+    @patch("botfarm.worker.subprocess.run")
+    def test_env_none_no_env_override(self, mock_run, tmp_path):
+        """When env is None, subprocess inherits the default environment."""
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["claude"],
+            returncode=0,
+            stdout=_make_claude_json(),
+            stderr="",
+        )
+        run_claude("do stuff", cwd=tmp_path, max_turns=10, env=None)
+
+        call_kwargs = mock_run.call_args.kwargs
+        assert call_kwargs["env"] is None
+
 
 # ---------------------------------------------------------------------------
 # _write_subprocess_log / _make_stage_log_path
@@ -675,6 +707,46 @@ class TestRunPipeline:
         )
         task = get_task(conn, task_id)
         assert task["review_state"] == "approved"
+
+    @patch("botfarm.worker._execute_stage")
+    def test_slot_db_path_threaded_as_env(self, mock_exec, conn, task_id, tmp_path):
+        """slot_db_path is passed as BOTFARM_DB_PATH env to _execute_stage."""
+        envs_seen = []
+
+        def capture_env(stage, **kwargs):
+            envs_seen.append(kwargs.get("env"))
+            return _mock_stage_result(stage, pr_url=PR_URL if stage == "implement" else None)
+
+        mock_exec.side_effect = capture_env
+        run_pipeline(
+            ticket_id="SMA-99",
+            task_id=task_id,
+            cwd=tmp_path,
+            conn=conn,
+            max_review_iterations=1,
+            slot_db_path="/tmp/slot-db/botfarm.db",
+        )
+        # Every stage should receive the env with BOTFARM_DB_PATH
+        assert all(e == {"BOTFARM_DB_PATH": "/tmp/slot-db/botfarm.db"} for e in envs_seen)
+
+    @patch("botfarm.worker._execute_stage")
+    def test_no_slot_db_path_no_env(self, mock_exec, conn, task_id, tmp_path):
+        """Without slot_db_path, no env override is passed."""
+        envs_seen = []
+
+        def capture_env(stage, **kwargs):
+            envs_seen.append(kwargs.get("env"))
+            return _mock_stage_result(stage, pr_url=PR_URL if stage == "implement" else None)
+
+        mock_exec.side_effect = capture_env
+        run_pipeline(
+            ticket_id="SMA-99",
+            task_id=task_id,
+            cwd=tmp_path,
+            conn=conn,
+            max_review_iterations=1,
+        )
+        assert all(e is None for e in envs_seen)
 
     @patch("botfarm.worker._execute_stage")
     def test_implement_no_pr_url_fails(self, mock_exec, conn, task_id, tmp_path):

@@ -2730,3 +2730,88 @@ class TestSlotWorktreeCwd:
 
             expected_cwd = str(tmp_path / "test-project-slot-1")
             mock_branch_lookup.assert_called_once_with("b1", expected_cwd)
+
+    def test_dispatch_worker_seeds_slot_db(self, supervisor, tmp_path):
+        """_dispatch_worker creates a sandboxed slot DB and passes it to worker."""
+        issue = _make_issue()
+        slot = supervisor.slot_manager.get_slot("test-project", 1)
+        poller = supervisor._pollers["test-project"]
+
+        with patch("botfarm.supervisor.Path.home", return_value=tmp_path), \
+             patch("botfarm.supervisor.multiprocessing.Process") as MockProc:
+            mock_proc = MagicMock()
+            mock_proc.pid = 12345
+            MockProc.return_value = mock_proc
+
+            supervisor._dispatch_worker("test-project", slot, issue, poller)
+
+            call_kwargs = MockProc.call_args.kwargs["kwargs"]
+            assert "slot_db_path" in call_kwargs
+            assert call_kwargs["slot_db_path"] is not None
+            # The slot DB file should have been seeded (copied from prod DB)
+            slot_db = Path(call_kwargs["slot_db_path"])
+            assert slot_db.exists()
+
+    def test_dispatch_worker_slot_db_path_format(self, supervisor, tmp_path):
+        """Slot DB path follows the expected format."""
+        issue = _make_issue()
+        slot = supervisor.slot_manager.get_slot("test-project", 1)
+        poller = supervisor._pollers["test-project"]
+
+        with patch("botfarm.supervisor.Path.home", return_value=tmp_path), \
+             patch("botfarm.supervisor.multiprocessing.Process") as MockProc:
+            mock_proc = MagicMock()
+            mock_proc.pid = 12345
+            MockProc.return_value = mock_proc
+
+            supervisor._dispatch_worker("test-project", slot, issue, poller)
+
+            call_kwargs = MockProc.call_args.kwargs["kwargs"]
+            slot_db = call_kwargs["slot_db_path"]
+            assert "test-project-1" in slot_db
+            assert slot_db.endswith("botfarm.db")
+
+    def test_cleanup_slot_db_removes_directory(self, supervisor, tmp_path):
+        """_cleanup_slot_db removes the slot DB directory."""
+        # Create the slot DB dir under tmp_path instead of real home
+        slot_dir = tmp_path / ".botfarm" / "slots" / "test-project-1"
+        slot_dir.mkdir(parents=True, exist_ok=True)
+        (slot_dir / "botfarm.db").write_text("fake")
+        assert slot_dir.exists()
+
+        with patch("botfarm.supervisor.Path.home", return_value=tmp_path):
+            supervisor._cleanup_slot_db("test-project", 1)
+        assert not slot_dir.exists()
+
+    def test_cleanup_slot_db_noop_when_missing(self, supervisor, tmp_path):
+        """_cleanup_slot_db does not error when directory doesn't exist."""
+        # Should not raise
+        supervisor._cleanup_slot_db("nonexistent-project", 99)
+
+    def test_completed_slot_cleans_up_db(self, supervisor, tmp_path):
+        """When a completed slot is freed, its sandboxed DB is cleaned up."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.mark_completed("test-project", 1)
+        slot = sm.get_slot("test-project", 1)
+
+        with patch.object(supervisor, "_cleanup_slot_db") as mock_cleanup:
+            supervisor._handle_completed_slot(slot)
+            mock_cleanup.assert_called_once_with("test-project", 1)
+
+    def test_failed_slot_cleans_up_db(self, supervisor, tmp_path):
+        """When a failed slot is freed, its sandboxed DB is cleaned up."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.mark_failed("test-project", 1)
+        slot = sm.get_slot("test-project", 1)
+
+        with patch.object(supervisor, "_cleanup_slot_db") as mock_cleanup:
+            supervisor._handle_failed_slot(slot)
+            mock_cleanup.assert_called_once_with("test-project", 1)

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import sqlite3
 import subprocess
@@ -79,11 +80,16 @@ def run_claude(
     cwd: str | Path,
     max_turns: int,
     log_file: Path | None = None,
+    env: dict[str, str] | None = None,
 ) -> ClaudeResult:
     """Run ``claude`` as a subprocess and return the parsed result.
 
     If *log_file* is provided, the raw stdout and stderr from the claude
     subprocess are written to that file for later inspection.
+
+    If *env* is provided, those entries are merged into the current
+    process environment for the subprocess (e.g. ``BOTFARM_DB_PATH``
+    for DB isolation).
 
     Raises ``subprocess.CalledProcessError`` if the process exits non-zero,
     or ``json.JSONDecodeError`` / ``KeyError`` if the output is unexpected.
@@ -97,12 +103,17 @@ def run_claude(
     ]
     logger.info("Running claude with max_turns=%d in %s", max_turns, cwd)
 
+    subprocess_env = None
+    if env:
+        subprocess_env = {**os.environ, **env}
+
     proc = subprocess.run(
         cmd,
         input=prompt,
         capture_output=True,
         text=True,
         cwd=str(cwd),
+        env=subprocess_env,
     )
 
     # Persist raw subprocess output to disk when a log file is configured
@@ -150,6 +161,7 @@ def _run_implement(
     cwd: str | Path,
     max_turns: int,
     log_file: Path | None = None,
+    env: dict[str, str] | None = None,
 ) -> StageResult:
     """IMPLEMENT stage — Claude Code implements the ticket and creates a PR."""
     prompt = (
@@ -157,7 +169,7 @@ def _run_implement(
         "Follow the Linear Tickets workflow in CLAUDE.md. "
         "Complete all steps through PR creation. Do not stop until the PR is created."
     )
-    result = run_claude(prompt, cwd=cwd, max_turns=max_turns, log_file=log_file)
+    result = run_claude(prompt, cwd=cwd, max_turns=max_turns, log_file=log_file, env=env)
 
     if result.is_error:
         return StageResult(
@@ -184,6 +196,7 @@ def _run_review(
     cwd: str | Path,
     max_turns: int,
     log_file: Path | None = None,
+    env: dict[str, str] | None = None,
 ) -> StageResult:
     """REVIEW stage — Fresh Claude Code reviews the PR and posts comments."""
     owner, repo, number = _parse_pr_url(pr_url)
@@ -209,7 +222,7 @@ def _run_review(
         "  VERDICT: APPROVED\n"
         "  VERDICT: CHANGES_REQUESTED"
     )
-    result = run_claude(prompt, cwd=cwd, max_turns=max_turns, log_file=log_file)
+    result = run_claude(prompt, cwd=cwd, max_turns=max_turns, log_file=log_file, env=env)
 
     if result.is_error:
         return StageResult(
@@ -235,6 +248,7 @@ def _run_fix(
     cwd: str | Path,
     max_turns: int,
     log_file: Path | None = None,
+    env: dict[str, str] | None = None,
 ) -> StageResult:
     """FIX stage — Fresh Claude Code addresses review comments and pushes fixes."""
     owner, repo, number = _parse_pr_url(pr_url)
@@ -253,7 +267,7 @@ def _run_fix(
         "- If fixed but clarification helps: reply \"Fixed — [what changed]\"\n"
         "- If intentionally not fixed: reply with a brief explanation why"
     )
-    result = run_claude(prompt, cwd=cwd, max_turns=max_turns, log_file=log_file)
+    result = run_claude(prompt, cwd=cwd, max_turns=max_turns, log_file=log_file, env=env)
 
     if result.is_error:
         return StageResult(
@@ -313,6 +327,7 @@ def _run_ci_fix(
     cwd: str | Path,
     max_turns: int,
     log_file: Path | None = None,
+    env: dict[str, str] | None = None,
 ) -> StageResult:
     """FIX stage variant — Claude Code fixes CI failures using CI output context."""
     prompt = (
@@ -321,7 +336,7 @@ def _run_ci_fix(
         "then run tests locally, commit and push the fixes.\n\n"
         f"CI failure output:\n{ci_failure_output[:2000]}"
     )
-    result = run_claude(prompt, cwd=cwd, max_turns=max_turns, log_file=log_file)
+    result = run_claude(prompt, cwd=cwd, max_turns=max_turns, log_file=log_file, env=env)
 
     if result.is_error:
         return StageResult(
@@ -424,6 +439,7 @@ def run_pipeline(
     max_ci_retries: int = 2,
     resume_from_stage: str | None = None,
     resume_session_id: str | None = None,  # TODO: wire through to run_claude --resume
+    slot_db_path: str | Path | None = None,
 ) -> PipelineResult:
     """Execute the full implement→review→fix→pr_checks→merge pipeline.
 
@@ -481,6 +497,11 @@ def run_pipeline(
     # Determine which stages to skip when resuming
     skipping = resume_from_stage is not None
 
+    # Build env overrides for Claude subprocesses (DB isolation)
+    subprocess_env = None
+    if slot_db_path:
+        subprocess_env = {"BOTFARM_DB_PATH": str(slot_db_path)}
+
     # Shared context for _run_and_record helper
     ctx = _PipelineContext(
         ticket_id=ticket_id,
@@ -496,6 +517,7 @@ def run_pipeline(
         db_path=db_path,
         log_dir=Path(log_dir) if log_dir else None,
         placeholder_branch=placeholder_branch,
+        subprocess_env=subprocess_env,
     )
 
     for stage in STAGES:
@@ -639,6 +661,7 @@ class _PipelineContext:
     db_path: str | Path | None = None
     log_dir: Path | None = None
     placeholder_branch: str | None = None
+    subprocess_env: dict[str, str] | None = None
 
     def run_and_record(
         self,
@@ -681,6 +704,7 @@ class _PipelineContext:
                 pr_checks_timeout=self.pr_checks_timeout,
                 log_file=log_file,
                 placeholder_branch=self.placeholder_branch,
+                env=self.subprocess_env,
             )
         except Exception as exc:
             logger.error("Stage '%s' raised: %s", stage, exc)
@@ -864,7 +888,7 @@ def _run_ci_retry_loop(
             fix_result = _run_ci_fix(
                 pr_url, ci_failure_output=ci_failure_output,
                 cwd=ctx.cwd, max_turns=ctx.turns_cfg.get("fix", 100),
-                log_file=log_file,
+                log_file=log_file, env=ctx.subprocess_env,
             )
         except Exception as exc:
             logger.error("CI fix stage raised: %s", exc)
@@ -930,18 +954,19 @@ def _execute_stage(
     pr_checks_timeout: int,
     log_file: Path | None = None,
     placeholder_branch: str | None = None,
+    env: dict[str, str] | None = None,
 ) -> StageResult:
     """Dispatch to the appropriate stage runner."""
     if stage == "implement":
-        return _run_implement(ticket_id, cwd=cwd, max_turns=max_turns, log_file=log_file)
+        return _run_implement(ticket_id, cwd=cwd, max_turns=max_turns, log_file=log_file, env=env)
     elif stage == "review":
         if not pr_url:
             raise ValueError(f"{stage} stage requires pr_url")
-        return _run_review(pr_url, cwd=cwd, max_turns=max_turns, log_file=log_file)
+        return _run_review(pr_url, cwd=cwd, max_turns=max_turns, log_file=log_file, env=env)
     elif stage == "fix":
         if not pr_url:
             raise ValueError(f"{stage} stage requires pr_url")
-        return _run_fix(pr_url, cwd=cwd, max_turns=max_turns, log_file=log_file)
+        return _run_fix(pr_url, cwd=cwd, max_turns=max_turns, log_file=log_file, env=env)
     elif stage == "pr_checks":
         if not pr_url:
             raise ValueError(f"{stage} stage requires pr_url")

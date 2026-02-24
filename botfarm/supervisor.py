@@ -17,6 +17,7 @@ import logging
 import multiprocessing
 import os
 import queue as queue_mod
+import shutil
 import signal
 import sqlite3
 import subprocess
@@ -73,6 +74,7 @@ def _worker_entry(
     resume_from_stage: str | None = None,
     resume_session_id: str | None = None,
     placeholder_branch: str | None = None,
+    slot_db_path: str | None = None,
 ) -> None:
     """Entry point for a worker subprocess.
 
@@ -109,6 +111,7 @@ def _worker_entry(
             max_ci_retries=max_ci_retries,
             resume_from_stage=resume_from_stage,
             resume_session_id=resume_session_id,
+            slot_db_path=slot_db_path,
         )
         if result.success:
             result_queue.put(_WorkerResult(
@@ -935,6 +938,7 @@ class Supervisor:
         self._conn.commit()
 
         self._slot_manager.free_slot(project, slot.slot_id)
+        self._cleanup_slot_db(project, slot.slot_id)
         logger.info("Freed slot %s/%d after completion", project, slot.slot_id)
 
     def _handle_failed_slot(self, slot: SlotState) -> None:
@@ -994,6 +998,7 @@ class Supervisor:
         self._conn.commit()
 
         self._slot_manager.free_slot(project, slot.slot_id)
+        self._cleanup_slot_db(project, slot.slot_id)
         logger.info("Freed slot %s/%d after failure", project, slot.slot_id)
 
     def _post_failure_comment(self, poller: LinearPoller, slot: SlotState) -> None:
@@ -1281,6 +1286,12 @@ class Supervisor:
         ticket_log_dir = self._log_dir / slot.ticket_id
         ticket_log_dir.mkdir(parents=True, exist_ok=True)
 
+        # Use the existing slot DB (seeded during initial dispatch).
+        # Re-seed if the DB was cleaned up (e.g. after a crash).
+        slot_db = self._slot_db_path(project_name, slot.slot_id)
+        if not Path(slot_db).exists():
+            slot_db = self._seed_slot_db(project_name, slot.slot_id)
+
         # Spawn a new worker that resumes from the interrupted stage
         proc = multiprocessing.Process(
             target=_worker_entry,
@@ -1300,6 +1311,7 @@ class Supervisor:
                 "resume_from_stage": slot.stage,
                 "resume_session_id": slot.current_session_id,
                 "placeholder_branch": self._slot_placeholder_branch(slot.slot_id),
+                "slot_db_path": slot_db,
             },
             daemon=False,
         )
@@ -1476,6 +1488,10 @@ class Supervisor:
         ticket_log_dir = self._log_dir / issue.identifier
         ticket_log_dir.mkdir(parents=True, exist_ok=True)
 
+        # Seed a sandboxed DB for this slot so the Claude subprocess's
+        # schema migrations don't affect the production DB.
+        slot_db = self._seed_slot_db(project_name, slot.slot_id)
+
         # Spawn worker subprocess
         proc = multiprocessing.Process(
             target=_worker_entry,
@@ -1493,6 +1509,7 @@ class Supervisor:
                 "max_review_iterations": self._config.agents.max_review_iterations,
                 "max_ci_retries": self._config.agents.max_ci_retries,
                 "placeholder_branch": self._slot_placeholder_branch(slot.slot_id),
+                "slot_db_path": slot_db,
             },
             daemon=False,  # Not daemon — survives supervisor exit
         )
@@ -1555,6 +1572,53 @@ class Supervisor:
     def _slot_placeholder_branch(slot_id: int) -> str:
         """Return the placeholder branch name for a slot."""
         return f"slot-{slot_id}-placeholder"
+
+    @staticmethod
+    def _slot_db_path(project_name: str, slot_id: int) -> str:
+        """Compute the sandboxed DB path for a slot.
+
+        Returns ``~/.botfarm/slots/<project>-<slot_id>/botfarm.db``.
+        """
+        base = Path.home() / ".botfarm" / "slots" / f"{project_name}-{slot_id}"
+        return str(base / "botfarm.db")
+
+    def _seed_slot_db(self, project_name: str, slot_id: int) -> str:
+        """Create a sandboxed DB for a slot by copying the production DB.
+
+        Returns the slot DB path.
+        """
+        slot_db = Path(self._slot_db_path(project_name, slot_id))
+        slot_db.parent.mkdir(parents=True, exist_ok=True)
+        prod_db = Path(self._db_path)
+        if prod_db.exists():
+            src = sqlite3.connect(str(prod_db))
+            try:
+                dst = sqlite3.connect(str(slot_db))
+                try:
+                    src.backup(dst)
+                finally:
+                    dst.close()
+            finally:
+                src.close()
+            logger.info(
+                "Seeded slot DB for %s/%d: %s", project_name, slot_id, slot_db,
+            )
+        else:
+            logger.warning(
+                "Production DB %s not found — slot %s/%d will start with empty DB",
+                prod_db, project_name, slot_id,
+            )
+        return str(slot_db)
+
+    @staticmethod
+    def _cleanup_slot_db(project_name: str, slot_id: int) -> None:
+        """Remove the sandboxed DB directory for a slot."""
+        slot_dir = Path(Supervisor._slot_db_path(project_name, slot_id)).parent
+        if slot_dir.exists():
+            shutil.rmtree(str(slot_dir), ignore_errors=True)
+            logger.info(
+                "Cleaned up slot DB for %s/%d: %s", project_name, slot_id, slot_dir,
+            )
 
     def _sleep(self, seconds: int) -> None:
         """Interruptible sleep — checks shutdown flag each second."""
