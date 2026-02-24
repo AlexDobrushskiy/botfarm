@@ -88,6 +88,9 @@
             {% if task.comments %}
             <tr><td><strong>Review Comments</strong></td><td>{{ task.comments }}</td></tr>
             {% endif %}
+            {% if task.pr_url %}
+            <tr><td><strong>Pull Request</strong></td><td><a href="{{ task.pr_url }}" target="_blank">{{ task.pr_url }}</a></td></tr>
+            {% endif %}
         </tbody>
     </table>
 </details>

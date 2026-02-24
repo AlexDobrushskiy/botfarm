@@ -31,6 +31,7 @@
             <th>Limit Hits</th>
             {{ sort_header("Started", "started_at") }}
             {{ sort_header("Completed", "completed_at") }}
+            <th>PR</th>
         </tr>
     </thead>
     <tbody>
@@ -58,6 +59,7 @@
             <td>{{ task.limit_interruptions if task.limit_interruptions is not none else "0" }}</td>
             <td>{{ task.started_at[:16] if task.started_at else "-" }}</td>
             <td>{{ task.completed_at[:16] if task.completed_at else "-" }}</td>
+            <td>{% if task.pr_url %}<a href="{{ task.pr_url }}" target="_blank" onclick="event.stopPropagation()">{% if "/pull/" in task.pr_url %}PR #{{ task.pr_url.split("/pull/")[-1].split("/")[0] }}{% else %}PR{% endif %}</a>{% else %}-{% endif %}</td>
         </tr>
         {% endfor %}
     </tbody>
