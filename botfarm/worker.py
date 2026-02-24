@@ -242,9 +242,16 @@ def _run_fix(
         f"Address the review comments on PR {pr_url}. "
         "Read both the top-level review comment and any inline review comments "
         f"on specific files/lines. Use 'gh api repos/{owner}/{repo}/pulls/{number}/comments' "
-        "to list inline comments. "
+        "to list inline comments. Note each comment's `id` field from the API response.\n\n"
         "Make the necessary code changes for each comment, run tests, "
-        "commit and push the fixes."
+        "commit and push the fixes.\n\n"
+        "After addressing (or deciding to skip) each inline comment, reply to it using:\n"
+        f"  gh api repos/{owner}/{repo}/pulls/{number}/comments/COMMENT_ID/replies -f body='...'\n"
+        "Replace COMMENT_ID with the comment's `id` from the earlier API response.\n\n"
+        "Reply guidelines:\n"
+        "- If fixed and obvious from context: reply \"Fixed\"\n"
+        "- If fixed but clarification helps: reply \"Fixed — [what changed]\"\n"
+        "- If intentionally not fixed: reply with a brief explanation why"
     )
     result = run_claude(prompt, cwd=cwd, max_turns=max_turns, log_file=log_file)
 

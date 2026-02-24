@@ -1804,3 +1804,14 @@ class TestPromptContent:
         prompt = mock_claude.call_args.args[0]
         assert "gh api repos/owner/repo/pulls/42/comments" in prompt
         assert "{{" not in prompt
+
+    @patch("botfarm.worker.run_claude")
+    def test_fix_prompt_instructs_reply_to_comments(self, mock_claude, tmp_path):
+        mock_claude.return_value = ClaudeResult(
+            session_id="s", num_turns=1, duration_seconds=1.0,
+            cost_usd=0.0, exit_subtype="", result_text="done",
+        )
+        _run_fix(PR_URL, cwd=tmp_path, max_turns=10)
+        prompt = mock_claude.call_args.args[0]
+        assert "comments/COMMENT_ID/replies" in prompt
+        assert "Fixed" in prompt
