@@ -672,7 +672,7 @@ class TestDispatchState:
     def test_save_and_load(self, conn):
         save_dispatch_state(conn, paused=True, reason="limit hit")
         conn.commit()
-        paused, reason = load_dispatch_state(conn)
+        paused, reason, _heartbeat = load_dispatch_state(conn)
         assert paused is True
         assert reason == "limit hit"
 
@@ -681,11 +681,11 @@ class TestDispatchState:
         conn.commit()
         save_dispatch_state(conn, paused=False)
         conn.commit()
-        paused, reason = load_dispatch_state(conn)
+        paused, reason, _heartbeat = load_dispatch_state(conn)
         assert paused is False
         assert reason is None
 
     def test_defaults_when_empty(self, conn):
-        paused, reason = load_dispatch_state(conn)
+        paused, reason, _heartbeat = load_dispatch_state(conn)
         assert paused is False
         assert reason is None

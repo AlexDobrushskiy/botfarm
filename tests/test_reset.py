@@ -3,6 +3,7 @@
 import json
 import os
 import signal
+import sqlite3
 from pathlib import Path
 from unittest.mock import patch
 
@@ -10,6 +11,7 @@ import pytest
 from click.testing import CliRunner
 
 from botfarm.cli import main
+from botfarm.db import init_db, load_all_slots, save_dispatch_state, upsert_slot
 
 
 @pytest.fixture()
@@ -18,20 +20,43 @@ def runner():
 
 
 @pytest.fixture()
-def state_file(tmp_path):
-    return tmp_path / "state.json"
+def db_file(tmp_path):
+    """Create an initialized database and return its path."""
+    path = tmp_path / "botfarm.db"
+    conn = init_db(path)
+    conn.close()
+    return path
 
 
-def _mock_resolve(state_file):
+def _mock_resolve(db_path):
     """Return a monkeypatch-compatible _resolve_paths replacement."""
-    return lambda _: (state_file, state_file.parent / "botfarm.db", None)
+    return lambda _: (db_path, None)
 
 
-def _write_state(state_file, slots, **extra):
-    """Write a state.json with slots and optional extra top-level keys."""
-    data = {"slots": slots, **extra}
-    state_file.write_text(json.dumps(data, indent=2))
-    return data
+def _seed_slots(db_path, slots, *, dispatch_paused=False, dispatch_pause_reason=None):
+    """Seed the database with slot rows and optional dispatch state."""
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys=ON")
+    for slot in slots:
+        upsert_slot(conn, slot)
+    save_dispatch_state(
+        conn,
+        paused=dispatch_paused,
+        reason=dispatch_pause_reason,
+    )
+    conn.commit()
+    conn.close()
+
+
+def _read_slots(db_path):
+    """Read all slots from DB as a list of dicts."""
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("SELECT * FROM slots ORDER BY project, slot_id").fetchall()
+    result = [dict(r) for r in rows]
+    conn.close()
+    return result
 
 
 def _make_slot(project, slot_id, status="free", **overrides):
@@ -65,11 +90,11 @@ def _make_slot(project, slot_id, status="free", **overrides):
 
 
 class TestResetHappyPath:
-    def test_reset_failed_slot(self, runner, state_file, monkeypatch):
-        _write_state(state_file, [
+    def test_reset_failed_slot(self, runner, db_file, monkeypatch):
+        _seed_slots(db_file, [
             _make_slot("my-proj", 1, "failed", ticket_id="SMA-10"),
         ])
-        monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(state_file))
+        monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
 
         result = runner.invoke(main, ["reset", "my-proj"])
         assert result.exit_code == 0
@@ -77,42 +102,42 @@ class TestResetHappyPath:
         assert "SMA-10" in result.output
         assert "failed" in result.output
 
-        # Verify state file was updated
-        data = json.loads(state_file.read_text())
-        assert data["slots"][0]["status"] == "free"
-        assert data["slots"][0]["ticket_id"] is None
-        assert data["slots"][0]["pid"] is None
+        # Verify DB was updated
+        slots = _read_slots(db_file)
+        assert slots[0]["status"] == "free"
+        assert slots[0]["ticket_id"] is None
+        assert slots[0]["pid"] is None
 
-    def test_reset_multiple_non_free_slots(self, runner, state_file, monkeypatch):
-        _write_state(state_file, [
+    def test_reset_multiple_non_free_slots(self, runner, db_file, monkeypatch):
+        _seed_slots(db_file, [
             _make_slot("proj", 1, "failed", ticket_id="T-1"),
             _make_slot("proj", 2, "completed_pending_cleanup", ticket_id="T-2"),
             _make_slot("proj", 3, "busy", ticket_id="T-3"),
         ])
-        monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(state_file))
+        monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
 
         result = runner.invoke(main, ["reset", "proj"])
         assert result.exit_code == 0
         assert "Reset 3 slot(s)" in result.output
 
-        data = json.loads(state_file.read_text())
-        for slot in data["slots"]:
+        slots = _read_slots(db_file)
+        for slot in slots:
             assert slot["status"] == "free"
             assert slot["ticket_id"] is None
 
-    def test_reset_preserves_free_slots(self, runner, state_file, monkeypatch):
-        _write_state(state_file, [
+    def test_reset_preserves_free_slots(self, runner, db_file, monkeypatch):
+        _seed_slots(db_file, [
             _make_slot("proj", 1, "free"),
             _make_slot("proj", 2, "failed", ticket_id="T-1"),
         ])
-        monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(state_file))
+        monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
 
         result = runner.invoke(main, ["reset", "proj"])
         assert result.exit_code == 0
         assert "Reset 1 slot(s)" in result.output
 
-    def test_reset_clears_all_ticket_fields(self, runner, state_file, monkeypatch):
-        _write_state(state_file, [
+    def test_reset_clears_all_ticket_fields(self, runner, db_file, monkeypatch):
+        _seed_slots(db_file, [
             _make_slot(
                 "proj", 1, "busy",
                 ticket_id="SMA-42",
@@ -130,13 +155,13 @@ class TestResetHappyPath:
                 stages_completed=["implement", "review"],
             ),
         ])
-        monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(state_file))
+        monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
 
         result = runner.invoke(main, ["reset", "proj"])
         assert result.exit_code == 0
 
-        data = json.loads(state_file.read_text())
-        slot = data["slots"][0]
+        slots = _read_slots(db_file)
+        slot = slots[0]
         assert slot["status"] == "free"
         assert slot["ticket_id"] is None
         assert slot["ticket_title"] is None
@@ -149,9 +174,9 @@ class TestResetHappyPath:
         assert slot["stage_started_at"] is None
         assert slot["sigterm_sent_at"] is None
         assert slot["pid"] is None
-        assert slot["interrupted_by_limit"] is False
+        assert slot["interrupted_by_limit"] == 0
         assert slot["resume_after"] is None
-        assert slot["stages_completed"] == []
+        assert json.loads(slot["stages_completed"]) == []
 
 
 # ---------------------------------------------------------------------------
@@ -160,12 +185,12 @@ class TestResetHappyPath:
 
 
 class TestResetAlreadyFree:
-    def test_all_slots_free(self, runner, state_file, monkeypatch):
-        _write_state(state_file, [
+    def test_all_slots_free(self, runner, db_file, monkeypatch):
+        _seed_slots(db_file, [
             _make_slot("proj", 1, "free"),
             _make_slot("proj", 2, "free"),
         ])
-        monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(state_file))
+        monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
 
         result = runner.invoke(main, ["reset", "proj"])
         assert result.exit_code == 0
@@ -178,11 +203,11 @@ class TestResetAlreadyFree:
 
 
 class TestResetLivePid:
-    def test_live_pid_with_force(self, runner, state_file, monkeypatch):
-        _write_state(state_file, [
+    def test_live_pid_with_force(self, runner, db_file, monkeypatch):
+        _seed_slots(db_file, [
             _make_slot("proj", 1, "busy", ticket_id="T-1", pid=99999),
         ])
-        monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(state_file))
+        monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
         monkeypatch.setattr("botfarm.cli._is_pid_alive", lambda pid: True)
 
         with patch("os.kill") as mock_kill:
@@ -193,14 +218,14 @@ class TestResetLivePid:
         mock_kill.assert_called_once_with(99999, signal.SIGTERM)
         assert "Reset 1 slot(s)" in result.output
 
-        data = json.loads(state_file.read_text())
-        assert data["slots"][0]["status"] == "free"
+        slots = _read_slots(db_file)
+        assert slots[0]["status"] == "free"
 
-    def test_live_pid_confirm_yes(self, runner, state_file, monkeypatch):
-        _write_state(state_file, [
+    def test_live_pid_confirm_yes(self, runner, db_file, monkeypatch):
+        _seed_slots(db_file, [
             _make_slot("proj", 1, "busy", ticket_id="T-1", pid=99999),
         ])
-        monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(state_file))
+        monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
         monkeypatch.setattr("botfarm.cli._is_pid_alive", lambda pid: True)
 
         with patch("os.kill"):
@@ -209,11 +234,11 @@ class TestResetLivePid:
         assert result.exit_code == 0
         assert "Reset 1 slot(s)" in result.output
 
-    def test_live_pid_confirm_no(self, runner, state_file, monkeypatch):
-        _write_state(state_file, [
+    def test_live_pid_confirm_no(self, runner, db_file, monkeypatch):
+        _seed_slots(db_file, [
             _make_slot("proj", 1, "busy", ticket_id="T-1", pid=99999),
         ])
-        monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(state_file))
+        monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
         monkeypatch.setattr("botfarm.cli._is_pid_alive", lambda pid: True)
 
         result = runner.invoke(main, ["reset", "proj"], input="n\n")
@@ -221,14 +246,14 @@ class TestResetLivePid:
         assert "Aborted" in result.output
 
         # State should be unchanged
-        data = json.loads(state_file.read_text())
-        assert data["slots"][0]["status"] == "busy"
+        slots = _read_slots(db_file)
+        assert slots[0]["status"] == "busy"
 
-    def test_dead_pid_no_confirmation(self, runner, state_file, monkeypatch):
-        _write_state(state_file, [
+    def test_dead_pid_no_confirmation(self, runner, db_file, monkeypatch):
+        _seed_slots(db_file, [
             _make_slot("proj", 1, "busy", ticket_id="T-1", pid=99999),
         ])
-        monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(state_file))
+        monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
         monkeypatch.setattr("botfarm.cli._is_pid_alive", lambda pid: False)
 
         result = runner.invoke(main, ["reset", "proj"])
@@ -244,28 +269,28 @@ class TestResetLivePid:
 
 
 class TestResetAll:
-    def test_reset_all_projects(self, runner, state_file, monkeypatch):
-        _write_state(state_file, [
+    def test_reset_all_projects(self, runner, db_file, monkeypatch):
+        _seed_slots(db_file, [
             _make_slot("proj-a", 1, "failed", ticket_id="T-1"),
             _make_slot("proj-b", 1, "busy", ticket_id="T-2"),
             _make_slot("proj-b", 2, "free"),
         ])
-        monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(state_file))
+        monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
 
         result = runner.invoke(main, ["reset", "--all"])
         assert result.exit_code == 0
         assert "Reset 2 slot(s)" in result.output
 
-        data = json.loads(state_file.read_text())
-        for slot in data["slots"]:
+        slots = _read_slots(db_file)
+        for slot in slots:
             assert slot["status"] == "free"
 
-    def test_reset_all_already_free(self, runner, state_file, monkeypatch):
-        _write_state(state_file, [
+    def test_reset_all_already_free(self, runner, db_file, monkeypatch):
+        _seed_slots(db_file, [
             _make_slot("proj-a", 1, "free"),
             _make_slot("proj-b", 1, "free"),
         ])
-        monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(state_file))
+        monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
 
         result = runner.invoke(main, ["reset", "--all"])
         assert result.exit_code == 0
@@ -273,25 +298,25 @@ class TestResetAll:
 
 
 # ---------------------------------------------------------------------------
-# Missing state file
+# Missing database
 # ---------------------------------------------------------------------------
 
 
 class TestResetMissingState:
-    def test_no_state_file(self, runner, tmp_path, monkeypatch):
+    def test_no_database(self, runner, tmp_path, monkeypatch):
         monkeypatch.setattr(
             "botfarm.cli._resolve_paths",
-            lambda _: (tmp_path / "nonexistent.json", tmp_path / "botfarm.db", None),
+            lambda _: (tmp_path / "nonexistent.db", None),
         )
         result = runner.invoke(main, ["reset", "proj"])
         assert result.exit_code == 0
-        assert "No state file" in result.output
+        assert "No database found" in result.output
 
-    def test_missing_project(self, runner, state_file, monkeypatch):
-        _write_state(state_file, [
+    def test_missing_project(self, runner, db_file, monkeypatch):
+        _seed_slots(db_file, [
             _make_slot("proj-a", 1, "free"),
         ])
-        monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(state_file))
+        monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
 
         result = runner.invoke(main, ["reset", "nonexistent"])
         assert result.exit_code == 0
@@ -305,67 +330,61 @@ class TestResetMissingState:
 
 
 class TestResetEdgeCases:
-    def test_no_project_no_all_flag(self, runner, state_file, monkeypatch):
-        _write_state(state_file, [_make_slot("proj", 1, "failed")])
-        monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(state_file))
+    def test_no_project_no_all_flag(self, runner, db_file, monkeypatch):
+        _seed_slots(db_file, [_make_slot("proj", 1, "failed")])
+        monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
 
         result = runner.invoke(main, ["reset"])
         assert result.exit_code != 0
         assert "Provide a project name" in result.output
 
-    def test_only_resets_matching_project(self, runner, state_file, monkeypatch):
-        _write_state(state_file, [
+    def test_only_resets_matching_project(self, runner, db_file, monkeypatch):
+        _seed_slots(db_file, [
             _make_slot("proj-a", 1, "failed", ticket_id="T-1"),
             _make_slot("proj-b", 1, "failed", ticket_id="T-2"),
         ])
-        monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(state_file))
+        monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
 
         result = runner.invoke(main, ["reset", "proj-a"])
         assert result.exit_code == 0
         assert "Reset 1 slot(s)" in result.output
 
-        data = json.loads(state_file.read_text())
-        proj_a = [s for s in data["slots"] if s["project"] == "proj-a"][0]
-        proj_b = [s for s in data["slots"] if s["project"] == "proj-b"][0]
+        slots = _read_slots(db_file)
+        proj_a = [s for s in slots if s["project"] == "proj-a"][0]
+        proj_b = [s for s in slots if s["project"] == "proj-b"][0]
         assert proj_a["status"] == "free"
         assert proj_b["status"] == "failed"  # untouched
 
-    def test_preserves_other_state_fields(self, runner, state_file, monkeypatch):
-        """Non-slot top-level state fields (dispatch_paused, usage) are preserved."""
-        _write_state(
-            state_file,
+    def test_preserves_dispatch_state(self, runner, db_file, monkeypatch):
+        """Dispatch state (paused, reason) is preserved across reset."""
+        _seed_slots(
+            db_file,
             [_make_slot("proj", 1, "failed", ticket_id="T-1")],
             dispatch_paused=True,
             dispatch_pause_reason="test reason",
-            usage={"some": "data"},
         )
-        monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(state_file))
+        monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
 
         result = runner.invoke(main, ["reset", "proj"])
         assert result.exit_code == 0
 
-        data = json.loads(state_file.read_text())
-        assert data["dispatch_paused"] is True
-        assert data["dispatch_pause_reason"] == "test reason"
-        assert data["usage"] == {"some": "data"}
+        # Verify dispatch_state is unchanged
+        conn = sqlite3.connect(str(db_file))
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT paused, pause_reason FROM dispatch_state WHERE id = 1"
+        ).fetchone()
+        conn.close()
+        assert row is not None
+        assert bool(row["paused"]) is True
+        assert row["pause_reason"] == "test reason"
 
-    def test_legacy_list_format(self, runner, state_file, monkeypatch):
-        """Reset works with the old bare-list state format."""
-        state_file.write_text(json.dumps([
-            _make_slot("proj", 1, "failed", ticket_id="T-1"),
-        ]))
-        monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(state_file))
-
-        result = runner.invoke(main, ["reset", "proj"])
-        assert result.exit_code == 0
-        assert "Reset 1 slot(s)" in result.output
-
-    def test_summary_table_shows_previous_status(self, runner, state_file, monkeypatch):
-        _write_state(state_file, [
+    def test_summary_table_shows_previous_status(self, runner, db_file, monkeypatch):
+        _seed_slots(db_file, [
             _make_slot("proj", 1, "busy", ticket_id="T-1"),
             _make_slot("proj", 2, "completed_pending_cleanup", ticket_id="T-2"),
         ])
-        monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(state_file))
+        monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
 
         result = runner.invoke(main, ["reset", "proj"])
         assert result.exit_code == 0

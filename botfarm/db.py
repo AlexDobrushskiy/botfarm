@@ -8,7 +8,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS tasks (
@@ -88,6 +88,7 @@ CREATE TABLE IF NOT EXISTS dispatch_state (
     id              INTEGER PRIMARY KEY CHECK (id = 1),
     paused          INTEGER NOT NULL DEFAULT 0,
     pause_reason    TEXT,
+    supervisor_heartbeat TEXT,
     updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
@@ -145,6 +146,14 @@ def _migrate(conn: sqlite3.Connection, from_version: int) -> None:
                 updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
             );
         """)
+    if from_version < 4:
+        # v3→v4: add supervisor_heartbeat to dispatch_state
+        existing = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(dispatch_state)").fetchall()
+        }
+        if "supervisor_heartbeat" not in existing:
+            conn.execute("ALTER TABLE dispatch_state ADD COLUMN supervisor_heartbeat TEXT")
     conn.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION,))
 
 
@@ -561,28 +570,33 @@ def load_all_slots(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     ).fetchall()
 
 
-def load_dispatch_state(conn: sqlite3.Connection) -> tuple[bool, str | None]:
-    """Load dispatch pause state. Returns (paused, reason)."""
+def load_dispatch_state(conn: sqlite3.Connection) -> tuple[bool, str | None, str | None]:
+    """Load dispatch pause state. Returns (paused, reason, supervisor_heartbeat)."""
     row = conn.execute(
-        "SELECT paused, pause_reason FROM dispatch_state WHERE id = 1"
+        "SELECT paused, pause_reason, supervisor_heartbeat FROM dispatch_state WHERE id = 1"
     ).fetchone()
     if row is None:
-        return False, None
-    return bool(row["paused"]), row["pause_reason"]
+        return False, None, None
+    return bool(row["paused"]), row["pause_reason"], row["supervisor_heartbeat"]
 
 
 def save_dispatch_state(
-    conn: sqlite3.Connection, *, paused: bool, reason: str | None = None,
+    conn: sqlite3.Connection,
+    *,
+    paused: bool,
+    reason: str | None = None,
+    supervisor_heartbeat: str | None = None,
 ) -> None:
-    """Save dispatch pause state (single-row table)."""
+    """Save dispatch pause state and supervisor heartbeat (single-row table)."""
     conn.execute(
         """
-        INSERT INTO dispatch_state (id, paused, pause_reason, updated_at)
-        VALUES (1, ?, ?, ?)
+        INSERT INTO dispatch_state (id, paused, pause_reason, supervisor_heartbeat, updated_at)
+        VALUES (1, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             paused=excluded.paused,
             pause_reason=excluded.pause_reason,
+            supervisor_heartbeat=excluded.supervisor_heartbeat,
             updated_at=excluded.updated_at
         """,
-        (int(paused), reason, _now_iso()),
+        (int(paused), reason, supervisor_heartbeat, _now_iso()),
     )

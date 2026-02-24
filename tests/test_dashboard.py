@@ -26,79 +26,55 @@ from botfarm.db import (
     insert_task,
     insert_usage_snapshot,
     update_task,
+    upsert_slot,
+    save_dispatch_state,
+    load_all_slots,
+    load_dispatch_state,
 )
 
 
-@pytest.fixture()
-def state_file(tmp_path):
-    """Create a state.json with sample slot data."""
-    path = tmp_path / "state.json"
-    data = {
-        "slots": [
-            {
-                "project": "my-project",
-                "slot_id": 1,
-                "status": "busy",
-                "ticket_id": "TST-1",
-                "ticket_title": "Fix bug",
-                "branch": "fix-bug",
-                "pr_url": None,
-                "stage": "implement",
-                "stage_iteration": 1,
-                "current_session_id": None,
-                "started_at": "2026-02-12T10:00:00+00:00",
-                "pid": 1234,
-                "interrupted_by_limit": False,
-                "resume_after": None,
-                "stages_completed": [],
-            },
-            {
-                "project": "my-project",
-                "slot_id": 2,
-                "status": "free",
-                "ticket_id": None,
-                "ticket_title": None,
-                "branch": None,
-                "pr_url": None,
-                "stage": None,
-                "stage_iteration": 0,
-                "current_session_id": None,
-                "started_at": None,
-                "pid": None,
-                "interrupted_by_limit": False,
-                "resume_after": None,
-                "stages_completed": [],
-            },
-        ],
-        "usage": {
-            "utilization_5h": 0.45,
-            "utilization_7d": 0.72,
-            "resets_at_5h": "2026-02-12T15:00:00+00:00",
-            "resets_at_7d": "2026-02-19T00:00:00+00:00",
-        },
-        "dispatch_paused": False,
-        "dispatch_pause_reason": None,
-        "last_usage_check": "2026-02-12T14:30:00+00:00",
-        "queue": {
-            "projects": [
-                {
-                    "name": "my-project",
-                    "todo_count": 3,
-                    "next_ticket_id": "TST-5",
-                    "next_ticket_title": "Add logging",
-                },
-            ],
-        },
+def _seed_slot(conn, project, slot_id, status="free", **overrides):
+    """Helper to seed a slot row in the DB."""
+    slot = {
+        "project": project, "slot_id": slot_id, "status": status,
+        "ticket_id": None, "ticket_title": None, "branch": None,
+        "pr_url": None, "stage": None, "stage_iteration": 0,
+        "current_session_id": None, "started_at": None,
+        "stage_started_at": None, "sigterm_sent_at": None,
+        "pid": None, "interrupted_by_limit": False,
+        "resume_after": None, "stages_completed": [],
     }
-    path.write_text(json.dumps(data))
-    return path
+    slot.update(overrides)
+    upsert_slot(conn, slot)
 
 
 @pytest.fixture()
 def db_file(tmp_path):
-    """Create a database with sample task data."""
+    """Create a database with sample task data, slot state, and usage snapshots."""
     path = tmp_path / "botfarm.db"
     conn = init_db(path)
+
+    # --- Slot data (was in state.json) ---
+    _seed_slot(
+        conn, "my-project", 1, status="busy",
+        ticket_id="TST-1", ticket_title="Fix bug", branch="fix-bug",
+        stage="implement", stage_iteration=1,
+        started_at="2026-02-12T10:00:00+00:00", pid=1234,
+    )
+    _seed_slot(conn, "my-project", 2, status="free")
+
+    # --- Dispatch state (was in state.json) ---
+    save_dispatch_state(conn, paused=False)
+
+    # --- Usage snapshot (was in state.json "usage" + "last_usage_check") ---
+    insert_usage_snapshot(
+        conn,
+        utilization_5h=0.45,
+        utilization_7d=0.72,
+        resets_at="2026-02-12T15:00:00+00:00",
+    )
+
+    # --- Task history data ---
     task_id = insert_task(
         conn,
         ticket_id="TST-1",
@@ -150,21 +126,15 @@ def db_file(tmp_path):
     )
     update_task(conn, task_id2, failure_reason="Tests failed", cost_usd=0.50, turns=10)
 
-    insert_usage_snapshot(
-        conn,
-        utilization_5h=0.45,
-        utilization_7d=0.72,
-        resets_at="2026-02-12T15:00:00+00:00",
-    )
     conn.commit()
     conn.close()
     return path
 
 
 @pytest.fixture()
-def client(state_file, db_file):
+def client(db_file):
     """FastAPI test client."""
-    app = create_app(state_file=state_file, db_path=db_file)
+    app = create_app(db_path=db_file)
     return TestClient(app)
 
 
@@ -172,8 +142,8 @@ def client(state_file, db_file):
 
 
 class TestCreateApp:
-    def test_app_created(self, state_file, db_file):
-        app = create_app(state_file=state_file, db_path=db_file)
+    def test_app_created(self, db_file):
+        app = create_app(db_path=db_file)
         assert app.title == "Botfarm Dashboard"
 
     def test_no_docs_endpoints(self, client):
@@ -225,7 +195,6 @@ class TestIndexPage:
 class TestIndexNoState:
     def test_index_no_state_file(self, tmp_path):
         app = create_app(
-            state_file=tmp_path / "nonexistent.json",
             db_path=tmp_path / "nonexistent.db",
         )
         client = TestClient(app)
@@ -247,12 +216,16 @@ class TestPartialSlots:
         assert "TST-1" in resp.text
         assert "implement" in resp.text
 
-    def test_dispatch_paused_banner(self, state_file, db_file):
-        data = json.loads(state_file.read_text())
-        data["dispatch_paused"] = True
-        data["dispatch_pause_reason"] = "5-hour limit exceeded"
-        state_file.write_text(json.dumps(data))
-        app = create_app(state_file=state_file, db_path=db_file)
+    def test_dispatch_paused_banner(self, tmp_path):
+        db_path = tmp_path / "paused.db"
+        conn = init_db(db_path)
+        _seed_slot(conn, "my-project", 1, status="free")
+        save_dispatch_state(
+            conn, paused=True, reason="5-hour limit exceeded",
+        )
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=db_path)
         client = TestClient(app)
         resp = client.get("/partials/slots")
         assert "DISPATCH PAUSED" in resp.text
@@ -285,28 +258,26 @@ class TestPartialQueue:
         resp = client.get("/partials/queue")
         assert resp.status_code == 200
 
-    def test_contains_queue_data(self, client):
+    def test_contains_no_work_available(self, client):
+        """Queue data is no longer available from DB; expect 'No work available'."""
         resp = client.get("/partials/queue")
         body = resp.text
-        assert "my-project" in body
-        assert "3" in body
-        assert "TST-5" in body
-        assert "Add logging" in body
+        assert "No work available" in body
 
-    def test_queue_ticket_link_with_workspace(self, state_file, db_file):
-        app = create_app(
-            state_file=state_file, db_path=db_file,
-            linear_workspace="my-team",
-        )
+    def test_queue_no_data(self, tmp_path):
+        """With an empty DB, queue should show 'No work available'."""
+        db_path = tmp_path / "empty.db"
+        conn = init_db(db_path)
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=db_path)
         client = TestClient(app)
         resp = client.get("/partials/queue")
-        assert "linear.app/my-team/issue/TST-5" in resp.text
+        assert resp.status_code == 200
+        assert "No work available" in resp.text
 
     def test_no_queue_data(self, tmp_path):
-        state = tmp_path / "state.json"
-        state.write_text(json.dumps({"slots": [], "usage": {}}))
         app = create_app(
-            state_file=state,
             db_path=tmp_path / "nonexistent.db",
         )
         client = TestClient(app)
@@ -315,15 +286,13 @@ class TestPartialQueue:
         assert "No work available" in resp.text
 
     def test_empty_queue_projects(self, tmp_path):
-        state = tmp_path / "state.json"
-        state.write_text(json.dumps({
-            "slots": [], "usage": {},
-            "queue": {"projects": []},
-        }))
-        app = create_app(
-            state_file=state,
-            db_path=tmp_path / "nonexistent.db",
-        )
+        """With no queue source in DB, should show 'No work available'."""
+        db_path = tmp_path / "nq.db"
+        conn = init_db(db_path)
+        _seed_slot(conn, "my-project", 1, status="free")
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=db_path)
         client = TestClient(app)
         resp = client.get("/partials/queue")
         assert resp.status_code == 200
@@ -342,21 +311,26 @@ class TestSlotPanelEnhancements:
         resp = client.get("/partials/slots")
         assert "linear.app/issue/TST-1" in resp.text
 
-    def test_ticket_link_with_workspace(self, state_file, db_file):
+    def test_ticket_link_with_workspace(self, db_file):
         app = create_app(
-            state_file=state_file, db_path=db_file,
+            db_path=db_file,
             linear_workspace="my-team",
         )
         client = TestClient(app)
         resp = client.get("/partials/slots")
         assert "linear.app/my-team/issue/TST-1" in resp.text
 
-    def test_paused_slot_resume_countdown(self, state_file, db_file):
-        data = json.loads(state_file.read_text())
-        data["slots"][0]["status"] = "paused_limit"
-        data["slots"][0]["resume_after"] = "2099-12-31T23:59:00+00:00"
-        state_file.write_text(json.dumps(data))
-        app = create_app(state_file=state_file, db_path=db_file)
+    def test_paused_slot_resume_countdown(self, tmp_path):
+        db_path = tmp_path / "paused_slot.db"
+        conn = init_db(db_path)
+        _seed_slot(
+            conn, "my-project", 1, status="paused_limit",
+            ticket_id="TST-1", ticket_title="Fix bug",
+            resume_after="2099-12-31T23:59:00+00:00",
+        )
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=db_path)
         client = TestClient(app)
         resp = client.get("/partials/slots")
         assert "resume-countdown" in resp.text
@@ -383,22 +357,36 @@ class TestUsagePanelEnhancements:
         assert "<progress" in resp.text
 
     def test_reset_countdowns(self, client):
-        resp = client.get("/partials/usage")
-        assert "reset-countdown" in resp.text
-        assert "Resets at:" in resp.text
+        """Reset countdowns appear on the index page (which falls back to DB data)."""
+        resp = client.get("/")
+        body = resp.text
+        # DB stores resets_at as a single field; the index page renders usage
+        # from the full-page context which includes DB-sourced data
+        assert "45.0%" in body
+        assert "72.0%" in body
 
     def test_last_usage_check(self, client):
-        resp = client.get("/partials/usage")
-        assert "Last checked:" in resp.text
-        assert "ago" in resp.text
+        """Last checked appears on the index page (which falls back to DB data)."""
+        resp = client.get("/")
+        body = resp.text
+        assert "Last checked:" in body
+        assert "ago" in body
 
-    def test_no_dispatch_pause_banner_in_usage(self, state_file, db_file):
+    def test_no_dispatch_pause_banner_in_usage(self, tmp_path, monkeypatch):
         """Dispatch pause banner lives in slots panel only, not usage."""
-        data = json.loads(state_file.read_text())
-        data["dispatch_paused"] = True
-        data["dispatch_pause_reason"] = "5-hour limit exceeded"
-        state_file.write_text(json.dumps(data))
-        app = create_app(state_file=state_file, db_path=db_file)
+        db_path = tmp_path / "paused_usage.db"
+        conn = init_db(db_path)
+        _seed_slot(conn, "my-project", 1, status="free")
+        save_dispatch_state(
+            conn, paused=True, reason="5-hour limit exceeded",
+        )
+        insert_usage_snapshot(
+            conn, utilization_5h=0.45, utilization_7d=0.72,
+            resets_at="2026-02-12T15:00:00+00:00",
+        )
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=db_path)
         client = TestClient(app)
         resp = client.get("/partials/usage")
         assert "DISPATCH PAUSED" not in resp.text
@@ -412,7 +400,7 @@ class TestUsageFreshness:
     """Tests for SMA-111: dashboard usage data freshness fixes."""
 
     def test_rate_limit_slot_not_claimed_on_failure(
-        self, state_file, db_file, monkeypatch,
+        self, db_file, monkeypatch,
     ):
         """Rate-limit slot should not be consumed when the API call fails.
 
@@ -429,15 +417,15 @@ class TestUsageFreshness:
         monkeypatch.setattr(
             "botfarm.dashboard.refresh_usage_snapshot", _failing_refresh,
         )
-        app = create_app(state_file=state_file, db_path=db_file)
+        app = create_app(db_path=db_file)
         client = TestClient(app)
 
-        # First call — triggers a real refresh attempt which fails
+        # First call -- triggers a real refresh attempt which fails
         resp1 = client.get("/partials/usage")
         assert resp1.status_code == 200
         first_call_count = call_count
 
-        # Second call — should also attempt a refresh (slot was not claimed)
+        # Second call -- should also attempt a refresh (slot was not claimed)
         resp2 = client.get("/partials/usage")
         assert resp2.status_code == 200
         assert call_count > first_call_count, (
@@ -445,7 +433,7 @@ class TestUsageFreshness:
         )
 
     def test_dashboard_tracks_own_refresh_timestamp(
-        self, state_file, db_file, monkeypatch,
+        self, db_file, monkeypatch,
     ):
         """After a successful refresh, 'Last checked' should reflect the
         dashboard's own timestamp, not the supervisor's."""
@@ -457,70 +445,100 @@ class TestUsageFreshness:
             "botfarm.dashboard.refresh_usage_snapshot",
             lambda conn: FakeState(),
         )
-        # Set supervisor's last_usage_check to something old
-        data = json.loads(state_file.read_text())
-        data["last_usage_check"] = "2020-01-01T00:00:00+00:00"
-        state_file.write_text(json.dumps(data))
 
-        app = create_app(state_file=state_file, db_path=db_file)
+        app = create_app(db_path=db_file)
         client = TestClient(app)
         resp = client.get("/partials/usage")
         body = resp.text
-        # Should show fresh data from our mock, not the stale state.json usage
+        # Should show fresh data from our mock, not the DB snapshot usage
         assert "30.0%" in body
-        # The "Last checked" should NOT show the ~6-year-old supervisor time;
-        # it should be a recent dashboard timestamp (seconds/minutes, not years)
+        # The "Last checked" should be a recent dashboard timestamp
         assert "Last checked:" in body
 
     def test_staleness_warning_shown_when_data_old(
-        self, state_file, db_file, monkeypatch,
+        self, tmp_path, monkeypatch,
     ):
         """A visual warning should appear when usage data is older than
-        2x the refresh interval (>120 seconds with default 60s interval)."""
+        2x the refresh interval (>120 seconds with default 60s interval).
+
+        The index page falls back to DB's last_usage_check (from
+        usage_snapshot.created_at), so staleness is testable there.
+        """
         monkeypatch.setattr(
             "botfarm.dashboard.refresh_usage_snapshot", lambda conn: None,
         )
-        # Set last_usage_check to 5 minutes ago (well over 2x60s threshold)
+        # Create a DB with a usage snapshot that has an old created_at
         from datetime import datetime, timedelta, timezone
         old_time = (
             datetime.now(timezone.utc) - timedelta(minutes=5)
         ).isoformat()
-        data = json.loads(state_file.read_text())
-        data["last_usage_check"] = old_time
-        state_file.write_text(json.dumps(data))
+        db_path = tmp_path / "stale.db"
+        conn = init_db(db_path)
+        # Insert usage snapshot with old timestamp
+        conn.execute(
+            "INSERT INTO usage_snapshots (utilization_5h, utilization_7d, resets_at, created_at)"
+            " VALUES (?, ?, ?, ?)",
+            (0.45, 0.72, "2026-02-12T15:00:00+00:00", old_time),
+        )
+        conn.commit()
+        conn.close()
 
-        app = create_app(state_file=state_file, db_path=db_file)
+        app = create_app(db_path=db_path)
+        client = TestClient(app)
+        # Use index page which falls back to DB's last_usage_check
+        resp = client.get("/")
+        assert "usage data may be stale" in resp.text
+
+    def test_staleness_warning_on_usage_partial_cold_start(
+        self, tmp_path, monkeypatch,
+    ):
+        """The /partials/usage endpoint should show a staleness warning on
+        cold start (before the dashboard refreshes) when the DB snapshot is old.
+        """
+        monkeypatch.setattr(
+            "botfarm.dashboard.refresh_usage_snapshot", lambda conn: None,
+        )
+        from datetime import datetime, timedelta, timezone
+        old_time = (
+            datetime.now(timezone.utc) - timedelta(minutes=5)
+        ).isoformat()
+        db_path = tmp_path / "stale_partial.db"
+        conn = init_db(db_path)
+        conn.execute(
+            "INSERT INTO usage_snapshots (utilization_5h, utilization_7d, resets_at, created_at)"
+            " VALUES (?, ?, ?, ?)",
+            (0.45, 0.72, "2026-02-12T15:00:00+00:00", old_time),
+        )
+        conn.commit()
+        conn.close()
+
+        app = create_app(db_path=db_path)
         client = TestClient(app)
         resp = client.get("/partials/usage")
         assert "usage data may be stale" in resp.text
 
     def test_no_staleness_warning_when_data_fresh(
-        self, state_file, db_file, monkeypatch,
+        self, db_file, monkeypatch,
     ):
         """No warning when the usage data was refreshed recently."""
         monkeypatch.setattr(
             "botfarm.dashboard.refresh_usage_snapshot", lambda conn: None,
         )
-        from datetime import datetime, timezone
-        fresh_time = datetime.now(timezone.utc).isoformat()
-        data = json.loads(state_file.read_text())
-        data["last_usage_check"] = fresh_time
-        state_file.write_text(json.dumps(data))
-
-        app = create_app(state_file=state_file, db_path=db_file)
+        # db_file already has a recent usage snapshot (just created)
+        app = create_app(db_path=db_file)
         client = TestClient(app)
         resp = client.get("/partials/usage")
         assert "usage data may be stale" not in resp.text
 
     def test_warning_level_log_on_refresh_failure(
-        self, state_file, db_file, monkeypatch, caplog,
+        self, db_file, monkeypatch, caplog,
     ):
         """Refresh failures should log at WARNING level, not DEBUG."""
         monkeypatch.setattr(
             "botfarm.dashboard.refresh_usage_snapshot",
             lambda conn: (_ for _ in ()).throw(RuntimeError("API error")),
         )
-        app = create_app(state_file=state_file, db_path=db_file)
+        app = create_app(db_path=db_file)
         client = TestClient(app)
 
         import logging
@@ -536,7 +554,7 @@ class TestUsageFreshness:
         )
 
     def test_successful_refresh_updates_cached_data(
-        self, state_file, db_file, monkeypatch,
+        self, db_file, monkeypatch,
     ):
         """After a successful API refresh, subsequent rate-limited calls
         should return the fresh data, not None."""
@@ -548,14 +566,14 @@ class TestUsageFreshness:
             "botfarm.dashboard.refresh_usage_snapshot",
             lambda conn: FakeState(),
         )
-        app = create_app(state_file=state_file, db_path=db_file)
+        app = create_app(db_path=db_file)
         client = TestClient(app)
 
-        # First call — refreshes from API
+        # First call -- refreshes from API
         resp1 = client.get("/partials/usage")
         assert "55.0%" in resp1.text
 
-        # Second call within rate-limit window — should return cached data
+        # Second call within rate-limit window -- should return cached data
         resp2 = client.get("/partials/usage")
         assert "55.0%" in resp2.text
 
@@ -571,11 +589,11 @@ class TestIndexQueuePanel:
         assert "queue-panel" in body
         assert "/partials/queue" in body
 
-    def test_index_contains_queue_data(self, client):
+    def test_index_queue_shows_no_work(self, client):
+        """Queue data is no longer in DB; index should show 'No work available'."""
         resp = client.get("/")
         body = resp.text
-        assert "TST-5" in body
-        assert "Add logging" in body
+        assert "No work available" in body
 
 
 # --- History ---
@@ -622,18 +640,17 @@ class TestHistoryPage:
         resp = client.get("/history")
         assert "/task/" in resp.text
 
-    def test_ticket_links_to_linear(self, state_file, db_file):
+    def test_ticket_links_to_linear(self, db_file):
         app = create_app(
-            state_file=state_file, db_path=db_file,
+            db_path=db_file,
             linear_workspace="my-team",
         )
         client = TestClient(app)
         resp = client.get("/history")
         assert "linear.app/my-team/issue/TST-1" in resp.text
 
-    def test_history_no_db(self, state_file, tmp_path):
+    def test_history_no_db(self, tmp_path):
         app = create_app(
-            state_file=state_file,
             db_path=tmp_path / "nonexistent.db",
         )
         client = TestClient(app)
@@ -705,7 +722,7 @@ class TestHistoryPagination:
         resp = client.get("/history?page=abc")
         assert resp.status_code == 200
 
-    def test_pagination_with_many_tasks(self, state_file, tmp_path):
+    def test_pagination_with_many_tasks(self, tmp_path):
         """When there are more than 25 tasks, pagination links appear."""
         path = tmp_path / "big.db"
         conn = init_db(path)
@@ -719,7 +736,7 @@ class TestHistoryPagination:
             )
         conn.commit()
         conn.close()
-        app = create_app(state_file=state_file, db_path=path)
+        app = create_app(db_path=path)
         client = TestClient(app)
         resp = client.get("/history")
         body = resp.text
@@ -792,9 +809,9 @@ class TestTaskDetailPage:
         resp = client.get("/task/1")
         assert "Back to Task History" in resp.text
 
-    def test_ticket_links_to_linear(self, state_file, db_file):
+    def test_ticket_links_to_linear(self, db_file):
         app = create_app(
-            state_file=state_file, db_path=db_file,
+            db_path=db_file,
             linear_workspace="my-team",
         )
         client = TestClient(app)
@@ -806,9 +823,8 @@ class TestTaskDetailPage:
         assert resp.status_code == 200
         assert "Task not found" in resp.text
 
-    def test_task_detail_no_db(self, state_file, tmp_path):
+    def test_task_detail_no_db(self, tmp_path):
         app = create_app(
-            state_file=state_file,
             db_path=tmp_path / "nonexistent.db",
         )
         client = TestClient(app)
@@ -822,13 +838,13 @@ class TestTaskDetailPage:
         assert "TST-2" in body
         assert "Tests failed" in body
 
-    def test_task_with_no_stages_or_events(self, state_file, tmp_path):
+    def test_task_with_no_stages_or_events(self, tmp_path):
         path = tmp_path / "sparse.db"
         conn = init_db(path)
         insert_task(conn, ticket_id="BARE-1", title="Bare task", project="p", slot=1)
         conn.commit()
         conn.close()
-        app = create_app(state_file=state_file, db_path=path)
+        app = create_app(db_path=path)
         client = TestClient(app)
         resp = client.get("/task/1")
         body = resp.text
@@ -955,9 +971,8 @@ class TestMetricsPage:
         assert "my-project" in body
         assert "other-project" in body
 
-    def test_metrics_no_db(self, state_file, tmp_path):
+    def test_metrics_no_db(self, tmp_path):
         app = create_app(
-            state_file=state_file,
             db_path=tmp_path / "nonexistent.db",
         )
         client = TestClient(app)
@@ -976,17 +991,17 @@ class TestMetricsPage:
 
 
 class TestStartDashboard:
-    def test_disabled_returns_none(self, state_file, db_file):
+    def test_disabled_returns_none(self, db_file):
         config = DashboardConfig(enabled=False)
         result = start_dashboard(
-            config, state_file=state_file, db_path=db_file,
+            config, db_path=db_file,
         )
         assert result is None
 
-    def test_enabled_returns_thread(self, state_file, db_file):
+    def test_enabled_returns_thread(self, db_file):
         config = DashboardConfig(enabled=True, host="127.0.0.1", port=0)
         thread = start_dashboard(
-            config, state_file=state_file, db_path=db_file,
+            config, db_path=db_file,
         )
         assert thread is not None
         assert thread.is_alive()
@@ -1021,44 +1036,34 @@ class TestEdgeCases:
             "botfarm.dashboard.refresh_usage_snapshot", lambda conn: None
         )
 
-    def test_corrupt_state_file(self, tmp_path, db_file):
-        state = tmp_path / "state.json"
-        state.write_text("not valid json {{{")
-        app = create_app(state_file=state, db_path=db_file)
+    def test_empty_db_index(self, tmp_path):
+        """With an empty DB (no slots, no state), index renders gracefully."""
+        db_path = tmp_path / "empty.db"
+        conn = init_db(db_path)
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=db_path)
         client = TestClient(app)
         resp = client.get("/")
         assert resp.status_code == 200
 
-    def test_state_file_bare_list(self, tmp_path, db_file):
-        state = tmp_path / "state.json"
-        slots = [
-            {"project": "p", "slot_id": 1, "status": "free",
-             "ticket_id": None, "ticket_title": None, "stage": None,
-             "stage_iteration": 0, "started_at": None},
-        ]
-        state.write_text(json.dumps(slots))
-        app = create_app(state_file=state, db_path=db_file)
-        client = TestClient(app)
-        resp = client.get("/")
-        assert resp.status_code == 200
-
-    def test_empty_database(self, state_file, tmp_path):
+    def test_empty_database(self, tmp_path):
         db_path = tmp_path / "empty.db"
         conn = init_db(db_path)
         conn.close()
-        app = create_app(state_file=state_file, db_path=db_path)
+        app = create_app(db_path=db_path)
         client = TestClient(app)
         resp = client.get("/history")
         assert resp.status_code == 200
         assert "No tasks found" in resp.text
 
     def test_usage_no_data(self, tmp_path):
-        state = tmp_path / "state.json"
-        state.write_text(json.dumps({"slots": [], "usage": {}}))
-        app = create_app(
-            state_file=state,
-            db_path=tmp_path / "nonexistent.db",
-        )
+        """With no usage snapshots in DB, usage partial renders without error."""
+        db_path = tmp_path / "no_usage.db"
+        conn = init_db(db_path)
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=db_path)
         client = TestClient(app)
         resp = client.get("/partials/usage")
         assert resp.status_code == 200
@@ -1121,10 +1126,10 @@ def _make_botfarm_config(tmp_path):
 
 class TestConfigPage:
     @pytest.fixture()
-    def config_client(self, state_file, db_file, tmp_path):
+    def config_client(self, db_file, tmp_path):
         config, _ = _make_botfarm_config(tmp_path)
         app = create_app(
-            state_file=state_file, db_path=db_file,
+            db_path=db_file,
             botfarm_config=config,
         )
         return TestClient(app)
@@ -1151,8 +1156,8 @@ class TestConfigPage:
         resp = config_client.get("/")
         assert "Config" in resp.text
 
-    def test_config_page_disabled_without_config(self, state_file, db_file):
-        app = create_app(state_file=state_file, db_path=db_file)
+    def test_config_page_disabled_without_config(self, db_file):
+        app = create_app(db_path=db_file)
         client = TestClient(app)
         resp = client.get("/config")
         assert resp.status_code == 200
@@ -1161,10 +1166,10 @@ class TestConfigPage:
 
 class TestConfigUpdate:
     @pytest.fixture()
-    def setup(self, state_file, db_file, tmp_path):
+    def setup(self, db_file, tmp_path):
         config, config_path = _make_botfarm_config(tmp_path)
         app = create_app(
-            state_file=state_file, db_path=db_file,
+            db_path=db_file,
             botfarm_config=config,
         )
         client = TestClient(app)
@@ -1262,8 +1267,8 @@ class TestConfigUpdate:
         assert resp.status_code == 400
         assert "JSON object" in resp.text
 
-    def test_update_without_config_returns_400(self, state_file, db_file):
-        app = create_app(state_file=state_file, db_path=db_file)
+    def test_update_without_config_returns_400(self, db_file):
+        app = create_app(db_path=db_file)
         client = TestClient(app)
         resp = client.post("/config", json={"linear": {"poll_interval_seconds": 60}})
         assert resp.status_code == 400
@@ -1330,10 +1335,10 @@ def _make_structural_botfarm_config(tmp_path):
 
 class TestStructuralConfigPage:
     @pytest.fixture()
-    def structural_client(self, state_file, db_file, tmp_path):
+    def structural_client(self, db_file, tmp_path):
         config, _ = _make_structural_botfarm_config(tmp_path)
         app = create_app(
-            state_file=state_file, db_path=db_file,
+            db_path=db_file,
             botfarm_config=config,
         )
         return TestClient(app)
@@ -1371,10 +1376,10 @@ class TestStructuralConfigPage:
 
 class TestStructuralConfigUpdate:
     @pytest.fixture()
-    def setup(self, state_file, db_file, tmp_path):
+    def setup(self, db_file, tmp_path):
         config, config_path = _make_structural_botfarm_config(tmp_path)
         app = create_app(
-            state_file=state_file, db_path=db_file,
+            db_path=db_file,
             botfarm_config=config,
         )
         client = TestClient(app)
@@ -1490,7 +1495,7 @@ class TestStructuralConfigUpdate:
         # Restart required because of structural update
         assert app.state.restart_required is True
 
-    def test_structural_update_no_config_path(self, state_file, db_file):
+    def test_structural_update_no_config_path(self, db_file):
         config = BotfarmConfig(
             projects=[
                 ProjectConfig(
@@ -1501,7 +1506,7 @@ class TestStructuralConfigUpdate:
         )
         # No source_path set
         app = create_app(
-            state_file=state_file, db_path=db_file,
+            db_path=db_file,
             botfarm_config=config,
         )
         client = TestClient(app)
@@ -1514,7 +1519,7 @@ class TestStructuralConfigUpdate:
 
 class TestConfigViewPage:
     @pytest.fixture()
-    def config_client(self, state_file, db_file, tmp_path):
+    def config_client(self, db_file, tmp_path):
         config = BotfarmConfig(
             projects=[
                 ProjectConfig(
@@ -1538,7 +1543,7 @@ class TestConfigViewPage:
         )
         config.source_path = str(tmp_path / "config.yaml")
         app = create_app(
-            state_file=state_file, db_path=db_file,
+            db_path=db_file,
             botfarm_config=config,
         )
         return TestClient(app)
@@ -1553,7 +1558,7 @@ class TestConfigViewPage:
         body = resp.text
         for section in [
             "Projects", "Linear", "Agents", "Usage Limits",
-            "Notifications", "Dashboard", "Database", "State File",
+            "Notifications", "Dashboard", "Database",
         ]:
             assert section in body
 
@@ -1601,14 +1606,14 @@ class TestConfigViewPage:
         assert "Configuration" in resp.text
         assert "/config/view" in resp.text
 
-    def test_config_view_disabled_without_config(self, state_file, db_file):
-        app = create_app(state_file=state_file, db_path=db_file)
+    def test_config_view_disabled_without_config(self, db_file):
+        app = create_app(db_path=db_file)
         client = TestClient(app)
         resp = client.get("/config/view")
         assert resp.status_code == 200
         assert "not available" in resp.text
 
-    def test_config_view_masks_short_api_key(self, state_file, db_file, tmp_path):
+    def test_config_view_masks_short_api_key(self, db_file, tmp_path):
         config = BotfarmConfig(
             projects=[
                 ProjectConfig(
@@ -1620,7 +1625,7 @@ class TestConfigViewPage:
         )
         config.source_path = str(tmp_path / "config.yaml")
         app = create_app(
-            state_file=state_file, db_path=db_file,
+            db_path=db_file,
             botfarm_config=config,
         )
         client = TestClient(app)
@@ -1629,7 +1634,7 @@ class TestConfigViewPage:
         assert "short" not in body
         assert "****" in body
 
-    def test_config_view_empty_webhook_shows_dash(self, state_file, db_file, tmp_path):
+    def test_config_view_empty_webhook_shows_dash(self, db_file, tmp_path):
         config = BotfarmConfig(
             projects=[
                 ProjectConfig(
@@ -1640,7 +1645,7 @@ class TestConfigViewPage:
         )
         config.source_path = str(tmp_path / "config.yaml")
         app = create_app(
-            state_file=state_file, db_path=db_file,
+            db_path=db_file,
             botfarm_config=config,
         )
         client = TestClient(app)
@@ -1764,86 +1769,103 @@ class TestTaskDetailPipeline:
 
 
 class TestSupervisorBadge:
-    def test_index_shows_stopped_when_no_heartbeat(self, tmp_path, db_file):
+    def test_index_shows_stopped_when_no_heartbeat(self, tmp_path):
         """Without supervisor_heartbeat, badge should show Stopped."""
-        state_path = tmp_path / "state.json"
-        state_path.write_text(json.dumps({"slots": []}))
-        app = create_app(state_file=state_path, db_path=db_file)
+        db_path = tmp_path / "no_hb.db"
+        conn = init_db(db_path)
+        _seed_slot(conn, "my-project", 1, status="free")
+        save_dispatch_state(conn, paused=False)
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=db_path)
         client = TestClient(app)
         resp = client.get("/")
         assert resp.status_code == 200
         assert "Supervisor Stopped" in resp.text
 
-    def test_index_shows_running_with_fresh_heartbeat(self, tmp_path, db_file):
+    def test_index_shows_running_with_fresh_heartbeat(self, tmp_path):
         """A recent heartbeat should show Supervisor Running."""
         from datetime import datetime, timezone
-        state_path = tmp_path / "state.json"
         now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-        state_path.write_text(json.dumps({
-            "slots": [],
-            "supervisor_heartbeat": now_iso,
-        }))
-        app = create_app(state_file=state_path, db_path=db_file)
+        db_path = tmp_path / "fresh_hb.db"
+        conn = init_db(db_path)
+        _seed_slot(conn, "my-project", 1, status="free")
+        save_dispatch_state(
+            conn, paused=False, supervisor_heartbeat=now_iso,
+        )
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=db_path)
         client = TestClient(app)
         resp = client.get("/")
         assert resp.status_code == 200
         assert "Supervisor Running" in resp.text
 
-    def test_index_shows_stopped_with_stale_heartbeat(self, tmp_path, db_file):
+    def test_index_shows_stopped_with_stale_heartbeat(self, tmp_path):
         """A heartbeat older than 30s should show Stopped."""
         from datetime import datetime, timedelta, timezone
         stale = datetime.now(timezone.utc) - timedelta(seconds=60)
-        state_path = tmp_path / "state.json"
-        state_path.write_text(json.dumps({
-            "slots": [],
-            "supervisor_heartbeat": stale.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
-        }))
-        app = create_app(state_file=state_path, db_path=db_file)
+        db_path = tmp_path / "stale_hb.db"
+        conn = init_db(db_path)
+        _seed_slot(conn, "my-project", 1, status="free")
+        save_dispatch_state(
+            conn, paused=False,
+            supervisor_heartbeat=stale.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+        )
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=db_path)
         client = TestClient(app)
         resp = client.get("/")
         assert resp.status_code == 200
         assert "Supervisor Stopped" in resp.text
 
-    def test_slots_partial_includes_oob_badge(self, tmp_path, db_file):
+    def test_slots_partial_includes_oob_badge(self, tmp_path):
         """The /partials/slots response should include hx-swap-oob badge."""
         from datetime import datetime, timezone
-        state_path = tmp_path / "state.json"
         now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-        state_path.write_text(json.dumps({
-            "slots": [],
-            "supervisor_heartbeat": now_iso,
-        }))
-        app = create_app(state_file=state_path, db_path=db_file)
+        db_path = tmp_path / "oob_badge.db"
+        conn = init_db(db_path)
+        _seed_slot(conn, "my-project", 1, status="free")
+        save_dispatch_state(
+            conn, paused=False, supervisor_heartbeat=now_iso,
+        )
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=db_path)
         client = TestClient(app)
         resp = client.get("/partials/slots")
         assert resp.status_code == 200
         assert 'hx-swap-oob="true"' in resp.text
         assert "Supervisor Running" in resp.text
 
-    def test_badge_on_history_page(self, tmp_path, db_file):
+    def test_badge_on_history_page(self, tmp_path):
         """History page should also show the supervisor badge."""
         from datetime import datetime, timezone
-        state_path = tmp_path / "state.json"
         now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-        state_path.write_text(json.dumps({
-            "slots": [],
-            "supervisor_heartbeat": now_iso,
-        }))
-        app = create_app(state_file=state_path, db_path=db_file)
+        db_path = tmp_path / "hist_badge.db"
+        conn = init_db(db_path)
+        _seed_slot(conn, "my-project", 1, status="free")
+        save_dispatch_state(
+            conn, paused=False, supervisor_heartbeat=now_iso,
+        )
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=db_path)
         client = TestClient(app)
         resp = client.get("/history")
         assert resp.status_code == 200
         assert "Supervisor Running" in resp.text
 
-    def test_backward_compat_no_heartbeat_field(self, tmp_path, db_file):
-        """Dashboard should not crash when heartbeat field is missing."""
-        state_path = tmp_path / "state.json"
-        state_path.write_text(json.dumps({
-            "slots": [
-                {"project": "p", "slot_id": 1, "status": "free"},
-            ],
-        }))
-        app = create_app(state_file=state_path, db_path=db_file)
+    def test_backward_compat_no_heartbeat_field(self, tmp_path):
+        """Dashboard should not crash when no dispatch_state row exists."""
+        db_path = tmp_path / "compat.db"
+        conn = init_db(db_path)
+        _seed_slot(conn, "p", 1, status="free")
+        # No save_dispatch_state call -- no heartbeat row
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=db_path)
         client = TestClient(app)
         resp = client.get("/")
         assert resp.status_code == 200

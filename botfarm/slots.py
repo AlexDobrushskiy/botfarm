@@ -4,9 +4,8 @@ Slots are the core resource — the supervisor tracks which slots are free,
 busy, paused, or failed. Each slot is bound to a specific project (worktree).
 
 Runtime state is persisted to the SQLite database (``slots`` and
-``dispatch_state`` tables). An optional ``state_path`` can be provided
-for backward-compatible JSON writes so that the dashboard and CLI
-continue to work until they are migrated to read from the DB directly.
+``dispatch_state`` tables). A ``state_path`` can optionally be provided
+for one-time migration of legacy state.json data into the database.
 """
 
 from __future__ import annotations
@@ -34,7 +33,6 @@ SLOT_STATUSES = frozenset(
     {"free", "busy", "paused_limit", "failed", "completed_pending_cleanup"}
 )
 
-DEFAULT_STATE_PATH = Path.home() / ".botfarm" / "state.json"
 
 
 @dataclass
@@ -110,10 +108,6 @@ class SlotManager:
     Each slot is identified by (project_name, slot_id). The manager
     persists state to the SQLite database after every mutation so the
     supervisor can recover from crashes.
-
-    An optional ``state_path`` enables backward-compatible JSON writes
-    so that the dashboard and CLI continue to work during the migration
-    period.
     """
 
     def __init__(
@@ -127,6 +121,7 @@ class SlotManager:
             self._conn = conn
         else:
             self._conn = init_db(self._db_path)
+        # state_path is kept only for one-time migration from state.json → DB
         self._state_path: Path | None = (
             Path(state_path).expanduser() if state_path else None
         )
@@ -138,11 +133,6 @@ class SlotManager:
     @property
     def db_path(self) -> Path:
         return self._db_path
-
-    @property
-    def state_path(self) -> Path | None:
-        """Backward-compat JSON path (may be None)."""
-        return self._state_path
 
     @property
     def slots(self) -> dict[tuple[str, int], SlotState]:
@@ -364,28 +354,9 @@ class SlotManager:
             self._conn,
             paused=self._dispatch_paused,
             reason=self._dispatch_pause_reason,
+            supervisor_heartbeat=_now_iso(),
         )
         self._conn.commit()
-
-        # Backward compat: also write state.json for dashboard/CLI
-        if self._state_path:
-            self._write_state_json()
-
-    def _write_state_json(self) -> None:
-        """Write state.json for backward compatibility with dashboard/CLI."""
-        self._state_path.parent.mkdir(parents=True, exist_ok=True)
-        payload: dict = {
-            "slots": [s.to_dict() for s in self._slots.values()],
-            "supervisor_heartbeat": _now_iso(),
-        }
-        if self._usage is not None:
-            payload["usage"] = self._usage
-        payload["dispatch_paused"] = self._dispatch_paused
-        if self._dispatch_pause_reason is not None:
-            payload["dispatch_pause_reason"] = self._dispatch_pause_reason
-        tmp_path = self._state_path.with_suffix(".tmp")
-        tmp_path.write_text(json.dumps(payload, indent=2) + "\n")
-        tmp_path.replace(self._state_path)
 
     def load(self) -> None:
         """Load state from DB if it exists. Falls back to state.json migration."""
@@ -412,7 +383,7 @@ class SlotManager:
             if key in self._slots:
                 self._slots[key] = SlotState.from_db_row(row)
 
-        paused, reason = load_dispatch_state(self._conn)
+        paused, reason, _heartbeat = load_dispatch_state(self._conn)
         self._dispatch_paused = paused
         self._dispatch_pause_reason = reason
 
@@ -486,7 +457,7 @@ class SlotManager:
     # ------------------------------------------------------------------
 
     def set_usage(self, usage: dict) -> None:
-        """Store current usage data (written to state.json for dashboard compat)."""
+        """Store current usage data."""
         self._usage = usage
         self._save()
 
