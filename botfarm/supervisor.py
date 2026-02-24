@@ -73,6 +73,7 @@ def _worker_entry(
     max_ci_retries: int = 2,
     resume_from_stage: str | None = None,
     resume_session_id: str | None = None,
+    placeholder_branch: str | None = None,
 ) -> None:
     """Entry point for a worker subprocess.
 
@@ -103,6 +104,7 @@ def _worker_entry(
             project=project_name,
             slot_id=slot_id,
             log_dir=log_dir,
+            placeholder_branch=placeholder_branch,
             max_turns=max_turns,
             max_review_iterations=max_review_iterations,
             max_ci_retries=max_ci_retries,
@@ -1268,6 +1270,7 @@ class Supervisor:
                 "max_ci_retries": self._config.agents.max_ci_retries,
                 "resume_from_stage": slot.stage,
                 "resume_session_id": slot.current_session_id,
+                "placeholder_branch": self._slot_placeholder_branch(slot.slot_id),
             },
             daemon=False,
         )
@@ -1440,6 +1443,7 @@ class Supervisor:
                 "max_turns": None,
                 "max_review_iterations": self._config.agents.max_review_iterations,
                 "max_ci_retries": self._config.agents.max_ci_retries,
+                "placeholder_branch": self._slot_placeholder_branch(slot.slot_id),
             },
             daemon=False,  # Not daemon — survives supervisor exit
         )
@@ -1497,6 +1501,11 @@ class Supervisor:
         """Compute the working directory for a slot's worktree."""
         base = Path(project_cfg.base_dir).expanduser()
         return str(base.parent / f"{project_cfg.worktree_prefix}{slot_id}")
+
+    @staticmethod
+    def _slot_placeholder_branch(slot_id: int) -> str:
+        """Return the placeholder branch name for a slot."""
+        return f"slot-{slot_id}-placeholder"
 
     def _sleep(self, seconds: int) -> None:
         """Interruptible sleep — checks shutdown flag each second."""

@@ -332,23 +332,38 @@ def _run_merge(
     *,
     cwd: str | Path,
     log_file: Path | None = None,
+    placeholder_branch: str | None = None,
 ) -> StageResult:
-    """MERGE stage — Squash merge the PR and delete the remote branch."""
+    """MERGE stage — Squash merge the PR, then checkout placeholder branch."""
     proc = subprocess.run(
-        ["gh", "pr", "merge", pr_url, "--squash", "--delete-branch"],
+        ["gh", "pr", "merge", pr_url, "--squash"],
         capture_output=True,
         text=True,
         cwd=str(cwd),
     )
     if log_file is not None:
         _write_subprocess_log(log_file, proc.stdout, proc.stderr)
-    success = proc.returncode == 0
-    error = None if success else proc.stderr[:500] if proc.stderr else proc.stdout[:500]
-    return StageResult(
-        stage="merge",
-        success=success,
-        error=error,
-    )
+    if proc.returncode != 0:
+        error = proc.stderr[:500] if proc.stderr else proc.stdout[:500]
+        return StageResult(stage="merge", success=False, error=error)
+
+    # Switch worktree back to its placeholder branch so it doesn't hold
+    # the now-deleted feature branch (which causes issues on next dispatch).
+    if placeholder_branch:
+        checkout = subprocess.run(
+            ["git", "checkout", placeholder_branch],
+            capture_output=True,
+            text=True,
+            cwd=str(cwd),
+        )
+        if checkout.returncode != 0:
+            logger.warning(
+                "Post-merge checkout of '%s' failed: %s",
+                placeholder_branch,
+                checkout.stderr[:300],
+            )
+
+    return StageResult(stage="merge", success=True)
 
 
 # ---------------------------------------------------------------------------
@@ -382,6 +397,7 @@ def run_pipeline(
     slot_id: int | None = None,
     state_path: str | Path | None = None,
     log_dir: str | Path | None = None,
+    placeholder_branch: str | None = None,
     max_turns: dict[str, int] | None = None,
     pr_checks_timeout: int = 600,
     max_review_iterations: int = 3,
@@ -459,6 +475,7 @@ def run_pipeline(
         slot_id=slot_id,
         state_path=state_path,
         log_dir=Path(log_dir) if log_dir else None,
+        placeholder_branch=placeholder_branch,
     )
 
     for stage in STAGES:
@@ -601,6 +618,7 @@ class _PipelineContext:
     slot_id: int | None = None
     state_path: str | Path | None = None
     log_dir: Path | None = None
+    placeholder_branch: str | None = None
 
     def run_and_record(
         self,
@@ -642,6 +660,7 @@ class _PipelineContext:
                 max_turns=self.turns_cfg.get(stage, 100),
                 pr_checks_timeout=self.pr_checks_timeout,
                 log_file=log_file,
+                placeholder_branch=self.placeholder_branch,
             )
         except Exception as exc:
             logger.error("Stage '%s' raised: %s", stage, exc)
@@ -890,6 +909,7 @@ def _execute_stage(
     max_turns: int,
     pr_checks_timeout: int,
     log_file: Path | None = None,
+    placeholder_branch: str | None = None,
 ) -> StageResult:
     """Dispatch to the appropriate stage runner."""
     if stage == "implement":
@@ -909,7 +929,7 @@ def _execute_stage(
     elif stage == "merge":
         if not pr_url:
             raise ValueError(f"{stage} stage requires pr_url")
-        return _run_merge(pr_url, cwd=cwd, log_file=log_file)
+        return _run_merge(pr_url, cwd=cwd, log_file=log_file, placeholder_branch=placeholder_branch)
     else:
         raise ValueError(f"Unknown stage: {stage}")
 
