@@ -19,6 +19,7 @@ from botfarm.config import (
     load_config,
 )
 from botfarm.db import get_task_history, init_db
+from botfarm.slots import SlotState, _is_pid_alive
 from botfarm.usage import refresh_usage_snapshot
 
 ENV_FILE_PATH = DEFAULT_CONFIG_DIR / ".env"
@@ -413,33 +414,13 @@ def run(config_path, log_dir):
     supervisor.run()
 
 
-# Fields to clear when resetting a slot to "free" (mirrors SlotManager.free_slot)
+# Derive "free" field values from the SlotState dataclass defaults so that
+# adding a new field to SlotState automatically keeps reset in sync.
+_free_state = SlotState(project="", slot_id=0)
 _FREE_SLOT_FIELDS = {
-    "status": "free",
-    "ticket_id": None,
-    "ticket_title": None,
-    "branch": None,
-    "pr_url": None,
-    "stage": None,
-    "stage_iteration": 0,
-    "current_session_id": None,
-    "started_at": None,
-    "stage_started_at": None,
-    "sigterm_sent_at": None,
-    "pid": None,
-    "interrupted_by_limit": False,
-    "resume_after": None,
-    "stages_completed": [],
+    k: v for k, v in _free_state.to_dict().items()
+    if k not in ("project", "slot_id")
 }
-
-
-def _is_pid_alive(pid: int) -> bool:
-    """Check whether a process with the given PID is still running."""
-    try:
-        os.kill(pid, 0)
-        return True
-    except (OSError, ProcessLookupError):
-        return False
 
 
 @main.command()
