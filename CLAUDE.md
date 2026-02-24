@@ -2,7 +2,8 @@
 
 ## Project Context
 - Botfarm: autonomous Linear ticket dispatcher for Claude Code agents
-- Pure Python CLI project — optional web dashboard, no database migrations, no run.sh/stop.sh
+- Pure Python CLI project — optional web dashboard, no run.sh/stop.sh
+- Database schema has versioned migrations in `db.py` (current: v2)
 - This CLAUDE.md primarily covers the implementer workflow. Reviewer and review-addresser agents receive instructions via prompt.
 
 ## Architecture
@@ -18,6 +19,10 @@ Modules under `botfarm/`:
 - `credentials.py` — OAuth token retrieval (macOS keychain / Linux ~/.claude/.credentials.json)
 - `notifications.py` — Slack/Discord webhook notifications with rate limiting
 - `dashboard.py` — Optional FastAPI + htmx web dashboard (background thread in supervisor)
+
+Docs under `docs/`:
+- `configuration.md` — Full config reference with examples
+- `philosophy.md` — Project design principles and trade-offs
 
 Key patterns:
 - Workers run as subprocesses; communicate results via `multiprocessing.Queue`
