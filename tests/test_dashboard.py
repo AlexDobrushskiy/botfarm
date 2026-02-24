@@ -1758,3 +1758,93 @@ class TestTaskDetailPipeline:
         body = resp.text
         # The CSS class exists in <style>, but the actual stepper div should not render
         assert 'class="pipeline-stepper"' not in body
+
+
+# --- Supervisor status badge ---
+
+
+class TestSupervisorBadge:
+    def test_index_shows_stopped_when_no_heartbeat(self, tmp_path, db_file):
+        """Without supervisor_heartbeat, badge should show Stopped."""
+        state_path = tmp_path / "state.json"
+        state_path.write_text(json.dumps({"slots": []}))
+        app = create_app(state_file=state_path, db_path=db_file)
+        client = TestClient(app)
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert "Supervisor Stopped" in resp.text
+
+    def test_index_shows_running_with_fresh_heartbeat(self, tmp_path, db_file):
+        """A recent heartbeat should show Supervisor Running."""
+        from datetime import datetime, timezone
+        state_path = tmp_path / "state.json"
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        state_path.write_text(json.dumps({
+            "slots": [],
+            "supervisor_heartbeat": now_iso,
+        }))
+        app = create_app(state_file=state_path, db_path=db_file)
+        client = TestClient(app)
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert "Supervisor Running" in resp.text
+
+    def test_index_shows_stopped_with_stale_heartbeat(self, tmp_path, db_file):
+        """A heartbeat older than 30s should show Stopped."""
+        from datetime import datetime, timedelta, timezone
+        stale = datetime.now(timezone.utc) - timedelta(seconds=60)
+        state_path = tmp_path / "state.json"
+        state_path.write_text(json.dumps({
+            "slots": [],
+            "supervisor_heartbeat": stale.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+        }))
+        app = create_app(state_file=state_path, db_path=db_file)
+        client = TestClient(app)
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert "Supervisor Stopped" in resp.text
+
+    def test_slots_partial_includes_oob_badge(self, tmp_path, db_file):
+        """The /partials/slots response should include hx-swap-oob badge."""
+        from datetime import datetime, timezone
+        state_path = tmp_path / "state.json"
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        state_path.write_text(json.dumps({
+            "slots": [],
+            "supervisor_heartbeat": now_iso,
+        }))
+        app = create_app(state_file=state_path, db_path=db_file)
+        client = TestClient(app)
+        resp = client.get("/partials/slots")
+        assert resp.status_code == 200
+        assert 'hx-swap-oob="true"' in resp.text
+        assert "Supervisor Running" in resp.text
+
+    def test_badge_on_history_page(self, tmp_path, db_file):
+        """History page should also show the supervisor badge."""
+        from datetime import datetime, timezone
+        state_path = tmp_path / "state.json"
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        state_path.write_text(json.dumps({
+            "slots": [],
+            "supervisor_heartbeat": now_iso,
+        }))
+        app = create_app(state_file=state_path, db_path=db_file)
+        client = TestClient(app)
+        resp = client.get("/history")
+        assert resp.status_code == 200
+        assert "Supervisor Running" in resp.text
+
+    def test_backward_compat_no_heartbeat_field(self, tmp_path, db_file):
+        """Dashboard should not crash when heartbeat field is missing."""
+        state_path = tmp_path / "state.json"
+        state_path.write_text(json.dumps({
+            "slots": [
+                {"project": "p", "slot_id": 1, "status": "free"},
+            ],
+        }))
+        app = create_app(state_file=state_path, db_path=db_file)
+        client = TestClient(app)
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert "Supervisor Stopped" in resp.text

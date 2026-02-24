@@ -22,6 +22,33 @@
             margin-bottom: 1rem;
             font-weight: bold;
         }
+        .supervisor-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+            font-size: 0.75rem;
+            font-weight: normal;
+            padding: 0.15rem 0.5rem;
+            border-radius: 1rem;
+            vertical-align: middle;
+            margin-left: 0.5rem;
+        }
+        .supervisor-badge-running {
+            background: rgba(34, 197, 94, 0.15);
+            color: #22c55e;
+        }
+        .supervisor-badge-stopped {
+            background: rgba(239, 68, 68, 0.15);
+            color: #ef4444;
+        }
+        .supervisor-dot {
+            width: 0.5rem;
+            height: 0.5rem;
+            border-radius: 50%;
+            display: inline-block;
+        }
+        .supervisor-dot-running { background: #22c55e; }
+        .supervisor-dot-stopped { background: #ef4444; }
         table { font-size: 0.9rem; }
         .metric-card {
             text-align: center;
@@ -148,7 +175,24 @@
 <body>
     <nav class="container-fluid">
         <ul>
-            <li><strong>Botfarm</strong></li>
+            <li>
+                <strong>Botfarm</strong>
+                <span id="supervisor-badge">
+                {% if supervisor is defined and supervisor %}
+                    {% if supervisor.running %}
+                    <span class="supervisor-badge supervisor-badge-running">
+                        <span class="supervisor-dot supervisor-dot-running"></span>
+                        Supervisor Running
+                    </span>
+                    {% else %}
+                    <span class="supervisor-badge supervisor-badge-stopped">
+                        <span class="supervisor-dot supervisor-dot-stopped"></span>
+                        Supervisor Stopped
+                    </span>
+                    {% endif %}
+                {% endif %}
+                </span>
+            </li>
         </ul>
         <ul>
             <li><a href="/"{% if active_page == "status" %} aria-current="page"{% endif %}>Live Status</a></li>

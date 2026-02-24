@@ -313,6 +313,7 @@ class SlotManager:
         self._state_path.parent.mkdir(parents=True, exist_ok=True)
         payload: dict = {
             "slots": [s.to_dict() for s in self._slots.values()],
+            "supervisor_heartbeat": _now_iso(),
         }
         if self._usage is not None:
             payload["usage"] = self._usage

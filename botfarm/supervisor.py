@@ -657,6 +657,10 @@ class Supervisor:
             except Exception:
                 logger.exception("%s failed", getattr(phase, "__name__", repr(phase)))
 
+        # Always update heartbeat so the dashboard knows the supervisor is alive,
+        # even when no state mutations occurred during this tick.
+        self._slot_manager.save()
+
     # ------------------------------------------------------------------
     # Reconciliation
     # ------------------------------------------------------------------
