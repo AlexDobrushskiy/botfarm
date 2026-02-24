@@ -1238,6 +1238,15 @@ class TestParseReviewApproved:
         text = "gh pr review --approve\nVERDICT: CHANGES_REQUESTED"
         assert _parse_review_approved(text) is False
 
+    def test_multiple_verdicts_last_wins(self):
+        # Early VERDICT (e.g. quoted from test code) should not shadow the real one
+        text = "The test checks VERDICT: APPROVED\n...later...\nVERDICT: CHANGES_REQUESTED"
+        assert _parse_review_approved(text) is False
+
+    def test_multiple_verdicts_last_wins_approved(self):
+        text = "Quoted VERDICT: CHANGES_REQUESTED from diff\n...later...\nVERDICT: APPROVED"
+        assert _parse_review_approved(text) is True
+
     def test_fallback_warning_logged(self, caplog):
         # When no VERDICT or gh command found, warning is logged
         import logging

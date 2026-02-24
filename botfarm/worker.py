@@ -1030,18 +1030,20 @@ def _parse_review_approved(text: str) -> bool:
     changes are requested, and ``False`` as a conservative default when
     the signal is ambiguous.
     """
-    # 1. Structured verdict marker — strongest signal, full text, case-insensitive
-    verdict_match = re.search(
+    # 1. Structured verdict marker — strongest signal, full text, case-insensitive.
+    #    Use findall + last match so early occurrences (e.g. quoted from test code
+    #    the reviewer is discussing) don't shadow the real verdict at the end.
+    verdict_matches = re.findall(
         r"VERDICT:\s*(APPROVED|CHANGES_REQUESTED)", text, re.IGNORECASE
     )
-    if verdict_match:
-        return verdict_match.group(1).upper() == "APPROVED"
+    if verdict_matches:
+        return verdict_matches[-1].upper() == "APPROVED"
 
-    # 2. gh pr review command — search full text
-    if re.search(r"gh\s+pr\s+review\s+.*--approve", text):
-        return True
+    # 2. gh pr review command — search full text, check reject first (conservative)
     if re.search(r"gh\s+pr\s+review\s+.*--request-changes", text):
         return False
+    if re.search(r"gh\s+pr\s+review\s+.*--approve", text):
+        return True
 
     logger.warning(
         "No VERDICT marker or gh pr review command found; "
