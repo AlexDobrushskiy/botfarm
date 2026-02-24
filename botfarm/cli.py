@@ -483,7 +483,7 @@ def reset(project, reset_all, force, config_path):
 
     # Check that the project exists in state if a specific project was given
     if project and not reset_all:
-        known_projects = {s.get("project") for s in slot_list if isinstance(s, dict)}
+        known_projects = {s.get("project") for s in slot_list if isinstance(s, dict)} - {None}
         if project not in known_projects:
             click.echo(
                 f"Project '{project}' not found in state file. "
