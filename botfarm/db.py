@@ -8,7 +8,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS tasks (
@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS usage_snapshots (
     utilization_5h      REAL,
     utilization_7d      REAL,
     resets_at           TEXT,
+    resets_at_7d        TEXT,
     created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
@@ -154,6 +155,14 @@ def _migrate(conn: sqlite3.Connection, from_version: int) -> None:
         }
         if "supervisor_heartbeat" not in existing:
             conn.execute("ALTER TABLE dispatch_state ADD COLUMN supervisor_heartbeat TEXT")
+    if from_version < 5:
+        # v4→v5: add resets_at_7d to usage_snapshots
+        existing = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(usage_snapshots)").fetchall()
+        }
+        if "resets_at_7d" not in existing:
+            conn.execute("ALTER TABLE usage_snapshots ADD COLUMN resets_at_7d TEXT")
     conn.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION,))
 
 
@@ -438,14 +447,15 @@ def insert_usage_snapshot(
     utilization_5h: float | None = None,
     utilization_7d: float | None = None,
     resets_at: str | None = None,
+    resets_at_7d: str | None = None,
 ) -> int:
     """Insert a usage snapshot and return its id."""
     cur = conn.execute(
         """
-        INSERT INTO usage_snapshots (utilization_5h, utilization_7d, resets_at, created_at)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO usage_snapshots (utilization_5h, utilization_7d, resets_at, resets_at_7d, created_at)
+        VALUES (?, ?, ?, ?, ?)
         """,
-        (utilization_5h, utilization_7d, resets_at, _now_iso()),
+        (utilization_5h, utilization_7d, resets_at, resets_at_7d, _now_iso()),
     )
     return cur.lastrowid
 

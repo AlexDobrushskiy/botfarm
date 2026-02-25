@@ -16,7 +16,8 @@ if [ -z "$PY_FILES" ]; then
 fi
 
 echo "==> Python files changed, running pytest..."
-if ! .venv/bin/python -m pytest tests/ -x -q; then
+# Unset BOTFARM_DB_PATH so tests use temp databases instead of the production DB
+if ! BOTFARM_DB_PATH= .venv/bin/python -m pytest tests/ -x -q; then
   echo "==> Tests FAILED"
   echo "==> Pre-commit hook FAILED. Fix the failing tests before committing."
   exit 1

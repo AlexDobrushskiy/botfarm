@@ -181,6 +181,7 @@ class UsagePoller:
             utilization_5h=self._state.utilization_5h,
             utilization_7d=self._state.utilization_7d,
             resets_at=self._state.resets_at_5h,
+            resets_at_7d=self._state.resets_at_7d,
         )
 
         logger.info(
