@@ -345,6 +345,122 @@ class TestFetchTeamIssues:
             issues = client.fetch_team_issues("SMA")
         assert issues[0].blocked_by is None
 
+    def test_parses_inverse_relations_blocks(self):
+        """inverseRelations with type=blocks means this issue is blocked."""
+        client = LinearClient(api_key="key")
+        nodes = [
+            {
+                "id": "id-1",
+                "identifier": "SMA-10",
+                "title": "Blocked via inverse",
+                "priority": 2,
+                "sortOrder": 1.0,
+                "url": "https://linear.app/SMA-10",
+                "assignee": None,
+                "labels": {"nodes": []},
+                "relations": {"nodes": []},
+                "inverseRelations": {
+                    "nodes": [
+                        {
+                            "type": "blocks",
+                            "issue": {
+                                "identifier": "SMA-9",
+                                "state": {"type": "started"},
+                            },
+                        },
+                    ]
+                },
+            }
+        ]
+        with patch.object(
+            httpx, "post", return_value=self._issues_response(nodes)
+        ):
+            issues = client.fetch_team_issues("SMA")
+        assert issues[0].blocked_by == ["SMA-9"]
+
+    def test_resolved_inverse_blockers_not_included(self):
+        """Resolved blockers via inverseRelations are ignored."""
+        client = LinearClient(api_key="key")
+        nodes = [
+            {
+                "id": "id-1",
+                "identifier": "SMA-10",
+                "title": "Was blocked via inverse",
+                "priority": 2,
+                "sortOrder": 1.0,
+                "url": "https://linear.app/SMA-10",
+                "assignee": None,
+                "labels": {"nodes": []},
+                "relations": {"nodes": []},
+                "inverseRelations": {
+                    "nodes": [
+                        {
+                            "type": "blocks",
+                            "issue": {
+                                "identifier": "SMA-9",
+                                "state": {"type": "completed"},
+                            },
+                        },
+                        {
+                            "type": "blocks",
+                            "issue": {
+                                "identifier": "SMA-8",
+                                "state": {"type": "canceled"},
+                            },
+                        },
+                    ]
+                },
+            }
+        ]
+        with patch.object(
+            httpx, "post", return_value=self._issues_response(nodes)
+        ):
+            issues = client.fetch_team_issues("SMA")
+        assert issues[0].blocked_by is None
+
+    def test_both_relation_directions_combined(self):
+        """Blockers from both relations and inverseRelations are combined."""
+        client = LinearClient(api_key="key")
+        nodes = [
+            {
+                "id": "id-1",
+                "identifier": "SMA-10",
+                "title": "Blocked both ways",
+                "priority": 2,
+                "sortOrder": 1.0,
+                "url": "https://linear.app/SMA-10",
+                "assignee": None,
+                "labels": {"nodes": []},
+                "relations": {
+                    "nodes": [
+                        {
+                            "type": "isBlockedBy",
+                            "relatedIssue": {
+                                "identifier": "SMA-7",
+                                "state": {"type": "started"},
+                            },
+                        },
+                    ]
+                },
+                "inverseRelations": {
+                    "nodes": [
+                        {
+                            "type": "blocks",
+                            "issue": {
+                                "identifier": "SMA-9",
+                                "state": {"type": "started"},
+                            },
+                        },
+                    ]
+                },
+            }
+        ]
+        with patch.object(
+            httpx, "post", return_value=self._issues_response(nodes)
+        ):
+            issues = client.fetch_team_issues("SMA")
+        assert sorted(issues[0].blocked_by) == ["SMA-7", "SMA-9"]
+
     def test_parses_children(self):
         client = LinearClient(api_key="key")
         nodes = [
@@ -572,6 +688,18 @@ class TestLinearPollerPoll:
             _make_issue(id="c", identifier="SMA-3", sort_order=3.0),
         ]
         result = poller.poll()
+        assert [c.identifier for c in result.candidates] == ["SMA-1", "SMA-3"]
+
+    def test_filters_inverse_blocked_tickets(self):
+        """Tickets blocked via inverseRelations are also filtered out."""
+        poller = self._make_poller()
+        poller._client.fetch_team_issues.return_value = [
+            _make_issue(id="a", identifier="SMA-1", sort_order=1.0),
+            _make_issue(id="b", identifier="SMA-2", sort_order=2.0, blocked_by=["SMA-1"]),
+            _make_issue(id="c", identifier="SMA-3", sort_order=3.0),
+        ]
+        result = poller.poll()
+        # SMA-2 is blocked (regardless of how blocked_by was populated)
         assert [c.identifier for c in result.candidates] == ["SMA-1", "SMA-3"]
 
     def test_unblocked_tickets_not_filtered(self):
