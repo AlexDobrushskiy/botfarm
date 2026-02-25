@@ -36,7 +36,7 @@
     </thead>
     <tbody>
         {% for task in tasks %}
-        <tr style="cursor: pointer;" onclick="window.location='/task/{{ task.id }}'">
+        <tr style="cursor: pointer;" onclick="window.location='/task/{{ task.ticket_id }}'">
             <td><a href="{{ linear_url(task.ticket_id) }}" target="_blank" onclick="event.stopPropagation()">{{ task.ticket_id }}</a></td>
             <td>{{ task.title[:50] }}{% if task.title|length > 50 %}&hellip;{% endif %}</td>
             <td>{{ task.project }}</td>

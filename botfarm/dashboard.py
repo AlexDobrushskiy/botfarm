@@ -35,6 +35,7 @@ from botfarm.db import (
     get_events,
     get_stage_runs,
     get_task,
+    get_task_by_ticket,
     get_task_history,
     init_db,
     load_all_slots,
@@ -526,7 +527,7 @@ def create_app(
     EVENT_LOG_LIMIT = 500
 
     @app.get("/task/{task_id}", response_class=HTMLResponse)
-    def task_detail_page(request: Request, task_id: int):
+    def task_detail_page(request: Request, task_id: str):
         task = None
         stages: list[dict] = []
         events: list[dict] = []
@@ -534,12 +535,21 @@ def create_app(
         conn = _get_db()
         if conn:
             try:
-                task_row = get_task(conn, task_id)
+                # Polymorphic lookup: try integer ID first, fall back to ticket ID
+                task_row = None
+                try:
+                    int_id = int(task_id)
+                    task_row = get_task(conn, int_id)
+                except ValueError:
+                    pass
+                if task_row is None:
+                    task_row = get_task_by_ticket(conn, task_id)
                 if task_row is not None:
                     task = _enrich_tasks([dict(task_row)])[0]
-                    stages = [dict(r) for r in get_stage_runs(conn, task_id)]
+                    db_task_id = task["id"]
+                    stages = [dict(r) for r in get_stage_runs(conn, db_task_id)]
                     events = [dict(r) for r in get_events(
-                        conn, task_id=task_id, limit=EVENT_LOG_LIMIT,
+                        conn, task_id=db_task_id, limit=EVENT_LOG_LIMIT,
                     )]
                     # Events come newest-first from DB; reverse for chronological display
                     events.reverse()
