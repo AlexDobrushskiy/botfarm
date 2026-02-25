@@ -49,7 +49,6 @@ class ClaudeResult:
     session_id: str
     num_turns: int
     duration_seconds: float
-    cost_usd: float
     exit_subtype: str
     result_text: str
     is_error: bool = False
@@ -59,7 +58,7 @@ def parse_claude_output(raw: str) -> ClaudeResult:
     """Parse the JSON output produced by ``claude -p --output-format json``.
 
     The expected shape is a JSON object with at least:
-    ``session_id``, ``num_turns``, ``duration_ms``, ``total_cost_usd``,
+    ``session_id``, ``num_turns``, ``duration_ms``,
     ``is_error``, ``result``, and ``subtype``.
     """
     data = json.loads(raw)
@@ -68,7 +67,6 @@ def parse_claude_output(raw: str) -> ClaudeResult:
         session_id=data.get("session_id", ""),
         num_turns=data.get("num_turns", 0),
         duration_seconds=duration_ms / 1000.0,
-        cost_usd=data.get("total_cost_usd", 0.0),
         exit_subtype=data.get("subtype", ""),
         result_text=data.get("result", ""),
         is_error=bool(data.get("is_error", False)),
@@ -466,7 +464,6 @@ class PipelineResult:
     success: bool
     stages_completed: list[str]
     pr_url: str | None = None
-    total_cost_usd: float = 0.0
     total_turns: int = 0
     total_duration_seconds: float = 0.0
     failure_stage: str | None = None
@@ -694,7 +691,6 @@ def run_pipeline(
         conn,
         task_id,
         status="completed",
-        cost_usd=pipeline.total_cost_usd,
         turns=pipeline.total_turns,
         completed_at=datetime.now(timezone.utc).isoformat(),
     )
@@ -816,7 +812,6 @@ class _PipelineContext:
         )
 
         if result.claude_result:
-            self.pipeline.total_cost_usd += result.claude_result.cost_usd
             self.pipeline.total_turns += result.claude_result.num_turns
             self.pipeline.total_duration_seconds += result.claude_result.duration_seconds
 
@@ -1067,7 +1062,6 @@ def _record_stage_run(
         session_id=cr.session_id if cr else None,
         turns=cr.num_turns if cr else 0,
         duration_seconds=cr.duration_seconds if cr else wall_elapsed,
-        cost_usd=cr.cost_usd if cr else 0.0,
         exit_subtype=cr.exit_subtype if cr else None,
     )
     conn.commit()
@@ -1079,7 +1073,6 @@ def _record_failure(conn, task_id: int, pipeline: PipelineResult) -> None:
         conn,
         task_id,
         status="failed",
-        cost_usd=pipeline.total_cost_usd,
         turns=pipeline.total_turns,
         failure_reason=f"{pipeline.failure_stage}: {pipeline.failure_reason}"[:500],
         completed_at=datetime.now(timezone.utc).isoformat(),

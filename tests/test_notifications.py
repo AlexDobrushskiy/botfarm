@@ -83,7 +83,6 @@ class TestNotifierSlack:
         notifier.notify_task_completed(
             ticket_id="SMA-42",
             title="Add widget",
-            cost_usd=1.50,
             duration_seconds=3600,
             pr_url="https://github.com/org/repo/pull/99",
         )
@@ -93,7 +92,6 @@ class TestNotifierSlack:
         payload = kwargs["json"]
         assert "text" in payload
         assert "SMA-42" in payload["text"]
-        assert "$1.50" in payload["text"]
         assert "60m" in payload["text"]
         assert "pull/99" in payload["text"]
 

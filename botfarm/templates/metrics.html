@@ -41,10 +41,6 @@
 <h2>Averages</h2>
 <div class="grid">
     <article class="metric-card">
-        <h2>${{ "%.2f"|format(metrics.avg_cost) }}</h2>
-        <p>Avg Cost / Task</p>
-    </article>
-    <article class="metric-card">
         <h2>{{ format_duration(metrics.avg_wall_time_seconds) }}</h2>
         <p>Avg Wall Time</p>
     </article>
@@ -70,26 +66,6 @@
     </article>
     <article class="metric-card">
         <h2>{{ metrics.completed_month }}</h2>
-        <p>Last 30 Days</p>
-    </article>
-</div>
-
-<h2>Cost</h2>
-<div class="grid">
-    <article class="metric-card">
-        <h2>${{ "%.2f"|format(metrics.total_cost) }}</h2>
-        <p>Total Cost</p>
-    </article>
-    <article class="metric-card">
-        <h2>${{ "%.2f"|format(metrics.cost_today) }}</h2>
-        <p>Today</p>
-    </article>
-    <article class="metric-card">
-        <h2>${{ "%.2f"|format(metrics.cost_week) }}</h2>
-        <p>Last 7 Days</p>
-    </article>
-    <article class="metric-card">
-        <h2>${{ "%.2f"|format(metrics.cost_month) }}</h2>
         <p>Last 30 Days</p>
     </article>
 </div>

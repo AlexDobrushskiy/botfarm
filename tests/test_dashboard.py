@@ -88,7 +88,6 @@ def db_file(tmp_path):
         task_id,
         started_at="2026-02-12T10:00:00+00:00",
         completed_at="2026-02-12T11:30:00+00:00",
-        cost_usd=1.25,
         turns=42,
         review_iterations=2,
     )
@@ -100,7 +99,6 @@ def db_file(tmp_path):
         session_id="sess-abc123def456",
         turns=30,
         duration_seconds=3600.0,
-        cost_usd=0.75,
     )
     insert_stage_run(
         conn,
@@ -109,7 +107,6 @@ def db_file(tmp_path):
         iteration=1,
         turns=12,
         duration_seconds=1800.0,
-        cost_usd=0.50,
         exit_subtype="approved",
     )
     insert_event(conn, task_id=task_id, event_type="stage_started", detail="implement")
@@ -124,7 +121,7 @@ def db_file(tmp_path):
         slot=2,
         status="failed",
     )
-    update_task(conn, task_id2, failure_reason="Tests failed", cost_usd=0.50, turns=10)
+    update_task(conn, task_id2, failure_reason="Tests failed", turns=10)
 
     conn.commit()
     conn.close()
@@ -688,15 +685,15 @@ class TestHistoryFilters:
         body = resp.text
         assert "TST-2" in body
 
-    def test_sort_by_cost_asc(self, client):
-        resp = client.get("/history?sort_by=cost_usd&sort_dir=ASC")
+    def test_sort_by_turns_asc(self, client):
+        resp = client.get("/history?sort_by=turns&sort_dir=ASC")
         assert resp.status_code == 200
         body = resp.text
-        # TST-2 ($0.50) should appear before TST-1 ($1.25)
+        # TST-2 (10 turns) should appear before TST-1 (42 turns)
         assert body.index("TST-2") < body.index("TST-1")
 
-    def test_sort_by_cost_desc(self, client):
-        resp = client.get("/history?sort_by=cost_usd&sort_dir=DESC")
+    def test_sort_by_turns_desc(self, client):
+        resp = client.get("/history?sort_by=turns&sort_dir=DESC")
         assert resp.status_code == 200
         body = resp.text
         assert body.index("TST-1") < body.index("TST-2")
@@ -789,7 +786,6 @@ class TestTaskDetailPage:
         resp = client.get("/task/1")
         body = resp.text
         assert "Wall Time" in body
-        assert "Cost" in body
         assert "Turns" in body
         assert "Review Iterations" in body
 
@@ -954,8 +950,6 @@ class TestMetricsPage:
         assert "Total Tasks" in body
         assert "Completed" in body
         assert "Failed" in body
-        assert "Total Cost" in body
-        assert "$1.75" in body
 
     def test_contains_success_rate(self, client):
         resp = client.get("/metrics")
@@ -967,7 +961,6 @@ class TestMetricsPage:
     def test_contains_averages(self, client):
         resp = client.get("/metrics")
         body = resp.text
-        assert "Avg Cost / Task" in body
         assert "Avg Wall Time" in body
         assert "Avg Turns / Task" in body
         assert "Avg Review Iterations" in body
@@ -980,11 +973,6 @@ class TestMetricsPage:
         assert "Last 7 Days" in body
         assert "Last 30 Days" in body
 
-    def test_contains_cost_buckets(self, client):
-        resp = client.get("/metrics")
-        body = resp.text
-        assert "Cost" in body
-
     def test_failure_reasons_displayed(self, client):
         resp = client.get("/metrics")
         body = resp.text
@@ -995,8 +983,7 @@ class TestMetricsPage:
         resp = client.get("/metrics?project=my-project")
         body = resp.text
         assert resp.status_code == 200
-        # Only 1 task in my-project (TST-1, completed, $1.25)
-        assert "$1.25" in body
+        # Only 1 task in my-project (TST-1, completed)
         assert "100.0%" in body  # 1/1 success rate
 
     def test_project_filter_dropdown(self, client):

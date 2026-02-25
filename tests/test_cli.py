@@ -290,7 +290,6 @@ class TestHistoryCommand:
         update_task(
             conn,
             task_id,
-            cost_usd=1.23,
             turns=50,
             started_at="2026-02-12T10:00:00.000000Z",
             completed_at="2026-02-12T10:30:00.000000Z",
@@ -304,7 +303,6 @@ class TestHistoryCommand:
         assert "SMA-10" in result.output
         assert "my-proj" in result.output
         assert "completed" in result.output
-        assert "1.23" in result.output
         assert "50" in result.output
         assert "30m00s" in result.output
 

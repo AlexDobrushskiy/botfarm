@@ -69,15 +69,12 @@ class Notifier:
         *,
         ticket_id: str,
         title: str,
-        cost_usd: float | None = None,
         duration_seconds: float | None = None,
         pr_url: str | None = None,
     ) -> None:
         """Notify that a task completed successfully."""
         lines = [f"*Task completed:* {ticket_id} — {title}"]
         details = []
-        if cost_usd is not None:
-            details.append(f"Cost: ${cost_usd:.2f}")
         if duration_seconds is not None:
             minutes = int(duration_seconds) // 60
             if minutes > 0:

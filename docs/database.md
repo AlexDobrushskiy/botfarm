@@ -2,7 +2,7 @@
 
 Botfarm uses a single SQLite database (`~/.botfarm/botfarm.db`) in WAL mode with foreign keys enabled. Schema is versioned — migrations run automatically on startup (see `db.py`).
 
-Current schema version: **5**
+Current schema version: **6**
 
 ## Tables
 
@@ -21,7 +21,6 @@ One row per Linear ticket that botfarm has picked up. Retries reuse the same row
 | `created_at` | TEXT | ISO-8601 timestamp |
 | `started_at` | TEXT | When work began |
 | `completed_at` | TEXT | When work finished (success or failure) |
-| `cost_usd` | REAL | Total API cost for all stages |
 | `turns` | INTEGER | Total agentic turns across all stages |
 | `review_iterations` | INTEGER | Number of review→fix cycles |
 | `comments` | TEXT | Accumulated review comments |
@@ -44,7 +43,6 @@ One row per Claude subprocess invocation. A single task has multiple stage runs 
 | `session_id` | TEXT | Claude session ID |
 | `turns` | INTEGER | Agentic turns in this stage |
 | `duration_seconds` | REAL | Wall-clock duration |
-| `cost_usd` | REAL | API cost for this stage |
 | `exit_subtype` | TEXT | How Claude exited (e.g. `end_turn`, `max_turns`) |
 | `was_limit_restart` | INTEGER | 1 if this run was a resume after a limit pause |
 | `created_at` | TEXT | ISO-8601 timestamp |
@@ -180,3 +178,4 @@ Stages are defined in `worker.py:STAGES`.
 | 3 | Add `slots` and `dispatch_state` tables |
 | 4 | Add `supervisor_heartbeat` to dispatch_state |
 | 5 | Add `resets_at_7d` to usage_snapshots |
+| 6 | Drop `cost_usd` from tasks and stage_runs (always $0.00 on Max subscription) |

@@ -214,7 +214,6 @@ def history(config_path, limit, project, status_filter):
     table.add_column("Ticket", style="bold")
     table.add_column("Project")
     table.add_column("Status")
-    table.add_column("Cost ($)", justify="right")
     table.add_column("Turns", justify="right")
     table.add_column("Duration", justify="right")
     table.add_column("Created")
@@ -230,7 +229,6 @@ def history(config_path, limit, project, status_filter):
         else:
             status_display = status_val
 
-        cost = f"{row['cost_usd']:.2f}" if row["cost_usd"] is not None else "-"
         turns = str(row["turns"]) if row["turns"] is not None else "-"
 
         duration = "-"
@@ -252,7 +250,6 @@ def history(config_path, limit, project, status_filter):
             row["ticket_id"],
             row["project"],
             status_display,
-            cost,
             turns,
             duration,
             created,
