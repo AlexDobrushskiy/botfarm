@@ -640,6 +640,11 @@ class TestHistoryPage:
         resp = client.get("/history")
         assert "/task/" in resp.text
 
+    def test_task_rows_use_ticket_id_urls(self, client):
+        resp = client.get("/history")
+        assert "/task/TST-1" in resp.text
+        assert "/task/TST-2" in resp.text
+
     def test_ticket_links_to_linear(self, db_file):
         app = create_app(
             db_path=db_file,
@@ -851,6 +856,34 @@ class TestTaskDetailPage:
         assert "BARE-1" in body
         assert "No stage runs recorded" in body
         assert "No events recorded" in body
+
+    def test_ticket_id_url_resolves(self, client):
+        """GET /task/TST-1 resolves via ticket_id lookup."""
+        resp = client.get("/task/TST-1")
+        assert resp.status_code == 200
+        body = resp.text
+        assert "TST-1" in body
+        assert "Fix bug" in body
+
+    def test_integer_id_still_works(self, client):
+        """GET /task/1 still resolves via integer ID (backward compat)."""
+        resp = client.get("/task/1")
+        assert resp.status_code == 200
+        assert "TST-1" in body if (body := resp.text) else False
+
+    def test_nonexistent_ticket_id_shows_not_found(self, client):
+        """GET /task/NOPE-999 shows not-found state gracefully."""
+        resp = client.get("/task/NOPE-999")
+        assert resp.status_code == 200
+        assert "Task not found" in resp.text
+
+    def test_second_task_by_ticket_id(self, client):
+        """GET /task/TST-2 resolves the failed task."""
+        resp = client.get("/task/TST-2")
+        assert resp.status_code == 200
+        body = resp.text
+        assert "TST-2" in body
+        assert "Add feature" in body
 
 
 # --- Usage Trends ---
