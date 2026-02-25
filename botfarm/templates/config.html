@@ -1,8 +1,60 @@
 {% extends "base.html" %}
 {% set active_page = "config" %}
-{% block title %}Config - Botfarm{% endblock %}
+{% block title %}Configuration - Botfarm{% endblock %}
 {% block content %}
 <style>
+    .config-tabs {
+        display: flex;
+        gap: 0;
+        border-bottom: 2px solid var(--pico-muted-border-color);
+        margin-bottom: 1.5rem;
+    }
+    .config-tab {
+        padding: 0.6rem 1.5rem;
+        cursor: pointer;
+        border: none;
+        background: none;
+        color: var(--pico-muted-color);
+        font-size: 1rem;
+        font-weight: 600;
+        border-bottom: 2px solid transparent;
+        margin-bottom: -2px;
+        width: auto;
+    }
+    .config-tab:hover {
+        color: var(--pico-color);
+    }
+    .config-tab.active {
+        color: var(--pico-primary);
+        border-bottom-color: var(--pico-primary);
+    }
+    .config-tab-content { display: none; }
+    .config-tab-content.active { display: block; }
+    .config-section { margin-bottom: 2rem; }
+    .config-section table td:first-child {
+        white-space: nowrap;
+        font-weight: 600;
+        width: 40%;
+    }
+    .config-section table { font-size: 0.9rem; }
+    .project-card {
+        border: 1px solid var(--pico-muted-border-color);
+        border-radius: var(--pico-border-radius);
+        padding: 1rem;
+        margin-bottom: 1rem;
+    }
+    .project-card h3 { margin-bottom: 0.75rem; }
+    .tag {
+        display: inline-block;
+        background: var(--pico-card-background-color);
+        border: 1px solid var(--pico-muted-border-color);
+        border-radius: 1rem;
+        padding: 0.15rem 0.6rem;
+        font-size: 0.85rem;
+        margin-right: 0.25rem;
+    }
+    .bool-yes { color: var(--pico-ins-color); }
+    .bool-no { color: var(--pico-muted-color); }
     .config-feedback {
         padding: 0.75rem 1rem;
         border-radius: var(--pico-border-radius);
@@ -21,7 +73,6 @@
         color: var(--pico-color-yellow-500, #eab308);
     }
     .config-feedback ul { margin: 0.25rem 0 0 1.25rem; padding: 0; }
-    .config-section { margin-bottom: 2rem; }
     .config-section fieldset { margin-bottom: 0; }
     .restart-banner {
         background: rgba(245, 158, 11, 0.2);
@@ -76,13 +127,6 @@
         width: auto;
         padding: 0.5rem 1rem;
     }
-    .project-card {
-        border: 1px solid var(--pico-muted-border-color);
-        border-radius: var(--pico-border-radius);
-        padding: 1rem;
-        margin-bottom: 1rem;
-    }
-    .project-card h3 { margin-bottom: 0.75rem; }
     .structural-note {
         color: var(--pico-muted-color);
         font-size: 0.85rem;
@@ -90,11 +134,173 @@
     }
 </style>
 
-<h1>Runtime Config</h1>
+<h1>Configuration</h1>
 
 {% if not config_enabled %}
-<p>Config editing is not available (no config object provided).</p>
+<p>Configuration is not available (no config object provided).</p>
 {% else %}
+
+<div class="config-tabs">
+    <button class="config-tab active" onclick="switchTab('view')">View</button>
+    <button class="config-tab" onclick="switchTab('edit')">Edit</button>
+</div>
+
+{# ==================== VIEW TAB ==================== #}
+<div id="tab-view" class="config-tab-content active">
+
+{# --- Projects --- #}
+<section class="config-section">
+    <h2>Projects</h2>
+    {% for project in full_config_values.projects %}
+    <div class="project-card">
+        <h3>{{ project.name }}</h3>
+        <figure>
+        <table>
+            <tbody>
+                <tr><td>Linear team</td><td>{{ project.linear_team }}</td></tr>
+                <tr><td>Linear project</td><td>{{ project.linear_project or "-" }}</td></tr>
+                <tr><td>Base directory</td><td><code>{{ project.base_dir }}</code></td></tr>
+                <tr><td>Worktree prefix</td><td><code>{{ project.worktree_prefix }}</code></td></tr>
+                <tr>
+                    <td>Slots</td>
+                    <td>
+                        {% for slot in project.slots %}
+                        <span class="tag">{{ slot }}</span>
+                        {% endfor %}
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+        </figure>
+    </div>
+    {% endfor %}
+</section>
+
+{# --- Linear --- #}
+<section class="config-section">
+    <h2>Linear</h2>
+    <figure>
+    <table>
+        <tbody>
+            <tr><td>API key</td><td><code>{{ full_config_values.linear.api_key }}</code></td></tr>
+            <tr><td>Workspace</td><td>{{ full_config_values.linear.workspace }}</td></tr>
+            <tr><td>Poll interval</td><td>{{ full_config_values.linear.poll_interval_seconds }}s</td></tr>
+            <tr>
+                <td>Exclude tags</td>
+                <td>
+                    {% for tag in full_config_values.linear.exclude_tags %}
+                    <span class="tag">{{ tag }}</span>
+                    {% endfor %}
+                    {% if not full_config_values.linear.exclude_tags %}-{% endif %}
+                </td>
+            </tr>
+            <tr><td>Todo status</td><td>{{ full_config_values.linear.todo_status }}</td></tr>
+            <tr><td>In Progress status</td><td>{{ full_config_values.linear.in_progress_status }}</td></tr>
+            <tr><td>Done status</td><td>{{ full_config_values.linear.done_status }}</td></tr>
+            <tr><td>In Review status</td><td>{{ full_config_values.linear.in_review_status }}</td></tr>
+            <tr><td>Failed status</td><td>{{ full_config_values.linear.failed_status }}</td></tr>
+            <tr>
+                <td>Comment on failure</td>
+                <td class="{{ 'bool-yes' if full_config_values.linear.comment_on_failure else 'bool-no' }}">
+                    {{ "Yes" if full_config_values.linear.comment_on_failure else "No" }}
+                </td>
+            </tr>
+            <tr>
+                <td>Comment on completion</td>
+                <td class="{{ 'bool-yes' if full_config_values.linear.comment_on_completion else 'bool-no' }}">
+                    {{ "Yes" if full_config_values.linear.comment_on_completion else "No" }}
+                </td>
+            </tr>
+            <tr>
+                <td>Comment on limit pause</td>
+                <td class="{{ 'bool-yes' if full_config_values.linear.comment_on_limit_pause else 'bool-no' }}">
+                    {{ "Yes" if full_config_values.linear.comment_on_limit_pause else "No" }}
+                </td>
+            </tr>
+        </tbody>
+    </table>
+    </figure>
+</section>
+
+{# --- Agents --- #}
+<section class="config-section">
+    <h2>Agents</h2>
+    <figure>
+    <table>
+        <tbody>
+            <tr><td>Max review iterations</td><td>{{ full_config_values.agents.max_review_iterations }}</td></tr>
+            <tr><td>Max CI retries</td><td>{{ full_config_values.agents.max_ci_retries }}</td></tr>
+            <tr><td>Timeout grace</td><td>{{ full_config_values.agents.timeout_grace_seconds }}s</td></tr>
+            {% for stage, minutes in full_config_values.agents.timeout_minutes.items() %}
+            <tr><td>Timeout: {{ stage }}</td><td>{{ minutes }} min</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    </figure>
+</section>
+
+{# --- Usage Limits --- #}
+<section class="config-section">
+    <h2>Usage Limits</h2>
+    <figure>
+    <table>
+        <tbody>
+            <tr><td>5-hour pause threshold</td><td>{{ full_config_values.usage_limits.pause_five_hour_threshold }}</td></tr>
+            <tr><td>7-day pause threshold</td><td>{{ full_config_values.usage_limits.pause_seven_day_threshold }}</td></tr>
+        </tbody>
+    </table>
+    </figure>
+</section>
+
+{# --- Notifications --- #}
+<section class="config-section">
+    <h2>Notifications</h2>
+    <figure>
+    <table>
+        <tbody>
+            <tr><td>Webhook URL</td><td><code>{{ full_config_values.notifications.webhook_url or "-" }}</code></td></tr>
+            <tr><td>Webhook format</td><td>{{ full_config_values.notifications.webhook_format }}</td></tr>
+            <tr><td>Rate limit</td><td>{{ full_config_values.notifications.rate_limit_seconds }}s</td></tr>
+        </tbody>
+    </table>
+    </figure>
+</section>
+
+{# --- Dashboard --- #}
+<section class="config-section">
+    <h2>Dashboard</h2>
+    <figure>
+    <table>
+        <tbody>
+            <tr>
+                <td>Enabled</td>
+                <td class="{{ 'bool-yes' if full_config_values.dashboard.enabled else 'bool-no' }}">
+                    {{ "Yes" if full_config_values.dashboard.enabled else "No" }}
+                </td>
+            </tr>
+            <tr><td>Host</td><td><code>{{ full_config_values.dashboard.host }}</code></td></tr>
+            <tr><td>Port</td><td>{{ full_config_values.dashboard.port }}</td></tr>
+        </tbody>
+    </table>
+    </figure>
+</section>
+
+{# --- Database --- #}
+<section class="config-section">
+    <h2>Database</h2>
+    <figure>
+    <table>
+        <tbody>
+            <tr><td>Path</td><td><code>{{ full_config_values.database.path }}</code></td></tr>
+        </tbody>
+    </table>
+    </figure>
+</section>
+
+</div>
+
+{# ==================== EDIT TAB ==================== #}
+<div id="tab-edit" class="config-tab-content">
 
 {% if restart_required %}
 <div class="restart-banner" role="alert" id="restart-banner">
@@ -257,7 +463,23 @@
     </form>
 </section>
 
+</div>
+
 <script>
+function switchTab(tabName) {
+    var tabs = document.querySelectorAll(".config-tab");
+    var contents = document.querySelectorAll(".config-tab-content");
+    for (var i = 0; i < tabs.length; i++) {
+        tabs[i].classList.remove("active");
+    }
+    for (var i = 0; i < contents.length; i++) {
+        contents[i].classList.remove("active");
+    }
+    document.getElementById("tab-" + tabName).classList.add("active");
+    var activeTab = tabName === "view" ? tabs[0] : tabs[1];
+    activeTab.classList.add("active");
+}
+
 function saveSection(event, section) {
     event.preventDefault();
     var form = event.target;
@@ -327,13 +549,13 @@ function showRestartBannerIfStructural(section) {
     if (structural.indexOf(section) !== -1) {
         var banner = document.getElementById("restart-banner");
         if (!banner) {
-            var h1 = document.querySelector("h1");
+            var editTab = document.getElementById("tab-edit");
             banner = document.createElement("div");
             banner.className = "restart-banner";
             banner.setAttribute("role", "alert");
             banner.id = "restart-banner";
             banner.textContent = "Restart required to apply changes. Structural config has been modified but the supervisor is still using the previous settings.";
-            h1.parentNode.insertBefore(banner, h1.nextSibling);
+            editTab.insertBefore(banner, editTab.firstChild);
         }
     }
 }
@@ -377,7 +599,7 @@ function addSlot(projectIdx) {
 
 function saveProjects() {
     var feedbackEl = document.getElementById("feedback-projects");
-    var cards = document.querySelectorAll(".project-card");
+    var cards = document.querySelectorAll("#tab-edit .project-card");
     var projects = [];
 
     for (var i = 0; i < cards.length; i++) {
