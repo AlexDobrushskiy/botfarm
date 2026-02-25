@@ -1895,7 +1895,10 @@ class Supervisor:
                 continue
 
             # Persist queue for dashboard visibility
-            save_queue_entries(self._conn, project_name, poll_result.candidates)
+            try:
+                save_queue_entries(self._conn, project_name, poll_result.candidates)
+            except Exception:
+                logger.exception("Failed to persist queue entries for %s", project_name)
 
             # Auto-close parent issues whose children are all done.
             done_status = self._config.linear.done_status
