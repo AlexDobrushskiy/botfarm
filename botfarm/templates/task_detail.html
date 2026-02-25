@@ -79,9 +79,9 @@
         <tbody>
             <tr><td><strong>Project</strong></td><td>{{ task.project }}</td></tr>
             <tr><td><strong>Slot</strong></td><td>{{ task.slot }}</td></tr>
-            <tr><td><strong>Created</strong></td><td>{{ task.created_at[:19] if task.created_at else "-" }}</td></tr>
-            <tr><td><strong>Started</strong></td><td>{{ task.started_at[:19] if task.started_at else "-" }}</td></tr>
-            <tr><td><strong>Completed</strong></td><td>{{ task.completed_at[:19] if task.completed_at else "-" }}</td></tr>
+            <tr><td><strong>Created</strong></td><td>{% if task.created_at %}<time data-timestamp="{{ task.created_at }}" title="{{ task.created_at[:19] }}">{{ task.created_at[:19] }}</time>{% else %}-{% endif %}</td></tr>
+            <tr><td><strong>Started</strong></td><td>{% if task.started_at %}<time data-timestamp="{{ task.started_at }}" title="{{ task.started_at[:19] }}">{{ task.started_at[:19] }}</time>{% else %}-{% endif %}</td></tr>
+            <tr><td><strong>Completed</strong></td><td>{% if task.completed_at %}<time data-timestamp="{{ task.completed_at }}" title="{{ task.completed_at[:19] }}">{{ task.completed_at[:19] }}</time>{% else %}-{% endif %}</td></tr>
             {% if task.failure_reason %}
             <tr><td><strong>Failure Reason</strong></td><td class="status-failed">{{ task.failure_reason }}</td></tr>
             {% endif %}
@@ -150,7 +150,7 @@
         <tbody>
             {% for event in events %}
             <tr>
-                <td>{{ event.created_at[:19] if event.created_at else "-" }}</td>
+                <td>{% if event.created_at %}<time data-timestamp="{{ event.created_at }}" title="{{ event.created_at[:19] }}">{{ event.created_at[:19] }}</time>{% else %}-{% endif %}</td>
                 <td>{{ event.event_type }}</td>
                 <td>{{ event.detail if event.detail else "-" }}</td>
             </tr>

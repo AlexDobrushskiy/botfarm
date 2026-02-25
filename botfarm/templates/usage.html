@@ -58,10 +58,10 @@
         <tbody>
             {% for s in snapshots | reverse %}
             <tr>
-                <td>{{ s.created_at[:19] if s.created_at else "-" }}</td>
+                <td>{% if s.created_at %}<time data-timestamp="{{ s.created_at }}" title="{{ s.created_at[:19] }}">{{ s.created_at[:19] }}</time>{% else %}-{% endif %}</td>
                 <td>{{ "%.1f"|format(s.utilization_5h * 100) if s.utilization_5h is not none else "-" }}</td>
                 <td>{{ "%.1f"|format(s.utilization_7d * 100) if s.utilization_7d is not none else "-" }}</td>
-                <td>{{ s.resets_at[:19] if s.resets_at else "-" }}</td>
+                <td>{% if s.resets_at %}<time data-timestamp="{{ s.resets_at }}" title="{{ s.resets_at[:19] }}">{{ s.resets_at[:19] }}</time>{% else %}-{% endif %}</td>
             </tr>
             {% endfor %}
         </tbody>

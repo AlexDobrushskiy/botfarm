@@ -1870,3 +1870,95 @@ class TestSupervisorBadge:
         resp = client.get("/")
         assert resp.status_code == 200
         assert "Supervisor Stopped" in resp.text
+
+
+# --- Relative timestamps (timeago) ---
+
+
+class TestRelativeTimestamps:
+    """Verify that timestamps use <time data-timestamp=...> elements for JS-based
+    relative time display, with raw ISO fallback text and title attributes."""
+
+    def test_timeago_js_in_base(self, client):
+        """The timeago() function and updateTimeagos() must be in the base template."""
+        resp = client.get("/")
+        body = resp.text
+        assert "function timeago(" in body
+        assert "function updateTimeagos(" in body
+        assert "data-timestamp" in body or "updateTimeagos" in body
+
+    def test_task_detail_timestamps_have_data_attr(self, client):
+        """Task detail page timestamps should use <time data-timestamp=...>."""
+        resp = client.get("/task/1")
+        body = resp.text
+        # created_at, started_at, completed_at should have data-timestamp
+        assert 'data-timestamp="2026-02-12T10:00:00+00:00"' in body  # started_at
+        assert 'data-timestamp="2026-02-12T11:30:00+00:00"' in body  # completed_at
+
+    def test_task_detail_timestamps_have_title(self, client):
+        """Task detail timestamps should have title attributes with full datetime."""
+        resp = client.get("/task/1")
+        body = resp.text
+        assert 'title="2026-02-12T10:00:00"' in body
+        assert 'title="2026-02-12T11:30:00"' in body
+
+    def test_task_detail_event_log_timestamps(self, client):
+        """Event log timestamps should use <time data-timestamp=...>."""
+        resp = client.get("/task/1")
+        body = resp.text
+        # Event log entries should have data-timestamp attributes
+        assert body.count("data-timestamp") >= 3  # at least task info + events
+
+    def test_history_timestamps_have_data_attr(self, client):
+        """History table started_at/completed_at should use <time data-timestamp=...>."""
+        resp = client.get("/partials/history")
+        body = resp.text
+        assert "data-timestamp" in body
+        # started_at and completed_at for TST-1
+        assert 'data-timestamp="2026-02-12T10:00:00+00:00"' in body
+        assert 'data-timestamp="2026-02-12T11:30:00+00:00"' in body
+
+    def test_history_timestamps_have_title(self, client):
+        """History timestamps should have title attributes."""
+        resp = client.get("/partials/history")
+        body = resp.text
+        assert 'title="2026-02-12T10:00:00"' in body
+
+    def test_usage_snapshot_timestamps(self, client):
+        """Usage page snapshot timestamps should use <time data-timestamp=...>."""
+        resp = client.get("/usage")
+        body = resp.text
+        assert "data-timestamp" in body
+
+    def test_usage_resets_at_has_data_attr(self, client):
+        """Usage page resets_at should use <time data-timestamp=...>."""
+        resp = client.get("/usage")
+        body = resp.text
+        assert 'data-timestamp="2026-02-12T15:00:00+00:00"' in body
+
+    def test_null_timestamps_show_dash(self, tmp_path):
+        """Null timestamps should show '-' without a <time> wrapper."""
+        path = tmp_path / "null_ts.db"
+        conn = init_db(path)
+        insert_task(conn, ticket_id="NULL-1", title="No dates", project="p", slot=1)
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=path)
+        client = TestClient(app)
+        resp = client.get("/task/1")
+        body = resp.text
+        assert "NULL-1" in body
+        # Null started_at and completed_at should show "-" not wrapped in <time>
+        assert "<td>-</td>" in body
+
+    def test_timeago_updates_on_htmx_swap(self, client):
+        """The updateTimeagos function should be registered for htmx:afterSwap."""
+        resp = client.get("/")
+        body = resp.text
+        assert 'addEventListener("htmx:afterSwap", updateTimeagos)' in body
+
+    def test_timeago_periodic_refresh(self, client):
+        """updateTimeagos should run on a 60-second interval."""
+        resp = client.get("/")
+        body = resp.text
+        assert "setInterval(updateTimeagos, 60000)" in body
