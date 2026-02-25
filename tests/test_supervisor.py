@@ -3489,3 +3489,56 @@ class TestManualPauseResume:
         # Should still be paused
         assert sm.dispatch_paused is True
         assert sm.dispatch_pause_reason == "manual_pause"
+
+    def test_paused_result_propagates_stages_completed(self, supervisor):
+        """Paused worker result syncs stages_completed to supervisor slot."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+
+        supervisor._result_queue.put(_WorkerResult(
+            project="test-project", slot_id=1, success=False,
+            paused=True,
+            stages_completed=["implement", "review"],
+        ))
+
+        supervisor._reconcile_workers()
+
+        slot = sm.get_slot("test-project", 1)
+        assert slot.status == "paused_manual"
+        assert slot.stages_completed == ["implement", "review"]
+
+    def test_pause_upgrades_reason_from_usage_limit(self, supervisor):
+        """Manual pause upgrades dispatch_pause_reason from usage_limit."""
+        sm = supervisor.slot_manager
+        sm.set_dispatch_paused(True, "usage_limit")
+
+        supervisor.request_pause()
+        supervisor._handle_manual_pause_resume()
+
+        assert sm.dispatch_paused is True
+        assert sm.dispatch_pause_reason == "manual_pause"
+
+    def test_pause_events_cleaned_for_failed_workers(self, supervisor):
+        """_pause_events is cleaned up even when workers fail."""
+        import multiprocessing
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+
+        pause_evt = multiprocessing.Event()
+        supervisor._pause_events[("test-project", 1)] = pause_evt
+
+        supervisor._result_queue.put(_WorkerResult(
+            project="test-project", slot_id=1, success=False,
+            failure_stage="implement",
+            failure_reason="something went wrong",
+        ))
+
+        supervisor._reconcile_workers()
+
+        assert ("test-project", 1) not in supervisor._pause_events

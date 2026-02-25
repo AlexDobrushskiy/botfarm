@@ -13,13 +13,15 @@
 </button>
 <button class="pause-btn pause-btn-resume"
         hx-post="/api/resume"
-        hx-swap="none">
+        hx-swap="none"
+        hx-on::after-request="this.closest('[hx-get]') && htmx.trigger(this.closest('[hx-get]'), 'htmx:load')">
     Cancel
 </button>
 {% elif pause_state == "paused" %}
 <button class="pause-btn pause-btn-resume"
         hx-post="/api/resume"
-        hx-swap="none">
+        hx-swap="none"
+        hx-on::after-request="this.closest('[hx-get]') && htmx.trigger(this.closest('[hx-get]'), 'htmx:load')">
     Resume
 </button>
 {% endif %}

@@ -59,6 +59,7 @@ class _WorkerResult:
     failure_reason: str | None = None
     limit_hit: bool = False
     paused: bool = False
+    stages_completed: list[str] | None = None
 
 
 def _worker_entry(
@@ -132,6 +133,7 @@ def _worker_entry(
             result_queue.put(_WorkerResult(
                 project=project_name, slot_id=slot_id, success=False,
                 paused=True,
+                stages_completed=result.stages_completed,
             ))
             logger.info(
                 "Worker %s/%d paused by manual request for %s",
@@ -871,16 +873,19 @@ class Supervisor:
             except queue_mod.Empty:
                 break
             if wr.paused:
+                # Sync stages_completed from the worker subprocess
+                if wr.stages_completed:
+                    for stage in wr.stages_completed:
+                        self._slot_manager.complete_stage(
+                            wr.project, wr.slot_id, stage,
+                        )
                 self._slot_manager.mark_paused_manual(wr.project, wr.slot_id)
-                # Clean up the pause event for this worker
-                self._pause_events.pop((wr.project, wr.slot_id), None)
                 logger.info(
                     "Worker result: %s/%d paused by manual request",
                     wr.project, wr.slot_id,
                 )
             elif wr.success:
                 self._slot_manager.mark_completed(wr.project, wr.slot_id)
-                self._pause_events.pop((wr.project, wr.slot_id), None)
                 logger.info(
                     "Worker result: %s/%d completed", wr.project, wr.slot_id,
                 )
@@ -920,6 +925,8 @@ class Supervisor:
                         "Worker result: %s/%d failed — %s",
                         wr.project, wr.slot_id, reason,
                     )
+            # Clean up pause event for this worker regardless of outcome
+            self._pause_events.pop((wr.project, wr.slot_id), None)
 
         # Clean up any tracked processes that have exited
         finished = []
@@ -1602,9 +1609,21 @@ class Supervisor:
             self._manual_pause_event.clear()
             self._manual_pause_requested = True
 
-            # Stop new dispatches
+            # Stop new dispatches (or upgrade reason if already paused)
             if not self._slot_manager.dispatch_paused:
                 logger.info("Manual pause requested — pausing dispatch")
+                self._slot_manager.set_dispatch_paused(True, "manual_pause")
+                insert_event(
+                    self._conn,
+                    event_type="manual_pause_requested",
+                )
+                self._conn.commit()
+            elif self._slot_manager.dispatch_pause_reason != "manual_pause":
+                logger.info(
+                    "Manual pause requested — upgrading dispatch pause "
+                    "reason from %s to manual_pause",
+                    self._slot_manager.dispatch_pause_reason,
+                )
                 self._slot_manager.set_dispatch_paused(True, "manual_pause")
                 insert_event(
                     self._conn,
