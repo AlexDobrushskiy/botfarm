@@ -118,6 +118,7 @@ def create_app(
     on_pause: Callable[[], None] | None = None,
     on_resume: Callable[[], None] | None = None,
     on_update: Callable[[], None] | None = None,
+    update_failed_event: threading.Event | None = None,
 ) -> FastAPI:
     """Create the FastAPI dashboard application.
 
@@ -142,6 +143,9 @@ def create_app(
     on_update:
         Callback invoked when the user clicks Update & Restart. Should be
         a callable with no arguments (e.g. ``supervisor.request_update``).
+    update_failed_event:
+        Threading event set by the supervisor when an update fails.
+        The banner endpoint checks this to reset the \"Updating...\" state.
     """
     app = FastAPI(title="Botfarm Dashboard", docs_url=None, redoc_url=None)
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
@@ -155,6 +159,7 @@ def create_app(
     app.state.on_resume = on_resume
     app.state.on_update = on_update
     app.state.update_in_progress = False
+    app.state.update_failed_event = update_failed_event
 
     # --- Helpers ---
 
@@ -825,6 +830,12 @@ def create_app(
 
     @app.get("/partials/update-banner", response_class=HTMLResponse)
     def partial_update_banner(request: Request):
+        # Check if supervisor signalled that update failed
+        failed_evt = app.state.update_failed_event
+        if failed_evt is not None and failed_evt.is_set():
+            failed_evt.clear()
+            app.state.update_in_progress = False
+
         if app.state.update_in_progress:
             return templates.TemplateResponse("partials/update_banner.html", {
                 "request": request,
@@ -1089,6 +1100,7 @@ def start_dashboard(
     on_pause: Callable[[], None] | None = None,
     on_resume: Callable[[], None] | None = None,
     on_update: Callable[[], None] | None = None,
+    update_failed_event: threading.Event | None = None,
 ) -> threading.Thread | None:
     """Start the dashboard server in a background daemon thread.
 
@@ -1104,6 +1116,7 @@ def start_dashboard(
         on_pause=on_pause,
         on_resume=on_resume,
         on_update=on_update,
+        update_failed_event=update_failed_event,
     )
 
     def _run():

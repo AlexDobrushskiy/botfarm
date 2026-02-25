@@ -1,6 +1,8 @@
 """Tests for botfarm.git_update module."""
 
 import subprocess
+import sys
+import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -125,6 +127,16 @@ class TestPullAndInstall:
         mock_run.side_effect = FileNotFoundError("git")
         assert pull_and_install() is False
 
+    @patch("botfarm.git_update.subprocess.run")
+    def test_uses_sys_executable_for_pip(self, mock_run):
+        mock_run.side_effect = [
+            MagicMock(returncode=0),  # git pull
+            MagicMock(returncode=0),  # pip install
+        ]
+        pull_and_install()
+        pip_call = mock_run.call_args_list[1]
+        assert pip_call.args[0][:3] == [sys.executable, "-m", "pip"]
+
 
 class TestDashboardUpdateBanner:
     """Test the dashboard update banner endpoint."""
@@ -175,6 +187,23 @@ class TestDashboardUpdateBanner:
         resp = client.get("/partials/update-banner")
         assert resp.status_code == 200
         assert "Updating" in resp.text
+
+    @patch("botfarm.dashboard.commits_behind", return_value=3)
+    def test_banner_resets_on_update_failed_event(self, mock_cb, db_file):
+        from botfarm.dashboard import create_app
+        from fastapi.testclient import TestClient
+        failed_event = threading.Event()
+        app = create_app(db_path=db_file, update_failed_event=failed_event)
+        app.state.update_in_progress = True
+        failed_event.set()
+        client = TestClient(app)
+        resp = client.get("/partials/update-banner")
+        assert resp.status_code == 200
+        # Should have reset to idle and show commits behind, not "Updating..."
+        assert "Updating" not in resp.text
+        assert "3 commits behind" in resp.text
+        assert app.state.update_in_progress is False
+        assert not failed_event.is_set()
 
 
 class TestDashboardUpdateAPI:

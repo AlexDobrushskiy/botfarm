@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
+import sys
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -54,7 +55,7 @@ def commits_behind(repo_dir: str | Path | None = None) -> int:
 def pull_and_install(repo_dir: str | Path | None = None) -> bool:
     """Pull latest ``origin/main`` and reinstall the package.
 
-    Runs ``git pull origin main`` then ``pip install -e .``.
+    Runs ``git pull origin main`` then ``sys.executable -m pip install -e .``.
 
     Returns ``True`` on success, ``False`` on any error.
     """
@@ -75,7 +76,7 @@ def pull_and_install(repo_dir: str | Path | None = None) -> bool:
 
     try:
         subprocess.run(
-            ["pip", "install", "-e", "."],
+            [sys.executable, "-m", "pip", "install", "-e", "."],
             check=True,
             **kwargs,
         )

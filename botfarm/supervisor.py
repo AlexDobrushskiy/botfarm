@@ -292,6 +292,7 @@ class Supervisor:
 
         # Update-and-restart signal (set by dashboard thread, read by supervisor)
         self._update_event = threading.Event()
+        self._update_failed_event = threading.Event()
         self._exit_code = 0
 
         # Queue for worker results — workers send _WorkerResult here
@@ -826,6 +827,7 @@ class Supervisor:
                 on_pause=self.request_pause,
                 on_resume=self.request_resume,
                 on_update=self.request_update,
+                update_failed_event=self._update_failed_event,
             )
 
         # Initial usage poll so we have data before the first dispatch
@@ -1782,7 +1784,7 @@ class Supervisor:
 
         # Step 2: Check if all workers are idle
         has_busy = any(
-            s.status in ("busy", "paused_manual")
+            s.status == "busy"
             for s in self._slot_manager.all_slots()
         )
         if has_busy:
@@ -1806,6 +1808,7 @@ class Supervisor:
             )
             self._conn.commit()
             self._update_event.clear()
+            self._update_failed_event.set()
             self._slot_manager.set_dispatch_paused(False)
             return
 
