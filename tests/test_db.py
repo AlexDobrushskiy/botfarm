@@ -28,6 +28,7 @@ from botfarm.db import (
     load_dispatch_state,
     resolve_db_path,
     save_dispatch_state,
+    save_queue_entries,
     update_task,
     upsert_slot,
 )
@@ -59,7 +60,7 @@ class TestInitDb:
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()
         }
-        assert tables >= {"tasks", "stage_runs", "usage_snapshots", "task_events", "schema_version", "slots", "dispatch_state"}
+        assert tables >= {"tasks", "stage_runs", "usage_snapshots", "task_events", "schema_version", "slots", "dispatch_state", "queue_entries"}
         c.close()
 
     def test_wal_mode_enabled(self, conn):
@@ -545,6 +546,124 @@ class TestInitDb:
 
         c2.close()
 
+    def test_migration_v6_to_v7(self, tmp_path):
+        """Simulate a v6 database and verify migration creates queue_entries table."""
+        db_file = tmp_path / "botfarm.db"
+        conn = sqlite3.connect(str(db_file))
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS tasks (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticket_id       TEXT NOT NULL UNIQUE,
+                title           TEXT NOT NULL,
+                project         TEXT NOT NULL,
+                slot            INTEGER NOT NULL,
+                status          TEXT NOT NULL DEFAULT 'pending',
+                created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                started_at      TEXT,
+                completed_at    TEXT,
+                turns           INTEGER NOT NULL DEFAULT 0,
+                review_iterations INTEGER NOT NULL DEFAULT 0,
+                comments        TEXT NOT NULL DEFAULT '',
+                limit_interruptions INTEGER NOT NULL DEFAULT 0,
+                failure_reason  TEXT,
+                pr_url          TEXT,
+                pipeline_stage  TEXT,
+                review_state    TEXT
+            );
+            CREATE TABLE IF NOT EXISTS stage_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id INTEGER NOT NULL REFERENCES tasks(id),
+                stage TEXT NOT NULL,
+                iteration INTEGER NOT NULL DEFAULT 1,
+                session_id TEXT,
+                turns INTEGER NOT NULL DEFAULT 0,
+                duration_seconds REAL,
+                exit_subtype TEXT,
+                was_limit_restart INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            );
+            CREATE TABLE IF NOT EXISTS usage_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                utilization_5h REAL,
+                utilization_7d REAL,
+                resets_at TEXT,
+                resets_at_7d TEXT,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            );
+            CREATE TABLE IF NOT EXISTS task_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id INTEGER REFERENCES tasks(id),
+                event_type TEXT NOT NULL,
+                detail TEXT,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            );
+            CREATE TABLE IF NOT EXISTS slots (
+                project TEXT NOT NULL,
+                slot_id INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'free',
+                ticket_id TEXT,
+                ticket_title TEXT,
+                branch TEXT,
+                pr_url TEXT,
+                stage TEXT,
+                stage_iteration INTEGER NOT NULL DEFAULT 0,
+                current_session_id TEXT,
+                started_at TEXT,
+                stage_started_at TEXT,
+                sigterm_sent_at TEXT,
+                pid INTEGER,
+                interrupted_by_limit INTEGER NOT NULL DEFAULT 0,
+                resume_after TEXT,
+                stages_completed TEXT,
+                updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                PRIMARY KEY(project, slot_id)
+            );
+            CREATE TABLE IF NOT EXISTS dispatch_state (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                paused INTEGER NOT NULL DEFAULT 0,
+                pause_reason TEXT,
+                supervisor_heartbeat TEXT,
+                updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            );
+        """)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)"
+        )
+        conn.execute("INSERT INTO schema_version (version) VALUES (6)")
+        conn.commit()
+        conn.close()
+
+        # Re-open via init_db — should migrate to v7
+        c2 = init_db(db_file, allow_migration=True)
+        row = c2.execute("SELECT version FROM schema_version").fetchone()
+        assert row[0] == SCHEMA_VERSION
+
+        # queue_entries table should exist
+        tables = {
+            r[0]
+            for r in c2.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        assert "queue_entries" in tables
+
+        # Index should exist
+        indexes = {
+            r[0]
+            for r in c2.execute(
+                "SELECT name FROM sqlite_master WHERE type='index'"
+            ).fetchall()
+        }
+        assert "idx_queue_entries_project" in indexes
+
+        # Verify columns
+        cols = {r[1] for r in c2.execute("PRAGMA table_info(queue_entries)").fetchall()}
+        assert cols == {"id", "project", "position", "ticket_id", "ticket_title", "priority", "sort_order", "url", "snapshot_at"}
+
+        c2.close()
+
 
 # ---------------------------------------------------------------------------
 # Migration infrastructure
@@ -553,10 +672,10 @@ class TestInitDb:
 
 class TestMigrationInfrastructure:
     def test_discover_migrations(self):
-        """All 6 SQL migration files are discovered with correct numbering."""
+        """All 7 SQL migration files are discovered with correct numbering."""
         migrations = _discover_migrations()
-        assert len(migrations) >= 6
-        for version in range(1, 7):
+        assert len(migrations) >= 7
+        for version in range(1, 8):
             assert version in migrations
             assert migrations[version].suffix == ".sql"
 
@@ -591,7 +710,7 @@ class TestMigrationInfrastructure:
         }
         assert tables >= {
             "tasks", "stage_runs", "usage_snapshots", "task_events",
-            "schema_version", "slots", "dispatch_state",
+            "schema_version", "slots", "dispatch_state", "queue_entries",
         }
 
         # cost_usd columns should NOT exist (dropped by migration 006)
@@ -1036,3 +1155,86 @@ class TestDispatchState:
         paused, reason, _heartbeat = load_dispatch_state(conn)
         assert paused is False
         assert reason is None
+
+
+# ---------------------------------------------------------------------------
+# Queue entries
+# ---------------------------------------------------------------------------
+
+
+class _FakeIssue:
+    """Minimal stand-in for LinearIssue with the fields save_queue_entries needs."""
+
+    def __init__(self, identifier, title, priority, sort_order, url):
+        self.identifier = identifier
+        self.title = title
+        self.priority = priority
+        self.sort_order = sort_order
+        self.url = url
+
+
+class TestQueueEntries:
+    def test_save_writes_entries(self, conn):
+        candidates = [
+            _FakeIssue("SMA-1", "First", 2, 1.0, "https://linear.app/1"),
+            _FakeIssue("SMA-2", "Second", 3, 2.5, "https://linear.app/2"),
+        ]
+        save_queue_entries(conn, "proj", candidates, "2026-02-25T00:00:00Z")
+
+        rows = conn.execute(
+            "SELECT * FROM queue_entries WHERE project = ? ORDER BY position", ("proj",)
+        ).fetchall()
+        assert len(rows) == 2
+        assert rows[0]["position"] == 0
+        assert rows[0]["ticket_id"] == "SMA-1"
+        assert rows[0]["ticket_title"] == "First"
+        assert rows[0]["priority"] == 2
+        assert rows[0]["sort_order"] == 1.0
+        assert rows[0]["url"] == "https://linear.app/1"
+        assert rows[0]["snapshot_at"] == "2026-02-25T00:00:00Z"
+        assert rows[1]["position"] == 1
+        assert rows[1]["ticket_id"] == "SMA-2"
+
+    def test_save_replaces_entries(self, conn):
+        old = [_FakeIssue("SMA-1", "Old", 2, 1.0, "https://linear.app/1")]
+        save_queue_entries(conn, "proj", old, "2026-02-25T00:00:00Z")
+
+        new = [_FakeIssue("SMA-3", "New", 1, 0.5, "https://linear.app/3")]
+        save_queue_entries(conn, "proj", new, "2026-02-25T01:00:00Z")
+
+        rows = conn.execute(
+            "SELECT * FROM queue_entries WHERE project = ?", ("proj",)
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0]["ticket_id"] == "SMA-3"
+        assert rows[0]["snapshot_at"] == "2026-02-25T01:00:00Z"
+
+    def test_empty_candidates_clears_entries(self, conn):
+        candidates = [_FakeIssue("SMA-1", "T", 2, 1.0, "https://linear.app/1")]
+        save_queue_entries(conn, "proj", candidates, "2026-02-25T00:00:00Z")
+
+        save_queue_entries(conn, "proj", [], "2026-02-25T01:00:00Z")
+
+        rows = conn.execute(
+            "SELECT * FROM queue_entries WHERE project = ?", ("proj",)
+        ).fetchall()
+        assert len(rows) == 0
+
+    def test_other_projects_not_affected(self, conn):
+        alpha = [_FakeIssue("SMA-1", "Alpha", 2, 1.0, "https://linear.app/1")]
+        beta = [_FakeIssue("SMA-2", "Beta", 3, 2.0, "https://linear.app/2")]
+        save_queue_entries(conn, "alpha", alpha, "2026-02-25T00:00:00Z")
+        save_queue_entries(conn, "beta", beta, "2026-02-25T00:00:00Z")
+
+        # Replace alpha with empty — beta should be unaffected
+        save_queue_entries(conn, "alpha", [], "2026-02-25T01:00:00Z")
+
+        alpha_rows = conn.execute(
+            "SELECT * FROM queue_entries WHERE project = ?", ("alpha",)
+        ).fetchall()
+        beta_rows = conn.execute(
+            "SELECT * FROM queue_entries WHERE project = ?", ("beta",)
+        ).fetchall()
+        assert len(alpha_rows) == 0
+        assert len(beta_rows) == 1
+        assert beta_rows[0]["ticket_id"] == "SMA-2"

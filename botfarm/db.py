@@ -509,6 +509,17 @@ def load_dispatch_state(conn: sqlite3.Connection) -> tuple[bool, str | None, str
     return bool(row["paused"]), row["pause_reason"], row["supervisor_heartbeat"]
 
 
+def save_queue_entries(conn: sqlite3.Connection, project: str, candidates: list, snapshot_at: str) -> None:
+    """Replace queue entries for a project with fresh poll results."""
+    conn.execute("DELETE FROM queue_entries WHERE project = ?", (project,))
+    for i, issue in enumerate(candidates):
+        conn.execute(
+            "INSERT INTO queue_entries (project, position, ticket_id, ticket_title, priority, sort_order, url, snapshot_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (project, i, issue.identifier, issue.title, issue.priority, issue.sort_order, issue.url, snapshot_at),
+        )
+    conn.commit()
+
+
 def save_dispatch_state(
     conn: sqlite3.Connection,
     *,

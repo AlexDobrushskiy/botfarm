@@ -30,7 +30,7 @@ from pathlib import Path
 from types import FrameType
 
 from botfarm.config import BotfarmConfig, ProjectConfig
-from botfarm.db import get_task, init_db, insert_event, insert_task, resolve_db_path, update_task
+from botfarm.db import _now_iso, get_task, init_db, insert_event, insert_task, resolve_db_path, save_queue_entries, update_task
 from botfarm.linear import LinearPoller, create_pollers
 from botfarm.notifications import Notifier
 from botfarm.preflight import log_preflight_summary, run_preflight_checks
@@ -1893,6 +1893,9 @@ class Supervisor:
                     "Failed to poll Linear for project %s", project_name,
                 )
                 continue
+
+            # Persist queue for dashboard visibility
+            save_queue_entries(self._conn, project_name, poll_result.candidates, _now_iso())
 
             # Auto-close parent issues whose children are all done.
             done_status = self._config.linear.done_status
