@@ -6,7 +6,7 @@
             <span class="{% if usage.utilization_5h >= 0.85 %}status-failed{% elif usage.utilization_5h >= 0.7 %}status-busy{% else %}status-free{% endif %}">
                 {{ "%.1f"|format(usage.utilization_5h * 100) }}%
             </span>
-            <progress value="{{ (usage.utilization_5h * 100)|round|int }}" max="100"></progress>
+            <progress value="{{ (usage.utilization_5h * 100)|round|int }}" max="100" style="margin-bottom: 0;"></progress>
             {% if usage.resets_at_5h %}
             <br><small>Resets at: <span class="reset-countdown" data-reset="{{ usage.resets_at_5h }}">{{ usage.resets_at_5h[:19] }}</span></small>
             {% endif %}
@@ -20,7 +20,7 @@
             <span class="{% if usage.utilization_7d >= 0.9 %}status-failed{% elif usage.utilization_7d >= 0.75 %}status-busy{% else %}status-free{% endif %}">
                 {{ "%.1f"|format(usage.utilization_7d * 100) }}%
             </span>
-            <progress value="{{ (usage.utilization_7d * 100)|round|int }}" max="100"></progress>
+            <progress value="{{ (usage.utilization_7d * 100)|round|int }}" max="100" style="margin-bottom: 0;"></progress>
             {% if usage.resets_at_7d %}
             <br><small>Resets at: <span class="reset-countdown" data-reset="{{ usage.resets_at_7d }}">{{ usage.resets_at_7d[:19] }}</span></small>
             {% endif %}
@@ -30,7 +30,7 @@
     </div>
 </div>
 {% if last_usage_check %}
-<small>Last checked: {{ elapsed(last_usage_check) }} ago</small>
+<small style="display: block; margin-top: 0.5rem;">Last checked: {{ elapsed(last_usage_check) }} ago</small>
 {% if usage_stale %}
 <br><small class="status-failed"><strong>Warning:</strong> usage data may be stale</small>
 {% endif %}
