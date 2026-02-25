@@ -354,6 +354,15 @@ def _run_ci_fix(
     )
 
 
+def _is_protected_branch(branch: str) -> bool:
+    """Return True if the branch must never be deleted."""
+    if branch == "main":
+        return True
+    if re.match(r"^slot-\d+-placeholder$", branch):
+        return True
+    return False
+
+
 def _run_merge(
     pr_url: str,
     *,
@@ -362,8 +371,26 @@ def _run_merge(
     placeholder_branch: str | None = None,
 ) -> StageResult:
     """MERGE stage — Squash merge the PR, then checkout placeholder branch."""
+    # Capture the current branch name before merge/checkout so we can
+    # delete the actual feature branch afterwards (not a stale name
+    # threaded through the pipeline).
+    feature_branch: str | None = None
+    rev_parse = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        capture_output=True,
+        text=True,
+        cwd=str(cwd),
+    )
+    if rev_parse.returncode == 0:
+        feature_branch = rev_parse.stdout.strip() or None
+    else:
+        logger.warning(
+            "Could not determine current branch: %s",
+            rev_parse.stderr[:300],
+        )
+
     proc = subprocess.run(
-        ["gh", "pr", "merge", pr_url, "--squash", "--delete-branch"],
+        ["gh", "pr", "merge", pr_url, "--squash"],
         capture_output=True,
         text=True,
         cwd=str(cwd),
@@ -398,6 +425,30 @@ def _run_merge(
                 placeholder_branch,
                 checkout.stderr[:300],
             )
+
+    # Delete the local feature branch to prevent stale branch accumulation.
+    if feature_branch:
+        if _is_protected_branch(feature_branch):
+            logger.warning(
+                "Refusing to delete protected branch '%s'", feature_branch,
+            )
+        else:
+            delete = subprocess.run(
+                ["git", "branch", "-D", feature_branch],
+                capture_output=True,
+                text=True,
+                cwd=str(cwd),
+            )
+            if delete.returncode != 0:
+                logger.warning(
+                    "Failed to delete local feature branch '%s': %s",
+                    feature_branch,
+                    delete.stderr[:300],
+                )
+            else:
+                logger.info(
+                    "Deleted local feature branch '%s'", feature_branch,
+                )
 
     return StageResult(stage="merge", success=True)
 
@@ -987,7 +1038,12 @@ def _execute_stage(
     elif stage == "merge":
         if not pr_url:
             raise ValueError(f"{stage} stage requires pr_url")
-        return _run_merge(pr_url, cwd=cwd, log_file=log_file, placeholder_branch=placeholder_branch)
+        return _run_merge(
+            pr_url,
+            cwd=cwd,
+            log_file=log_file,
+            placeholder_branch=placeholder_branch,
+        )
     else:
         raise ValueError(f"Unknown stage: {stage}")
 
