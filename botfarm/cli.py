@@ -92,6 +92,10 @@ _STATUS_COLORS = {
 @click.version_option(version=__version__)
 def main():
     """Botfarm: autonomous Linear ticket dispatcher for Claude Code agents."""
+    # Load local .env first (slot-specific, e.g. BOTFARM_DB_PATH),
+    # then global ~/.botfarm/.env (shared, e.g. LINEAR_API_KEY).
+    # override=False means first-loaded value wins.
+    load_dotenv(Path.cwd() / ".env", override=False)
     load_dotenv(ENV_FILE_PATH, override=False)
 
 
