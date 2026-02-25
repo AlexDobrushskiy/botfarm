@@ -1932,8 +1932,8 @@ class TestRecoverOnStartup:
         assert len(events) == 1
         assert "pr_merged" in events[0]["detail"]
 
-    def test_dead_worker_pr_open_marked_completed(self, supervisor):
-        """Dead worker whose PR is still open is marked completed."""
+    def test_dead_worker_pr_open_resumes_from_review(self, supervisor):
+        """Dead worker whose PR is open (no stages completed) resumes from review."""
         sm = supervisor.slot_manager
         sm.assign_ticket(
             "test-project", 1,
@@ -1952,13 +1952,14 @@ class TestRecoverOnStartup:
         with (
             patch("botfarm.supervisor._is_pid_alive", return_value=False),
             patch.object(supervisor, "_check_pr_status", return_value="open"),
+            patch.object(supervisor, "_resume_recovered_worker") as mock_resume,
         ):
             supervisor._recover_on_startup()
 
-        assert sm.get_slot("test-project", 1).status == "completed_pending_cleanup"
-        events = get_events(supervisor._conn, event_type="recovery_completed")
-        assert len(events) == 1
-        assert "pr_open" in events[0]["detail"]
+        mock_resume.assert_called_once_with(slot, resume_from_stage="review")
+        assert sm.get_slot("test-project", 1).status == "busy"
+        events = get_events(supervisor._conn, event_type="recovery_resumed")
+        assert len(events) == 0  # resume event is logged inside _resume_recovered_worker (mocked)
 
     def test_dead_worker_pr_closed_marked_failed(self, supervisor):
         """Dead worker whose PR was closed without merging is marked failed."""
@@ -2147,6 +2148,201 @@ class TestRecoverOnStartup:
             supervisor.run()
 
         mock_recover.assert_called_once()
+
+    # --- Stage-aware recovery tests ---
+
+    def test_dead_worker_with_stages_resumes_from_next_stage(self, supervisor):
+        """Dead worker with stages_completed resumes from the next stage."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        slot = sm.get_slot("test-project", 1)
+        slot.pid = 99999
+        slot.stages_completed = ["implement"]
+
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        with (
+            patch("botfarm.supervisor._is_pid_alive", return_value=False),
+            patch.object(supervisor, "_check_pr_status", return_value="open"),
+            patch.object(supervisor, "_resume_recovered_worker") as mock_resume,
+        ):
+            supervisor._recover_on_startup()
+
+        mock_resume.assert_called_once_with(slot, resume_from_stage="review")
+
+    def test_dead_worker_with_review_completed_resumes_fix(self, supervisor):
+        """Dead worker that completed implement+review resumes from fix."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        slot = sm.get_slot("test-project", 1)
+        slot.pid = 99999
+        slot.stages_completed = ["implement", "review"]
+
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        with (
+            patch("botfarm.supervisor._is_pid_alive", return_value=False),
+            patch.object(supervisor, "_check_pr_status", return_value="open"),
+            patch.object(supervisor, "_resume_recovered_worker") as mock_resume,
+        ):
+            supervisor._recover_on_startup()
+
+        mock_resume.assert_called_once_with(slot, resume_from_stage="fix")
+
+    def test_dead_worker_with_pr_checks_completed_resumes_merge(self, supervisor):
+        """Dead worker that completed through pr_checks resumes from merge."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        slot = sm.get_slot("test-project", 1)
+        slot.pid = 99999
+        slot.stages_completed = ["implement", "review", "fix", "pr_checks"]
+
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        with (
+            patch("botfarm.supervisor._is_pid_alive", return_value=False),
+            patch.object(supervisor, "_check_pr_status", return_value="open"),
+            patch.object(supervisor, "_resume_recovered_worker") as mock_resume,
+        ):
+            supervisor._recover_on_startup()
+
+        mock_resume.assert_called_once_with(slot, resume_from_stage="merge")
+
+    def test_dead_worker_during_merge_pr_merged_marks_completed(self, supervisor):
+        """Dead worker during merge stage with merged PR is marked completed."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        slot = sm.get_slot("test-project", 1)
+        slot.pid = 99999
+        slot.stages_completed = ["implement", "review", "fix", "pr_checks"]
+
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        with (
+            patch("botfarm.supervisor._is_pid_alive", return_value=False),
+            patch.object(supervisor, "_check_pr_status", return_value="merged"),
+        ):
+            supervisor._recover_on_startup()
+
+        assert sm.get_slot("test-project", 1).status == "completed_pending_cleanup"
+        events = get_events(supervisor._conn, event_type="recovery_completed")
+        assert len(events) == 1
+        assert "pr_merged_during_merge" in events[0]["detail"]
+
+    def test_dead_worker_all_stages_completed_marks_completed(self, supervisor):
+        """Dead worker with all stages completed is marked completed."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        slot = sm.get_slot("test-project", 1)
+        slot.pid = 99999
+        slot.stages_completed = ["implement", "review", "fix", "pr_checks", "merge"]
+
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        with (
+            patch("botfarm.supervisor._is_pid_alive", return_value=False),
+            patch.object(supervisor, "_check_pr_status", return_value="merged"),
+        ):
+            supervisor._recover_on_startup()
+
+        assert sm.get_slot("test-project", 1).status == "completed_pending_cleanup"
+        events = get_events(supervisor._conn, event_type="recovery_completed")
+        assert len(events) == 1
+        assert "all_stages_completed" in events[0]["detail"]
+
+    def test_dead_worker_stages_completed_resumes_pr_checks(self, supervisor):
+        """Dead worker that completed through fix resumes from pr_checks."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        slot = sm.get_slot("test-project", 1)
+        slot.pid = 99999
+        slot.stages_completed = ["implement", "review", "fix"]
+
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        with (
+            patch("botfarm.supervisor._is_pid_alive", return_value=False),
+            patch.object(supervisor, "_check_pr_status", return_value="open"),
+            patch.object(supervisor, "_resume_recovered_worker") as mock_resume,
+        ):
+            supervisor._recover_on_startup()
+
+        mock_resume.assert_called_once_with(slot, resume_from_stage="pr_checks")
+
+
+class TestNextStageAfter:
+    """Tests for _next_stage_after — the stage ordering helper."""
+
+    def test_no_stages_returns_implement(self):
+        assert Supervisor._next_stage_after([]) == "implement"
+
+    def test_implement_completed_returns_review(self):
+        assert Supervisor._next_stage_after(["implement"]) == "review"
+
+    def test_through_fix_returns_pr_checks(self):
+        assert Supervisor._next_stage_after(["implement", "review", "fix"]) == "pr_checks"
+
+    def test_through_pr_checks_returns_merge(self):
+        assert Supervisor._next_stage_after(
+            ["implement", "review", "fix", "pr_checks"]
+        ) == "merge"
+
+    def test_all_completed_returns_none(self):
+        assert Supervisor._next_stage_after(
+            ["implement", "review", "fix", "pr_checks", "merge"]
+        ) is None
+
+    def test_out_of_order_still_finds_gaps(self):
+        # review completed but implement not — implement is the gap
+        assert Supervisor._next_stage_after(["review", "fix"]) == "implement"
 
 
 class TestReconcileDbTasks:

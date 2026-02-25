@@ -33,7 +33,7 @@ from botfarm.linear import LinearPoller, create_pollers
 from botfarm.notifications import Notifier
 from botfarm.slots import SlotManager, SlotState, _is_pid_alive
 from botfarm.usage import DEFAULT_PAUSE_5H_THRESHOLD, DEFAULT_PAUSE_7D_THRESHOLD, UsagePoller
-from botfarm.worker import PipelineResult, run_pipeline
+from botfarm.worker import STAGES, PipelineResult, run_pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -342,93 +342,211 @@ class Supervisor:
         )
 
     def _recover_dead_worker(self, slot: SlotState) -> None:
-        """Determine outcome for a dead worker and update slot state."""
+        """Determine outcome for a dead worker and update slot state.
+
+        Uses stage-aware recovery when the worker made progress
+        (``stages_completed`` is non-empty). Falls back to PR-status-only
+        logic for workers that died before completing any stage.
+        """
         project = slot.project
         slot_id = slot.slot_id
         ticket_id = slot.ticket_id
         old_pid = slot.pid
-
-        # Check if a PR was created (indicates the worker got far enough)
         pr_status = self._check_pr_status(slot)
 
+        # --- Stage-aware recovery ---
+        if slot.stages_completed:
+            next_stage = self._next_stage_after(slot.stages_completed)
+            if next_stage == "merge" and pr_status == "merged":
+                # Worker died during merge but PR is already merged
+                logger.info(
+                    "Dead worker PID %d for %s/%d: PR already merged — marking completed",
+                    old_pid, project, slot_id,
+                )
+                self._mark_recovery_completed(slot, reason="pr_merged_during_merge")
+                return
+            if next_stage:
+                logger.info(
+                    "Dead worker PID %d for %s/%d: resuming from stage '%s' "
+                    "(completed: %s)",
+                    old_pid, project, slot_id, next_stage,
+                    ", ".join(slot.stages_completed),
+                )
+                self._resume_recovered_worker(slot, resume_from_stage=next_stage)
+                return
+            # All stages completed — should not happen, but treat as completed
+            logger.info(
+                "Dead worker PID %d for %s/%d: all stages completed — marking completed",
+                old_pid, project, slot_id,
+            )
+            self._mark_recovery_completed(slot, reason="all_stages_completed")
+            return
+
+        # --- No stages completed: check if implement produced a PR ---
         if pr_status == "merged":
             logger.info(
                 "Dead worker PID %d for %s/%d: PR was merged — marking completed",
                 old_pid, project, slot_id,
             )
-            self._slot_manager.mark_completed(project, slot_id)
-            task_id = self._find_task_id(ticket_id)
-            if task_id is not None:
-                update_task(self._conn, task_id, status="completed")
-            insert_event(
-                self._conn,
-                task_id=task_id,
-                event_type="recovery_completed",
-                detail=f"project={project}, slot={slot_id}, "
-                f"pid={old_pid}, reason=pr_merged",
-            )
-        elif pr_status == "open":
+            self._mark_recovery_completed(slot, reason="pr_merged")
+            return
+
+        if pr_status == "open":
+            # Worker died during implement but managed to create a PR.
+            # Resume from review instead of discarding the work.
             logger.info(
-                "Dead worker PID %d for %s/%d: PR is open — marking completed",
+                "Dead worker PID %d for %s/%d: PR is open (no stages completed) "
+                "— resuming from review",
                 old_pid, project, slot_id,
             )
-            self._slot_manager.mark_completed(project, slot_id)
-            task_id = self._find_task_id(ticket_id)
-            if task_id is not None:
-                update_task(self._conn, task_id, status="completed")
-            insert_event(
-                self._conn,
-                task_id=task_id,
-                event_type="recovery_completed",
-                detail=f"project={project}, slot={slot_id}, "
-                f"pid={old_pid}, reason=pr_open",
-            )
-        elif pr_status == "closed":
+            self._resume_recovered_worker(slot, resume_from_stage="review")
+            return
+
+        if pr_status == "closed":
             logger.warning(
                 "Dead worker PID %d for %s/%d: PR was closed without merging — marking failed",
                 old_pid, project, slot_id,
             )
-            self._slot_manager.mark_failed(
-                project, slot_id,
-                reason=f"worker PID {old_pid} died (PR closed without merging)",
+            self._mark_recovery_failed(
+                slot, reason="pr_closed",
+                failure_msg=f"worker PID {old_pid} died (PR closed without merging)",
             )
-            task_id = self._find_task_id(ticket_id)
-            if task_id is not None:
-                update_task(
-                    self._conn, task_id,
-                    status="failed",
-                    failure_reason=f"worker PID {old_pid} died (PR closed without merging)",
-                )
-            insert_event(
-                self._conn,
-                task_id=task_id,
-                event_type="recovery_failed",
-                detail=f"project={project}, slot={slot_id}, "
-                f"pid={old_pid}, reason=pr_closed",
+            return
+
+        # No PR, no stages completed — nothing to resume from
+        logger.warning(
+            "Dead worker PID %d for %s/%d: no PR found — marking failed",
+            old_pid, project, slot_id,
+        )
+        self._mark_recovery_failed(
+            slot, reason="no_pr",
+            failure_msg=f"worker PID {old_pid} died (no PR found)",
+        )
+
+    def _mark_recovery_completed(self, slot: SlotState, *, reason: str) -> None:
+        """Mark a recovered slot as completed and record the event."""
+        self._slot_manager.mark_completed(slot.project, slot.slot_id)
+        task_id = self._find_task_id(slot.ticket_id)
+        if task_id is not None:
+            update_task(self._conn, task_id, status="completed")
+        insert_event(
+            self._conn,
+            task_id=task_id,
+            event_type="recovery_completed",
+            detail=f"project={slot.project}, slot={slot.slot_id}, "
+            f"pid={slot.pid}, reason={reason}",
+        )
+
+    def _mark_recovery_failed(
+        self, slot: SlotState, *, reason: str, failure_msg: str,
+    ) -> None:
+        """Mark a recovered slot as failed and record the event."""
+        self._slot_manager.mark_failed(slot.project, slot.slot_id, reason=failure_msg)
+        task_id = self._find_task_id(slot.ticket_id)
+        if task_id is not None:
+            update_task(
+                self._conn, task_id,
+                status="failed",
+                failure_reason=failure_msg,
             )
-        else:
-            logger.warning(
-                "Dead worker PID %d for %s/%d: no PR found — marking failed",
-                old_pid, project, slot_id,
+        insert_event(
+            self._conn,
+            task_id=task_id,
+            event_type="recovery_failed",
+            detail=f"project={slot.project}, slot={slot.slot_id}, "
+            f"pid={slot.pid}, reason={reason}",
+        )
+
+    @staticmethod
+    def _next_stage_after(stages_completed: list[str]) -> str | None:
+        """Return the first stage in STAGES not in *stages_completed*.
+
+        Returns ``None`` when all stages have been completed.
+        """
+        completed_set = set(stages_completed)
+        for stage in STAGES:
+            if stage not in completed_set:
+                return stage
+        return None
+
+    def _resume_recovered_worker(
+        self, slot: SlotState, *, resume_from_stage: str,
+    ) -> None:
+        """Resume a crash-recovered worker by spawning a new subprocess.
+
+        Similar to ``_resume_paused_worker`` but for workers that died
+        due to SIGINT or unexpected crash. Sets the slot back to busy
+        and spawns a new worker starting from *resume_from_stage*.
+        """
+        project_name = slot.project
+        project_cfg = self._projects.get(project_name)
+        if not project_cfg:
+            logger.error("No project config for %s — cannot resume recovered worker", project_name)
+            self._mark_recovery_failed(
+                slot, reason="no_project_config",
+                failure_msg=f"No project config for {project_name}",
             )
-            self._slot_manager.mark_failed(
-                project, slot_id,
-                reason=f"worker PID {old_pid} died (no PR found)",
-            )
-            task_id = self._find_task_id(ticket_id)
-            if task_id is not None:
-                update_task(
-                    self._conn, task_id,
-                    status="failed",
-                    failure_reason=f"worker PID {old_pid} died during recovery",
-                )
-            insert_event(
-                self._conn,
-                task_id=task_id,
-                event_type="recovery_failed",
-                detail=f"project={project}, slot={slot_id}, "
-                f"pid={old_pid}, reason=no_pr",
-            )
+            return
+
+        task_id = self._find_task_id(slot.ticket_id)
+
+        insert_event(
+            self._conn,
+            task_id=task_id,
+            event_type="recovery_resumed",
+            detail=f"project={project_name}, slot={slot.slot_id}, "
+            f"pid={slot.pid}, resume_from={resume_from_stage}, "
+            f"stages_completed={','.join(slot.stages_completed)}",
+        )
+        # Commit here because _recover_on_startup does a single commit at
+        # the end, but we need the event recorded before spawning.
+        self._conn.commit()
+
+        # Set slot back to busy (it's still in "busy" status with a dead PID)
+        slot.pid = None
+        slot.stage = resume_from_stage
+        self._slot_manager._save()
+
+        cwd = self._slot_worktree_cwd(project_cfg, slot.slot_id)
+
+        ticket_log_dir = self._log_dir / slot.ticket_id
+        ticket_log_dir.mkdir(parents=True, exist_ok=True)
+
+        slot_db = self._slot_db_path(project_name, slot.slot_id)
+        if not Path(slot_db).exists():
+            slot_db = self._seed_slot_db(project_name, slot.slot_id)
+
+        proc = multiprocessing.Process(
+            target=_worker_entry,
+            kwargs={
+                "ticket_id": slot.ticket_id,
+                "ticket_title": slot.ticket_title or "",
+                "task_id": task_id or 0,
+                "project_name": project_name,
+                "slot_id": slot.slot_id,
+                "cwd": cwd,
+                "db_path": self._db_path,
+                "log_dir": str(ticket_log_dir),
+                "result_queue": self._result_queue,
+                "max_turns": None,
+                "max_review_iterations": self._config.agents.max_review_iterations,
+                "max_ci_retries": self._config.agents.max_ci_retries,
+                "resume_from_stage": resume_from_stage,
+                "resume_session_id": slot.current_session_id,
+                "placeholder_branch": self._slot_placeholder_branch(slot.slot_id),
+                "slot_db_path": slot_db,
+            },
+            daemon=False,
+        )
+        proc.start()
+        self._workers[(project_name, slot.slot_id)] = proc
+        self._slot_manager.set_pid(project_name, slot.slot_id, proc.pid)
+
+        logger.info(
+            "Resumed recovered worker PID %d for %s in slot %s/%d at stage %s",
+            proc.pid, slot.ticket_id, project_name, slot.slot_id,
+            resume_from_stage,
+        )
 
     def _recover_timed_out_slot(self, slot: SlotState) -> None:
         """Handle a slot that had a SIGTERM sent before the supervisor crashed."""
