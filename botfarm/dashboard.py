@@ -347,6 +347,14 @@ def create_app(
             "supervisor": _supervisor_status(state),
         })
 
+    @app.get("/partials/supervisor-badge", response_class=HTMLResponse)
+    def partial_supervisor_badge(request: Request):
+        state = _read_state()
+        return templates.TemplateResponse("partials/supervisor_badge.html", {
+            "request": request,
+            "supervisor": _supervisor_status(state),
+        })
+
     _usage_refresh_lock = threading.Lock()
     _last_usage_refresh: dict = {"time": None, "data": None}
     _USAGE_REFRESH_INTERVAL = 60  # seconds — rate-limit API calls
