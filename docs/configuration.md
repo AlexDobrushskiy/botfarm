@@ -110,9 +110,12 @@ Thresholds for pausing dispatch when Anthropic API usage is high. Values are fra
 
 ```yaml
 usage_limits:
-  pause_five_hour_threshold: 0.85   # Pause if 5-hour utilization >= 85% (default: 0.85)
-  pause_seven_day_threshold: 0.90   # Pause if 7-day utilization >= 90% (default: 0.90)
+  enabled: true                       # Set to false to disable usage-based pausing (default: true)
+  pause_five_hour_threshold: 0.85     # Pause if 5-hour utilization >= 85% (default: 0.85)
+  pause_seven_day_threshold: 0.90     # Pause if 7-day utilization >= 90% (default: 0.90)
 ```
+
+Set `enabled: false` to fully disable usage-based dispatch pausing (e.g. if you have extended usage on your Claude account).
 
 When a threshold is hit, dispatch pauses (no new tickets are picked up). Workers already running continue to completion. Dispatch resumes automatically once utilization drops below the threshold.
 

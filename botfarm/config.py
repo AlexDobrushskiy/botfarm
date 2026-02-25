@@ -49,6 +49,7 @@ database:
   path: ""
 
 usage_limits:
+  enabled: true
   pause_five_hour_threshold: 0.85
   pause_seven_day_threshold: 0.90
 
@@ -108,6 +109,7 @@ class DatabaseConfig:
 
 @dataclass
 class UsageLimitsConfig:
+    enabled: bool = True
     pause_five_hour_threshold: float = 0.85
     pause_seven_day_threshold: float = 0.90
 
@@ -351,6 +353,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
 
     ul_data = data.get("usage_limits", {})
     usage_limits = UsageLimitsConfig(
+        enabled=_parse_bool(ul_data, "enabled", True),
         pause_five_hour_threshold=float(ul_data.get("pause_five_hour_threshold", 0.85)),
         pause_seven_day_threshold=float(ul_data.get("pause_seven_day_threshold", 0.90)),
     )
@@ -422,6 +425,7 @@ EDITABLE_FIELDS: dict[tuple[str, str], dict] = {
     ("linear", "comment_on_failure"): {"type": "bool"},
     ("linear", "comment_on_completion"): {"type": "bool"},
     ("linear", "comment_on_limit_pause"): {"type": "bool"},
+    ("usage_limits", "enabled"): {"type": "bool"},
     ("usage_limits", "pause_five_hour_threshold"): {"type": "float", "min": 0.0, "max": 1.0},
     ("usage_limits", "pause_seven_day_threshold"): {"type": "float", "min": 0.0, "max": 1.0},
     ("agents", "max_review_iterations"): {"type": "int", "min": 1},

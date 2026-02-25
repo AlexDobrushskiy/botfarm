@@ -245,6 +245,12 @@
     <figure>
     <table>
         <tbody>
+            <tr>
+                <td>Enabled</td>
+                <td class="{{ 'bool-yes' if full_config_values.usage_limits.enabled else 'bool-no' }}">
+                    {{ "Yes" if full_config_values.usage_limits.enabled else "No" }}
+                </td>
+            </tr>
             <tr><td>5-hour pause threshold</td><td>{{ full_config_values.usage_limits.pause_five_hour_threshold }}</td></tr>
             <tr><td>7-day pause threshold</td><td>{{ full_config_values.usage_limits.pause_seven_day_threshold }}</td></tr>
         </tbody>
@@ -346,6 +352,13 @@
     <h2>Usage Limits</h2>
     <div id="feedback-usage_limits"></div>
     <form onsubmit="return saveSection(event, 'usage_limits')">
+        <fieldset>
+            <label>
+                <input type="checkbox" id="usage_limits-enabled" name="enabled" role="switch"
+                       {% if config_values.usage_limits.enabled %}checked{% endif %}>
+                Enable usage-based pausing
+            </label>
+        </fieldset>
         <div class="grid">
             <label for="usage_limits-pause_five_hour_threshold">
                 5-hour pause threshold

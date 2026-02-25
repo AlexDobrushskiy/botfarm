@@ -1362,6 +1362,7 @@ class Supervisor:
         should_pause, _ = self._usage_poller.state.should_pause_with_thresholds(
             five_hour_threshold=thresholds.pause_five_hour_threshold,
             seven_day_threshold=thresholds.pause_seven_day_threshold,
+            enabled=thresholds.enabled,
         )
         return should_pause
 
@@ -1480,6 +1481,7 @@ class Supervisor:
             should_pause, _ = self._usage_poller.state.should_pause_with_thresholds(
                 five_hour_threshold=thresholds.pause_five_hour_threshold,
                 seven_day_threshold=thresholds.pause_seven_day_threshold,
+                enabled=thresholds.enabled,
             )
             if should_pause:
                 logger.debug(
@@ -1843,6 +1845,7 @@ class Supervisor:
         should_pause, reason = self._usage_poller.state.should_pause_with_thresholds(
             five_hour_threshold=thresholds.pause_five_hour_threshold,
             seven_day_threshold=thresholds.pause_seven_day_threshold,
+            enabled=thresholds.enabled,
         )
 
         if should_pause:

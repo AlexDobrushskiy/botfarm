@@ -909,6 +909,7 @@ def create_app(
                 "timeout_grace_seconds": cfg.agents.timeout_grace_seconds,
             },
             "usage_limits": {
+                "enabled": cfg.usage_limits.enabled,
                 "pause_five_hour_threshold": cfg.usage_limits.pause_five_hour_threshold,
                 "pause_seven_day_threshold": cfg.usage_limits.pause_seven_day_threshold,
             },
@@ -942,6 +943,7 @@ def create_app(
                 "comment_on_limit_pause": cfg.linear.comment_on_limit_pause,
             },
             "usage_limits": {
+                "enabled": cfg.usage_limits.enabled,
                 "pause_five_hour_threshold": cfg.usage_limits.pause_five_hour_threshold,
                 "pause_seven_day_threshold": cfg.usage_limits.pause_seven_day_threshold,
             },

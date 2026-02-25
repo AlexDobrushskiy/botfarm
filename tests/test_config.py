@@ -340,6 +340,7 @@ def test_load_config_linear_project_set(tmp_path):
 def test_load_config_usage_limits_defaults(tmp_path):
     config_path = _write_config(tmp_path, MINIMAL_CONFIG)
     config = load_config(config_path)
+    assert config.usage_limits.enabled is True
     assert config.usage_limits.pause_five_hour_threshold == 0.85
     assert config.usage_limits.pause_seven_day_threshold == 0.90
 
@@ -356,6 +357,19 @@ def test_load_config_usage_limits_custom(tmp_path):
     config = load_config(config_path)
     assert config.usage_limits.pause_five_hour_threshold == 0.75
     assert config.usage_limits.pause_seven_day_threshold == 0.80
+
+
+def test_load_config_usage_limits_enabled_false(tmp_path):
+    data = {
+        **MINIMAL_CONFIG,
+        "usage_limits": {
+            "enabled": False,
+            "pause_five_hour_threshold": 0.85,
+        },
+    }
+    config_path = _write_config(tmp_path, data)
+    config = load_config(config_path)
+    assert config.usage_limits.enabled is False
 
 
 def test_load_config_usage_limits_out_of_range(tmp_path):

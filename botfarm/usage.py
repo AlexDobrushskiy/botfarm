@@ -40,11 +40,15 @@ class UsageState:
         self,
         five_hour_threshold: float = DEFAULT_PAUSE_5H_THRESHOLD,
         seven_day_threshold: float = DEFAULT_PAUSE_7D_THRESHOLD,
+        enabled: bool = True,
     ) -> tuple[bool, str | None]:
         """Check whether dispatch should be paused based on configurable thresholds.
 
         Returns (should_pause, reason_string_or_None).
+        When ``enabled`` is False, always returns (False, None).
         """
+        if not enabled:
+            return False, None
         if (
             self.utilization_5h is not None
             and self.utilization_5h >= five_hour_threshold

@@ -158,6 +158,16 @@ class TestUsageState:
         )
         assert paused is False
 
+    def test_pause_with_thresholds_disabled(self):
+        """When enabled=False, never pauses even if utilization exceeds thresholds."""
+        state = UsageState(utilization_5h=0.99, utilization_7d=0.99)
+        paused, reason = state.should_pause_with_thresholds(
+            five_hour_threshold=0.85, seven_day_threshold=0.90,
+            enabled=False,
+        )
+        assert paused is False
+        assert reason is None
+
 
 # ---------------------------------------------------------------------------
 # UsagePoller — basic construction
