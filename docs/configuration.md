@@ -137,6 +137,21 @@ Valid stage names for `timeout_minutes`: `implement`, `review`, `fix`, `pr_check
 
 ---
 
+### `logging`
+
+Log rotation and cleanup settings.
+
+```yaml
+logging:
+  max_bytes: 10485760           # Max size per log file before rotation (default: 10 MB)
+  backup_count: 5               # Number of rotated files to keep (default: 5)
+  ticket_log_retention_days: 30 # Delete ticket log dirs older than N days (default: 30)
+```
+
+`max_bytes` and `backup_count` apply to both the supervisor log and per-worker log files via `RotatingFileHandler`. Old per-ticket log directories are cleaned up periodically (hourly) — directories for active tickets are never removed.
+
+---
+
 ### `dashboard`
 
 Optional web dashboard (FastAPI + htmx). Runs as a background thread inside the supervisor.

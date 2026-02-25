@@ -399,7 +399,12 @@ def run(config_path, log_dir):
     except ConfigError as exc:
         raise click.ClickException(str(exc)) from exc
 
-    setup_logging(log_dir=log_dir or DEFAULT_LOG_DIR, console=True)
+    setup_logging(
+        log_dir=log_dir or DEFAULT_LOG_DIR,
+        console=True,
+        max_bytes=config.logging.max_bytes,
+        backup_count=config.logging.backup_count,
+    )
 
     supervisor = Supervisor(config, log_dir=log_dir or DEFAULT_LOG_DIR)
     supervisor.run()

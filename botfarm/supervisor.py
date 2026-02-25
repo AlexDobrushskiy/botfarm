@@ -14,6 +14,7 @@ brings down the supervisor.
 from __future__ import annotations
 
 import logging
+import logging.handlers
 import multiprocessing
 import os
 import queue as queue_mod
@@ -68,6 +69,8 @@ def _worker_entry(
     cwd: str,
     db_path: str,
     log_dir: str | None = None,
+    log_max_bytes: int = 10 * 1024 * 1024,
+    log_backup_count: int = 5,
     result_queue: multiprocessing.Queue,
     max_turns: dict[str, int] | None,
     max_review_iterations: int = 3,
@@ -92,7 +95,11 @@ def _worker_entry(
     # Set up per-ticket Python logging to a file so worker log messages
     # (info, warnings, errors) are captured alongside the subprocess logs.
     if log_dir:
-        _setup_worker_logging(Path(log_dir))
+        _setup_worker_logging(
+            Path(log_dir),
+            max_bytes=log_max_bytes,
+            backup_count=log_backup_count,
+        )
 
     conn = init_db(db_path)
 
@@ -155,11 +162,17 @@ def _worker_entry(
         conn.close()
 
 
-def _setup_worker_logging(log_dir: Path) -> None:
-    """Configure a file handler for the worker subprocess.
+def _setup_worker_logging(
+    log_dir: Path,
+    *,
+    max_bytes: int = 10 * 1024 * 1024,
+    backup_count: int = 5,
+) -> None:
+    """Configure a rotating file handler for the worker subprocess.
 
     Writes worker-level Python log messages to ``<log_dir>/worker.log``
-    so they persist alongside the per-stage subprocess logs.
+    so they persist alongside the per-stage subprocess logs.  Uses
+    :class:`~logging.handlers.RotatingFileHandler` to cap disk usage.
     """
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / "worker.log"
@@ -169,7 +182,11 @@ def _setup_worker_logging(log_dir: Path) -> None:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    handler = logging.FileHandler(str(log_file))
+    handler = logging.handlers.RotatingFileHandler(
+        str(log_file),
+        maxBytes=max_bytes,
+        backupCount=backup_count,
+    )
     handler.setFormatter(fmt)
     handler.setLevel(logging.DEBUG)
 
@@ -248,6 +265,9 @@ class Supervisor:
 
         # Queue for worker results — workers send _WorkerResult here
         self._result_queue: multiprocessing.Queue = multiprocessing.Queue()
+
+        # Timestamp of last ticket log cleanup (runs at most once per hour)
+        self._last_log_cleanup: float = 0.0
 
     @property
     def slot_manager(self) -> SlotManager:
@@ -531,6 +551,8 @@ class Supervisor:
                 "cwd": cwd,
                 "db_path": self._db_path,
                 "log_dir": str(ticket_log_dir),
+                "log_max_bytes": self._config.logging.max_bytes,
+                "log_backup_count": self._config.logging.backup_count,
                 "result_queue": self._result_queue,
                 "max_turns": None,
                 "max_review_iterations": self._config.agents.max_review_iterations,
@@ -790,6 +812,7 @@ class Supervisor:
             self._handle_paused_slots,
             self._poll_usage,
             self._poll_and_dispatch,
+            self._cleanup_old_ticket_logs,
         ):
             try:
                 phase()
@@ -1470,6 +1493,8 @@ class Supervisor:
                 "cwd": cwd,
                 "db_path": self._db_path,
                 "log_dir": str(ticket_log_dir),
+                "log_max_bytes": self._config.logging.max_bytes,
+                "log_backup_count": self._config.logging.backup_count,
                 "result_queue": self._result_queue,
                 "max_turns": None,
                 "max_review_iterations": self._config.agents.max_review_iterations,
@@ -1670,6 +1695,8 @@ class Supervisor:
                 "cwd": cwd,
                 "db_path": self._db_path,
                 "log_dir": str(ticket_log_dir),
+                "log_max_bytes": self._config.logging.max_bytes,
+                "log_backup_count": self._config.logging.backup_count,
                 "result_queue": self._result_queue,
                 "max_turns": None,
                 "max_review_iterations": self._config.agents.max_review_iterations,
@@ -1786,6 +1813,62 @@ class Supervisor:
                 "Cleaned up slot DB for %s/%d: %s", project_name, slot_id, slot_dir,
             )
 
+    # ------------------------------------------------------------------
+    # Log maintenance
+    # ------------------------------------------------------------------
+
+    _LOG_CLEANUP_INTERVAL = 3600  # run at most once per hour
+
+    def _cleanup_old_ticket_logs(self) -> None:
+        """Remove per-ticket log directories older than the retention period.
+
+        Runs at most once per hour to avoid unnecessary I/O.  Only
+        directories directly under ``self._log_dir`` are considered;
+        sub-items that are not directories (e.g. ``supervisor.log``) are
+        skipped.
+        """
+        now = time.time()
+        if now - self._last_log_cleanup < self._LOG_CLEANUP_INTERVAL:
+            return
+        self._last_log_cleanup = now
+
+        retention_days = self._config.logging.ticket_log_retention_days
+        cutoff = now - retention_days * 86400
+
+        if not self._log_dir.is_dir():
+            return
+
+        # Collect ticket IDs currently being worked on so we never delete
+        # logs for active slots.
+        active_tickets: set[str] = set()
+        for slot in self._slot_manager.all_slots():
+            if slot.ticket_id and slot.status not in ("free",):
+                active_tickets.add(slot.ticket_id)
+
+        removed = 0
+        for entry in self._log_dir.iterdir():
+            if not entry.is_dir():
+                continue
+            # Skip known non-ticket directories (e.g. slot DB dirs)
+            if entry.name in ("slot_dbs",):
+                continue
+            # Never delete logs for currently active tickets
+            if entry.name in active_tickets:
+                continue
+            try:
+                mtime = entry.stat().st_mtime
+            except OSError:
+                continue
+            if mtime < cutoff:
+                shutil.rmtree(str(entry), ignore_errors=True)
+                removed += 1
+
+        if removed:
+            logger.info(
+                "Cleaned up %d old ticket log dir(s) (retention=%d days)",
+                removed, retention_days,
+            )
+
     def _sleep(self, seconds: int) -> None:
         """Interruptible sleep — checks shutdown flag each second."""
         for _ in range(seconds):
@@ -1804,10 +1887,16 @@ def setup_logging(
     *,
     level: int = logging.INFO,
     console: bool = True,
+    max_bytes: int = 10 * 1024 * 1024,
+    backup_count: int = 5,
 ) -> None:
     """Configure logging to file and optionally console.
 
     Log file: ``<log_dir>/supervisor.log``
+
+    Uses :class:`~logging.handlers.RotatingFileHandler` so the log file
+    is automatically rotated when it reaches *max_bytes*, keeping at most
+    *backup_count* rotated copies.
     """
     log_dir = Path(log_dir).expanduser()
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -1833,9 +1922,13 @@ def setup_logging(
         for h in root.handlers
     )
 
-    # File handler
+    # Rotating file handler
     if not has_file:
-        fh = logging.FileHandler(log_file)
+        fh = logging.handlers.RotatingFileHandler(
+            log_file,
+            maxBytes=max_bytes,
+            backupCount=backup_count,
+        )
         fh.setLevel(level)
         fh.setFormatter(fmt)
         root.addHandler(fh)

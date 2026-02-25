@@ -11,6 +11,7 @@ from botfarm.config import (
     BotfarmConfig,
     ConfigError,
     LinearConfig,
+    LoggingConfig,
     NotificationsConfig,
     ProjectConfig,
     UsageLimitsConfig,
@@ -632,6 +633,54 @@ def test_load_config_sets_source_path(tmp_path):
     config_path = _write_config(tmp_path, MINIMAL_CONFIG)
     config = load_config(config_path)
     assert config.source_path == str(config_path)
+
+
+# --- logging config ---
+
+
+def test_load_config_logging_defaults(tmp_path):
+    config_path = _write_config(tmp_path, MINIMAL_CONFIG)
+    config = load_config(config_path)
+    assert config.logging.max_bytes == 10 * 1024 * 1024
+    assert config.logging.backup_count == 5
+    assert config.logging.ticket_log_retention_days == 30
+
+
+def test_load_config_logging_custom(tmp_path):
+    data = {
+        **MINIMAL_CONFIG,
+        "logging": {
+            "max_bytes": 5000000,
+            "backup_count": 3,
+            "ticket_log_retention_days": 7,
+        },
+    }
+    config_path = _write_config(tmp_path, data)
+    config = load_config(config_path)
+    assert config.logging.max_bytes == 5000000
+    assert config.logging.backup_count == 3
+    assert config.logging.ticket_log_retention_days == 7
+
+
+def test_validate_logging_max_bytes_zero(tmp_path):
+    data = {**MINIMAL_CONFIG, "logging": {"max_bytes": 0}}
+    config_path = _write_config(tmp_path, data)
+    with pytest.raises(ConfigError, match="max_bytes"):
+        load_config(config_path)
+
+
+def test_validate_logging_backup_count_negative(tmp_path):
+    data = {**MINIMAL_CONFIG, "logging": {"backup_count": -1}}
+    config_path = _write_config(tmp_path, data)
+    with pytest.raises(ConfigError, match="backup_count"):
+        load_config(config_path)
+
+
+def test_validate_logging_retention_days_zero(tmp_path):
+    data = {**MINIMAL_CONFIG, "logging": {"ticket_log_retention_days": 0}}
+    config_path = _write_config(tmp_path, data)
+    with pytest.raises(ConfigError, match="ticket_log_retention_days"):
+        load_config(config_path)
 
 
 # --- unknown key warnings ---
