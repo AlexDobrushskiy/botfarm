@@ -310,6 +310,7 @@ def limits(config_path):
     util_5h = row["utilization_5h"]
     util_7d = row["utilization_7d"]
     resets_at = row["resets_at"]
+    resets_at_7d = row["resets_at_7d"]
     recorded_at = row["created_at"]
 
     # Derive yellow→red boundary as midpoint between threshold and 1.0
@@ -337,7 +338,9 @@ def limits(config_path):
         table.add_row("7-day utilization", "-")
 
     if resets_at:
-        table.add_row("Resets at", resets_at)
+        table.add_row("5-hour resets at", resets_at)
+    if resets_at_7d:
+        table.add_row("7-day resets at", resets_at_7d)
 
     # Use dispatch_paused from DB if available, else derive from thresholds
     if dispatch_paused is not None:

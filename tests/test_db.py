@@ -280,6 +280,124 @@ class TestInitDb:
         c2.commit()
         c2.close()
 
+    def test_migration_v4_to_v5(self, tmp_path):
+        """Simulate a v4 database and verify migration adds resets_at_7d column."""
+        db_file = tmp_path / "botfarm.db"
+        conn = sqlite3.connect(str(db_file))
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        # Create v4 schema (usage_snapshots without resets_at_7d)
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS tasks (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticket_id       TEXT NOT NULL UNIQUE,
+                title           TEXT NOT NULL,
+                project         TEXT NOT NULL,
+                slot            INTEGER NOT NULL,
+                status          TEXT NOT NULL DEFAULT 'pending',
+                created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                started_at      TEXT,
+                completed_at    TEXT,
+                cost_usd        REAL NOT NULL DEFAULT 0.0,
+                turns           INTEGER NOT NULL DEFAULT 0,
+                review_iterations INTEGER NOT NULL DEFAULT 0,
+                comments        TEXT NOT NULL DEFAULT '',
+                limit_interruptions INTEGER NOT NULL DEFAULT 0,
+                failure_reason  TEXT,
+                pr_url          TEXT,
+                pipeline_stage  TEXT,
+                review_state    TEXT
+            );
+            CREATE TABLE IF NOT EXISTS stage_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id INTEGER NOT NULL REFERENCES tasks(id),
+                stage TEXT NOT NULL,
+                iteration INTEGER NOT NULL DEFAULT 1,
+                session_id TEXT,
+                turns INTEGER NOT NULL DEFAULT 0,
+                duration_seconds REAL,
+                cost_usd REAL NOT NULL DEFAULT 0.0,
+                exit_subtype TEXT,
+                was_limit_restart INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            );
+            CREATE TABLE IF NOT EXISTS usage_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                utilization_5h REAL,
+                utilization_7d REAL,
+                resets_at TEXT,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            );
+            CREATE TABLE IF NOT EXISTS task_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id INTEGER REFERENCES tasks(id),
+                event_type TEXT NOT NULL,
+                detail TEXT,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            );
+            CREATE TABLE IF NOT EXISTS slots (
+                project TEXT NOT NULL,
+                slot_id INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'free',
+                ticket_id TEXT,
+                ticket_title TEXT,
+                branch TEXT,
+                pr_url TEXT,
+                stage TEXT,
+                stage_iteration INTEGER NOT NULL DEFAULT 0,
+                current_session_id TEXT,
+                started_at TEXT,
+                stage_started_at TEXT,
+                sigterm_sent_at TEXT,
+                pid INTEGER,
+                interrupted_by_limit INTEGER NOT NULL DEFAULT 0,
+                resume_after TEXT,
+                stages_completed TEXT,
+                updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                PRIMARY KEY(project, slot_id)
+            );
+            CREATE TABLE IF NOT EXISTS dispatch_state (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                paused INTEGER NOT NULL DEFAULT 0,
+                pause_reason TEXT,
+                supervisor_heartbeat TEXT,
+                updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            );
+        """)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)"
+        )
+        conn.execute("INSERT INTO schema_version (version) VALUES (4)")
+        # Insert a snapshot without resets_at_7d to verify data survives migration
+        conn.execute(
+            "INSERT INTO usage_snapshots (utilization_5h, utilization_7d, resets_at) VALUES (?, ?, ?)",
+            (0.5, 0.3, "2026-02-13T00:00:00Z"),
+        )
+        conn.commit()
+        conn.close()
+
+        # Re-open via init_db — should migrate to v5
+        c2 = init_db(db_file)
+        row = c2.execute("SELECT version FROM schema_version").fetchone()
+        assert row[0] == SCHEMA_VERSION
+
+        # resets_at_7d column should exist and be NULL for pre-existing rows
+        snap = c2.execute("SELECT resets_at, resets_at_7d FROM usage_snapshots").fetchone()
+        assert snap[0] == "2026-02-13T00:00:00Z"
+        assert snap[1] is None
+
+        # Should be able to insert with the new column
+        c2.execute(
+            "INSERT INTO usage_snapshots (utilization_5h, utilization_7d, resets_at, resets_at_7d) VALUES (?, ?, ?, ?)",
+            (0.6, 0.4, "2026-02-14T00:00:00Z", "2026-02-21T00:00:00Z"),
+        )
+        c2.commit()
+        snap2 = c2.execute(
+            "SELECT resets_at_7d FROM usage_snapshots ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+        assert snap2[0] == "2026-02-21T00:00:00Z"
+        c2.close()
+
 
 # ---------------------------------------------------------------------------
 # Tasks
@@ -549,12 +667,27 @@ class TestUsageSnapshots:
         assert rows[0]["id"] == sid
         assert rows[0]["utilization_5h"] == pytest.approx(0.73)
 
+    def test_insert_with_resets_at_7d(self, conn):
+        sid = insert_usage_snapshot(
+            conn,
+            utilization_5h=0.73,
+            utilization_7d=0.45,
+            resets_at="2026-02-13T00:00:00Z",
+            resets_at_7d="2026-02-20T00:00:00Z",
+        )
+        rows = get_usage_snapshots(conn)
+        assert len(rows) == 1
+        assert rows[0]["id"] == sid
+        assert rows[0]["resets_at"] == "2026-02-13T00:00:00Z"
+        assert rows[0]["resets_at_7d"] == "2026-02-20T00:00:00Z"
+
     def test_nullable_fields(self, conn):
         insert_usage_snapshot(conn)
         rows = get_usage_snapshots(conn)
         assert rows[0]["utilization_5h"] is None
         assert rows[0]["utilization_7d"] is None
         assert rows[0]["resets_at"] is None
+        assert rows[0]["resets_at_7d"] is None
 
     def test_limit(self, conn):
         for _ in range(5):

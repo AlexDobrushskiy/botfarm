@@ -184,6 +184,8 @@ def create_app(
                     "utilization_5h": usage_row["utilization_5h"],
                     "utilization_7d": usage_row["utilization_7d"],
                     "resets_at": usage_row["resets_at"],
+                    "resets_at_5h": usage_row["resets_at"],
+                    "resets_at_7d": usage_row["resets_at_7d"],
                 }
                 last_usage_check = usage_row["created_at"]
 
