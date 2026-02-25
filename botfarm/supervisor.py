@@ -295,6 +295,9 @@ class Supervisor:
         self._update_failed_event = threading.Event()
         self._exit_code = 0
 
+        # Wake event — set by interactive requests to break out of _sleep() early
+        self._wake_event = threading.Event()
+
         # Queue for worker results — workers send _WorkerResult here
         self._result_queue: multiprocessing.Queue = multiprocessing.Queue()
 
@@ -1746,14 +1749,17 @@ class Supervisor:
     def request_pause(self) -> None:
         """Request a manual pause (thread-safe, called from dashboard)."""
         self._manual_pause_event.set()
+        self._wake_event.set()
 
     def request_resume(self) -> None:
         """Request a manual resume (thread-safe, called from dashboard)."""
         self._manual_resume_event.set()
+        self._wake_event.set()
 
     def request_update(self) -> None:
         """Request an update-and-restart cycle (thread-safe, called from dashboard)."""
         self._update_event.set()
+        self._wake_event.set()
 
     def _handle_update_request(self) -> None:
         """Check for update request and execute update-and-restart flow.
@@ -2189,11 +2195,12 @@ class Supervisor:
             )
 
     def _sleep(self, seconds: int) -> None:
-        """Interruptible sleep — checks shutdown flag each second."""
+        """Interruptible sleep — checks shutdown and wake flags each second."""
         for _ in range(seconds):
-            if self._shutdown_requested:
+            if self._shutdown_requested or self._wake_event.is_set():
                 break
             time.sleep(1)
+        self._wake_event.clear()
 
 
 # ---------------------------------------------------------------------------
