@@ -42,6 +42,7 @@ from botfarm.db import (
     load_all_slots,
     load_dispatch_state,
 )
+from botfarm.git_update import commits_behind
 from botfarm.worker import STAGES
 from botfarm.usage import refresh_usage_snapshot
 
@@ -116,6 +117,8 @@ def create_app(
     state_file: str | Path | None = None,
     on_pause: Callable[[], None] | None = None,
     on_resume: Callable[[], None] | None = None,
+    on_update: Callable[[], None] | None = None,
+    update_failed_event: threading.Event | None = None,
 ) -> FastAPI:
     """Create the FastAPI dashboard application.
 
@@ -137,6 +140,12 @@ def create_app(
     on_resume:
         Callback invoked when the user clicks Resume. Should be a callable
         with no arguments (e.g. ``supervisor.request_resume``).
+    on_update:
+        Callback invoked when the user clicks Update & Restart. Should be
+        a callable with no arguments (e.g. ``supervisor.request_update``).
+    update_failed_event:
+        Threading event set by the supervisor when an update fails.
+        The banner endpoint checks this to reset the \"Updating...\" state.
     """
     app = FastAPI(title="Botfarm Dashboard", docs_url=None, redoc_url=None)
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
@@ -148,6 +157,9 @@ def create_app(
     app.state.restart_required = False
     app.state.on_pause = on_pause
     app.state.on_resume = on_resume
+    app.state.on_update = on_update
+    app.state.update_in_progress = False
+    app.state.update_failed_event = update_failed_event
 
     # --- Helpers ---
 
@@ -789,6 +801,66 @@ def create_app(
             "has_callbacks": app.state.on_pause is not None,
         })
 
+    # --- Update banner ---
+
+    _update_check_lock = threading.Lock()
+    _last_update_check: dict = {"time": None, "commits_behind": 0}
+    _UPDATE_CHECK_INTERVAL = 60  # seconds
+
+    def _check_commits_behind() -> int:
+        """Check how far behind origin/main we are, rate-limited."""
+        import time as _time
+
+        now = _time.monotonic()
+        with _update_check_lock:
+            last = _last_update_check["time"]
+            if last is not None and now - last < _UPDATE_CHECK_INTERVAL:
+                return _last_update_check["commits_behind"]
+
+        try:
+            count = commits_behind()
+        except Exception:
+            logger.warning("Update check failed", exc_info=True)
+            count = 0
+
+        with _update_check_lock:
+            _last_update_check["time"] = now
+            _last_update_check["commits_behind"] = count
+        return count
+
+    @app.get("/partials/update-banner", response_class=HTMLResponse)
+    def partial_update_banner(request: Request):
+        # Check if supervisor signalled that update failed
+        failed_evt = app.state.update_failed_event
+        if failed_evt is not None and failed_evt.is_set():
+            failed_evt.clear()
+            app.state.update_in_progress = False
+
+        if app.state.update_in_progress:
+            return templates.TemplateResponse("partials/update_banner.html", {
+                "request": request,
+                "update_status": "updating",
+                "commits_behind": 0,
+            })
+        count = _check_commits_behind()
+        return templates.TemplateResponse("partials/update_banner.html", {
+            "request": request,
+            "update_status": "idle",
+            "commits_behind": count,
+        })
+
+    @app.post("/api/update")
+    def api_update():
+        cb = app.state.on_update
+        if cb is None:
+            return JSONResponse(
+                {"error": "Update not available (supervisor not connected)"},
+                status_code=503,
+            )
+        app.state.update_in_progress = True
+        cb()
+        return JSONResponse({"status": "ok"})
+
     # --- Read-only config view ---
 
     def _mask_secret(value: str) -> str:
@@ -1027,6 +1099,8 @@ def start_dashboard(
     state_file: str | Path | None = None,
     on_pause: Callable[[], None] | None = None,
     on_resume: Callable[[], None] | None = None,
+    on_update: Callable[[], None] | None = None,
+    update_failed_event: threading.Event | None = None,
 ) -> threading.Thread | None:
     """Start the dashboard server in a background daemon thread.
 
@@ -1041,6 +1115,8 @@ def start_dashboard(
         botfarm_config=botfarm_config,
         on_pause=on_pause,
         on_resume=on_resume,
+        on_update=on_update,
+        update_failed_event=update_failed_event,
     )
 
     def _run():

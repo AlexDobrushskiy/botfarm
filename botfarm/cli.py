@@ -401,8 +401,17 @@ def init(path):
     default=None,
     help="Directory for log files (default: ~/.botfarm/logs/).",
 )
-def run(config_path, log_dir):
+@click.option(
+    "--auto-restart",
+    is_flag=True,
+    default=False,
+    help="Automatically restart after an update (exit code 42).",
+)
+def run(config_path, log_dir, auto_restart):
     """Run the supervisor in foreground mode."""
+    import sys
+
+    from botfarm.git_update import UPDATE_EXIT_CODE
     from botfarm.supervisor import DEFAULT_LOG_DIR, Supervisor, setup_logging
 
     cfg_path = config_path or DEFAULT_CONFIG_PATH
@@ -419,7 +428,11 @@ def run(config_path, log_dir):
     )
 
     supervisor = Supervisor(config, log_dir=log_dir or DEFAULT_LOG_DIR)
-    supervisor.run()
+    exit_code = supervisor.run()
+
+    if exit_code == UPDATE_EXIT_CODE and auto_restart:
+        click.echo("Restarting after update...")
+        os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
 # Derive "free" field values from the SlotState dataclass defaults so that
