@@ -424,6 +424,125 @@ class TestInitDb:
         assert snap2[0] == "2026-02-21T00:00:00Z"
         c2.close()
 
+    def test_migration_v5_to_v6(self, tmp_path):
+        """Simulate a v5 database and verify migration drops cost_usd columns."""
+        db_file = tmp_path / "botfarm.db"
+        conn = sqlite3.connect(str(db_file))
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS tasks (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticket_id       TEXT NOT NULL UNIQUE,
+                title           TEXT NOT NULL,
+                project         TEXT NOT NULL,
+                slot            INTEGER NOT NULL,
+                status          TEXT NOT NULL DEFAULT 'pending',
+                created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                started_at      TEXT,
+                completed_at    TEXT,
+                cost_usd        REAL NOT NULL DEFAULT 0.0,
+                turns           INTEGER NOT NULL DEFAULT 0,
+                review_iterations INTEGER NOT NULL DEFAULT 0,
+                comments        TEXT NOT NULL DEFAULT '',
+                limit_interruptions INTEGER NOT NULL DEFAULT 0,
+                failure_reason  TEXT,
+                pr_url          TEXT,
+                pipeline_stage  TEXT,
+                review_state    TEXT
+            );
+            CREATE TABLE IF NOT EXISTS stage_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id INTEGER NOT NULL REFERENCES tasks(id),
+                stage TEXT NOT NULL,
+                iteration INTEGER NOT NULL DEFAULT 1,
+                session_id TEXT,
+                turns INTEGER NOT NULL DEFAULT 0,
+                duration_seconds REAL,
+                cost_usd REAL NOT NULL DEFAULT 0.0,
+                exit_subtype TEXT,
+                was_limit_restart INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            );
+            CREATE TABLE IF NOT EXISTS usage_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                utilization_5h REAL,
+                utilization_7d REAL,
+                resets_at TEXT,
+                resets_at_7d TEXT,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            );
+            CREATE TABLE IF NOT EXISTS task_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id INTEGER REFERENCES tasks(id),
+                event_type TEXT NOT NULL,
+                detail TEXT,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            );
+            CREATE TABLE IF NOT EXISTS slots (
+                project TEXT NOT NULL,
+                slot_id INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'free',
+                ticket_id TEXT,
+                ticket_title TEXT,
+                branch TEXT,
+                pr_url TEXT,
+                stage TEXT,
+                stage_iteration INTEGER NOT NULL DEFAULT 0,
+                current_session_id TEXT,
+                started_at TEXT,
+                stage_started_at TEXT,
+                sigterm_sent_at TEXT,
+                pid INTEGER,
+                interrupted_by_limit INTEGER NOT NULL DEFAULT 0,
+                resume_after TEXT,
+                stages_completed TEXT,
+                updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                PRIMARY KEY(project, slot_id)
+            );
+            CREATE TABLE IF NOT EXISTS dispatch_state (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                paused INTEGER NOT NULL DEFAULT 0,
+                pause_reason TEXT,
+                supervisor_heartbeat TEXT,
+                updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            );
+        """)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)"
+        )
+        conn.execute("INSERT INTO schema_version (version) VALUES (5)")
+        # Insert data with cost_usd to verify it survives (column dropped)
+        conn.execute(
+            "INSERT INTO tasks (ticket_id, title, project, slot, cost_usd) VALUES (?, ?, ?, ?, ?)",
+            ("SMA-1", "Old task", "proj", 1, 1.25),
+        )
+        conn.execute(
+            "INSERT INTO stage_runs (task_id, stage, cost_usd) VALUES (?, ?, ?)",
+            (1, "implement", 0.75),
+        )
+        conn.commit()
+        conn.close()
+
+        # Re-open via init_db — should migrate to v6
+        c2 = init_db(db_file, allow_migration=True)
+        row = c2.execute("SELECT version FROM schema_version").fetchone()
+        assert row[0] == SCHEMA_VERSION
+
+        # cost_usd columns should be gone
+        task_cols = {r[1] for r in c2.execute("PRAGMA table_info(tasks)").fetchall()}
+        assert "cost_usd" not in task_cols
+
+        stage_cols = {r[1] for r in c2.execute("PRAGMA table_info(stage_runs)").fetchall()}
+        assert "cost_usd" not in stage_cols
+
+        # Data should survive (other columns intact)
+        task = c2.execute("SELECT ticket_id, turns FROM tasks WHERE ticket_id = 'SMA-1'").fetchone()
+        assert task[0] == "SMA-1"
+        assert task[1] == 0
+
+        c2.close()
+
 
 # ---------------------------------------------------------------------------
 # Tasks
@@ -601,11 +720,11 @@ class TestTasks:
 
     def test_get_task_history_sort(self, conn):
         insert_task(conn, ticket_id="SORT-A", title="A", project="p", slot=1, status="completed")
-        update_task(conn, 1, cost_usd=10.0)
+        update_task(conn, 1, turns=10)
         insert_task(conn, ticket_id="SORT-B", title="B", project="p", slot=2, status="completed")
-        update_task(conn, 2, cost_usd=1.0)
-        asc = get_task_history(conn, sort_by="cost_usd", sort_dir="ASC")
-        assert asc[0]["cost_usd"] <= asc[1]["cost_usd"]
+        update_task(conn, 2, turns=1)
+        asc = get_task_history(conn, sort_by="turns", sort_dir="ASC")
+        assert asc[0]["turns"] <= asc[1]["turns"]
 
     def test_get_task_history_invalid_sort_defaults(self, conn):
         insert_task(conn, ticket_id="DEF-1", title="T", project="p", slot=1)
@@ -653,7 +772,6 @@ class TestStageRuns:
             session_id="sess-abc",
             turns=10,
             duration_seconds=120.5,
-            cost_usd=0.42,
         )
         runs = get_stage_runs(conn, tid)
         assert len(runs) == 1

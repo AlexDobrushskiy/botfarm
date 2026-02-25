@@ -8,7 +8,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 class SchemaVersionError(RuntimeError):
@@ -43,7 +43,6 @@ CREATE TABLE IF NOT EXISTS tasks (
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     started_at      TEXT,
     completed_at    TEXT,
-    cost_usd        REAL NOT NULL DEFAULT 0.0,
     turns           INTEGER NOT NULL DEFAULT 0,
     review_iterations INTEGER NOT NULL DEFAULT 0,
     comments        TEXT NOT NULL DEFAULT '',
@@ -62,7 +61,6 @@ CREATE TABLE IF NOT EXISTS stage_runs (
     session_id          TEXT,
     turns               INTEGER NOT NULL DEFAULT 0,
     duration_seconds    REAL,
-    cost_usd            REAL NOT NULL DEFAULT 0.0,
     exit_subtype        TEXT,
     was_limit_restart   INTEGER NOT NULL DEFAULT 0,
     created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
@@ -185,6 +183,12 @@ def _migrate(conn: sqlite3.Connection, from_version: int) -> None:
         }
         if "resets_at_7d" not in existing:
             conn.execute("ALTER TABLE usage_snapshots ADD COLUMN resets_at_7d TEXT")
+    if from_version < 6:
+        # v5→v6: drop cost_usd columns (always $0.00 on Max subscription)
+        for table in ("tasks", "stage_runs"):
+            cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+            if "cost_usd" in cols:
+                conn.execute(f"ALTER TABLE {table} DROP COLUMN cost_usd")  # noqa: S608
     conn.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION,))
 
 
@@ -272,7 +276,6 @@ def insert_task(
             created_at = excluded.created_at,
             started_at = NULL,
             completed_at = NULL,
-            cost_usd = 0.0,
             turns = 0,
             review_iterations = 0,
             comments = '',
@@ -301,7 +304,7 @@ def update_task(
     """Update one or more columns on a task row.
 
     Only the columns passed as keyword arguments are updated.
-    Allowed columns: status, started_at, completed_at, cost_usd, turns,
+    Allowed columns: status, started_at, completed_at, turns,
     review_iterations, comments, limit_interruptions, failure_reason,
     pr_url, pipeline_stage, review_state.
     """
@@ -309,7 +312,6 @@ def update_task(
         "status",
         "started_at",
         "completed_at",
-        "cost_usd",
         "turns",
         "review_iterations",
         "comments",
@@ -364,7 +366,7 @@ def get_task_history(
 ) -> list[sqlite3.Row]:
     """Return recent tasks, newest first. Optionally filter by project/status/search."""
     allowed_sort_cols = {
-        "ticket_id", "title", "project", "status", "cost_usd", "turns",
+        "ticket_id", "title", "project", "status", "turns",
         "review_iterations", "limit_interruptions", "created_at",
         "started_at", "completed_at",
     }
@@ -432,7 +434,6 @@ def insert_stage_run(
     session_id: str | None = None,
     turns: int = 0,
     duration_seconds: float | None = None,
-    cost_usd: float = 0.0,
     exit_subtype: str | None = None,
     was_limit_restart: bool = False,
 ) -> int:
@@ -441,8 +442,8 @@ def insert_stage_run(
         """
         INSERT INTO stage_runs
             (task_id, stage, iteration, session_id, turns,
-             duration_seconds, cost_usd, exit_subtype, was_limit_restart, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             duration_seconds, exit_subtype, was_limit_restart, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             task_id,
@@ -451,7 +452,6 @@ def insert_stage_run(
             session_id,
             turns,
             duration_seconds,
-            cost_usd,
             exit_subtype,
             int(was_limit_restart),
             _now_iso(),

@@ -24,7 +24,6 @@
             {{ sort_header("Project", "project") }}
             {{ sort_header("Status", "status") }}
             <th>Wall Time</th>
-            {{ sort_header("Cost ($)", "cost_usd") }}
             {{ sort_header("Turns", "turns") }}
             <th>Reviews</th>
             <th>Comments</th>
@@ -52,7 +51,6 @@
                 {% endif %}
             </td>
             <td>{{ task.duration }}</td>
-            <td>{{ "%.2f"|format(task.cost_usd) if task.cost_usd is not none else "-" }}</td>
             <td>{{ task.turns if task.turns is not none else "-" }}</td>
             <td>{{ task.review_iterations if task.review_iterations is not none else "-" }}</td>
             <td>{{ task.comments if task.comments else "-" }}</td>

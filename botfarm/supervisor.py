@@ -1252,8 +1252,6 @@ class Supervisor:
         if task_id is not None:
             task = get_task(self._conn, task_id)
             if task:
-                if task["cost_usd"] is not None:
-                    lines.append(f"- **Cost:** ${task['cost_usd']:.2f}")
                 if task["started_at"] and task["completed_at"]:
                     try:
                         started = datetime.fromisoformat(
@@ -1296,12 +1294,10 @@ class Supervisor:
     def _notify_task_completed(self, slot: SlotState) -> None:
         """Send a webhook notification for a completed task."""
         task_id = self._find_task_id(slot.ticket_id)
-        cost = None
         duration = None
         if task_id is not None:
             task = get_task(self._conn, task_id)
             if task:
-                cost = task["cost_usd"]
                 if task["started_at"] and task["completed_at"]:
                     try:
                         started = datetime.fromisoformat(
@@ -1324,7 +1320,6 @@ class Supervisor:
         self._notifier.notify_task_completed(
             ticket_id=slot.ticket_id or "unknown",
             title=slot.ticket_title or "unknown",
-            cost_usd=cost,
             duration_seconds=duration,
             pr_url=pr_url,
         )

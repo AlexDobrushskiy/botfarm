@@ -80,7 +80,6 @@ def _make_claude_json(
     session_id="sess-abc",
     num_turns=5,
     duration_ms=12000,
-    cost_usd=0.25,
     subtype="tool_use",
     result="Done",
     is_error=False,
@@ -90,7 +89,6 @@ def _make_claude_json(
             "session_id": session_id,
             "num_turns": num_turns,
             "duration_ms": duration_ms,
-            "total_cost_usd": cost_usd,
             "subtype": subtype,
             "result": result,
             "is_error": is_error,
@@ -124,7 +122,6 @@ class TestParseClaudeOutput:
         assert result.session_id == "sess-abc"
         assert result.num_turns == 5
         assert result.duration_seconds == 12.0
-        assert result.cost_usd == 0.25
         assert result.exit_subtype == "tool_use"
         assert result.result_text == "Done"
         assert result.is_error is False
@@ -145,7 +142,6 @@ class TestParseClaudeOutput:
         assert result.session_id == ""
         assert result.num_turns == 0
         assert result.duration_seconds == 0.0
-        assert result.cost_usd == 0.0
         assert result.exit_subtype == ""
         assert result.result_text == "ok"
 
@@ -370,7 +366,6 @@ class TestRunImplement:
             session_id="s1",
             num_turns=10,
             duration_seconds=30.0,
-            cost_usd=0.5,
             exit_subtype="tool_use",
             result_text=f"Created PR: {PR_URL}",
         )
@@ -386,7 +381,6 @@ class TestRunImplement:
             session_id="s1",
             num_turns=10,
             duration_seconds=30.0,
-            cost_usd=0.5,
             exit_subtype="tool_use",
             result_text="Done but no PR link",
         )
@@ -400,7 +394,6 @@ class TestRunImplement:
             session_id="s1",
             num_turns=10,
             duration_seconds=30.0,
-            cost_usd=0.5,
             exit_subtype="tool_use",
             result_text="Max turns reached",
             is_error=True,
@@ -417,7 +410,6 @@ class TestRunReview:
             session_id="s2",
             num_turns=5,
             duration_seconds=15.0,
-            cost_usd=0.2,
             exit_subtype="tool_use",
             result_text="Review posted",
         )
@@ -431,7 +423,6 @@ class TestRunReview:
             session_id="s2",
             num_turns=5,
             duration_seconds=15.0,
-            cost_usd=0.2,
             exit_subtype="tool_use",
             result_text="Error occurred",
             is_error=True,
@@ -448,7 +439,6 @@ class TestRunFix:
             session_id="s3",
             num_turns=8,
             duration_seconds=20.0,
-            cost_usd=0.3,
             exit_subtype="tool_use",
             result_text="Fixes pushed",
         )
@@ -462,7 +452,6 @@ class TestRunFix:
             session_id="s3",
             num_turns=8,
             duration_seconds=20.0,
-            cost_usd=0.3,
             exit_subtype="tool_use",
             result_text="Error occurred",
             is_error=True,
@@ -679,7 +668,7 @@ class TestCheckPrMerged:
 # ---------------------------------------------------------------------------
 
 
-def _mock_stage_result(stage, success=True, pr_url=None, cost=0.1, turns=3, review_approved=None):
+def _mock_stage_result(stage, success=True, pr_url=None, turns=3, review_approved=None):
     """Build a StageResult with optional ClaudeResult."""
     cr = None
     if stage in ("implement", "review", "fix"):
@@ -687,7 +676,6 @@ def _mock_stage_result(stage, success=True, pr_url=None, cost=0.1, turns=3, revi
             session_id=f"sess-{stage}",
             num_turns=turns,
             duration_seconds=10.0,
-            cost_usd=cost,
             exit_subtype="tool_use",
             result_text="done",
         )
@@ -706,9 +694,9 @@ class TestRunPipeline:
     def test_full_success(self, mock_exec, conn, task_id, tmp_path):
         """All 5 stages succeed → pipeline success, metrics recorded."""
         mock_exec.side_effect = [
-            _mock_stage_result("implement", pr_url=PR_URL, cost=0.5, turns=10),
-            _mock_stage_result("review", cost=0.2, turns=5),
-            _mock_stage_result("fix", cost=0.3, turns=8),
+            _mock_stage_result("implement", pr_url=PR_URL, turns=10),
+            _mock_stage_result("review", turns=5),
+            _mock_stage_result("fix", turns=8),
             _mock_stage_result("pr_checks"),  # no claude result
             _mock_stage_result("merge"),  # no claude result
         ]
@@ -722,7 +710,6 @@ class TestRunPipeline:
         assert result.success is True
         assert result.stages_completed == list(STAGES)
         assert result.pr_url == PR_URL
-        assert result.total_cost_usd == pytest.approx(1.0)
         assert result.total_turns == 23
         assert result.failure_stage is None
 
@@ -734,7 +721,6 @@ class TestRunPipeline:
         # Task should be marked completed with timestamp
         task = get_task(conn, task_id)
         assert task["status"] == "completed"
-        assert task["cost_usd"] == pytest.approx(1.0)
         assert task["turns"] == 23
         assert task["completed_at"] is not None
 
@@ -742,7 +728,7 @@ class TestRunPipeline:
     def test_pr_url_persisted_to_db(self, mock_exec, conn, task_id, tmp_path):
         """PR URL from implement stage is written to tasks DB."""
         mock_exec.side_effect = [
-            _mock_stage_result("implement", pr_url=PR_URL, cost=0.5, turns=10),
+            _mock_stage_result("implement", pr_url=PR_URL, turns=10),
             _mock_stage_result("review", review_approved=True),
             _mock_stage_result("pr_checks"),
             _mock_stage_result("merge"),
@@ -1016,11 +1002,11 @@ class TestRunPipeline:
 
     @patch("botfarm.worker._execute_stage")
     def test_metrics_accumulation(self, mock_exec, conn, task_id, tmp_path):
-        """Costs, turns, and duration accumulate across stages."""
+        """Turns and duration accumulate across stages."""
         mock_exec.side_effect = [
-            _mock_stage_result("implement", pr_url=PR_URL, cost=1.0, turns=20),
-            _mock_stage_result("review", cost=0.5, turns=10),
-            _mock_stage_result("fix", cost=0.3, turns=5),
+            _mock_stage_result("implement", pr_url=PR_URL, turns=20),
+            _mock_stage_result("review", turns=10),
+            _mock_stage_result("fix", turns=5),
             _mock_stage_result("pr_checks"),
             _mock_stage_result("merge"),
         ]
@@ -1031,7 +1017,6 @@ class TestRunPipeline:
             conn=conn,
             max_review_iterations=1,
         )
-        assert result.total_cost_usd == pytest.approx(1.8)
         assert result.total_turns == 35
         # 3 claude stages × 10s each
         assert result.total_duration_seconds == pytest.approx(30.0)
@@ -1065,7 +1050,7 @@ class TestRunPipeline:
         log_dir.mkdir(parents=True)
 
         mock_exec.side_effect = [
-            _mock_stage_result("implement", pr_url=PR_URL, cost=0.5, turns=10),
+            _mock_stage_result("implement", pr_url=PR_URL, turns=10),
             _mock_stage_result("review", review_approved=True),
             _mock_stage_result("pr_checks"),
             _mock_stage_result("merge"),
@@ -1089,7 +1074,7 @@ class TestRunPipeline:
     def test_no_log_dir_passes_none(self, mock_exec, conn, task_id, tmp_path):
         """When log_dir is not set, _execute_stage receives log_file=None."""
         mock_exec.side_effect = [
-            _mock_stage_result("implement", pr_url=PR_URL, cost=0.5, turns=10),
+            _mock_stage_result("implement", pr_url=PR_URL, turns=10),
             _mock_stage_result("review", review_approved=True),
             _mock_stage_result("pr_checks"),
             _mock_stage_result("merge"),
@@ -1296,7 +1281,7 @@ class TestRunPipelinePauseEvent:
         pause_evt = mp.Event()  # not set
 
         mock_exec.side_effect = [
-            _mock_stage_result("implement", pr_url=PR_URL_PAUSE, cost=0.5, turns=10),
+            _mock_stage_result("implement", pr_url=PR_URL_PAUSE, turns=10),
             _mock_stage_result("review", review_approved=True),
             _mock_stage_result("pr_checks"),
             _mock_stage_result("merge"),
@@ -1316,7 +1301,7 @@ class TestRunPipelinePauseEvent:
     def test_no_pause_event_pipeline_proceeds(self, mock_exec, conn, task_id, tmp_path):
         """When pause_event is None, pipeline proceeds normally."""
         mock_exec.side_effect = [
-            _mock_stage_result("implement", pr_url=PR_URL_PAUSE, cost=0.5, turns=10),
+            _mock_stage_result("implement", pr_url=PR_URL_PAUSE, turns=10),
             _mock_stage_result("review", review_approved=True),
             _mock_stage_result("pr_checks"),
             _mock_stage_result("merge"),
@@ -1379,7 +1364,6 @@ class TestDataclasses:
             session_id="s1",
             num_turns=10,
             duration_seconds=30.0,
-            cost_usd=0.5,
             exit_subtype="tool_use",
             result_text="done",
         )
@@ -1393,7 +1377,6 @@ class TestDataclasses:
 
     def test_pipeline_result_defaults(self):
         pr = PipelineResult(ticket_id="SMA-1", success=False, stages_completed=[])
-        assert pr.total_cost_usd == 0.0
         assert pr.total_turns == 0
         assert pr.failure_stage is None
         assert pr.paused is False
@@ -1559,10 +1542,10 @@ class TestReviewIterationLoop:
         mock_exec.side_effect = [
             _mock_stage_result("implement", pr_url=PR_URL),
             # Iteration 1: review requests changes
-            _mock_stage_result("review", review_approved=False, cost=0.2, turns=5),
-            _mock_stage_result("fix", cost=0.3, turns=8),
+            _mock_stage_result("review", review_approved=False, turns=5),
+            _mock_stage_result("fix", turns=8),
             # Iteration 2: review approves
-            _mock_stage_result("review", review_approved=True, cost=0.1, turns=3),
+            _mock_stage_result("review", review_approved=True, turns=3),
             _mock_stage_result("pr_checks"),
             _mock_stage_result("merge"),
         ]
@@ -1660,14 +1643,14 @@ class TestReviewIterationLoop:
     def test_metrics_accumulate_across_iterations(
         self, mock_exec, conn, task_id, tmp_path,
     ):
-        """Costs and turns from all review/fix iterations are accumulated."""
+        """Turns from all review/fix iterations are accumulated."""
         mock_exec.side_effect = [
-            _mock_stage_result("implement", pr_url=PR_URL, cost=1.0, turns=20),
+            _mock_stage_result("implement", pr_url=PR_URL, turns=20),
             # Iteration 1
-            _mock_stage_result("review", review_approved=False, cost=0.2, turns=5),
-            _mock_stage_result("fix", cost=0.3, turns=8),
+            _mock_stage_result("review", review_approved=False, turns=5),
+            _mock_stage_result("fix", turns=8),
             # Iteration 2 — approved
-            _mock_stage_result("review", review_approved=True, cost=0.1, turns=3),
+            _mock_stage_result("review", review_approved=True, turns=3),
             _mock_stage_result("pr_checks"),
             _mock_stage_result("merge"),
         ]
@@ -1679,8 +1662,6 @@ class TestReviewIterationLoop:
             max_review_iterations=3,
         )
         assert result.success is True
-        # 1.0 + 0.2 + 0.3 + 0.1 = 1.6
-        assert result.total_cost_usd == pytest.approx(1.6)
         # 20 + 5 + 8 + 3 = 36
         assert result.total_turns == 36
 
@@ -1745,7 +1726,6 @@ class TestRunCiFix:
             session_id="s-ci",
             num_turns=6,
             duration_seconds=18.0,
-            cost_usd=0.35,
             exit_subtype="tool_use",
             result_text="Fixed CI failures",
         )
@@ -1767,7 +1747,6 @@ class TestRunCiFix:
             session_id="s-ci",
             num_turns=6,
             duration_seconds=18.0,
-            cost_usd=0.35,
             exit_subtype="tool_use",
             result_text="Error occurred",
             is_error=True,
@@ -1784,7 +1763,6 @@ class TestRunCiFix:
             session_id="s-ci",
             num_turns=3,
             duration_seconds=10.0,
-            cost_usd=0.1,
             exit_subtype="tool_use",
             result_text="Fixed",
         )
@@ -1836,7 +1814,7 @@ class TestCiRetryLoop:
             _mock_stage_result("pr_checks"),
             _mock_stage_result("merge"),
         ]
-        mock_ci_fix.return_value = _mock_stage_result("fix", cost=0.3, turns=8)
+        mock_ci_fix.return_value = _mock_stage_result("fix", turns=8)
         result = run_pipeline(
             ticket_id="SMA-99",
             task_id=task_id,
@@ -1981,15 +1959,15 @@ class TestCiRetryLoop:
     @patch("botfarm.worker._run_ci_fix")
     @patch("botfarm.worker._execute_stage")
     def test_ci_retry_metrics_accumulate(self, mock_exec, mock_ci_fix, conn, task_id, tmp_path):
-        """Costs and turns from CI fix retries accumulate in pipeline metrics."""
+        """Turns from CI fix retries accumulate in pipeline metrics."""
         mock_exec.side_effect = [
-            _mock_stage_result("implement", pr_url=PR_URL, cost=1.0, turns=20),
-            _mock_stage_result("review", review_approved=True, cost=0.2, turns=5),
+            _mock_stage_result("implement", pr_url=PR_URL, turns=20),
+            _mock_stage_result("review", review_approved=True, turns=5),
             _mock_stage_result("pr_checks", success=False),
             _mock_stage_result("pr_checks"),
             _mock_stage_result("merge"),
         ]
-        mock_ci_fix.return_value = _mock_stage_result("fix", cost=0.4, turns=10)
+        mock_ci_fix.return_value = _mock_stage_result("fix", turns=10)
         result = run_pipeline(
             ticket_id="SMA-99",
             task_id=task_id,
@@ -1999,8 +1977,6 @@ class TestCiRetryLoop:
             max_ci_retries=2,
         )
         assert result.success is True
-        # 1.0 + 0.2 + 0.4 = 1.6
-        assert result.total_cost_usd == pytest.approx(1.6)
         # 20 + 5 + 10 = 35
         assert result.total_turns == 35
 
@@ -2073,7 +2049,7 @@ class TestPromptContent:
     def test_review_prompt_contains_inline_comment_api(self, mock_claude, tmp_path):
         mock_claude.return_value = ClaudeResult(
             session_id="s", num_turns=1, duration_seconds=1.0,
-            cost_usd=0.0, exit_subtype="", result_text="done",
+            exit_subtype="", result_text="done",
         )
         _run_review(PR_URL, cwd=tmp_path, max_turns=10)
         prompt = mock_claude.call_args.args[0]
@@ -2085,7 +2061,7 @@ class TestPromptContent:
     def test_review_prompt_contains_verdict_instruction(self, mock_claude, tmp_path):
         mock_claude.return_value = ClaudeResult(
             session_id="s", num_turns=1, duration_seconds=1.0,
-            cost_usd=0.0, exit_subtype="", result_text="done",
+            exit_subtype="", result_text="done",
         )
         _run_review(PR_URL, cwd=tmp_path, max_turns=10)
         prompt = mock_claude.call_args.args[0]
@@ -2099,7 +2075,7 @@ class TestPromptContent:
         """Review prompt instructs agent to use CHANGES_REQUESTED when inline comments exist."""
         mock_claude.return_value = ClaudeResult(
             session_id="s", num_turns=1, duration_seconds=1.0,
-            cost_usd=0.0, exit_subtype="", result_text="done",
+            exit_subtype="", result_text="done",
         )
         _run_review(PR_URL, cwd=tmp_path, max_turns=10)
         prompt = mock_claude.call_args.args[0]
@@ -2110,7 +2086,7 @@ class TestPromptContent:
     def test_fix_prompt_contains_inline_comment_api(self, mock_claude, tmp_path):
         mock_claude.return_value = ClaudeResult(
             session_id="s", num_turns=1, duration_seconds=1.0,
-            cost_usd=0.0, exit_subtype="", result_text="done",
+            exit_subtype="", result_text="done",
         )
         _run_fix(PR_URL, cwd=tmp_path, max_turns=10)
         prompt = mock_claude.call_args.args[0]
@@ -2121,7 +2097,7 @@ class TestPromptContent:
     def test_fix_prompt_instructs_reply_to_comments(self, mock_claude, tmp_path):
         mock_claude.return_value = ClaudeResult(
             session_id="s", num_turns=1, duration_seconds=1.0,
-            cost_usd=0.0, exit_subtype="", result_text="done",
+            exit_subtype="", result_text="done",
         )
         _run_fix(PR_URL, cwd=tmp_path, max_turns=10)
         prompt = mock_claude.call_args.args[0]

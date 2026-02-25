@@ -26,6 +26,8 @@ def test_dotenv_loads_env_vars(tmp_path, monkeypatch):
     monkeypatch.setattr(cli_mod, "ENV_FILE_PATH", env_file)
     monkeypatch.delenv("BOTFARM_TEST_DOTENV_VAR", raising=False)
     monkeypatch.delenv("BOTFARM_DB_PATH", raising=False)
+    # Avoid loading CWD .env (which may point to a real DB with a different schema version)
+    monkeypatch.chdir(tmp_path)
 
     runner = CliRunner()
     result = runner.invoke(main, ["status"])

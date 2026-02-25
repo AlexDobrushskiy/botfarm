@@ -466,7 +466,7 @@ def create_app(
             return [], 0, 1
 
     ALLOWED_SORT_COLS = {
-        "ticket_id", "title", "project", "status", "cost_usd", "turns",
+        "ticket_id", "title", "project", "status", "turns",
         "review_iterations", "limit_interruptions", "created_at",
         "started_at", "completed_at",
     }
@@ -633,8 +633,7 @@ def create_app(
         row = conn.execute(
             "SELECT COUNT(*) as total, "
             "SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) as completed, "
-            "SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) as failed, "
-            "COALESCE(SUM(cost_usd), 0) as total_cost "
+            "SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) as failed "
             "FROM tasks" + where,
             params,
         ).fetchone()
@@ -642,7 +641,6 @@ def create_app(
             metrics["total_tasks"] = row["total"] or 0
             metrics["completed_tasks"] = row["completed"] or 0
             metrics["failed_tasks"] = row["failed"] or 0
-            metrics["total_cost"] = row["total_cost"]
             if metrics["total_tasks"] > 0:
                 metrics["success_rate"] = round(
                     metrics["completed_tasks"] / metrics["total_tasks"] * 100, 1,
@@ -650,14 +648,12 @@ def create_app(
 
         # Averages over completed tasks only
         avg_row = conn.execute(
-            "SELECT COALESCE(AVG(cost_usd), 0) as avg_cost, "
-            "COALESCE(AVG(turns), 0) as avg_turns, "
+            "SELECT COALESCE(AVG(turns), 0) as avg_turns, "
             "COALESCE(AVG(review_iterations), 0) as avg_reviews "
             "FROM tasks" + where + " AND status = 'completed'",
             params,
         ).fetchone()
         if avg_row:
-            metrics["avg_cost"] = avg_row["avg_cost"]
             metrics["avg_turns"] = round(avg_row["avg_turns"])
             metrics["avg_review_iterations"] = round(avg_row["avg_reviews"], 1)
 
@@ -680,8 +676,7 @@ def create_app(
             ("month", "-29 days"),
         ]:
             bucket_row = conn.execute(
-                "SELECT COUNT(*) as cnt, "
-                "COALESCE(SUM(cost_usd), 0) as cost "
+                "SELECT COUNT(*) as cnt "
                 "FROM tasks" + where
                 + " AND status = 'completed'"
                 " AND completed_at >= datetime('now', ?)",
@@ -689,7 +684,6 @@ def create_app(
             ).fetchone()
             if bucket_row:
                 metrics[f"completed_{label}"] = bucket_row["cnt"] or 0
-                metrics[f"cost_{label}"] = bucket_row["cost"]
 
         # Most common failure reasons
         reason_rows = conn.execute(
@@ -708,11 +702,10 @@ def create_app(
 
     _EMPTY_METRICS: dict = {
         "total_tasks": 0, "completed_tasks": 0, "failed_tasks": 0,
-        "total_cost": 0.0, "avg_cost": 0.0, "avg_turns": 0,
-        "avg_review_iterations": 0.0, "avg_wall_time_seconds": 0,
-        "success_rate": 0.0, "completed_today": 0, "completed_week": 0,
-        "completed_month": 0, "cost_today": 0.0, "cost_week": 0.0,
-        "cost_month": 0.0, "failure_reasons": [],
+        "avg_turns": 0, "avg_review_iterations": 0.0,
+        "avg_wall_time_seconds": 0, "success_rate": 0.0,
+        "completed_today": 0, "completed_week": 0,
+        "completed_month": 0, "failure_reasons": [],
     }
 
     @app.get("/metrics", response_class=HTMLResponse)

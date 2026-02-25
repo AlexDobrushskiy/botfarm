@@ -32,10 +32,6 @@
         <p>Wall Time</p>
     </article>
     <article class="metric-card">
-        <h2>${{ "%.2f"|format(task.cost_usd) if task.cost_usd is not none else "0.00" }}</h2>
-        <p>Cost</p>
-    </article>
-    <article class="metric-card">
         <h2>{{ task.turns if task.turns is not none else 0 }}</h2>
         <p>Turns</p>
     </article>
@@ -106,7 +102,6 @@
                 <th>Stage</th>
                 <th>Iteration</th>
                 <th>Duration</th>
-                <th>Cost ($)</th>
                 <th>Turns</th>
                 <th>Session ID</th>
                 <th>Exit Subtype</th>
@@ -119,7 +114,6 @@
                 <td>{{ stage.stage }}</td>
                 <td>{{ stage.iteration }}</td>
                 <td>{{ format_duration(stage.duration_seconds | int) if stage.duration_seconds is not none else "-" }}</td>
-                <td>{{ "%.2f"|format(stage.cost_usd) if stage.cost_usd is not none else "-" }}</td>
                 <td>{{ stage.turns if stage.turns is not none else "-" }}</td>
                 <td style="font-family: monospace; font-size: 0.8rem;">{{ stage.session_id[:12] if stage.session_id else "-" }}{% if stage.session_id and stage.session_id|length > 12 %}&hellip;{% endif %}</td>
                 <td>{{ stage.exit_subtype if stage.exit_subtype else "-" }}</td>
