@@ -188,6 +188,23 @@
             .pipeline-connector { top: 0.9rem; }
             .pipeline-label { font-size: 0.65rem; }
         }
+
+        /* Failure reason truncation */
+        .failure-reason { max-width: 600px; }
+        .failure-reason details summary {
+            cursor: pointer;
+            list-style: none;
+        }
+        .failure-reason details summary::-webkit-details-marker { display: none; }
+        .failure-reason-full {
+            white-space: pre-wrap;
+            word-break: break-word;
+            font-size: 0.85rem;
+            margin-top: 0.5rem;
+            padding: 0.5rem;
+            background: var(--pico-card-background-color);
+            border-radius: var(--pico-border-radius);
+        }
     </style>
     <script>
     function updateCountdowns() {
