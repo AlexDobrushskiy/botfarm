@@ -31,7 +31,7 @@ from botfarm.supervisor import (
     _worker_entry,
     setup_logging,
 )
-from botfarm.worker import PipelineResult
+from botfarm.worker import PipelineResult, STAGES
 
 
 # ---------------------------------------------------------------------------
@@ -841,6 +841,7 @@ class TestWorkerEntry:
 
         mock_result = MagicMock()
         mock_result.success = True
+        mock_result.paused = False
         mock_pipeline.return_value = mock_result
 
         _worker_entry(
@@ -881,6 +882,7 @@ class TestWorkerEntry:
 
         mock_result = MagicMock()
         mock_result.success = False
+        mock_result.paused = False
         mock_result.failure_stage = "implement"
         mock_result.failure_reason = "PR not created"
         mock_pipeline.return_value = mock_result
@@ -3309,3 +3311,234 @@ class TestSlotWorktreeCwd:
         with patch.object(supervisor, "_cleanup_slot_db") as mock_cleanup:
             supervisor._handle_failed_slot(slot)
             mock_cleanup.assert_called_once_with("test-project", 1)
+
+
+# ---------------------------------------------------------------------------
+# Manual pause / resume
+# ---------------------------------------------------------------------------
+
+
+class TestNextStageAfter:
+    def test_empty_stages_returns_first(self):
+        assert Supervisor._next_stage_after([]) == "implement"
+
+    def test_after_implement(self):
+        assert Supervisor._next_stage_after(["implement"]) == "review"
+
+    def test_after_implement_review_fix(self):
+        assert Supervisor._next_stage_after(["implement", "review", "fix"]) == "pr_checks"
+
+    def test_all_stages_returns_none(self):
+        assert Supervisor._next_stage_after(list(STAGES)) is None
+
+    def test_after_partial_stages(self):
+        assert Supervisor._next_stage_after(["implement", "review"]) == "fix"
+
+
+class TestWorkerResultPaused:
+    def test_paused_field_default_false(self):
+        wr = _WorkerResult(project="p", slot_id=1, success=False)
+        assert wr.paused is False
+
+    def test_paused_field_set(self):
+        wr = _WorkerResult(project="p", slot_id=1, success=False, paused=True)
+        assert wr.paused is True
+
+
+class TestReconcilePausedResult:
+    def test_paused_result_marks_slot_paused_manual(self, supervisor):
+        """When a worker sends paused=True result, slot becomes paused_manual."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.complete_stage("test-project", 1, "implement")
+
+        supervisor._result_queue.put(_WorkerResult(
+            project="test-project", slot_id=1, success=False,
+            paused=True,
+        ))
+
+        supervisor._reconcile_workers()
+
+        assert sm.get_slot("test-project", 1).status == "paused_manual"
+
+
+class TestManualPauseResume:
+    def test_request_pause_sets_dispatch_paused(self, supervisor):
+        """request_pause() sets the event; _handle_manual_pause_resume processes it."""
+        supervisor.request_pause()
+        supervisor._handle_manual_pause_resume()
+
+        sm = supervisor.slot_manager
+        assert sm.dispatch_paused is True
+        assert sm.dispatch_pause_reason == "manual_pause"
+
+        events = get_events(supervisor._conn, event_type="manual_pause_requested")
+        assert len(events) == 1
+
+    def test_pause_with_no_busy_slots_completes_immediately(self, supervisor):
+        """If no slots are busy when pause is handled, pause completes right away."""
+        supervisor.request_pause()
+        supervisor._handle_manual_pause_resume()
+
+        # Should have completed immediately since no workers were busy
+        events = get_events(supervisor._conn, event_type="manual_pause_complete")
+        assert len(events) == 1
+        assert supervisor._manual_pause_requested is False
+
+    def test_pause_signals_busy_workers(self, supervisor):
+        """Pause sets the pause_event for busy workers."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.set_pid("test-project", 1, os.getpid())
+
+        # Create a pause event for this worker
+        import multiprocessing
+        pause_evt = multiprocessing.Event()
+        supervisor._pause_events[("test-project", 1)] = pause_evt
+
+        supervisor.request_pause()
+        supervisor._handle_manual_pause_resume()
+
+        assert pause_evt.is_set()
+        assert supervisor._manual_pause_requested is True
+
+    def test_resume_clears_dispatch_pause(self, supervisor):
+        """request_resume() clears manual pause and dispatch state."""
+        # First pause
+        supervisor.request_pause()
+        supervisor._handle_manual_pause_resume()
+
+        # Then resume
+        supervisor.request_resume()
+        supervisor._handle_manual_pause_resume()
+
+        sm = supervisor.slot_manager
+        assert sm.dispatch_paused is False
+
+        events = get_events(supervisor._conn, event_type="manual_resumed")
+        assert len(events) >= 1
+
+    def test_resume_cancels_in_flight_pause(self, supervisor):
+        """If resume is called while pause is still in flight, it cancels the pause."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.set_pid("test-project", 1, os.getpid())
+
+        import multiprocessing
+        pause_evt = multiprocessing.Event()
+        supervisor._pause_events[("test-project", 1)] = pause_evt
+
+        # Pause — signals worker
+        supervisor.request_pause()
+        supervisor._handle_manual_pause_resume()
+        assert pause_evt.is_set()
+
+        # Resume before worker finishes — should clear the event
+        supervisor.request_resume()
+        supervisor._handle_manual_pause_resume()
+
+        assert not pause_evt.is_set()
+        assert supervisor._manual_pause_requested is False
+
+    def test_resume_resumes_paused_manual_slots(self, supervisor):
+        """Resume re-spawns workers for paused_manual slots."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.complete_stage("test-project", 1, "implement")
+        sm.mark_paused_manual("test-project", 1)
+
+        # Set up manual pause state
+        sm.set_dispatch_paused(True, "manual_pause")
+
+        supervisor.request_resume()
+        with patch.object(supervisor, "_resume_manual_paused_worker") as mock_resume:
+            supervisor._handle_manual_pause_resume()
+            mock_resume.assert_called_once()
+            # Verify it was called with the paused slot
+            called_slot = mock_resume.call_args[0][0]
+            assert called_slot.ticket_id == "TST-1"
+
+    def test_manual_pause_does_not_auto_resume(self, supervisor):
+        """_poll_and_dispatch should not resume dispatch when paused for manual_pause."""
+        sm = supervisor.slot_manager
+        sm.set_dispatch_paused(True, "manual_pause")
+
+        # Set utilization to low values that would normally trigger resume
+        supervisor._usage_poller._state.utilization_5h = 0.10
+        supervisor._usage_poller._state.utilization_7d = 0.10
+
+        poller = supervisor._pollers["test-project"]
+        poller.poll.return_value = PollResult(candidates=[_make_issue()], auto_close_parents=[])
+
+        with patch.object(supervisor, "_dispatch_worker") as mock_dispatch:
+            supervisor._poll_and_dispatch()
+            mock_dispatch.assert_not_called()
+
+        # Should still be paused
+        assert sm.dispatch_paused is True
+        assert sm.dispatch_pause_reason == "manual_pause"
+
+    def test_paused_result_propagates_stages_completed(self, supervisor):
+        """Paused worker result syncs stages_completed to supervisor slot."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+
+        supervisor._result_queue.put(_WorkerResult(
+            project="test-project", slot_id=1, success=False,
+            paused=True,
+            stages_completed=["implement", "review"],
+        ))
+
+        supervisor._reconcile_workers()
+
+        slot = sm.get_slot("test-project", 1)
+        assert slot.status == "paused_manual"
+        assert slot.stages_completed == ["implement", "review"]
+
+    def test_pause_upgrades_reason_from_usage_limit(self, supervisor):
+        """Manual pause upgrades dispatch_pause_reason from usage_limit."""
+        sm = supervisor.slot_manager
+        sm.set_dispatch_paused(True, "usage_limit")
+
+        supervisor.request_pause()
+        supervisor._handle_manual_pause_resume()
+
+        assert sm.dispatch_paused is True
+        assert sm.dispatch_pause_reason == "manual_pause"
+
+    def test_pause_events_cleaned_for_failed_workers(self, supervisor):
+        """_pause_events is cleaned up even when workers fail."""
+        import multiprocessing
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+
+        pause_evt = multiprocessing.Event()
+        supervisor._pause_events[("test-project", 1)] = pause_evt
+
+        supervisor._result_queue.put(_WorkerResult(
+            project="test-project", slot_id=1, success=False,
+            failure_stage="implement",
+            failure_reason="something went wrong",
+        ))
+
+        supervisor._reconcile_workers()
+
+        assert ("test-project", 1) not in supervisor._pause_events

@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 # Valid slot statuses
 SLOT_STATUSES = frozenset(
-    {"free", "busy", "paused_limit", "failed", "completed_pending_cleanup"}
+    {"free", "busy", "paused_limit", "paused_manual", "failed", "completed_pending_cleanup"}
 )
 
 
@@ -170,12 +170,17 @@ class SlotManager:
         """Return all slots paused due to rate limiting."""
         return [s for s in self._slots.values() if s.status == "paused_limit"]
 
+    def paused_manual_slots(self) -> list[SlotState]:
+        """Return all slots paused by a manual user-initiated pause."""
+        return [s for s in self._slots.values() if s.status == "paused_manual"]
+
     def active_ticket_ids(self) -> set[str]:
-        """Return the set of Linear issue IDs currently assigned to busy slots."""
+        """Return the set of Linear issue IDs currently assigned to busy/paused slots."""
         return {
             s.ticket_id
             for s in self._slots.values()
-            if s.status in ("busy", "paused_limit") and s.ticket_id is not None
+            if s.status in ("busy", "paused_limit", "paused_manual")
+            and s.ticket_id is not None
         }
 
     def all_slots(self) -> list[SlotState]:
@@ -261,6 +266,13 @@ class SlotManager:
         slot.pid = None
         self._save()
 
+    def mark_paused_manual(self, project: str, slot_id: int) -> None:
+        """Pause a slot due to a user-initiated manual pause."""
+        slot = self._require_slot(project, slot_id)
+        slot.status = "paused_manual"
+        slot.pid = None
+        self._save()
+
     def mark_completed(self, project: str, slot_id: int) -> None:
         """Mark a slot as completed, pending cleanup."""
         slot = self._require_slot(project, slot_id)
@@ -303,10 +315,10 @@ class SlotManager:
     def resume_slot(self, project: str, slot_id: int) -> None:
         """Resume a paused slot back to busy."""
         slot = self._require_slot(project, slot_id)
-        if slot.status != "paused_limit":
+        if slot.status not in ("paused_limit", "paused_manual"):
             raise SlotError(
                 f"Slot ({project}, {slot_id}) is '{slot.status}', "
-                "expected 'paused_limit'"
+                "expected 'paused_limit' or 'paused_manual'"
             )
         slot.status = "busy"
         slot.resume_after = None

@@ -1154,6 +1154,93 @@ class TestRunPipelineResume:
 
 
 # ---------------------------------------------------------------------------
+# Pipeline pause_event
+# ---------------------------------------------------------------------------
+
+
+PR_URL_PAUSE = "https://github.com/owner/repo/pull/42"
+
+
+class TestRunPipelinePauseEvent:
+    @patch("botfarm.worker._execute_stage")
+    def test_pause_event_stops_pipeline_between_stages(self, mock_exec, conn, task_id, tmp_path):
+        """When pause_event is set, pipeline exits with paused=True between stages."""
+        import multiprocessing as mp
+
+        pause_evt = mp.Event()
+
+        call_count = 0
+
+        def _side_effect(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            stage = args[0] if args else kwargs.get("stage", "implement")
+            # After implement completes, set the pause event
+            if call_count == 1:
+                pause_evt.set()
+            return _mock_stage_result(stage, pr_url=PR_URL_PAUSE if call_count == 1 else None)
+
+        mock_exec.side_effect = _side_effect
+
+        result = run_pipeline(
+            ticket_id="SMA-99",
+            task_id=task_id,
+            cwd=tmp_path,
+            conn=conn,
+            pause_event=pause_evt,
+        )
+        assert result.paused is True
+        assert result.success is False
+        assert "implement" in result.stages_completed
+        # Should have stopped before running review
+        assert call_count == 1
+
+    @patch("botfarm.worker._execute_stage")
+    def test_unset_pause_event_does_not_stop(self, mock_exec, conn, task_id, tmp_path):
+        """When pause_event exists but is NOT set, pipeline proceeds normally."""
+        import multiprocessing as mp
+
+        pause_evt = mp.Event()  # not set
+
+        mock_exec.side_effect = [
+            _mock_stage_result("implement", pr_url=PR_URL_PAUSE, cost=0.5, turns=10),
+            _mock_stage_result("review", review_approved=True),
+            _mock_stage_result("pr_checks"),
+            _mock_stage_result("merge"),
+        ]
+
+        result = run_pipeline(
+            ticket_id="SMA-99",
+            task_id=task_id,
+            cwd=tmp_path,
+            conn=conn,
+            pause_event=pause_evt,
+        )
+        assert result.success is True
+        assert result.paused is False
+
+    @patch("botfarm.worker._execute_stage")
+    def test_no_pause_event_pipeline_proceeds(self, mock_exec, conn, task_id, tmp_path):
+        """When pause_event is None, pipeline proceeds normally."""
+        mock_exec.side_effect = [
+            _mock_stage_result("implement", pr_url=PR_URL_PAUSE, cost=0.5, turns=10),
+            _mock_stage_result("review", review_approved=True),
+            _mock_stage_result("pr_checks"),
+            _mock_stage_result("merge"),
+        ]
+
+        result = run_pipeline(
+            ticket_id="SMA-99",
+            task_id=task_id,
+            cwd=tmp_path,
+            conn=conn,
+            pause_event=None,
+        )
+        assert result.success is True
+        assert result.paused is False
+
+
+# ---------------------------------------------------------------------------
 # _recover_pr_url
 # ---------------------------------------------------------------------------
 
@@ -1216,6 +1303,14 @@ class TestDataclasses:
         assert pr.total_cost_usd == 0.0
         assert pr.total_turns == 0
         assert pr.failure_stage is None
+        assert pr.paused is False
+
+    def test_pipeline_result_paused(self):
+        pr = PipelineResult(
+            ticket_id="SMA-1", success=False, stages_completed=["implement"],
+            paused=True,
+        )
+        assert pr.paused is True
 
     def test_stage_result_review_approved_default(self):
         sr = StageResult(stage="review", success=True)

@@ -22,6 +22,7 @@ import shutil
 import signal
 import sqlite3
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -57,6 +58,8 @@ class _WorkerResult:
     failure_stage: str | None = None
     failure_reason: str | None = None
     limit_hit: bool = False
+    paused: bool = False
+    stages_completed: list[str] | None = None
 
 
 def _worker_entry(
@@ -78,6 +81,7 @@ def _worker_entry(
     resume_session_id: str | None = None,
     placeholder_branch: str | None = None,
     slot_db_path: str | None = None,
+    pause_event: multiprocessing.Event | None = None,
 ) -> None:
     """Entry point for a worker subprocess.
 
@@ -123,8 +127,19 @@ def _worker_entry(
             resume_from_stage=resume_from_stage,
             resume_session_id=resume_session_id,
             slot_db_path=slot_db_path,
+            pause_event=pause_event,
         )
-        if result.success:
+        if result.paused:
+            result_queue.put(_WorkerResult(
+                project=project_name, slot_id=slot_id, success=False,
+                paused=True,
+                stages_completed=result.stages_completed,
+            ))
+            logger.info(
+                "Worker %s/%d paused by manual request for %s",
+                project_name, slot_id, ticket_id,
+            )
+        elif result.success:
             result_queue.put(_WorkerResult(
                 project=project_name, slot_id=slot_id, success=True,
             ))
@@ -265,6 +280,15 @@ class Supervisor:
 
         # Track child processes: (project, slot_id) -> Process
         self._workers: dict[tuple[str, int], multiprocessing.Process] = {}
+
+        # Per-worker pause events: (project, slot_id) -> Event
+        # Set by the supervisor to signal workers to stop after current stage
+        self._pause_events: dict[tuple[str, int], multiprocessing.Event] = {}
+
+        # Manual pause/resume signals (set by dashboard thread, read by supervisor)
+        self._manual_pause_event = threading.Event()
+        self._manual_resume_event = threading.Event()
+        self._manual_pause_requested = False
 
         # Queue for worker results — workers send _WorkerResult here
         self._result_queue: multiprocessing.Queue = multiprocessing.Queue()
@@ -543,6 +567,11 @@ class Supervisor:
         if not Path(slot_db).exists():
             slot_db = self._seed_slot_db(project_name, slot.slot_id)
 
+        # Create a pause event so recovered workers can respond to manual pause
+        pause_event = multiprocessing.Event()
+        key = (project_name, slot.slot_id)
+        self._pause_events[key] = pause_event
+
         proc = multiprocessing.Process(
             target=_worker_entry,
             kwargs={
@@ -563,11 +592,12 @@ class Supervisor:
                 "resume_session_id": slot.current_session_id,
                 "placeholder_branch": self._slot_placeholder_branch(slot.slot_id),
                 "slot_db_path": slot_db,
+                "pause_event": pause_event,
             },
             daemon=False,
         )
         proc.start()
-        self._workers[(project_name, slot.slot_id)] = proc
+        self._workers[key] = proc
         self._slot_manager.set_pid(project_name, slot.slot_id, proc.pid)
 
         logger.info(
@@ -786,6 +816,8 @@ class Supervisor:
                 db_path=self._db_path,
                 linear_workspace=self._config.linear.workspace,
                 botfarm_config=self._config,
+                on_pause=self.request_pause,
+                on_resume=self.request_resume,
             )
 
         # Initial usage poll so we have data before the first dispatch
@@ -809,6 +841,7 @@ class Supervisor:
 
         for phase in (
             self._reconcile_workers,
+            self._handle_manual_pause_resume,
             self._check_timeouts,
             self._handle_finished_slots,
             self._handle_paused_slots,
@@ -839,7 +872,19 @@ class Supervisor:
                 wr: _WorkerResult = self._result_queue.get(timeout=0.05)
             except queue_mod.Empty:
                 break
-            if wr.success:
+            if wr.paused:
+                # Sync stages_completed from the worker subprocess
+                if wr.stages_completed:
+                    for stage in wr.stages_completed:
+                        self._slot_manager.complete_stage(
+                            wr.project, wr.slot_id, stage,
+                        )
+                self._slot_manager.mark_paused_manual(wr.project, wr.slot_id)
+                logger.info(
+                    "Worker result: %s/%d paused by manual request",
+                    wr.project, wr.slot_id,
+                )
+            elif wr.success:
                 self._slot_manager.mark_completed(wr.project, wr.slot_id)
                 logger.info(
                     "Worker result: %s/%d completed", wr.project, wr.slot_id,
@@ -880,6 +925,8 @@ class Supervisor:
                         "Worker result: %s/%d failed — %s",
                         wr.project, wr.slot_id, reason,
                     )
+            # Clean up pause event for this worker regardless of outcome
+            self._pause_events.pop((wr.project, wr.slot_id), None)
 
         # Clean up any tracked processes that have exited
         finished = []
@@ -1483,6 +1530,11 @@ class Supervisor:
         if not Path(slot_db).exists():
             slot_db = self._seed_slot_db(project_name, slot.slot_id)
 
+        # Create a pause event for the resumed worker
+        pause_event = multiprocessing.Event()
+        key = (project_name, slot.slot_id)
+        self._pause_events[key] = pause_event
+
         # Spawn a new worker that resumes from the interrupted stage
         proc = multiprocessing.Process(
             target=_worker_entry,
@@ -1504,17 +1556,190 @@ class Supervisor:
                 "resume_session_id": slot.current_session_id,
                 "placeholder_branch": self._slot_placeholder_branch(slot.slot_id),
                 "slot_db_path": slot_db,
+                "pause_event": pause_event,
             },
             daemon=False,
         )
         proc.start()
-        self._workers[(project_name, slot.slot_id)] = proc
+        self._workers[key] = proc
         self._slot_manager.set_pid(project_name, slot.slot_id, proc.pid)
 
         logger.info(
             "Resumed worker PID %d for %s in slot %s/%d at stage %s",
             proc.pid, slot.ticket_id, project_name, slot.slot_id, slot.stage,
         )
+
+    # ------------------------------------------------------------------
+    # Manual pause / resume
+    # ------------------------------------------------------------------
+
+    def _handle_manual_pause_resume(self) -> None:
+        """Process manual pause/resume requests from the dashboard."""
+        # Handle resume first — if both are set, resume cancels the pause
+        if self._manual_resume_event.is_set():
+            self._manual_resume_event.clear()
+            self._manual_pause_event.clear()
+
+            if self._manual_pause_requested:
+                # Cancel in-flight pause: clear events so workers continue
+                for event in self._pause_events.values():
+                    event.clear()
+                self._manual_pause_requested = False
+
+            # Resume all manually-paused slots
+            for slot in self._slot_manager.paused_manual_slots():
+                self._resume_manual_paused_worker(slot)
+
+            # Clear dispatch pause if it was set for manual pause
+            if (
+                self._slot_manager.dispatch_paused
+                and self._slot_manager.dispatch_pause_reason == "manual_pause"
+            ):
+                logger.info("Manual resume: dispatch unpaused")
+                self._slot_manager.set_dispatch_paused(False)
+                insert_event(
+                    self._conn,
+                    event_type="manual_resumed",
+                )
+                self._conn.commit()
+            return
+
+        # Handle pause request
+        if self._manual_pause_event.is_set():
+            self._manual_pause_event.clear()
+            self._manual_pause_requested = True
+
+            # Stop new dispatches (or upgrade reason if already paused)
+            if not self._slot_manager.dispatch_paused:
+                logger.info("Manual pause requested — pausing dispatch")
+                self._slot_manager.set_dispatch_paused(True, "manual_pause")
+                insert_event(
+                    self._conn,
+                    event_type="manual_pause_requested",
+                )
+                self._conn.commit()
+            elif self._slot_manager.dispatch_pause_reason != "manual_pause":
+                logger.info(
+                    "Manual pause requested — upgrading dispatch pause "
+                    "reason from %s to manual_pause",
+                    self._slot_manager.dispatch_pause_reason,
+                )
+                self._slot_manager.set_dispatch_paused(True, "manual_pause")
+                insert_event(
+                    self._conn,
+                    event_type="manual_pause_requested",
+                )
+                self._conn.commit()
+
+        # If manual pause is in progress, signal busy workers to stop
+        if self._manual_pause_requested:
+            busy = self._slot_manager.busy_slots()
+            if not busy:
+                # All workers have finished — pause is complete
+                self._manual_pause_requested = False
+                logger.info("Manual pause complete — all workers idle")
+                insert_event(
+                    self._conn,
+                    event_type="manual_pause_complete",
+                )
+                self._conn.commit()
+            else:
+                # Signal busy workers to stop after current stage
+                for slot in busy:
+                    key = (slot.project, slot.slot_id)
+                    event = self._pause_events.get(key)
+                    if event is not None:
+                        event.set()
+
+    def _resume_manual_paused_worker(self, slot: SlotState) -> None:
+        """Resume a manually-paused slot by re-spawning its worker."""
+        project_name = slot.project
+        project_cfg = self._projects.get(project_name)
+        if not project_cfg:
+            logger.error("No project config for %s — cannot resume", project_name)
+            return
+
+        task_id = self._find_task_id(slot.ticket_id)
+
+        # Determine the next stage to resume from
+        resume_stage = self._next_stage_after(slot.stages_completed)
+        if resume_stage is None:
+            # All stages were completed — shouldn't be paused_manual
+            logger.warning(
+                "Slot %s/%d has all stages completed but is paused_manual — freeing",
+                project_name, slot.slot_id,
+            )
+            self._slot_manager.free_slot(project_name, slot.slot_id)
+            return
+
+        insert_event(
+            self._conn,
+            task_id=task_id,
+            event_type="manual_resumed",
+            detail=f"project={project_name}, slot={slot.slot_id}, "
+            f"resume_stage={resume_stage}",
+        )
+        self._conn.commit()
+
+        # Resume the slot back to busy
+        self._slot_manager.resume_slot(project_name, slot.slot_id)
+
+        cwd = self._slot_worktree_cwd(project_cfg, slot.slot_id)
+
+        # Create per-ticket log directory (may already exist)
+        ticket_log_dir = self._log_dir / slot.ticket_id
+        ticket_log_dir.mkdir(parents=True, exist_ok=True)
+
+        # Use the existing slot DB (seeded during initial dispatch)
+        slot_db = self._slot_db_path(project_name, slot.slot_id)
+        if not Path(slot_db).exists():
+            slot_db = self._seed_slot_db(project_name, slot.slot_id)
+
+        # Create a new pause event for the resumed worker
+        pause_event = multiprocessing.Event()
+        key = (project_name, slot.slot_id)
+        self._pause_events[key] = pause_event
+
+        proc = multiprocessing.Process(
+            target=_worker_entry,
+            kwargs={
+                "ticket_id": slot.ticket_id,
+                "ticket_title": slot.ticket_title or "",
+                "task_id": task_id or 0,
+                "project_name": project_name,
+                "slot_id": slot.slot_id,
+                "cwd": cwd,
+                "log_dir": str(ticket_log_dir),
+                "log_max_bytes": self._config.logging.max_bytes,
+                "log_backup_count": self._config.logging.backup_count,
+                "result_queue": self._result_queue,
+                "max_turns": None,
+                "max_review_iterations": self._config.agents.max_review_iterations,
+                "max_ci_retries": self._config.agents.max_ci_retries,
+                "resume_from_stage": resume_stage,
+                "resume_session_id": slot.current_session_id,
+                "placeholder_branch": self._slot_placeholder_branch(slot.slot_id),
+                "slot_db_path": slot_db,
+                "pause_event": pause_event,
+            },
+            daemon=False,
+        )
+        proc.start()
+        self._workers[key] = proc
+        self._slot_manager.set_pid(project_name, slot.slot_id, proc.pid)
+
+        logger.info(
+            "Resumed manually-paused worker PID %d for %s in slot %s/%d at stage %s",
+            proc.pid, slot.ticket_id, project_name, slot.slot_id, resume_stage,
+        )
+
+    def request_pause(self) -> None:
+        """Request a manual pause (thread-safe, called from dashboard)."""
+        self._manual_pause_event.set()
+
+    def request_resume(self) -> None:
+        """Request a manual resume (thread-safe, called from dashboard)."""
+        self._manual_resume_event.set()
 
     # ------------------------------------------------------------------
     # Usage polling
@@ -1552,7 +1777,10 @@ class Supervisor:
             return
 
         # Utilization is below thresholds — resume if previously paused
+        # (but don't override a manual pause)
         if self._slot_manager.dispatch_paused:
+            if self._slot_manager.dispatch_pause_reason == "manual_pause":
+                return  # Manual pause takes priority — don't auto-resume
             prev_reason = self._slot_manager.dispatch_pause_reason
             logger.info("Dispatch resumed — utilization dropped below thresholds")
             self._slot_manager.set_dispatch_paused(False)
@@ -1684,6 +1912,11 @@ class Supervisor:
         # schema migrations don't affect the production DB.
         slot_db = self._seed_slot_db(project_name, slot.slot_id)
 
+        # Create a pause event for this worker
+        pause_event = multiprocessing.Event()
+        key = (project_name, slot.slot_id)
+        self._pause_events[key] = pause_event
+
         # Spawn worker subprocess
         proc = multiprocessing.Process(
             target=_worker_entry,
@@ -1703,11 +1936,12 @@ class Supervisor:
                 "max_ci_retries": self._config.agents.max_ci_retries,
                 "placeholder_branch": self._slot_placeholder_branch(slot.slot_id),
                 "slot_db_path": slot_db,
+                "pause_event": pause_event,
             },
             daemon=False,  # Not daemon — survives supervisor exit
         )
         proc.start()
-        self._workers[(project_name, slot.slot_id)] = proc
+        self._workers[key] = proc
         self._slot_manager.set_pid(project_name, slot.slot_id, proc.pid)
 
         logger.info(

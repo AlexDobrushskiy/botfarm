@@ -2007,3 +2007,115 @@ class TestRelativeTimestamps:
         resp = client.get("/")
         body = resp.text
         assert "setInterval(updateTimeagos, 60000)" in body
+
+
+# ---------------------------------------------------------------------------
+# Manual pause / resume API
+# ---------------------------------------------------------------------------
+
+
+class TestManualPauseState:
+    def test_running_state(self, db_file):
+        """No manual pause → state is 'running'."""
+        app = create_app(db_path=db_file, on_pause=lambda: None, on_resume=lambda: None)
+        client = TestClient(app)
+        resp = client.get("/partials/supervisor-controls")
+        assert resp.status_code == 200
+        # Running state should show the Pause button
+        assert "Pause" in resp.text
+
+    def test_paused_state(self, tmp_path):
+        """When dispatch_paused=manual_pause and no busy slots → state is 'paused'."""
+        path = tmp_path / "test.db"
+        conn = init_db(path)
+        _seed_slot(conn, "proj", 1, status="paused_manual", ticket_id="T-1")
+        save_dispatch_state(conn, paused=True, reason="manual_pause")
+        conn.commit()
+        conn.close()
+
+        app = create_app(db_path=path, on_pause=lambda: None, on_resume=lambda: None)
+        client = TestClient(app)
+        resp = client.get("/partials/supervisor-controls")
+        assert resp.status_code == 200
+        assert "Resume" in resp.text
+
+    def test_pausing_state(self, tmp_path):
+        """When dispatch_paused=manual_pause and busy slots exist → pausing."""
+        path = tmp_path / "test.db"
+        conn = init_db(path)
+        _seed_slot(conn, "proj", 1, status="busy", ticket_id="T-1", pid=12345)
+        save_dispatch_state(conn, paused=True, reason="manual_pause")
+        conn.commit()
+        conn.close()
+
+        app = create_app(db_path=path, on_pause=lambda: None, on_resume=lambda: None)
+        client = TestClient(app)
+        resp = client.get("/partials/supervisor-controls")
+        assert resp.status_code == 200
+        assert "Pausing" in resp.text
+        assert "Cancel" in resp.text
+
+
+class TestPauseResumeAPI:
+    def test_pause_calls_callback(self, db_file):
+        """POST /api/pause calls the on_pause callback."""
+        called = []
+        app = create_app(
+            db_path=db_file,
+            on_pause=lambda: called.append("pause"),
+            on_resume=lambda: None,
+        )
+        client = TestClient(app)
+        resp = client.post("/api/pause")
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "ok"}
+        assert called == ["pause"]
+
+    def test_resume_calls_callback(self, db_file):
+        """POST /api/resume calls the on_resume callback."""
+        called = []
+        app = create_app(
+            db_path=db_file,
+            on_pause=lambda: None,
+            on_resume=lambda: called.append("resume"),
+        )
+        client = TestClient(app)
+        resp = client.post("/api/resume")
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "ok"}
+        assert called == ["resume"]
+
+    def test_pause_without_callback_returns_503(self, db_file):
+        """POST /api/pause returns 503 when no callback is registered."""
+        app = create_app(db_path=db_file)
+        client = TestClient(app)
+        resp = client.post("/api/pause")
+        assert resp.status_code == 503
+
+    def test_resume_without_callback_returns_503(self, db_file):
+        """POST /api/resume returns 503 when no callback is registered."""
+        app = create_app(db_path=db_file)
+        client = TestClient(app)
+        resp = client.post("/api/resume")
+        assert resp.status_code == 503
+
+
+class TestPausedManualSlotDisplay:
+    def test_paused_manual_shown_in_slots_table(self, tmp_path):
+        """A slot with status paused_manual should display correctly."""
+        path = tmp_path / "test.db"
+        conn = init_db(path)
+        _seed_slot(
+            conn, "proj", 1, status="paused_manual",
+            ticket_id="T-1", ticket_title="Test", branch="b1",
+            stages_completed=["implement"],
+        )
+        save_dispatch_state(conn, paused=True, reason="manual_pause")
+        conn.commit()
+        conn.close()
+
+        app = create_app(db_path=path)
+        client = TestClient(app)
+        resp = client.get("/partials/slots")
+        assert resp.status_code == 200
+        assert "paused manual" in resp.text

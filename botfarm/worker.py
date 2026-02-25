@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import multiprocessing
 import os
 import re
 import sqlite3
@@ -419,6 +420,7 @@ class PipelineResult:
     total_duration_seconds: float = 0.0
     failure_stage: str | None = None
     failure_reason: str | None = None
+    paused: bool = False
 
 
 def run_pipeline(
@@ -440,6 +442,7 @@ def run_pipeline(
     resume_from_stage: str | None = None,
     resume_session_id: str | None = None,  # TODO: wire through to run_claude --resume
     slot_db_path: str | Path | None = None,
+    pause_event: multiprocessing.Event | None = None,
 ) -> PipelineResult:
     """Execute the full implement→review→fix→pr_checks→merge pipeline.
 
@@ -533,6 +536,16 @@ def run_pipeline(
                 continue
         else:
             logger.info("Starting stage '%s' for %s", stage, ticket_id)
+
+        # Check for manual pause request between stages
+        if pause_event is not None and pause_event.is_set():
+            logger.info(
+                "Manual pause requested — exiting pipeline after stage '%s' for %s",
+                pipeline.stages_completed[-1] if pipeline.stages_completed else "(none)",
+                ticket_id,
+            )
+            pipeline.paused = True
+            return pipeline
 
         # ----- Review iteration loop -----
         if stage == "review":

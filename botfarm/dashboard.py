@@ -12,10 +12,11 @@ import logging
 import sqlite3
 import threading
 from datetime import datetime, timezone
+from collections.abc import Callable
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
 from botfarm.config import (
@@ -113,6 +114,8 @@ def create_app(
     linear_workspace: str = "",
     botfarm_config: BotfarmConfig | None = None,
     state_file: str | Path | None = None,
+    on_pause: Callable[[], None] | None = None,
+    on_resume: Callable[[], None] | None = None,
 ) -> FastAPI:
     """Create the FastAPI dashboard application.
 
@@ -128,6 +131,12 @@ def create_app(
     state_file:
         Deprecated. Ignored. Kept only for backward compatibility during
         the transition period.
+    on_pause:
+        Callback invoked when the user clicks Pause. Should be a callable
+        with no arguments (e.g. ``supervisor.request_pause``).
+    on_resume:
+        Callback invoked when the user clicks Resume. Should be a callable
+        with no arguments (e.g. ``supervisor.request_resume``).
     """
     app = FastAPI(title="Botfarm Dashboard", docs_url=None, redoc_url=None)
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
@@ -137,6 +146,8 @@ def create_app(
     app.state.linear_workspace = linear_workspace
     app.state.botfarm_config = botfarm_config
     app.state.restart_required = False
+    app.state.on_pause = on_pause
+    app.state.on_resume = on_resume
 
     # --- Helpers ---
 
@@ -293,6 +304,8 @@ def create_app(
             "elapsed": _elapsed,
             "linear_url": _linear_url,
             "supervisor": _supervisor_status(state),
+            "pause_state": _manual_pause_state(state),
+            "has_callbacks": app.state.on_pause is not None,
         })
 
     @app.get("/partials/slots", response_class=HTMLResponse)
@@ -725,6 +738,64 @@ def create_app(
             "supervisor": _supervisor_status(_read_state()),
         })
 
+    # --- Pause / Resume API ---
+
+    def _manual_pause_state(state: dict) -> str:
+        """Determine the manual pause UI state from current state.
+
+        Returns one of: "running", "pausing", "paused".
+        """
+        dispatch_paused = state.get("dispatch_paused", False)
+        pause_reason = state.get("dispatch_pause_reason")
+        if not dispatch_paused or pause_reason != "manual_pause":
+            # Check if any slots are paused_manual (already paused even if
+            # dispatch was resumed by usage threshold changes)
+            slots = state.get("slots", [])
+            has_manual_paused = any(s["status"] == "paused_manual" for s in slots)
+            if has_manual_paused:
+                return "paused"
+            return "running"
+        # Dispatch is paused for manual reason — check if workers are still busy
+        slots = state.get("slots", [])
+        has_busy = any(s["status"] == "busy" for s in slots)
+        if has_busy:
+            busy_count = sum(1 for s in slots if s["status"] == "busy")
+            return f"pausing:{busy_count}"
+        return "paused"
+
+    @app.post("/api/pause")
+    def api_pause():
+        cb = app.state.on_pause
+        if cb is None:
+            return JSONResponse(
+                {"error": "Pause not available (supervisor not connected)"},
+                status_code=503,
+            )
+        cb()
+        return JSONResponse({"status": "ok"})
+
+    @app.post("/api/resume")
+    def api_resume():
+        cb = app.state.on_resume
+        if cb is None:
+            return JSONResponse(
+                {"error": "Resume not available (supervisor not connected)"},
+                status_code=503,
+            )
+        cb()
+        return JSONResponse({"status": "ok"})
+
+    @app.get("/partials/supervisor-controls", response_class=HTMLResponse)
+    def partial_supervisor_controls(request: Request):
+        state = _read_state()
+        pause_state = _manual_pause_state(state)
+        return templates.TemplateResponse("partials/supervisor_controls.html", {
+            "request": request,
+            "pause_state": pause_state,
+            "supervisor": _supervisor_status(state),
+            "has_callbacks": app.state.on_pause is not None,
+        })
+
     # --- Read-only config view ---
 
     def _mask_secret(value: str) -> str:
@@ -961,6 +1032,8 @@ def start_dashboard(
     linear_workspace: str = "",
     botfarm_config: BotfarmConfig | None = None,
     state_file: str | Path | None = None,
+    on_pause: Callable[[], None] | None = None,
+    on_resume: Callable[[], None] | None = None,
 ) -> threading.Thread | None:
     """Start the dashboard server in a background daemon thread.
 
@@ -973,6 +1046,8 @@ def start_dashboard(
         db_path=db_path,
         linear_workspace=linear_workspace,
         botfarm_config=botfarm_config,
+        on_pause=on_pause,
+        on_resume=on_resume,
     )
 
     def _run():
