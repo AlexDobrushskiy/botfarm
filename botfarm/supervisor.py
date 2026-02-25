@@ -318,7 +318,9 @@ class Supervisor:
                 detail=f"slots_processed={recovered_count}",
             )
 
-        # Single commit for all recovery operations (sub-methods do not commit individually)
+        # Single commit for all recovery operations.
+        # Exception: _resume_recovered_worker commits early to record
+        # the recovery_resumed event before spawning.
         self._conn.commit()
 
     def _reattach_worker(self, slot: SlotState) -> None:
@@ -504,8 +506,9 @@ class Supervisor:
 
         # Set slot back to busy (it's still in "busy" status with a dead PID)
         slot.pid = None
-        slot.stage = resume_from_stage
-        self._slot_manager._save()
+        self._slot_manager.update_stage(
+            project_name, slot.slot_id, stage=resume_from_stage,
+        )
 
         cwd = self._slot_worktree_cwd(project_cfg, slot.slot_id)
 
