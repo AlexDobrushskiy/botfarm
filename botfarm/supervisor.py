@@ -290,6 +290,10 @@ class Supervisor:
         self._manual_resume_event = threading.Event()
         self._manual_pause_requested = False
 
+        # Update-and-restart signal (set by dashboard thread, read by supervisor)
+        self._update_event = threading.Event()
+        self._exit_code = 0
+
         # Queue for worker results — workers send _WorkerResult here
         self._result_queue: multiprocessing.Queue = multiprocessing.Queue()
 
@@ -771,8 +775,11 @@ class Supervisor:
     # Main loop
     # ------------------------------------------------------------------
 
-    def run(self) -> None:
-        """Run the supervisor main loop until shutdown is requested."""
+    def run(self) -> int:
+        """Run the supervisor main loop until shutdown is requested.
+
+        Returns an exit code. ``42`` means "restart after update".
+        """
         self._log_dir.mkdir(parents=True, exist_ok=True)
         self.install_signal_handlers()
 
@@ -818,6 +825,7 @@ class Supervisor:
                 botfarm_config=self._config,
                 on_pause=self.request_pause,
                 on_resume=self.request_resume,
+                on_update=self.request_update,
             )
 
         # Initial usage poll so we have data before the first dispatch
@@ -834,6 +842,8 @@ class Supervisor:
         finally:
             self._shutdown()
 
+        return self._exit_code
+
     def _tick(self) -> None:
         """One iteration of the supervisor loop."""
         # Merge worker-written stage updates from disk before any state writes
@@ -842,6 +852,7 @@ class Supervisor:
         for phase in (
             self._reconcile_workers,
             self._handle_manual_pause_resume,
+            self._handle_update_request,
             self._check_timeouts,
             self._handle_finished_slots,
             self._handle_paused_slots,
@@ -1735,6 +1746,79 @@ class Supervisor:
     def request_resume(self) -> None:
         """Request a manual resume (thread-safe, called from dashboard)."""
         self._manual_resume_event.set()
+
+    def request_update(self) -> None:
+        """Request an update-and-restart cycle (thread-safe, called from dashboard)."""
+        self._update_event.set()
+
+    def _handle_update_request(self) -> None:
+        """Check for update request and execute update-and-restart flow.
+
+        Flow: pause dispatch → wait for all workers to finish current stage
+        and become idle → git pull + pip install → exit with code 42.
+        """
+        if not self._update_event.is_set():
+            return
+
+        from botfarm.git_update import UPDATE_EXIT_CODE, pull_and_install
+
+        # Step 1: Pause dispatch if not already paused
+        if not self._slot_manager.dispatch_paused:
+            logger.info("Update requested — pausing dispatch for update")
+            self._slot_manager.set_dispatch_paused(True, "update_in_progress")
+            insert_event(
+                self._conn,
+                event_type="update_started",
+                detail="pausing workers for update",
+            )
+            self._conn.commit()
+
+        # Signal all active workers to pause after current stage
+        for key, proc in self._workers.items():
+            if proc.is_alive():
+                evt = self._pause_events.get(key)
+                if evt is not None:
+                    evt.set()
+
+        # Step 2: Check if all workers are idle
+        has_busy = any(
+            s.status in ("busy", "paused_manual")
+            for s in self._slot_manager.all_slots()
+        )
+        if has_busy:
+            return  # Wait for next tick
+
+        # Step 3: All workers idle — run update
+        logger.info("All workers idle — pulling latest code")
+        insert_event(
+            self._conn,
+            event_type="update_pulling",
+            detail="git pull origin main && pip install -e .",
+        )
+        self._conn.commit()
+
+        if not pull_and_install():
+            logger.error("Update failed — aborting restart")
+            insert_event(
+                self._conn,
+                event_type="update_failed",
+                detail="git pull or pip install failed",
+            )
+            self._conn.commit()
+            self._update_event.clear()
+            self._slot_manager.set_dispatch_paused(False)
+            return
+
+        # Step 4: Exit with special code for restart
+        logger.info("Update complete — exiting with code %d for restart", UPDATE_EXIT_CODE)
+        insert_event(
+            self._conn,
+            event_type="update_complete",
+            detail=f"exiting with code {UPDATE_EXIT_CODE}",
+        )
+        self._conn.commit()
+        self._exit_code = UPDATE_EXIT_CODE
+        self._shutdown_requested = True
 
     # ------------------------------------------------------------------
     # Usage polling
