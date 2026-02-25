@@ -83,7 +83,16 @@
     <tbody>
         {% for fr in metrics.failure_reasons %}
         <tr>
-            <td>{{ fr.reason }}</td>
+            <td class="failure-reason" title="{{ fr.reason }}">
+                {% if fr.reason|length > 120 %}
+                <details>
+                    <summary>{{ fr.reason[:120] }}…</summary>
+                    <pre class="failure-reason-full">{{ fr.reason }}</pre>
+                </details>
+                {% else %}
+                {{ fr.reason }}
+                {% endif %}
+            </td>
             <td>{{ fr.count }}</td>
         </tr>
         {% endfor %}
