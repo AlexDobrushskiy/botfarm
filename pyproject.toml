@@ -18,6 +18,9 @@ dependencies = [
     "jinja2",
 ]
 
+[tool.setuptools.package-data]
+botfarm = ["migrations/*.sql"]
+
 [project.scripts]
 botfarm = "botfarm.cli:main"
 

@@ -4,11 +4,33 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-SCHEMA_VERSION = 6
+MIGRATIONS_DIR = Path(__file__).parent / "migrations"
+
+
+def _discover_migrations() -> dict[int, Path]:
+    """Glob migration SQL files and return {version: path} sorted by version."""
+    migrations: dict[int, Path] = {}
+    for sql_file in sorted(MIGRATIONS_DIR.glob("*.sql")):
+        match = re.match(r"^(\d+)", sql_file.name)
+        if match:
+            migrations[int(match.group(1))] = sql_file
+    return dict(sorted(migrations.items()))
+
+
+def get_schema_version() -> int:
+    """Return the highest migration number found on disk."""
+    migrations = _discover_migrations()
+    if not migrations:
+        raise RuntimeError("No migration files found in %s" % MIGRATIONS_DIR)
+    return max(migrations.keys())
+
+
+SCHEMA_VERSION = get_schema_version()
 
 
 class SchemaVersionError(RuntimeError):
@@ -32,164 +54,25 @@ def resolve_db_path() -> Path:
         )
     return Path(db_path).expanduser()
 
-SCHEMA_SQL = """\
-CREATE TABLE IF NOT EXISTS tasks (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    ticket_id       TEXT NOT NULL UNIQUE,
-    title           TEXT NOT NULL,
-    project         TEXT NOT NULL,
-    slot            INTEGER NOT NULL,
-    status          TEXT NOT NULL DEFAULT 'pending',
-    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    started_at      TEXT,
-    completed_at    TEXT,
-    turns           INTEGER NOT NULL DEFAULT 0,
-    review_iterations INTEGER NOT NULL DEFAULT 0,
-    comments        TEXT NOT NULL DEFAULT '',
-    limit_interruptions INTEGER NOT NULL DEFAULT 0,
-    failure_reason  TEXT,
-    pr_url          TEXT,
-    pipeline_stage  TEXT,
-    review_state    TEXT
-);
-
-CREATE TABLE IF NOT EXISTS stage_runs (
-    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_id             INTEGER NOT NULL REFERENCES tasks(id),
-    stage               TEXT NOT NULL,
-    iteration           INTEGER NOT NULL DEFAULT 1,
-    session_id          TEXT,
-    turns               INTEGER NOT NULL DEFAULT 0,
-    duration_seconds    REAL,
-    exit_subtype        TEXT,
-    was_limit_restart   INTEGER NOT NULL DEFAULT 0,
-    created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-);
-
-CREATE TABLE IF NOT EXISTS usage_snapshots (
-    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-    utilization_5h      REAL,
-    utilization_7d      REAL,
-    resets_at           TEXT,
-    resets_at_7d        TEXT,
-    created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-);
-
-CREATE TABLE IF NOT EXISTS task_events (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_id     INTEGER REFERENCES tasks(id),
-    event_type  TEXT NOT NULL,
-    detail      TEXT,
-    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-);
-
-CREATE TABLE IF NOT EXISTS slots (
-    project             TEXT NOT NULL,
-    slot_id             INTEGER NOT NULL,
-    status              TEXT NOT NULL DEFAULT 'free',
-    ticket_id           TEXT,
-    ticket_title        TEXT,
-    branch              TEXT,
-    pr_url              TEXT,
-    stage               TEXT,
-    stage_iteration     INTEGER NOT NULL DEFAULT 0,
-    current_session_id  TEXT,
-    started_at          TEXT,
-    stage_started_at    TEXT,
-    sigterm_sent_at     TEXT,
-    pid                 INTEGER,
-    interrupted_by_limit INTEGER NOT NULL DEFAULT 0,
-    resume_after        TEXT,
-    stages_completed    TEXT,
-    updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    PRIMARY KEY(project, slot_id)
-);
-
-CREATE TABLE IF NOT EXISTS dispatch_state (
-    id              INTEGER PRIMARY KEY CHECK (id = 1),
-    paused          INTEGER NOT NULL DEFAULT 0,
-    pause_reason    TEXT,
-    supervisor_heartbeat TEXT,
-    updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-);
-
-CREATE INDEX IF NOT EXISTS idx_stage_runs_task_id ON stage_runs(task_id);
-CREATE INDEX IF NOT EXISTS idx_task_events_task_id ON task_events(task_id);
-CREATE INDEX IF NOT EXISTS idx_task_events_type ON task_events(event_type);
-CREATE INDEX IF NOT EXISTS idx_tasks_ticket_id ON tasks(ticket_id);
-CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
-"""
-
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
-def _migrate(conn: sqlite3.Connection, from_version: int) -> None:
-    """Run schema migrations from *from_version* up to SCHEMA_VERSION."""
-    if from_version < 2:
-        # v1→v2: add pr_url, pipeline_stage, review_state to tasks
-        existing = {
-            row[1]
-            for row in conn.execute("PRAGMA table_info(tasks)").fetchall()
-        }
-        for col in ("pr_url", "pipeline_stage", "review_state"):
-            if col not in existing:
-                conn.execute(f"ALTER TABLE tasks ADD COLUMN {col} TEXT")  # noqa: S608
-    if from_version < 3:
-        # v2→v3: add slots and dispatch_state tables for runtime state
-        conn.executescript("""
-            CREATE TABLE IF NOT EXISTS slots (
-                project             TEXT NOT NULL,
-                slot_id             INTEGER NOT NULL,
-                status              TEXT NOT NULL DEFAULT 'free',
-                ticket_id           TEXT,
-                ticket_title        TEXT,
-                branch              TEXT,
-                pr_url              TEXT,
-                stage               TEXT,
-                stage_iteration     INTEGER NOT NULL DEFAULT 0,
-                current_session_id  TEXT,
-                started_at          TEXT,
-                stage_started_at    TEXT,
-                sigterm_sent_at     TEXT,
-                pid                 INTEGER,
-                interrupted_by_limit INTEGER NOT NULL DEFAULT 0,
-                resume_after        TEXT,
-                stages_completed    TEXT,
-                updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-                PRIMARY KEY(project, slot_id)
-            );
-            CREATE TABLE IF NOT EXISTS dispatch_state (
-                id              INTEGER PRIMARY KEY CHECK (id = 1),
-                paused          INTEGER NOT NULL DEFAULT 0,
-                pause_reason    TEXT,
-                updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-            );
-        """)
-    if from_version < 4:
-        # v3→v4: add supervisor_heartbeat to dispatch_state
-        existing = {
-            row[1]
-            for row in conn.execute("PRAGMA table_info(dispatch_state)").fetchall()
-        }
-        if "supervisor_heartbeat" not in existing:
-            conn.execute("ALTER TABLE dispatch_state ADD COLUMN supervisor_heartbeat TEXT")
-    if from_version < 5:
-        # v4→v5: add resets_at_7d to usage_snapshots
-        existing = {
-            row[1]
-            for row in conn.execute("PRAGMA table_info(usage_snapshots)").fetchall()
-        }
-        if "resets_at_7d" not in existing:
-            conn.execute("ALTER TABLE usage_snapshots ADD COLUMN resets_at_7d TEXT")
-    if from_version < 6:
-        # v5→v6: drop cost_usd columns (always $0.00 on Max subscription)
-        for table in ("tasks", "stage_runs"):
-            cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
-            if "cost_usd" in cols:
-                conn.execute(f"ALTER TABLE {table} DROP COLUMN cost_usd")  # noqa: S608
-    conn.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION,))
+def _run_migrations(conn: sqlite3.Connection, from_version: int) -> None:
+    """Run migration SQL files from *from_version* up to SCHEMA_VERSION.
+
+    Each migration is executed and committed individually so that a crash
+    mid-upgrade leaves the database at the last successful migration.
+    """
+    migrations = _discover_migrations()
+    for version, sql_path in migrations.items():
+        if version <= from_version:
+            continue
+        sql = sql_path.read_text()
+        conn.executescript(sql)
+        conn.execute("UPDATE schema_version SET version = ?", (version,))
+        conn.commit()
 
 
 def init_db(
@@ -219,15 +102,17 @@ def init_db(
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
-    conn.executescript(SCHEMA_SQL)
-    # executescript() implicitly commits and can reset pragmas — re-apply FK enforcement
-    conn.execute("PRAGMA foreign_keys=ON")
+
     conn.execute(
         "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)"
     )
     row = conn.execute("SELECT version FROM schema_version").fetchone()
+
     if row is None:
-        conn.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
+        # Fresh database — run all migrations from scratch
+        conn.execute("INSERT INTO schema_version (version) VALUES (0)")
+        conn.commit()
+        _run_migrations(conn, 0)
     elif row[0] < SCHEMA_VERSION:
         if not allow_migration:
             raise SchemaVersionError(
@@ -235,12 +120,15 @@ def init_db(
                 f"({SCHEMA_VERSION}). Run `botfarm run` "
                 f"(the supervisor will migrate automatically)."
             )
-        _migrate(conn, row[0])
+        _run_migrations(conn, row[0])
     elif row[0] > SCHEMA_VERSION:
         raise SchemaVersionError(
             f"Database schema version mismatch: expected {SCHEMA_VERSION}, got {row[0]}. "
             "Cannot downgrade."
         )
+
+    # executescript() implicitly commits and can reset pragmas — re-apply
+    conn.execute("PRAGMA foreign_keys=ON")
     conn.commit()
     return conn
 

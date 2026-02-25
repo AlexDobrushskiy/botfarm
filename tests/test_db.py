@@ -9,9 +9,11 @@ import pytest
 from botfarm.db import (
     SCHEMA_VERSION,
     SchemaVersionError,
+    _discover_migrations,
     count_tasks,
     get_distinct_projects,
     get_events,
+    get_schema_version,
     get_stage_runs,
     get_task,
     get_task_by_ticket,
@@ -542,6 +544,74 @@ class TestInitDb:
         assert task[1] == 0
 
         c2.close()
+
+
+# ---------------------------------------------------------------------------
+# Migration infrastructure
+# ---------------------------------------------------------------------------
+
+
+class TestMigrationInfrastructure:
+    def test_discover_migrations(self):
+        """All 6 SQL migration files are discovered with correct numbering."""
+        migrations = _discover_migrations()
+        assert len(migrations) >= 6
+        for version in range(1, 7):
+            assert version in migrations
+            assert migrations[version].suffix == ".sql"
+
+    def test_migration_numbers_contiguous(self):
+        """Migration numbers form a contiguous sequence with no gaps."""
+        migrations = _discover_migrations()
+        versions = sorted(migrations.keys())
+        expected = list(range(versions[0], versions[-1] + 1))
+        assert versions == expected
+
+    def test_schema_version_matches_highest_migration(self):
+        """SCHEMA_VERSION equals the highest migration file number."""
+        migrations = _discover_migrations()
+        assert SCHEMA_VERSION == max(migrations.keys())
+        assert SCHEMA_VERSION == get_schema_version()
+
+    def test_fresh_db_runs_all_migrations(self, tmp_path):
+        """A fresh database reaches SCHEMA_VERSION with all tables and cost_usd dropped."""
+        db_file = tmp_path / "fresh.db"
+        c = init_db(db_file, allow_migration=True)
+
+        # Version should be current
+        row = c.execute("SELECT version FROM schema_version").fetchone()
+        assert row[0] == SCHEMA_VERSION
+
+        # All tables should exist
+        tables = {
+            r[0]
+            for r in c.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        assert tables >= {
+            "tasks", "stage_runs", "usage_snapshots", "task_events",
+            "schema_version", "slots", "dispatch_state",
+        }
+
+        # cost_usd columns should NOT exist (dropped by migration 006)
+        task_cols = {r[1] for r in c.execute("PRAGMA table_info(tasks)").fetchall()}
+        assert "cost_usd" not in task_cols
+        stage_cols = {r[1] for r in c.execute("PRAGMA table_info(stage_runs)").fetchall()}
+        assert "cost_usd" not in stage_cols
+
+        # Columns added in later migrations should exist
+        assert "pr_url" in task_cols
+        assert "pipeline_stage" in task_cols
+        assert "review_state" in task_cols
+
+        snap_cols = {r[1] for r in c.execute("PRAGMA table_info(usage_snapshots)").fetchall()}
+        assert "resets_at_7d" in snap_cols
+
+        dispatch_cols = {r[1] for r in c.execute("PRAGMA table_info(dispatch_state)").fetchall()}
+        assert "supervisor_heartbeat" in dispatch_cols
+
+        c.close()
 
 
 # ---------------------------------------------------------------------------

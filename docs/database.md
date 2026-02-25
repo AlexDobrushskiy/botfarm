@@ -169,13 +169,38 @@ The worker runs tickets through these stages in order:
 
 Stages are defined in `worker.py:STAGES`.
 
-## Migration History
+## Migrations
 
-| Version | Change |
-|---------|--------|
-| 1 | Initial schema (tasks, stage_runs, usage_snapshots, task_events) |
-| 2 | Add `pr_url`, `pipeline_stage`, `review_state` to tasks |
-| 3 | Add `slots` and `dispatch_state` tables |
-| 4 | Add `supervisor_heartbeat` to dispatch_state |
-| 5 | Add `resets_at_7d` to usage_snapshots |
-| 6 | Drop `cost_usd` from tasks and stage_runs (always $0.00 on Max subscription) |
+Migrations live as numbered `.sql` files in `botfarm/migrations/`:
+
+```
+botfarm/migrations/
+  001_initial_schema.sql
+  002_add_pr_columns.sql
+  003_add_slots_and_dispatch.sql
+  004_add_supervisor_heartbeat.sql
+  005_add_resets_at_7d.sql
+  006_drop_cost_usd.sql
+```
+
+Each file is executed exactly once, in order, with a commit after each step. The `schema_version` table tracks the last successfully applied migration. Fresh databases run all migrations sequentially; existing databases skip already-applied migrations.
+
+`SCHEMA_VERSION` is computed dynamically from the highest migration file number via `get_schema_version()`.
+
+### Adding a new migration
+
+1. Create `botfarm/migrations/NNN_description.sql` where `NNN` is the next number (zero-padded to 3 digits).
+2. Write the SQL statements (no `IF NOT EXISTS` guards needed — each migration runs exactly once).
+3. Run `python -m pytest tests/test_db.py -v` to verify the migration chain.
+4. `SCHEMA_VERSION` updates automatically — no code changes needed in `db.py`.
+
+### Migration history
+
+| Version | File | Change |
+|---------|------|--------|
+| 1 | `001_initial_schema.sql` | Initial schema (tasks, stage_runs, usage_snapshots, task_events) |
+| 2 | `002_add_pr_columns.sql` | Add `pr_url`, `pipeline_stage`, `review_state` to tasks |
+| 3 | `003_add_slots_and_dispatch.sql` | Add `slots` and `dispatch_state` tables |
+| 4 | `004_add_supervisor_heartbeat.sql` | Add `supervisor_heartbeat` to dispatch_state |
+| 5 | `005_add_resets_at_7d.sql` | Add `resets_at_7d` to usage_snapshots |
+| 6 | `006_drop_cost_usd.sql` | Drop `cost_usd` from tasks and stage_runs (always $0.00 on Max subscription) |

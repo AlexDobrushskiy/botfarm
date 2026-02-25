@@ -9,7 +9,6 @@ from click.testing import CliRunner
 
 from botfarm.cli import _elapsed, main
 from botfarm.db import (
-    SCHEMA_SQL,
     init_db,
     insert_task,
     insert_usage_snapshot,
