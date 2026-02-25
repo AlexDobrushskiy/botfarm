@@ -1834,9 +1834,13 @@ class TestSupervisorBadge:
         assert "Supervisor Running" in resp.text
 
     def test_index_shows_stopped_with_stale_heartbeat(self, tmp_path):
-        """A heartbeat older than 30s should show Stopped."""
+        """A heartbeat older than poll_interval + grace should show Stopped.
+
+        The default poll_interval is 120s and grace is 60s, so a heartbeat
+        older than 180s should be considered stale.
+        """
         from datetime import datetime, timedelta, timezone
-        stale = datetime.now(timezone.utc) - timedelta(seconds=60)
+        stale = datetime.now(timezone.utc) - timedelta(seconds=200)
         db_path = tmp_path / "stale_hb.db"
         conn = init_db(db_path)
         _seed_slot(conn, "my-project", 1, status="free")
@@ -1851,6 +1855,29 @@ class TestSupervisorBadge:
         resp = client.get("/")
         assert resp.status_code == 200
         assert "Supervisor Stopped" in resp.text
+
+    def test_index_shows_running_during_poll_sleep(self, tmp_path):
+        """A heartbeat within the poll interval should show Running.
+
+        With default poll_interval=120s, a heartbeat 60s old is well
+        within the expected range and must NOT show Stopped.
+        """
+        from datetime import datetime, timedelta, timezone
+        recent = datetime.now(timezone.utc) - timedelta(seconds=60)
+        db_path = tmp_path / "poll_sleep.db"
+        conn = init_db(db_path)
+        _seed_slot(conn, "my-project", 1, status="free")
+        save_dispatch_state(
+            conn, paused=False,
+            supervisor_heartbeat=recent.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+        )
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=db_path)
+        client = TestClient(app)
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert "Supervisor Running" in resp.text
 
     def test_slots_partial_includes_oob_badge(self, tmp_path):
         """The /partials/slots response should include hx-swap-oob badge."""

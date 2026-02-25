@@ -268,10 +268,17 @@ def create_app(
             return f"https://linear.app/{ws}/issue/{ticket_id}"
         return f"https://linear.app/issue/{ticket_id}"
 
-    HEARTBEAT_STALE_SECONDS = 30
+    # Extra grace period on top of poll_interval_seconds before considering
+    # the supervisor heartbeat stale.  The heartbeat is written once per tick,
+    # then the supervisor sleeps for poll_interval_seconds.  The buffer
+    # accounts for tick execution time and minor scheduling jitter.
+    _HEARTBEAT_GRACE_SECONDS = 60
 
     def _supervisor_status(state: dict) -> dict:
         """Compute supervisor liveness from the heartbeat field.
+
+        The staleness threshold is ``poll_interval_seconds + grace`` so that
+        the badge stays green during the normal sleep between ticks.
 
         Returns a dict with 'running' (bool) and 'heartbeat' (ISO str or None).
         """
@@ -279,9 +286,13 @@ def create_app(
         if not heartbeat:
             return {"running": False, "heartbeat": None}
         try:
+            cfg = app.state.botfarm_config
+            poll_interval = cfg.linear.poll_interval_seconds if cfg else 120
+            stale_threshold = poll_interval + _HEARTBEAT_GRACE_SECONDS
+
             hb_dt = datetime.fromisoformat(heartbeat.replace("Z", "+00:00"))
             age = (datetime.now(timezone.utc) - hb_dt).total_seconds()
-            return {"running": age <= HEARTBEAT_STALE_SECONDS, "heartbeat": heartbeat}
+            return {"running": age <= stale_threshold, "heartbeat": heartbeat}
         except (ValueError, TypeError):
             return {"running": False, "heartbeat": None}
 
