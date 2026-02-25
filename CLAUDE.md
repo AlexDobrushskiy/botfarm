@@ -3,7 +3,7 @@
 ## Project Context
 - Botfarm: autonomous Linear ticket dispatcher for Claude Code agents
 - Pure Python CLI project — optional web dashboard, no run.sh/stop.sh
-- Database schema has versioned migrations in `db.py` (current: v2)
+- Database schema has versioned migrations in `db.py` (current: v5)
 - This CLAUDE.md primarily covers the implementer workflow. Reviewer and review-addresser agents receive instructions via prompt.
 
 ## Architecture
@@ -22,13 +22,26 @@ Modules under `botfarm/`:
 
 Docs under `docs/`:
 - `configuration.md` — Full config reference with examples
+- `runtime-files.md` — `~/.botfarm/` directory layout, logs, and temporary files
+- `database.md` — SQLite schema, tables, event types, migration history
 - `philosophy.md` — Project design principles and trade-offs
+- `improvements.md` — Planned improvements and ideas
+- `competitors.md` — Competitor analysis
 
 Key patterns:
 - Workers run as subprocesses; communicate results via `multiprocessing.Queue`
-- All state persists to `state.json` after every mutation — supervisor survives crashes
+- All state persists to SQLite (`~/.botfarm/botfarm.db`) after every mutation — supervisor survives crashes
 - Usage limits pause slots mid-pipeline and resume from interrupted stage
 - Claude invoked via `claude -p --output-format json` subprocess
+
+## Runtime Files
+All runtime data lives under `~/.botfarm/` (see `docs/runtime-files.md` for full details):
+- `config.yaml` / `.env` — configuration and environment variables
+- `botfarm.db` — SQLite database (slots, tasks, stage runs, events, usage snapshots)
+- `logs/supervisor.log` — main supervisor log (rotated)
+- `logs/<TICKET-ID>/worker.log` — per-ticket worker log
+- `logs/<TICKET-ID>/<stage>[-iter<N>]-<timestamp>.log` — per-stage Claude subprocess output
+- `slots/<project>-<slot_id>/` — temporary sandboxed DB copies (auto-cleaned)
 
 ## Workflow: Linear Tickets
 When working on a Linear ticket:
