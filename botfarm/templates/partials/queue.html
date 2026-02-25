@@ -1,30 +1,39 @@
 {% if queue and queue.projects %}
+{% set priority_labels = {0: "None", 1: "Urgent", 2: "High", 3: "Normal", 4: "Low"} %}
+{% for proj in queue.projects %}
 <figure>
-<table>
-    <thead>
-        <tr>
-            <th>Project</th>
-            <th>Todo Tickets</th>
-            <th>Next Ticket</th>
-        </tr>
-    </thead>
-    <tbody>
-        {% for proj in queue.projects %}
-        <tr>
-            <td>{{ proj.name }}</td>
-            <td>{{ proj.todo_count }}</td>
-            <td>
-                {% if proj.next_ticket_id %}
-                    <a href="{{ linear_url(proj.next_ticket_id) }}" target="_blank" rel="noopener">{{ proj.next_ticket_id }}</a>{% if proj.next_ticket_title %} — {{ proj.next_ticket_title }}{% endif %}
-                {% else %}
-                    -
-                {% endif %}
-            </td>
-        </tr>
-        {% endfor %}
-    </tbody>
-</table>
+    <figcaption>
+        <strong>{{ proj.name }}</strong>
+        {% if proj.snapshot_at %}
+        <small class="text-muted"> — Last polled: <span class="timeago" data-ts="{{ proj.snapshot_at }}">{{ elapsed(proj.snapshot_at) }}</span> ago</small>
+        {% endif %}
+    </figcaption>
+    {% if proj.entries %}
+    <table>
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>Ticket</th>
+                <th>Title</th>
+                <th>Priority</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for entry in proj.entries %}
+            <tr{% if entry.position == 0 %} style="font-weight: 600;"{% endif %}>
+                <td>{% if entry.position == 0 %}<mark>Next</mark>{% else %}{{ entry.position + 1 }}{% endif %}</td>
+                <td><a href="{{ linear_url(entry.ticket_id) }}" target="_blank" rel="noopener">{{ entry.ticket_id }}</a></td>
+                <td>{{ entry.ticket_title }}</td>
+                <td>{{ priority_labels.get(entry.priority, "Normal") }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>No tickets in queue.</p>
+    {% endif %}
 </figure>
+{% endfor %}
 {% else %}
 <p>No work available — queue is empty or supervisor is not running.</p>
 {% endif %}

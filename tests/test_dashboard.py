@@ -30,7 +30,17 @@ from botfarm.db import (
     save_dispatch_state,
     load_all_slots,
     load_dispatch_state,
+    save_queue_entries,
 )
+
+
+def _seed_queue_entry(conn, project, position, ticket_id, ticket_title, priority=3, url="", snapshot_at="2026-02-25T12:00:00+00:00"):
+    """Helper to seed a queue entry row in the DB."""
+    conn.execute(
+        "INSERT INTO queue_entries (project, position, ticket_id, ticket_title, priority, sort_order, url, snapshot_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (project, position, ticket_id, ticket_title, priority, 0.0, url or f"https://linear.app/issue/{ticket_id}", snapshot_at),
+    )
+    conn.commit()
 
 
 def _seed_slot(conn, project, slot_id, status="free", **overrides):
@@ -301,6 +311,111 @@ class TestPartialQueue:
         resp = client.get("/partials/queue")
         assert resp.status_code == 200
         assert "No work available" in resp.text
+
+    def test_queue_displays_entries(self, tmp_path):
+        """Queue entries from DB should render per-project tables."""
+        db_path = tmp_path / "q.db"
+        conn = init_db(db_path)
+        _seed_queue_entry(conn, "alpha", 0, "ALP-1", "First ticket", priority=1)
+        _seed_queue_entry(conn, "alpha", 1, "ALP-2", "Second ticket", priority=3)
+        conn.close()
+        app = create_app(db_path=db_path)
+        c = TestClient(app)
+        resp = c.get("/partials/queue")
+        assert resp.status_code == 200
+        body = resp.text
+        assert "alpha" in body
+        assert "ALP-1" in body
+        assert "ALP-2" in body
+        assert "First ticket" in body
+        assert "Second ticket" in body
+
+    def test_queue_next_up_highlighted(self, tmp_path):
+        """Position 0 should show 'Next' marker."""
+        db_path = tmp_path / "q.db"
+        conn = init_db(db_path)
+        _seed_queue_entry(conn, "proj", 0, "P-1", "Top ticket")
+        _seed_queue_entry(conn, "proj", 1, "P-2", "Other ticket")
+        conn.close()
+        app = create_app(db_path=db_path)
+        c = TestClient(app)
+        resp = c.get("/partials/queue")
+        body = resp.text
+        assert "<mark>Next</mark>" in body
+
+    def test_queue_priority_labels(self, tmp_path):
+        """Priority integers should render as text labels."""
+        db_path = tmp_path / "q.db"
+        conn = init_db(db_path)
+        _seed_queue_entry(conn, "proj", 0, "P-1", "Urgent task", priority=1)
+        _seed_queue_entry(conn, "proj", 1, "P-2", "High task", priority=2)
+        _seed_queue_entry(conn, "proj", 2, "P-3", "Low task", priority=4)
+        conn.close()
+        app = create_app(db_path=db_path)
+        c = TestClient(app)
+        resp = c.get("/partials/queue")
+        body = resp.text
+        assert "Urgent" in body
+        assert "High" in body
+        assert "Low" in body
+
+    def test_queue_multiple_projects(self, tmp_path):
+        """Multiple projects should each get their own section."""
+        db_path = tmp_path / "q.db"
+        conn = init_db(db_path)
+        _seed_queue_entry(conn, "alpha", 0, "A-1", "Alpha task")
+        _seed_queue_entry(conn, "beta", 0, "B-1", "Beta task")
+        conn.close()
+        app = create_app(db_path=db_path)
+        c = TestClient(app)
+        resp = c.get("/partials/queue")
+        body = resp.text
+        assert "alpha" in body
+        assert "beta" in body
+        assert "A-1" in body
+        assert "B-1" in body
+
+    def test_queue_ticket_links(self, tmp_path):
+        """Ticket IDs should be linked to Linear."""
+        db_path = tmp_path / "q.db"
+        conn = init_db(db_path)
+        _seed_queue_entry(conn, "proj", 0, "TST-99", "Linked ticket")
+        conn.close()
+        app = create_app(db_path=db_path, linear_workspace="myws")
+        c = TestClient(app)
+        resp = c.get("/partials/queue")
+        body = resp.text
+        assert "https://linear.app/myws/issue/TST-99" in body
+
+    def test_queue_empty_project_from_config(self, tmp_path):
+        """Configured projects with no queue entries should show empty state."""
+        db_path = tmp_path / "q.db"
+        conn = init_db(db_path)
+        _seed_queue_entry(conn, "alpha", 0, "A-1", "Alpha task")
+        conn.close()
+        cfg = BotfarmConfig(projects=[
+            ProjectConfig(name="alpha", linear_team="T", base_dir="/tmp", worktree_prefix="w", slots=[1]),
+            ProjectConfig(name="beta", linear_team="T", base_dir="/tmp", worktree_prefix="w", slots=[2]),
+        ])
+        app = create_app(db_path=db_path, botfarm_config=cfg)
+        c = TestClient(app)
+        resp = c.get("/partials/queue")
+        body = resp.text
+        assert "alpha" in body
+        assert "beta" in body
+        assert "No tickets in queue" in body
+
+    def test_queue_snapshot_timestamp(self, tmp_path):
+        """Snapshot timestamp should appear as 'Last polled' text."""
+        db_path = tmp_path / "q.db"
+        conn = init_db(db_path)
+        _seed_queue_entry(conn, "proj", 0, "P-1", "Task", snapshot_at="2026-02-25T12:00:00+00:00")
+        conn.close()
+        app = create_app(db_path=db_path)
+        c = TestClient(app)
+        resp = c.get("/partials/queue")
+        body = resp.text
+        assert "Last polled:" in body
 
 
 # --- Slot Panel enhancements ---

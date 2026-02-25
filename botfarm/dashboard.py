@@ -12,6 +12,7 @@ import logging
 import sqlite3
 import threading
 from datetime import datetime, timezone
+from itertools import groupby
 from collections.abc import Callable
 from pathlib import Path
 
@@ -212,6 +213,46 @@ def create_app(
                 }
                 last_usage_check = usage_row["created_at"]
 
+            # Read queue entries grouped by project
+            queue_rows = conn.execute(
+                "SELECT project, position, ticket_id, ticket_title, priority, url, snapshot_at "
+                "FROM queue_entries ORDER BY project, position"
+            ).fetchall()
+
+            projects_queue = []
+            for project_name, rows in groupby(queue_rows, key=lambda r: r["project"]):
+                entries = list(rows)
+                projects_queue.append({
+                    "name": project_name,
+                    "todo_count": len(entries),
+                    "snapshot_at": entries[0]["snapshot_at"] if entries else None,
+                    "entries": [
+                        {
+                            "position": r["position"],
+                            "ticket_id": r["ticket_id"],
+                            "ticket_title": r["ticket_title"],
+                            "priority": r["priority"],
+                            "url": r["url"],
+                        }
+                        for r in entries
+                    ],
+                })
+
+            # Include configured projects with zero queue entries
+            cfg = app.state.botfarm_config
+            if cfg:
+                existing_names = {p["name"] for p in projects_queue}
+                for proj_cfg in cfg.projects:
+                    if proj_cfg.name not in existing_names:
+                        projects_queue.append({
+                            "name": proj_cfg.name,
+                            "todo_count": 0,
+                            "snapshot_at": None,
+                            "entries": [],
+                        })
+                # Sort so configured projects appear in stable order
+                projects_queue.sort(key=lambda p: p["name"])
+
             return {
                 "slots": slots,
                 "dispatch_paused": paused,
@@ -219,6 +260,7 @@ def create_app(
                 "supervisor_heartbeat": heartbeat,
                 "usage": usage,
                 "last_usage_check": last_usage_check,
+                "queue": {"projects": projects_queue} if projects_queue else None,
             }
         except sqlite3.OperationalError:
             return {}
@@ -440,6 +482,7 @@ def create_app(
             "request": request,
             "queue": queue,
             "linear_url": _linear_url,
+            "elapsed": _elapsed,
         })
 
     def _enrich_tasks(tasks: list[dict]) -> list[dict]:
