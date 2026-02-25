@@ -550,40 +550,53 @@ class TestRunMerge:
             args=["gh"], returncode=0, stdout="Merged", stderr=""
         )
         _run_merge(PR_URL, cwd=tmp_path)
-        call_args = mock_run.call_args[0][0]
-        assert "--delete-branch" not in call_args
+        # Second call is gh pr merge (first is git rev-parse)
+        merge_call_args = mock_run.call_args_list[1][0][0]
+        assert "--delete-branch" not in merge_call_args
 
     @patch("botfarm.worker.subprocess.run")
     def test_merge_deletes_local_feature_branch(self, mock_run, tmp_path):
         """After merge and checkout, the local feature branch is deleted."""
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout="ok", stderr=""
-        )
-        _run_merge(
-            PR_URL, cwd=tmp_path,
-            placeholder_branch="slot-1-placeholder",
-            feature_branch="feat/my-feature",
-        )
-        # 3 calls: gh pr merge, git checkout, git branch -D
-        assert mock_run.call_count == 3
-        delete_call = mock_run.call_args_list[2][0][0]
+        def side_effect(cmd, **kwargs):
+            if cmd[:2] == ["git", "rev-parse"]:
+                return subprocess.CompletedProcess(
+                    args=cmd, returncode=0, stdout="feat/my-feature\n", stderr=""
+                )
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout="ok", stderr=""
+            )
+        mock_run.side_effect = side_effect
+        _run_merge(PR_URL, cwd=tmp_path, placeholder_branch="slot-1-placeholder")
+        # 4 calls: git rev-parse, gh pr merge, git checkout, git branch -D
+        assert mock_run.call_count == 4
+        delete_call = mock_run.call_args_list[3][0][0]
         assert delete_call == ["git", "branch", "-D", "feat/my-feature"]
 
     @patch("botfarm.worker.subprocess.run")
-    def test_merge_skips_branch_delete_when_no_feature_branch(self, mock_run, tmp_path):
-        """When feature_branch is None, no branch deletion is attempted."""
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout="ok", stderr=""
-        )
+    def test_merge_skips_branch_delete_when_rev_parse_fails(self, mock_run, tmp_path):
+        """When current branch cannot be determined, no branch deletion is attempted."""
+        def side_effect(cmd, **kwargs):
+            if cmd[:2] == ["git", "rev-parse"]:
+                return subprocess.CompletedProcess(
+                    args=cmd, returncode=1, stdout="", stderr="not a git repo"
+                )
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout="ok", stderr=""
+            )
+        mock_run.side_effect = side_effect
         result = _run_merge(PR_URL, cwd=tmp_path, placeholder_branch="slot-1-placeholder")
         assert result.success is True
-        # Only 2 calls: gh pr merge and git checkout (no branch -D)
-        assert mock_run.call_count == 2
+        # 3 calls: git rev-parse (fail), gh pr merge, git checkout (no branch -D)
+        assert mock_run.call_count == 3
 
     @patch("botfarm.worker.subprocess.run")
     def test_merge_branch_delete_failure_does_not_block_pipeline(self, mock_run, tmp_path):
         """Branch deletion failure logs a warning but returns success."""
         def side_effect(cmd, **kwargs):
+            if cmd[:2] == ["git", "rev-parse"]:
+                return subprocess.CompletedProcess(
+                    args=cmd, returncode=0, stdout="feat/my-feature\n", stderr=""
+                )
             if cmd[0] == "git" and "branch" in cmd and "-D" in cmd:
                 return subprocess.CompletedProcess(
                     args=cmd, returncode=1, stdout="", stderr="error: branch not found"
@@ -595,23 +608,24 @@ class TestRunMerge:
         result = _run_merge(
             PR_URL, cwd=tmp_path,
             placeholder_branch="slot-1-placeholder",
-            feature_branch="feat/my-feature",
         )
         assert result.success is True
 
     @patch("botfarm.worker.subprocess.run")
     def test_merge_refuses_to_delete_protected_branch(self, mock_run, tmp_path):
         """Protected branches (main, slot-*-placeholder) must never be deleted."""
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout="ok", stderr=""
-        )
-        _run_merge(
-            PR_URL, cwd=tmp_path,
-            placeholder_branch="slot-1-placeholder",
-            feature_branch="main",
-        )
-        # Only 2 calls: gh pr merge and git checkout (no branch -D for protected)
-        assert mock_run.call_count == 2
+        def side_effect(cmd, **kwargs):
+            if cmd[:2] == ["git", "rev-parse"]:
+                return subprocess.CompletedProcess(
+                    args=cmd, returncode=0, stdout="main\n", stderr=""
+                )
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout="ok", stderr=""
+            )
+        mock_run.side_effect = side_effect
+        _run_merge(PR_URL, cwd=tmp_path, placeholder_branch="slot-1-placeholder")
+        # 3 calls: git rev-parse, gh pr merge, git checkout (no branch -D for protected)
+        assert mock_run.call_count == 3
 
 
 class TestIsProtectedBranch:

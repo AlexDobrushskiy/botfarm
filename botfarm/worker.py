@@ -369,9 +369,26 @@ def _run_merge(
     cwd: str | Path,
     log_file: Path | None = None,
     placeholder_branch: str | None = None,
-    feature_branch: str | None = None,
 ) -> StageResult:
     """MERGE stage — Squash merge the PR, then checkout placeholder branch."""
+    # Capture the current branch name before merge/checkout so we can
+    # delete the actual feature branch afterwards (not a stale name
+    # threaded through the pipeline).
+    feature_branch: str | None = None
+    rev_parse = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        capture_output=True,
+        text=True,
+        cwd=str(cwd),
+    )
+    if rev_parse.returncode == 0:
+        feature_branch = rev_parse.stdout.strip() or None
+    else:
+        logger.warning(
+            "Could not determine current branch: %s",
+            rev_parse.stderr[:300],
+        )
+
     proc = subprocess.run(
         ["gh", "pr", "merge", pr_url, "--squash"],
         capture_output=True,
@@ -469,7 +486,6 @@ def run_pipeline(
     db_path: str | Path | None = None,
     log_dir: str | Path | None = None,
     placeholder_branch: str | None = None,
-    feature_branch: str | None = None,
     max_turns: dict[str, int] | None = None,
     pr_checks_timeout: int = 600,
     max_review_iterations: int = 3,
@@ -555,7 +571,6 @@ def run_pipeline(
         db_path=db_path,
         log_dir=Path(log_dir) if log_dir else None,
         placeholder_branch=placeholder_branch,
-        feature_branch=feature_branch,
         subprocess_env=subprocess_env,
     )
 
@@ -710,7 +725,6 @@ class _PipelineContext:
     db_path: str | Path | None = None
     log_dir: Path | None = None
     placeholder_branch: str | None = None
-    feature_branch: str | None = None
     subprocess_env: dict[str, str] | None = None
 
     def run_and_record(
@@ -754,7 +768,6 @@ class _PipelineContext:
                 pr_checks_timeout=self.pr_checks_timeout,
                 log_file=log_file,
                 placeholder_branch=self.placeholder_branch,
-                feature_branch=self.feature_branch,
                 env=self.subprocess_env,
             )
         except Exception as exc:
@@ -1005,7 +1018,6 @@ def _execute_stage(
     pr_checks_timeout: int,
     log_file: Path | None = None,
     placeholder_branch: str | None = None,
-    feature_branch: str | None = None,
     env: dict[str, str] | None = None,
 ) -> StageResult:
     """Dispatch to the appropriate stage runner."""
@@ -1026,7 +1038,12 @@ def _execute_stage(
     elif stage == "merge":
         if not pr_url:
             raise ValueError(f"{stage} stage requires pr_url")
-        return _run_merge(pr_url, cwd=cwd, log_file=log_file, placeholder_branch=placeholder_branch, feature_branch=feature_branch)
+        return _run_merge(
+            pr_url,
+            cwd=cwd,
+            log_file=log_file,
+            placeholder_branch=placeholder_branch,
+        )
     else:
         raise ValueError(f"Unknown stage: {stage}")
 
