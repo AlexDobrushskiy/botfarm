@@ -1,0 +1,26 @@
+{% if has_callbacks %}
+{% if pause_state == "running" %}
+<button class="pause-btn pause-btn-pause"
+        hx-post="/api/pause"
+        hx-swap="none"
+        hx-on::after-request="this.closest('[hx-get]') && htmx.trigger(this.closest('[hx-get]'), 'htmx:load')">
+    Pause
+</button>
+{% elif pause_state.startswith("pausing") %}
+{% set busy_count = pause_state.split(":")[1] if ":" in pause_state else "?" %}
+<button class="pause-btn pause-btn-pausing" disabled>
+    Pausing&hellip; ({{ busy_count }} worker{{ "s" if busy_count != "1" else "" }})
+</button>
+<button class="pause-btn pause-btn-resume"
+        hx-post="/api/resume"
+        hx-swap="none">
+    Cancel
+</button>
+{% elif pause_state == "paused" %}
+<button class="pause-btn pause-btn-resume"
+        hx-post="/api/resume"
+        hx-swap="none">
+    Resume
+</button>
+{% endif %}
+{% endif %}

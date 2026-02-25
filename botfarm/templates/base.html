@@ -14,6 +14,29 @@
         .status-paused_limit { color: var(--pico-color-purple-400, #c084fc); }
         .status-failed { color: var(--pico-del-color); }
         .status-completed_pending_cleanup { color: var(--pico-color-cyan-400, #22d3ee); }
+        .status-paused_manual { color: var(--pico-color-orange-400, #fb923c); }
+        .pause-btn {
+            padding: 0.4rem 1rem;
+            border-radius: var(--pico-border-radius);
+            border: none;
+            cursor: pointer;
+            font-size: 0.85rem;
+            font-weight: 600;
+        }
+        .pause-btn-pause {
+            background: var(--pico-color-yellow-500, #eab308);
+            color: #000;
+        }
+        .pause-btn-pausing {
+            background: var(--pico-color-orange-400, #fb923c);
+            color: #000;
+            cursor: default;
+            opacity: 0.8;
+        }
+        .pause-btn-resume {
+            background: var(--pico-ins-color);
+            color: #fff;
+        }
         .banner-paused {
             background: var(--pico-del-color);
             color: #fff;

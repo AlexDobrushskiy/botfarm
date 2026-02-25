@@ -425,8 +425,79 @@ class TestResumeSlot:
 
     def test_resume_non_paused_raises(self, mgr: SlotManager):
         mgr.register_slot("proj", 1)
-        with pytest.raises(SlotError, match="expected 'paused_limit'"):
+        with pytest.raises(SlotError, match="expected 'paused_limit' or 'paused_manual'"):
             mgr.resume_slot("proj", 1)
+
+    def test_resume_paused_manual_to_busy(self, mgr: SlotManager):
+        mgr.register_slot("proj", 1)
+        mgr.assign_ticket(
+            "proj", 1, ticket_id="T-1", ticket_title="T1", branch="b1"
+        )
+        mgr.mark_paused_manual("proj", 1)
+        assert mgr.get_slot("proj", 1).status == "paused_manual"
+        mgr.resume_slot("proj", 1)
+        assert mgr.get_slot("proj", 1).status == "busy"
+
+
+class TestMarkPausedManual:
+    def test_mark_paused_manual(self, mgr: SlotManager):
+        mgr.register_slot("proj", 1)
+        mgr.assign_ticket(
+            "proj", 1, ticket_id="T-1", ticket_title="T1", branch="b1"
+        )
+        mgr.set_pid("proj", 1, 100)
+        mgr.mark_paused_manual("proj", 1)
+        slot = mgr.get_slot("proj", 1)
+        assert slot.status == "paused_manual"
+        assert slot.pid is None
+
+    def test_paused_manual_preserves_ticket_info(self, mgr: SlotManager):
+        mgr.register_slot("proj", 1)
+        mgr.assign_ticket(
+            "proj", 1, ticket_id="T-1", ticket_title="T1", branch="b1"
+        )
+        mgr.complete_stage("proj", 1, "implement")
+        mgr.mark_paused_manual("proj", 1)
+        slot = mgr.get_slot("proj", 1)
+        assert slot.ticket_id == "T-1"
+        assert slot.branch == "b1"
+        assert slot.stages_completed == ["implement"]
+
+
+class TestPausedManualSlots:
+    def test_returns_manually_paused(self, mgr: SlotManager):
+        mgr.register_slot("proj", 1)
+        mgr.register_slot("proj", 2)
+        mgr.assign_ticket(
+            "proj", 1, ticket_id="T-1", ticket_title="T1", branch="b1"
+        )
+        mgr.mark_paused_manual("proj", 1)
+        paused = mgr.paused_manual_slots()
+        assert len(paused) == 1
+        assert paused[0].slot_id == 1
+
+    def test_empty_when_none_paused(self, mgr: SlotManager):
+        mgr.register_slot("proj", 1)
+        assert mgr.paused_manual_slots() == []
+
+    def test_does_not_include_paused_limit(self, mgr: SlotManager):
+        mgr.register_slot("proj", 1)
+        mgr.assign_ticket(
+            "proj", 1, ticket_id="T-1", ticket_title="T1", branch="b1"
+        )
+        mgr.mark_paused_limit("proj", 1)
+        assert mgr.paused_manual_slots() == []
+
+
+class TestActiveTicketIdsManualPause:
+    def test_includes_paused_manual(self, mgr: SlotManager):
+        mgr.register_slot("proj", 1)
+        mgr.assign_ticket(
+            "proj", 1, ticket_id="T-1", ticket_title="T1", branch="b1"
+        )
+        mgr.mark_paused_manual("proj", 1)
+        ids = mgr.active_ticket_ids()
+        assert "T-1" in ids
 
 
 # ---------------------------------------------------------------------------
@@ -764,6 +835,7 @@ class TestSlotStatuses:
             "free",
             "busy",
             "paused_limit",
+            "paused_manual",
             "failed",
             "completed_pending_cleanup",
         }
@@ -828,6 +900,32 @@ class TestLifecycleIntegration:
         mgr.mark_paused_limit("proj", 1)
         assert mgr.get_slot("proj", 1).status == "paused_limit"
         assert mgr.get_slot("proj", 1).interrupted_by_limit is True
+
+        # Resume
+        mgr.resume_slot("proj", 1)
+        assert mgr.get_slot("proj", 1).status == "busy"
+
+        # Complete
+        mgr.mark_completed("proj", 1)
+        mgr.free_slot("proj", 1)
+        assert mgr.get_slot("proj", 1).status == "free"
+
+    def test_manual_pause_resume_cycle(self, mgr: SlotManager):
+        """Test manual pause -> resume -> complete cycle."""
+        mgr.register_slot("proj", 1)
+        mgr.assign_ticket(
+            "proj", 1, ticket_id="T-1", ticket_title="T1", branch="b1"
+        )
+        mgr.set_pid("proj", 1, 123)
+        mgr.update_stage("proj", 1, stage="implement")
+        mgr.complete_stage("proj", 1, "implement")
+
+        # Manual pause
+        mgr.mark_paused_manual("proj", 1)
+        assert mgr.get_slot("proj", 1).status == "paused_manual"
+        assert mgr.get_slot("proj", 1).pid is None
+        # interrupted_by_limit should NOT be set for manual pause
+        assert mgr.get_slot("proj", 1).interrupted_by_limit is False
 
         # Resume
         mgr.resume_slot("proj", 1)
