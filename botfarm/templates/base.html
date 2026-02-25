@@ -276,20 +276,8 @@
         <ul>
             <li>
                 <strong>Botfarm</strong>
-                <span id="supervisor-badge">
-                {% if supervisor is defined and supervisor %}
-                    {% if supervisor.running %}
-                    <span class="supervisor-badge supervisor-badge-running">
-                        <span class="supervisor-dot supervisor-dot-running"></span>
-                        Supervisor Running
-                    </span>
-                    {% else %}
-                    <span class="supervisor-badge supervisor-badge-stopped">
-                        <span class="supervisor-dot supervisor-dot-stopped"></span>
-                        Supervisor Stopped
-                    </span>
-                    {% endif %}
-                {% endif %}
+                <span id="supervisor-badge" hx-get="/partials/supervisor-badge" hx-trigger="every 5s" hx-swap="innerHTML">
+                {% include "partials/supervisor_badge.html" %}
                 </span>
             </li>
         </ul>

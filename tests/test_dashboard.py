@@ -1879,11 +1879,29 @@ class TestSupervisorBadge:
         assert resp.status_code == 200
         assert "Supervisor Running" in resp.text
 
-    def test_slots_partial_includes_oob_badge(self, tmp_path):
-        """The /partials/slots response should include hx-swap-oob badge."""
+    def test_supervisor_badge_partial_endpoint(self, tmp_path):
+        """The /partials/supervisor-badge endpoint returns the badge."""
         from datetime import datetime, timezone
         now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-        db_path = tmp_path / "oob_badge.db"
+        db_path = tmp_path / "badge_partial.db"
+        conn = init_db(db_path)
+        _seed_slot(conn, "my-project", 1, status="free")
+        save_dispatch_state(
+            conn, paused=False, supervisor_heartbeat=now_iso,
+        )
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=db_path)
+        client = TestClient(app)
+        resp = client.get("/partials/supervisor-badge")
+        assert resp.status_code == 200
+        assert "Supervisor Running" in resp.text
+
+    def test_slots_partial_no_duplicate_badge(self, tmp_path):
+        """The /partials/slots response should NOT contain the supervisor badge."""
+        from datetime import datetime, timezone
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        db_path = tmp_path / "no_dup_badge.db"
         conn = init_db(db_path)
         _seed_slot(conn, "my-project", 1, status="free")
         save_dispatch_state(
@@ -1895,8 +1913,7 @@ class TestSupervisorBadge:
         client = TestClient(app)
         resp = client.get("/partials/slots")
         assert resp.status_code == 200
-        assert 'hx-swap-oob="true"' in resp.text
-        assert "Supervisor Running" in resp.text
+        assert 'hx-swap-oob' not in resp.text
 
     def test_badge_on_history_page(self, tmp_path):
         """History page should also show the supervisor badge."""

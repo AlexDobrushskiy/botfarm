@@ -1,0 +1,13 @@
+{% if supervisor is defined and supervisor %}
+    {% if supervisor.running %}
+    <span class="supervisor-badge supervisor-badge-running">
+        <span class="supervisor-dot supervisor-dot-running"></span>
+        Supervisor Running
+    </span>
+    {% else %}
+    <span class="supervisor-badge supervisor-badge-stopped">
+        <span class="supervisor-dot supervisor-dot-stopped"></span>
+        Supervisor Stopped
+    </span>
+    {% endif %}
+{% endif %}
