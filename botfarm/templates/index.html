@@ -2,7 +2,7 @@
 {% set active_page = "status" %}
 {% block title %}Live Status - Botfarm{% endblock %}
 {% block content %}
-<div id="update-banner" hx-get="/partials/update-banner" hx-trigger="every 60s" hx-swap="innerHTML">
+<div id="update-banner" hx-get="/partials/update-banner" hx-trigger="load, every 60s" hx-swap="innerHTML">
 </div>
 
 <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem;">
