@@ -180,6 +180,13 @@ class TestIndexPage:
         assert "hx-get" in body
         assert "hx-trigger" in body
 
+    def test_index_update_banner_loads_immediately(self, client):
+        """Update banner must fetch on page load, not just on the poll interval."""
+        resp = client.get("/")
+        body = resp.text
+        assert 'id="update-banner"' in body
+        assert 'hx-trigger="load, every 60s"' in body
+
     def test_index_contains_navigation(self, client):
         resp = client.get("/")
         body = resp.text
