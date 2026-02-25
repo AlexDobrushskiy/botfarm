@@ -565,6 +565,11 @@ class Supervisor:
         if not Path(slot_db).exists():
             slot_db = self._seed_slot_db(project_name, slot.slot_id)
 
+        # Create a pause event so recovered workers can respond to manual pause
+        pause_event = multiprocessing.Event()
+        key = (project_name, slot.slot_id)
+        self._pause_events[key] = pause_event
+
         proc = multiprocessing.Process(
             target=_worker_entry,
             kwargs={
@@ -585,11 +590,12 @@ class Supervisor:
                 "resume_session_id": slot.current_session_id,
                 "placeholder_branch": self._slot_placeholder_branch(slot.slot_id),
                 "slot_db_path": slot_db,
+                "pause_event": pause_event,
             },
             daemon=False,
         )
         proc.start()
-        self._workers[(project_name, slot.slot_id)] = proc
+        self._workers[key] = proc
         self._slot_manager.set_pid(project_name, slot.slot_id, proc.pid)
 
         logger.info(
@@ -1707,16 +1713,6 @@ class Supervisor:
             "Resumed manually-paused worker PID %d for %s in slot %s/%d at stage %s",
             proc.pid, slot.ticket_id, project_name, slot.slot_id, resume_stage,
         )
-
-    @staticmethod
-    def _next_stage_after(stages_completed: list[str]) -> str | None:
-        """Return the next pipeline stage after the last completed one."""
-        if not stages_completed:
-            return STAGES[0]
-        for i, stage in enumerate(STAGES):
-            if stage not in stages_completed:
-                return stage
-        return None
 
     def request_pause(self) -> None:
         """Request a manual pause (thread-safe, called from dashboard)."""

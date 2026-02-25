@@ -12,6 +12,7 @@ import logging
 import sqlite3
 import threading
 from datetime import datetime, timezone
+from collections.abc import Callable
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -113,8 +114,8 @@ def create_app(
     linear_workspace: str = "",
     botfarm_config: BotfarmConfig | None = None,
     state_file: str | Path | None = None,
-    on_pause: object | None = None,
-    on_resume: object | None = None,
+    on_pause: Callable[[], None] | None = None,
+    on_resume: Callable[[], None] | None = None,
 ) -> FastAPI:
     """Create the FastAPI dashboard application.
 
@@ -1031,8 +1032,8 @@ def start_dashboard(
     linear_workspace: str = "",
     botfarm_config: BotfarmConfig | None = None,
     state_file: str | Path | None = None,
-    on_pause: object | None = None,
-    on_resume: object | None = None,
+    on_pause: Callable[[], None] | None = None,
+    on_resume: Callable[[], None] | None = None,
 ) -> threading.Thread | None:
     """Start the dashboard server in a background daemon thread.
 
