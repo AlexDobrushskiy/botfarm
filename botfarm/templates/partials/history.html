@@ -57,8 +57,8 @@
             <td>{{ task.review_iterations if task.review_iterations is not none else "-" }}</td>
             <td>{{ task.comments if task.comments else "-" }}</td>
             <td>{{ task.limit_interruptions if task.limit_interruptions is not none else "0" }}</td>
-            <td>{{ task.started_at[:16] if task.started_at else "-" }}</td>
-            <td>{{ task.completed_at[:16] if task.completed_at else "-" }}</td>
+            <td>{% if task.started_at %}<time data-timestamp="{{ task.started_at }}" title="{{ task.started_at[:19] }}">{{ task.started_at[:16] }}</time>{% else %}-{% endif %}</td>
+            <td>{% if task.completed_at %}<time data-timestamp="{{ task.completed_at }}" title="{{ task.completed_at[:19] }}">{{ task.completed_at[:16] }}</time>{% else %}-{% endif %}</td>
             <td>{% if task.pr_url %}<a href="{{ task.pr_url }}" target="_blank" onclick="event.stopPropagation()">{% if "/pull/" in task.pr_url %}PR #{{ task.pr_url.split("/pull/")[-1].split("/")[0] }}{% else %}PR{% endif %}</a>{% else %}-{% endif %}</td>
         </tr>
         {% endfor %}

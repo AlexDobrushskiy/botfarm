@@ -170,6 +170,33 @@
     setInterval(updateCountdowns, 10000);
     document.addEventListener("htmx:afterSwap", updateCountdowns);
     document.addEventListener("DOMContentLoaded", updateCountdowns);
+
+    function timeago(isoString) {
+        var date = new Date(isoString);
+        if (isNaN(date.getTime())) return isoString;
+        var now = Date.now();
+        var diff = now - date.getTime();
+        if (diff < 0) return isoString;
+        var seconds = Math.floor(diff / 1000);
+        if (seconds < 60) return "just now";
+        var minutes = Math.floor(seconds / 60);
+        if (minutes < 60) return minutes + "m ago";
+        var hours = Math.floor(minutes / 60);
+        if (hours < 24) return hours + "h ago";
+        var days = Math.floor(hours / 24);
+        if (days < 7) return days + "d ago";
+        var months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+        return months[date.getMonth()] + " " + date.getDate();
+    }
+    function updateTimeagos() {
+        document.querySelectorAll("[data-timestamp]").forEach(function(el) {
+            var ts = el.getAttribute("data-timestamp");
+            if (ts) el.textContent = timeago(ts);
+        });
+    }
+    setInterval(updateTimeagos, 60000);
+    document.addEventListener("htmx:afterSwap", updateTimeagos);
+    document.addEventListener("DOMContentLoaded", updateTimeagos);
     </script>
 </head>
 <body>
