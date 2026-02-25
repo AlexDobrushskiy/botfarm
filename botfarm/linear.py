@@ -439,7 +439,7 @@ class LinearPoller:
         # This respects the manual drag-and-drop ordering set by the user.
         candidates.sort(key=lambda i: i.sort_order)
 
-        logger.info(
+        logger.debug(
             "Polled %s: %d Todo issues, %d candidates, %d auto-close parents",
             self._project.linear_team,
             len(issues),

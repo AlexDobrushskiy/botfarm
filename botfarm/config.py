@@ -30,7 +30,7 @@ projects:
 linear:
   api_key: ${LINEAR_API_KEY}
   workspace: my-workspace
-  poll_interval_seconds: 120
+  poll_interval_seconds: 30
   exclude_tags:
     - Human
   # Workflow status names (must match your Linear team's workflow)
@@ -88,7 +88,7 @@ class ProjectConfig:
 class LinearConfig:
     api_key: str = ""
     workspace: str = ""
-    poll_interval_seconds: int = 120
+    poll_interval_seconds: int = 30
     exclude_tags: list[str] = field(default_factory=lambda: ["Human"])
     # Configurable workflow status names
     todo_status: str = "Todo"
@@ -334,7 +334,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
     linear = LinearConfig(
         api_key=linear_data.get("api_key", ""),
         workspace=linear_data.get("workspace", ""),
-        poll_interval_seconds=linear_data.get("poll_interval_seconds", 120),
+        poll_interval_seconds=linear_data.get("poll_interval_seconds", 30),
         exclude_tags=linear_data.get("exclude_tags", ["Human"]),
         todo_status=str(linear_data.get("todo_status", "Todo")),
         in_progress_status=str(linear_data.get("in_progress_status", "In Progress")),
