@@ -779,17 +779,6 @@ def create_app(
             },
         }
 
-    @app.get("/config/view", response_class=HTMLResponse)
-    def config_view_page(request: Request):
-        cfg = app.state.botfarm_config
-        enabled = cfg is not None
-        return templates.TemplateResponse("config_view.html", {
-            "request": request,
-            "config_enabled": enabled,
-            "config_values": _full_config_values(),
-            "supervisor": _supervisor_status(_read_state()),
-        })
-
     # --- Config editing ---
 
     def _config_values() -> dict:
@@ -837,6 +826,7 @@ def create_app(
             "request": request,
             "config_enabled": enabled,
             "config_values": _config_values(),
+            "full_config_values": _full_config_values(),
             "editable_fields": EDITABLE_FIELDS,
             "restart_required": app.state.restart_required,
             "supervisor": _supervisor_status(_read_state()),

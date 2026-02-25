@@ -1549,12 +1549,19 @@ class TestConfigViewPage:
         return TestClient(app)
 
     def test_config_view_returns_200(self, config_client):
-        resp = config_client.get("/config/view")
+        resp = config_client.get("/config")
         assert resp.status_code == 200
         assert "text/html" in resp.headers["content-type"]
 
+    def test_config_page_has_view_and_edit_tabs(self, config_client):
+        resp = config_client.get("/config")
+        body = resp.text
+        assert "tab-view" in body
+        assert "tab-edit" in body
+        assert "switchTab" in body
+
     def test_config_view_contains_all_sections(self, config_client):
-        resp = config_client.get("/config/view")
+        resp = config_client.get("/config")
         body = resp.text
         for section in [
             "Projects", "Linear", "Agents", "Usage Limits",
@@ -1563,7 +1570,7 @@ class TestConfigViewPage:
             assert section in body
 
     def test_config_view_shows_project_details(self, config_client):
-        resp = config_client.get("/config/view")
+        resp = config_client.get("/config")
         body = resp.text
         assert "test-project" in body
         assert "TST" in body
@@ -1572,23 +1579,21 @@ class TestConfigViewPage:
         assert "My Project" in body
 
     def test_config_view_masks_api_key(self, config_client):
-        resp = config_client.get("/config/view")
+        resp = config_client.get("/config")
         body = resp.text
-        # Should show masked key (first 4 + **** + last 4)
+        # View tab should show masked key (first 4 + **** + last 4)
         assert "lin_****cdef" in body
-        # Full key must not appear
+        # Full key must not appear (API key is not editable, so not in edit tab either)
         assert "lin_api_1234567890abcdef" not in body
 
     def test_config_view_masks_webhook_url(self, config_client):
-        resp = config_client.get("/config/view")
+        resp = config_client.get("/config")
         body = resp.text
-        # Full URL must not appear
-        assert "https://hooks.slack.com/services/T00/B00/xxx" not in body
-        # Should show masked version
+        # View tab should show masked version
         assert "http****/xxx" in body
 
     def test_config_view_shows_linear_settings(self, config_client):
-        resp = config_client.get("/config/view")
+        resp = config_client.get("/config")
         body = resp.text
         assert "my-workspace" in body
         assert "60" in body  # poll_interval_seconds
@@ -1596,7 +1601,7 @@ class TestConfigViewPage:
         assert "Manual" in body
 
     def test_config_view_shows_boolean_values(self, config_client):
-        resp = config_client.get("/config/view")
+        resp = config_client.get("/config")
         body = resp.text
         assert "Yes" in body  # comment_on_failure = True
         assert "No" in body   # comment_on_completion = False
@@ -1604,12 +1609,12 @@ class TestConfigViewPage:
     def test_config_view_nav_link(self, config_client):
         resp = config_client.get("/")
         assert "Configuration" in resp.text
-        assert "/config/view" in resp.text
+        assert "/config" in resp.text
 
     def test_config_view_disabled_without_config(self, db_file):
         app = create_app(db_path=db_file)
         client = TestClient(app)
-        resp = client.get("/config/view")
+        resp = client.get("/config")
         assert resp.status_code == 200
         assert "not available" in resp.text
 
@@ -1629,7 +1634,7 @@ class TestConfigViewPage:
             botfarm_config=config,
         )
         client = TestClient(app)
-        resp = client.get("/config/view")
+        resp = client.get("/config")
         body = resp.text
         assert "short" not in body
         assert "****" in body
@@ -1649,7 +1654,7 @@ class TestConfigViewPage:
             botfarm_config=config,
         )
         client = TestClient(app)
-        resp = client.get("/config/view")
+        resp = client.get("/config")
         body = resp.text
         # Empty webhook_url should show "-"
         assert "Webhook URL" in body
