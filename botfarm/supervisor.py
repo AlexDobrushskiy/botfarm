@@ -31,6 +31,7 @@ from botfarm.config import BotfarmConfig, ProjectConfig
 from botfarm.db import get_task, init_db, insert_event, insert_task, update_task
 from botfarm.linear import LinearPoller, create_pollers
 from botfarm.notifications import Notifier
+from botfarm.preflight import log_preflight_summary, run_preflight_checks
 from botfarm.slots import SlotManager, SlotState, _is_pid_alive
 from botfarm.usage import DEFAULT_PAUSE_5H_THRESHOLD, DEFAULT_PAUSE_7D_THRESHOLD, UsagePoller
 from botfarm.worker import STAGES, PipelineResult, run_pipeline
@@ -733,6 +734,21 @@ class Supervisor:
             f"slots={len(self._slot_manager.all_slots())}",
         )
         self._conn.commit()
+
+        # Run pre-flight health checks before entering main loop
+        preflight_results = run_preflight_checks(self._config)
+        if not log_preflight_summary(preflight_results):
+            insert_event(
+                self._conn,
+                event_type="preflight_failed",
+                detail="; ".join(
+                    f"{r.name}: {r.message}"
+                    for r in preflight_results
+                    if not r.passed and r.critical
+                ),
+            )
+            self._conn.commit()
+            raise SystemExit(1)
 
         # Recover from previous state before entering main loop
         self._recover_on_startup()

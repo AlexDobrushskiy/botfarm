@@ -196,7 +196,8 @@ class TestReconcileWorkers:
             failure_stage="implement", failure_reason="crash",
         ))
 
-        supervisor._reconcile_workers()
+        with patch.object(supervisor, "_check_usage_api_for_limit", return_value=False):
+            supervisor._reconcile_workers()
 
         assert sm.get_slot("test-project", 1).status == "failed"
 
@@ -720,6 +721,8 @@ class TestRun:
             patch.object(supervisor, "_tick", side_effect=fake_tick),
             patch.object(supervisor, "_sleep") as mock_sleep,
             patch.object(supervisor, "install_signal_handlers"),
+            patch("botfarm.supervisor.run_preflight_checks", return_value=[]),
+            patch("botfarm.supervisor.log_preflight_summary", return_value=True),
         ):
             supervisor.run()
 
@@ -730,7 +733,11 @@ class TestRun:
     def test_run_records_start_and_stop_events(self, supervisor, tmp_path):
         supervisor._shutdown_requested = True
 
-        with patch.object(supervisor, "install_signal_handlers"):
+        with (
+            patch.object(supervisor, "install_signal_handlers"),
+            patch("botfarm.supervisor.run_preflight_checks", return_value=[]),
+            patch("botfarm.supervisor.log_preflight_summary", return_value=True),
+        ):
             supervisor.run()
 
         # Re-open conn since _shutdown closes it
@@ -1262,10 +1269,6 @@ class TestLimitHitHandling:
         )
         supervisor._conn.commit()
 
-        # Usage API shows low utilization
-        supervisor._usage_poller._state.utilization_5h = 0.10
-        supervisor._usage_poller._state.utilization_7d = 0.10
-
         supervisor._result_queue.put(_WorkerResult(
             project="test-project", slot_id=1, success=False,
             failure_stage="implement",
@@ -1273,7 +1276,10 @@ class TestLimitHitHandling:
             limit_hit=False,
         ))
 
-        supervisor._reconcile_workers()
+        # Mock _check_usage_api_for_limit to return False (low utilization)
+        # instead of making a real API call that could return high usage.
+        with patch.object(supervisor, "_check_usage_api_for_limit", return_value=False):
+            supervisor._reconcile_workers()
 
         # Should be treated as a normal failure
         slot = sm.get_slot("test-project", 1)
@@ -1310,7 +1316,10 @@ class TestHandlePausedSlots:
         supervisor._usage_poller._state.utilization_5h = 0.10
         supervisor._usage_poller._state.utilization_7d = 0.10
 
-        with patch("botfarm.supervisor.multiprocessing.Process") as MockProc:
+        with (
+            patch.object(supervisor._usage_poller, "force_poll"),
+            patch("botfarm.supervisor.multiprocessing.Process") as MockProc,
+        ):
             mock_proc = MagicMock()
             mock_proc.pid = 555
             MockProc.return_value = mock_proc
@@ -1382,7 +1391,10 @@ class TestHandlePausedSlots:
         supervisor._usage_poller._state.utilization_5h = 0.10
         supervisor._usage_poller._state.utilization_7d = 0.10
 
-        with patch("botfarm.supervisor.multiprocessing.Process") as MockProc:
+        with (
+            patch.object(supervisor._usage_poller, "force_poll"),
+            patch("botfarm.supervisor.multiprocessing.Process") as MockProc,
+        ):
             mock_proc = MagicMock()
             mock_proc.pid = 555
             MockProc.return_value = mock_proc
@@ -1415,7 +1427,10 @@ class TestHandlePausedSlots:
         supervisor._usage_poller._state.utilization_5h = 0.10
         supervisor._usage_poller._state.utilization_7d = 0.10
 
-        with patch("botfarm.supervisor.multiprocessing.Process") as MockProc:
+        with (
+            patch.object(supervisor._usage_poller, "force_poll"),
+            patch("botfarm.supervisor.multiprocessing.Process") as MockProc,
+        ):
             mock_proc = MagicMock()
             mock_proc.pid = 555
             MockProc.return_value = mock_proc
@@ -1446,7 +1461,10 @@ class TestHandlePausedSlots:
         supervisor._usage_poller._state.utilization_5h = 0.10
         supervisor._usage_poller._state.utilization_7d = 0.10
 
-        with patch("botfarm.supervisor.multiprocessing.Process") as MockProc:
+        with (
+            patch.object(supervisor._usage_poller, "force_poll"),
+            patch("botfarm.supervisor.multiprocessing.Process") as MockProc,
+        ):
             mock_proc = MagicMock()
             mock_proc.pid = 555
             MockProc.return_value = mock_proc
@@ -1481,10 +1499,7 @@ class TestHandlePausedSlots:
         supervisor._usage_poller._state.utilization_7d = 0.10
 
         with (
-            patch.object(
-                supervisor._usage_poller, "force_poll",
-                wraps=supervisor._usage_poller.force_poll,
-            ) as mock_fp,
+            patch.object(supervisor._usage_poller, "force_poll") as mock_fp,
             patch("botfarm.supervisor.multiprocessing.Process") as MockProc,
         ):
             mock_proc = MagicMock()
@@ -2144,6 +2159,8 @@ class TestRecoverOnStartup:
         with (
             patch.object(supervisor, "_recover_on_startup") as mock_recover,
             patch.object(supervisor, "install_signal_handlers"),
+            patch("botfarm.supervisor.run_preflight_checks", return_value=[]),
+            patch("botfarm.supervisor.log_preflight_summary", return_value=True),
         ):
             supervisor.run()
 
@@ -3027,7 +3044,10 @@ class TestSlotWorktreeCwd:
         supervisor._usage_poller._state.utilization_5h = 0.10
         supervisor._usage_poller._state.utilization_7d = 0.10
 
-        with patch("botfarm.supervisor.multiprocessing.Process") as MockProc:
+        with (
+            patch.object(supervisor._usage_poller, "force_poll"),
+            patch("botfarm.supervisor.multiprocessing.Process") as MockProc,
+        ):
             mock_proc = MagicMock()
             mock_proc.pid = 555
             MockProc.return_value = mock_proc
