@@ -869,7 +869,8 @@ class TestTaskDetailPage:
         """GET /task/1 still resolves via integer ID (backward compat)."""
         resp = client.get("/task/1")
         assert resp.status_code == 200
-        assert "TST-1" in body if (body := resp.text) else False
+        body = resp.text
+        assert "TST-1" in body
 
     def test_nonexistent_ticket_id_shows_not_found(self, client):
         """GET /task/NOPE-999 shows not-found state gracefully."""
