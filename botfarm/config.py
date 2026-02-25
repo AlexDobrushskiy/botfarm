@@ -131,6 +131,13 @@ class AgentsConfig:
 
 
 @dataclass
+class LoggingConfig:
+    max_bytes: int = 10 * 1024 * 1024  # 10 MB per rotated file
+    backup_count: int = 5  # number of rotated files to keep
+    ticket_log_retention_days: int = 30  # delete ticket logs older than N days
+
+
+@dataclass
 class NotificationsConfig:
     webhook_url: str = ""
     webhook_format: str = "slack"  # "slack" or "discord"
@@ -145,6 +152,7 @@ class BotfarmConfig:
     usage_limits: UsageLimitsConfig = field(default_factory=UsageLimitsConfig)
     dashboard: DashboardConfig = field(default_factory=DashboardConfig)
     agents: AgentsConfig = field(default_factory=AgentsConfig)
+    logging: LoggingConfig = field(default_factory=LoggingConfig)
     notifications: NotificationsConfig = field(default_factory=NotificationsConfig)
     source_path: str = ""  # Set by load_config to the source file path
 
@@ -262,6 +270,15 @@ def _validate_config(config: BotfarmConfig) -> None:
     if config.agents.timeout_grace_seconds < 0:
         raise ConfigError("agents.timeout_grace_seconds must be at least 0")
 
+    if config.logging.max_bytes < 1:
+        raise ConfigError("logging.max_bytes must be at least 1")
+
+    if config.logging.backup_count < 0:
+        raise ConfigError("logging.backup_count must be at least 0")
+
+    if config.logging.ticket_log_retention_days < 1:
+        raise ConfigError("logging.ticket_log_retention_days must be at least 1")
+
     if config.notifications.webhook_format not in ("slack", "discord"):
         raise ConfigError(
             f"notifications.webhook_format must be 'slack' or 'discord', "
@@ -297,7 +314,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
 
     known_keys = {
         "projects", "linear", "database", "usage_limits",
-        "dashboard", "agents", "notifications",
+        "dashboard", "agents", "logging", "notifications",
     }
     unknown = set(data.keys()) - known_keys
     if unknown:
@@ -355,6 +372,15 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         timeout_grace_seconds=int(agents_data.get("timeout_grace_seconds", 10)),
     )
 
+    log_data = data.get("logging", {})
+    logging_cfg = LoggingConfig(
+        max_bytes=int(log_data.get("max_bytes", 10 * 1024 * 1024)),
+        backup_count=int(log_data.get("backup_count", 5)),
+        ticket_log_retention_days=int(
+            log_data.get("ticket_log_retention_days", 30)
+        ),
+    )
+
     notif_data = data.get("notifications", {})
     notifications = NotificationsConfig(
         webhook_url=str(notif_data.get("webhook_url", "")),
@@ -375,6 +401,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         usage_limits=usage_limits,
         dashboard=dashboard,
         agents=agents,
+        logging=logging_cfg,
         notifications=notifications,
     )
 

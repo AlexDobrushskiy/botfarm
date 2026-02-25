@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import logging
+import logging.handlers
+import os
 import signal
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch, call
@@ -961,8 +964,28 @@ class TestSetupLogging:
             root.handlers = []
             setup_logging(log_dir, console=False)
             assert any(
-                isinstance(h, logging.FileHandler) for h in root.handlers
+                isinstance(h, logging.handlers.RotatingFileHandler)
+                for h in root.handlers
             )
+        finally:
+            root.handlers = original_handlers
+
+    def test_rotating_handler_params(self, tmp_path):
+        log_dir = tmp_path / "logs"
+        root = logging.getLogger()
+        original_handlers = root.handlers[:]
+        try:
+            root.handlers = []
+            setup_logging(
+                log_dir, console=False, max_bytes=5_000_000, backup_count=3,
+            )
+            rfh = [
+                h for h in root.handlers
+                if isinstance(h, logging.handlers.RotatingFileHandler)
+            ]
+            assert len(rfh) == 1
+            assert rfh[0].maxBytes == 5_000_000
+            assert rfh[0].backupCount == 3
         finally:
             root.handlers = original_handlers
 
@@ -1000,7 +1023,7 @@ class TestSetupWorkerLogging:
         finally:
             root.handlers = original_handlers
 
-    def test_adds_file_handler(self, tmp_path):
+    def test_adds_rotating_file_handler(self, tmp_path):
         log_dir = tmp_path / "logs" / "SMA-99"
         root = logging.getLogger()
         original_handlers = root.handlers[:]
@@ -1008,8 +1031,28 @@ class TestSetupWorkerLogging:
             root.handlers = []
             _setup_worker_logging(log_dir)
             assert any(
-                isinstance(h, logging.FileHandler) for h in root.handlers
+                isinstance(h, logging.handlers.RotatingFileHandler)
+                for h in root.handlers
             )
+        finally:
+            root.handlers = original_handlers
+
+    def test_rotating_handler_params(self, tmp_path):
+        log_dir = tmp_path / "logs" / "SMA-99"
+        root = logging.getLogger()
+        original_handlers = root.handlers[:]
+        try:
+            root.handlers = []
+            _setup_worker_logging(
+                log_dir, max_bytes=2_000_000, backup_count=2,
+            )
+            rfh = [
+                h for h in root.handlers
+                if isinstance(h, logging.handlers.RotatingFileHandler)
+            ]
+            assert len(rfh) == 1
+            assert rfh[0].maxBytes == 2_000_000
+            assert rfh[0].backupCount == 2
         finally:
             root.handlers = original_handlers
 
@@ -1023,6 +1066,104 @@ class TestSetupWorkerLogging:
             assert log_dir.exists()
         finally:
             root.handlers = original_handlers
+
+
+# ---------------------------------------------------------------------------
+# _cleanup_old_ticket_logs
+# ---------------------------------------------------------------------------
+
+
+class TestCleanupOldTicketLogs:
+    """Tests for Supervisor._cleanup_old_ticket_logs."""
+
+    def test_removes_old_directories(self, supervisor, tmp_path):
+        """Directories older than retention period are removed."""
+        log_dir = supervisor._log_dir
+        log_dir.mkdir(parents=True, exist_ok=True)
+
+        old_dir = log_dir / "SMA-OLD"
+        old_dir.mkdir()
+        # Set mtime to 60 days ago
+        old_time = time.time() - 60 * 86400
+        os.utime(str(old_dir), (old_time, old_time))
+
+        supervisor._config.logging.ticket_log_retention_days = 30
+        supervisor._last_log_cleanup = 0.0
+        supervisor._cleanup_old_ticket_logs()
+
+        assert not old_dir.exists()
+
+    def test_preserves_recent_directories(self, supervisor, tmp_path):
+        """Directories newer than retention period are kept."""
+        log_dir = supervisor._log_dir
+        log_dir.mkdir(parents=True, exist_ok=True)
+
+        recent_dir = log_dir / "SMA-RECENT"
+        recent_dir.mkdir()
+
+        supervisor._config.logging.ticket_log_retention_days = 30
+        supervisor._last_log_cleanup = 0.0
+        supervisor._cleanup_old_ticket_logs()
+
+        assert recent_dir.exists()
+
+    def test_skips_active_ticket_dirs(self, supervisor, tmp_path):
+        """Directories for active tickets are never removed."""
+        log_dir = supervisor._log_dir
+        log_dir.mkdir(parents=True, exist_ok=True)
+
+        # Assign a ticket to a slot
+        supervisor._slot_manager.assign_ticket(
+            "test-project", 1,
+            ticket_id="SMA-ACTIVE",
+            ticket_title="SMA-ACTIVE title",
+            branch="branch-active",
+        )
+
+        active_dir = log_dir / "SMA-ACTIVE"
+        active_dir.mkdir()
+        old_time = time.time() - 60 * 86400
+        os.utime(str(active_dir), (old_time, old_time))
+
+        supervisor._config.logging.ticket_log_retention_days = 30
+        supervisor._last_log_cleanup = 0.0
+        supervisor._cleanup_old_ticket_logs()
+
+        assert active_dir.exists()
+
+    def test_skips_non_directories(self, supervisor, tmp_path):
+        """Regular files (e.g. supervisor.log) are not removed."""
+        log_dir = supervisor._log_dir
+        log_dir.mkdir(parents=True, exist_ok=True)
+
+        log_file = log_dir / "supervisor.log"
+        log_file.write_text("test")
+        old_time = time.time() - 60 * 86400
+        os.utime(str(log_file), (old_time, old_time))
+
+        supervisor._config.logging.ticket_log_retention_days = 30
+        supervisor._last_log_cleanup = 0.0
+        supervisor._cleanup_old_ticket_logs()
+
+        assert log_file.exists()
+
+    def test_throttled_by_interval(self, supervisor, tmp_path):
+        """Cleanup runs at most once per hour."""
+        log_dir = supervisor._log_dir
+        log_dir.mkdir(parents=True, exist_ok=True)
+
+        old_dir = log_dir / "SMA-THROTTLE"
+        old_dir.mkdir()
+        old_time = time.time() - 60 * 86400
+        os.utime(str(old_dir), (old_time, old_time))
+
+        supervisor._config.logging.ticket_log_retention_days = 30
+        # Pretend cleanup just ran
+        supervisor._last_log_cleanup = time.time()
+        supervisor._cleanup_old_ticket_logs()
+
+        # Dir should still exist because cleanup was throttled
+        assert old_dir.exists()
 
 
 # ---------------------------------------------------------------------------
