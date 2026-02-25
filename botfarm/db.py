@@ -509,8 +509,10 @@ def load_dispatch_state(conn: sqlite3.Connection) -> tuple[bool, str | None, str
     return bool(row["paused"]), row["pause_reason"], row["supervisor_heartbeat"]
 
 
-def save_queue_entries(conn: sqlite3.Connection, project: str, candidates: list, snapshot_at: str) -> None:
+def save_queue_entries(conn: sqlite3.Connection, project: str, candidates: list, snapshot_at: str | None = None) -> None:
     """Replace queue entries for a project with fresh poll results."""
+    if snapshot_at is None:
+        snapshot_at = _now_iso()
     conn.execute("DELETE FROM queue_entries WHERE project = ?", (project,))
     for i, issue in enumerate(candidates):
         conn.execute(
