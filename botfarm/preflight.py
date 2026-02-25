@@ -143,18 +143,17 @@ def check_linear_api(config: BotfarmConfig) -> list[CheckResult]:
     for project in config.projects:
         team_key = project.linear_team
         if team_key in checked_teams:
-            team_states = checked_teams[team_key]
-        else:
-            try:
-                team_states = client.get_team_states(team_key)
-                checked_teams[team_key] = team_states
-            except LinearAPIError as exc:
-                results.append(CheckResult(
-                    name=f"linear_team:{team_key}",
-                    passed=False,
-                    message=f"Cannot reach team '{team_key}': {exc}",
-                ))
-                continue
+            continue  # Already validated team and statuses
+        try:
+            team_states = client.get_team_states(team_key)
+            checked_teams[team_key] = team_states
+        except LinearAPIError as exc:
+            results.append(CheckResult(
+                name=f"linear_team:{team_key}",
+                passed=False,
+                message=f"Cannot reach team '{team_key}': {exc}",
+            ))
+            continue
 
         results.append(CheckResult(
             name=f"linear_team:{team_key}",
@@ -241,33 +240,33 @@ def check_database(config: BotfarmConfig) -> list[CheckResult]:
     # If the DB file exists, check schema version
     if db_path.exists():
         try:
-            conn = sqlite3.connect(str(db_path))
-            row = conn.execute(
-                "SELECT version FROM schema_version"
-            ).fetchone()
-            conn.close()
-            if row is not None:
-                version = row[0]
-                if version > SCHEMA_VERSION:
-                    results.append(CheckResult(
-                        name="database",
-                        passed=False,
-                        message=(
-                            f"DB schema version ({version}) is newer than "
-                            f"expected ({SCHEMA_VERSION}) — cannot downgrade"
-                        ),
-                    ))
-                    return results
-                elif version < SCHEMA_VERSION:
-                    results.append(CheckResult(
-                        name="database",
-                        passed=True,
-                        message=f"OK — DB at v{version}, will migrate to v{SCHEMA_VERSION}",
-                    ))
-                    return results
-        except sqlite3.OperationalError:
-            # New DB or missing table — init_db will handle it
-            pass
+            with sqlite3.connect(str(db_path)) as conn:
+                row = conn.execute(
+                    "SELECT version FROM schema_version"
+                ).fetchone()
+        except sqlite3.Error:
+            # New DB, missing table, or corrupt file — init_db will handle it
+            row = None
+
+        if row is not None:
+            version = row[0]
+            if version > SCHEMA_VERSION:
+                results.append(CheckResult(
+                    name="database",
+                    passed=False,
+                    message=(
+                        f"DB schema version ({version}) is newer than "
+                        f"expected ({SCHEMA_VERSION}) — cannot downgrade"
+                    ),
+                ))
+                return results
+            elif version < SCHEMA_VERSION:
+                results.append(CheckResult(
+                    name="database",
+                    passed=True,
+                    message=f"OK — DB at v{version}, will migrate to v{SCHEMA_VERSION}",
+                ))
+                return results
 
     results.append(CheckResult(
         name="database",
@@ -364,9 +363,9 @@ def log_preflight_summary(results: list[CheckResult]) -> bool:
         if r.passed:
             logger.info("  [PASS] %-40s %s", r.name, r.message)
         elif r.critical:
-            logger.error(" [FAIL] %-40s %s", r.name, r.message)
+            logger.error("  [FAIL] %-40s %s", r.name, r.message)
         else:
-            logger.warning(" [WARN] %-40s %s", r.name, r.message)
+            logger.warning("  [WARN] %-40s %s", r.name, r.message)
 
     if critical_failures:
         logger.error(
