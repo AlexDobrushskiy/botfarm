@@ -10,6 +10,28 @@ from pathlib import Path
 
 SCHEMA_VERSION = 5
 
+
+class SchemaVersionError(RuntimeError):
+    """Raised when the database schema version does not match the expected version."""
+
+
+def resolve_db_path() -> Path:
+    """Resolve the database path from the ``BOTFARM_DB_PATH`` environment variable.
+
+    Every process (supervisor, worker, CLI) must call this to obtain the
+    authoritative database path.  The variable is typically loaded from a
+    ``.env`` file in the working directory via ``python-dotenv``.
+
+    Raises ``RuntimeError`` if the variable is not set or is empty.
+    """
+    db_path = os.environ.get("BOTFARM_DB_PATH")
+    if not db_path:
+        raise RuntimeError(
+            "BOTFARM_DB_PATH environment variable is not set. "
+            "Add it to your .env file (e.g. BOTFARM_DB_PATH=~/.botfarm/botfarm.db)."
+        )
+    return Path(db_path).expanduser()
+
 SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS tasks (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -166,23 +188,27 @@ def _migrate(conn: sqlite3.Connection, from_version: int) -> None:
     conn.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION,))
 
 
-def init_db(db_path: str | Path) -> sqlite3.Connection:
+def init_db(
+    db_path: str | Path,
+    *,
+    allow_migration: bool = False,
+) -> sqlite3.Connection:
     """Open (or create) the database and ensure the schema exists.
 
-    If the ``BOTFARM_DB_PATH`` environment variable is set, it overrides
-    *db_path*.  This allows worker-spawned Claude subprocesses to use a
-    per-slot sandboxed database so that schema migrations never touch the
-    shared production DB.
+    Parameters
+    ----------
+    db_path:
+        Path to the SQLite database file.
+    allow_migration:
+        When ``True``, automatically migrate an older schema to the
+        current version.  When ``False`` (default), a version mismatch
+        raises ``SchemaVersionError`` so that migrations are never
+        applied silently.  The supervisor and CLI should pass ``True``;
+        worker subprocesses and Claude subprocesses should leave it at
+        the default.
 
     Returns a sqlite3.Connection with WAL mode and foreign keys enabled.
     """
-    # SAFETY: This env var is only set in the Claude subprocess's environment
-    # (via subprocess.run(env=...)) — never in the supervisor/worker process.
-    # If it were set in the parent process, all init_db() calls would silently
-    # redirect to the wrong database.
-    env_override = os.environ.get("BOTFARM_DB_PATH")
-    if env_override:
-        db_path = env_override
     db_path = Path(db_path).expanduser()
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -200,9 +226,15 @@ def init_db(db_path: str | Path) -> sqlite3.Connection:
     if row is None:
         conn.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
     elif row[0] < SCHEMA_VERSION:
+        if not allow_migration:
+            raise SchemaVersionError(
+                f"Database schema version ({row[0]}) is older than expected "
+                f"({SCHEMA_VERSION}). Run the supervisor or use --migrate to "
+                f"upgrade the schema."
+            )
         _migrate(conn, row[0])
     elif row[0] > SCHEMA_VERSION:
-        raise RuntimeError(
+        raise SchemaVersionError(
             f"Database schema version mismatch: expected {SCHEMA_VERSION}, got {row[0]}. "
             "Cannot downgrade."
         )

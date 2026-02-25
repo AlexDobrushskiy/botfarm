@@ -18,10 +18,12 @@ from botfarm.config import (
     load_config,
 )
 from botfarm.db import (
+    SchemaVersionError,
     get_task_history,
     init_db,
     load_all_slots,
     load_dispatch_state,
+    resolve_db_path,
     save_dispatch_state,
     upsert_slot,
 )
@@ -30,24 +32,24 @@ from botfarm.usage import refresh_usage_snapshot
 
 ENV_FILE_PATH = DEFAULT_CONFIG_DIR / ".env"
 
-# Default paths (match config.py defaults)
-DEFAULT_DB_PATH = DEFAULT_CONFIG_DIR / "botfarm.db"
-
 
 def _resolve_paths(
     config_path: Path | None,
 ) -> tuple[Path, "BotfarmConfig | None"]:
-    """Resolve database path from config, falling back to defaults.
+    """Resolve database path from ``BOTFARM_DB_PATH`` env var and optionally load config.
 
     Returns (db_path, config_or_None).
+    Raises ``click.ClickException`` if ``BOTFARM_DB_PATH`` is not set.
     """
-    db_path = DEFAULT_DB_PATH
-    config = None
+    try:
+        db_path = resolve_db_path()
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
 
+    config = None
     cfg_path = config_path or DEFAULT_CONFIG_PATH
     if cfg_path.exists():
         config = load_config(cfg_path)
-        db_path = Path(config.database.path).expanduser()
 
     return db_path, config
 
@@ -111,6 +113,8 @@ def status(config_path):
 
     try:
         conn = init_db(db_path)
+    except SchemaVersionError as exc:
+        raise click.ClickException(str(exc)) from exc
     except sqlite3.Error as exc:
         raise click.ClickException(f"Failed to open database: {exc}") from exc
 
@@ -183,6 +187,8 @@ def history(config_path, limit, project, status_filter):
 
     try:
         conn = init_db(db_path)
+    except SchemaVersionError as exc:
+        raise click.ClickException(str(exc)) from exc
     except sqlite3.Error as exc:
         raise click.ClickException(f"Failed to open database: {exc}") from exc
 
@@ -280,6 +286,8 @@ def limits(config_path):
 
     try:
         conn = init_db(db_path)
+    except SchemaVersionError as exc:
+        raise click.ClickException(str(exc)) from exc
     except sqlite3.Error as exc:
         raise click.ClickException(f"Failed to open database: {exc}") from exc
 
@@ -463,6 +471,8 @@ def reset(project, reset_all, force, config_path):
 
     try:
         conn = init_db(db_path)
+    except SchemaVersionError as exc:
+        raise click.ClickException(str(exc)) from exc
     except sqlite3.Error as exc:
         raise click.ClickException(f"Failed to open database: {exc}") from exc
 

@@ -45,7 +45,8 @@ linear:
   comment_on_limit_pause: false
 
 database:
-  path: ~/.botfarm/botfarm.db
+  # path is ignored — set BOTFARM_DB_PATH in your .env file instead
+  path: ""
 
 usage_limits:
   pause_five_hour_threshold: 0.85
@@ -102,7 +103,7 @@ class LinearConfig:
 
 @dataclass
 class DatabaseConfig:
-    path: str = "~/.botfarm/botfarm.db"
+    path: str = ""
 
 
 @dataclass
@@ -345,7 +346,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
 
     db_data = data.get("database", {})
     database = DatabaseConfig(
-        path=db_data.get("path", "~/.botfarm/botfarm.db"),
+        path=db_data.get("path", ""),
     )
 
     ul_data = data.get("usage_limits", {})

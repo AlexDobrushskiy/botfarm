@@ -36,7 +36,6 @@ def _make_config(
     *,
     projects: list[ProjectConfig] | None = None,
     linear: LinearConfig | None = None,
-    db_path: str | None = None,
     notifications: NotificationsConfig | None = None,
 ) -> BotfarmConfig:
     """Build a BotfarmConfig with sensible defaults for testing."""
@@ -54,7 +53,7 @@ def _make_config(
     return BotfarmConfig(
         projects=projects,
         linear=linear or LinearConfig(api_key="lin_test_key"),
-        database=DatabaseConfig(path=db_path or str(tmp_path / "test.db")),
+        database=DatabaseConfig(),
         notifications=notifications or NotificationsConfig(),
     )
 
@@ -283,13 +282,22 @@ class TestCheckCredentials:
 
 
 class TestCheckDatabase:
-    def test_pass_new_db(self, tmp_path):
-        config = _make_config(tmp_path, db_path=str(tmp_path / "new.db"))
+    def test_fail_env_not_set(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("BOTFARM_DB_PATH", raising=False)
+        config = _make_config(tmp_path)
+        results = check_database(config)
+        assert len(results) == 1
+        assert not results[0].passed
+        assert "BOTFARM_DB_PATH" in results[0].message
+
+    def test_pass_new_db(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "new.db"))
+        config = _make_config(tmp_path)
         results = check_database(config)
         assert len(results) == 1
         assert results[0].passed
 
-    def test_pass_existing_db_matching_version(self, tmp_path):
+    def test_pass_existing_db_matching_version(self, tmp_path, monkeypatch):
         db_path = tmp_path / "test.db"
         conn = sqlite3.connect(str(db_path))
         conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
@@ -297,12 +305,13 @@ class TestCheckDatabase:
         conn.commit()
         conn.close()
 
-        config = _make_config(tmp_path, db_path=str(db_path))
+        monkeypatch.setenv("BOTFARM_DB_PATH", str(db_path))
+        config = _make_config(tmp_path)
         results = check_database(config)
         assert len(results) == 1
         assert results[0].passed
 
-    def test_pass_older_version_will_migrate(self, tmp_path):
+    def test_pass_older_version_will_migrate(self, tmp_path, monkeypatch):
         db_path = tmp_path / "test.db"
         conn = sqlite3.connect(str(db_path))
         conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
@@ -310,13 +319,14 @@ class TestCheckDatabase:
         conn.commit()
         conn.close()
 
-        config = _make_config(tmp_path, db_path=str(db_path))
+        monkeypatch.setenv("BOTFARM_DB_PATH", str(db_path))
+        config = _make_config(tmp_path)
         results = check_database(config)
         assert len(results) == 1
         assert results[0].passed
         assert "will migrate" in results[0].message
 
-    def test_fail_newer_version(self, tmp_path):
+    def test_fail_newer_version(self, tmp_path, monkeypatch):
         db_path = tmp_path / "test.db"
         conn = sqlite3.connect(str(db_path))
         conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
@@ -324,16 +334,18 @@ class TestCheckDatabase:
         conn.commit()
         conn.close()
 
-        config = _make_config(tmp_path, db_path=str(db_path))
+        monkeypatch.setenv("BOTFARM_DB_PATH", str(db_path))
+        config = _make_config(tmp_path)
         results = check_database(config)
         assert len(results) == 1
         assert not results[0].passed
         assert "cannot downgrade" in results[0].message
 
-    def test_fail_dir_not_writable(self, tmp_path):
+    def test_fail_dir_not_writable(self, tmp_path, monkeypatch):
         db_dir = tmp_path / "dbdir"
         db_dir.mkdir()
-        config = _make_config(tmp_path, db_path=str(db_dir / "test.db"))
+        monkeypatch.setenv("BOTFARM_DB_PATH", str(db_dir / "test.db"))
+        config = _make_config(tmp_path)
         with patch("botfarm.preflight.os.access", return_value=False):
             results = check_database(config)
         assert len(results) == 1
@@ -436,10 +448,11 @@ class TestLogPreflightSummary:
 
 
 class TestRunPreflightChecks:
-    def test_runs_all_checks(self, tmp_path):
+    def test_runs_all_checks(self, tmp_path, monkeypatch):
         base = tmp_path / "repo"
         base.mkdir()
         (base / ".git").mkdir()
+        monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "test.db"))
         config = _make_config(tmp_path, projects=[ProjectConfig(
             name="p1", linear_team="TST", base_dir=str(base),
             worktree_prefix="p-", slots=[1],

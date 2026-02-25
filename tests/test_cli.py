@@ -28,7 +28,7 @@ def runner():
 @pytest.fixture()
 def db_file(tmp_path):
     db_path = tmp_path / "botfarm.db"
-    conn = init_db(db_path)
+    conn = init_db(db_path, allow_migration=True)
     conn.close()
     return db_path
 
