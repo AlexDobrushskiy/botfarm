@@ -38,6 +38,15 @@ _ISSUE_FIELDS = """
           }
         }
       }
+      inverseRelations {
+        nodes {
+          type
+          issue {
+            identifier
+            state { type }
+          }
+        }
+      }
       children {
         nodes {
           identifier
@@ -263,6 +272,15 @@ class LinearClient:
                 related = rel.get("relatedIssue") or {}
                 state_type = (related.get("state") or {}).get("type", "")
                 # Only count as blocked if the blocker is not resolved
+                if state_type not in ("completed", "canceled"):
+                    blocked_by.append(related.get("identifier", ""))
+            # Also check inverseRelations: if another issue has type="blocks"
+            # pointing at us, we are blocked by that issue.
+            for rel in node.get("inverseRelations", {}).get("nodes", []):
+                if rel.get("type") != "blocks":
+                    continue
+                related = rel.get("issue") or {}
+                state_type = (related.get("state") or {}).get("type", "")
                 if state_type not in ("completed", "canceled"):
                     blocked_by.append(related.get("identifier", ""))
             # Parse children to detect parent issues.
