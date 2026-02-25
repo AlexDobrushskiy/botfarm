@@ -229,8 +229,8 @@ def init_db(
         if not allow_migration:
             raise SchemaVersionError(
                 f"Database schema version ({row[0]}) is older than expected "
-                f"({SCHEMA_VERSION}). Run the supervisor or use --migrate to "
-                f"upgrade the schema."
+                f"({SCHEMA_VERSION}). Run `botfarm run` "
+                f"(the supervisor will migrate automatically)."
             )
         _migrate(conn, row[0])
     elif row[0] > SCHEMA_VERSION:
