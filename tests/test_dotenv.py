@@ -17,10 +17,15 @@ def test_dotenv_loads_env_vars(tmp_path, monkeypatch):
     """CLI loads variables from .env file into os.environ."""
     import botfarm.cli as cli_mod
 
+    db_path = tmp_path / "nonexistent.db"
     env_file = tmp_path / ".env"
-    env_file.write_text("BOTFARM_TEST_DOTENV_VAR=loaded_value\n")
+    env_file.write_text(
+        f"BOTFARM_TEST_DOTENV_VAR=loaded_value\n"
+        f"BOTFARM_DB_PATH={db_path}\n"
+    )
     monkeypatch.setattr(cli_mod, "ENV_FILE_PATH", env_file)
     monkeypatch.delenv("BOTFARM_TEST_DOTENV_VAR", raising=False)
+    monkeypatch.delenv("BOTFARM_DB_PATH", raising=False)
 
     runner = CliRunner()
     result = runner.invoke(main, ["status"])
@@ -36,6 +41,8 @@ def test_dotenv_no_error_when_missing(tmp_path, monkeypatch):
     import botfarm.cli as cli_mod
 
     monkeypatch.setattr(cli_mod, "ENV_FILE_PATH", tmp_path / "nonexistent" / ".env")
+    # BOTFARM_DB_PATH must still be set for CLI to work
+    monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "nonexistent.db"))
 
     runner = CliRunner()
     result = runner.invoke(main, ["status"])
@@ -50,6 +57,8 @@ def test_dotenv_does_not_override_existing_env(tmp_path, monkeypatch):
     env_file.write_text("BOTFARM_TEST_EXISTING=from_dotenv\n")
     monkeypatch.setattr(cli_mod, "ENV_FILE_PATH", env_file)
     monkeypatch.setenv("BOTFARM_TEST_EXISTING", "from_env")
+    # BOTFARM_DB_PATH must be set for CLI to work
+    monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "nonexistent.db"))
 
     runner = CliRunner()
     result = runner.invoke(main, ["status"])

@@ -29,7 +29,7 @@ from pathlib import Path
 from types import FrameType
 
 from botfarm.config import BotfarmConfig, ProjectConfig
-from botfarm.db import get_task, init_db, insert_event, insert_task, update_task
+from botfarm.db import get_task, init_db, insert_event, insert_task, resolve_db_path, update_task
 from botfarm.linear import LinearPoller, create_pollers
 from botfarm.notifications import Notifier
 from botfarm.preflight import log_preflight_summary, run_preflight_checks
@@ -67,7 +67,6 @@ def _worker_entry(
     project_name: str,
     slot_id: int,
     cwd: str,
-    db_path: str,
     log_dir: str | None = None,
     log_max_bytes: int = 10 * 1024 * 1024,
     log_backup_count: int = 5,
@@ -86,6 +85,9 @@ def _worker_entry(
     communicated back to the supervisor via ``result_queue`` so only
     the supervisor writes to the shared state file.
 
+    The database path is resolved from the ``BOTFARM_DB_PATH`` environment
+    variable (inherited from the supervisor process).
+
     When ``resume_from_stage`` is set, the pipeline skips stages that
     were already completed and resumes from the specified stage.
     """
@@ -101,6 +103,7 @@ def _worker_entry(
             backup_count=log_backup_count,
         )
 
+    db_path = resolve_db_path()
     conn = init_db(db_path)
 
     try:
@@ -238,10 +241,10 @@ class Supervisor:
             p.project_name: p for p in pollers
         }
 
-        # Database
-        db_path = Path(config.database.path).expanduser()
+        # Database — path comes from BOTFARM_DB_PATH env var (loaded from .env)
+        db_path = resolve_db_path()
         self._db_path = str(db_path)
-        self._conn: sqlite3.Connection = init_db(db_path)
+        self._conn: sqlite3.Connection = init_db(db_path, allow_migration=True)
 
         # Slot manager (shares the supervisor's DB connection)
         self._slot_manager = SlotManager(
@@ -549,7 +552,6 @@ class Supervisor:
                 "project_name": project_name,
                 "slot_id": slot.slot_id,
                 "cwd": cwd,
-                "db_path": self._db_path,
                 "log_dir": str(ticket_log_dir),
                 "log_max_bytes": self._config.logging.max_bytes,
                 "log_backup_count": self._config.logging.backup_count,
@@ -781,7 +783,7 @@ class Supervisor:
             from botfarm.dashboard import start_dashboard
             self._dashboard_thread = start_dashboard(
                 self._config.dashboard,
-                db_path=self._config.database.path,
+                db_path=self._db_path,
                 linear_workspace=self._config.linear.workspace,
                 botfarm_config=self._config,
             )
@@ -1491,7 +1493,6 @@ class Supervisor:
                 "project_name": project_name,
                 "slot_id": slot.slot_id,
                 "cwd": cwd,
-                "db_path": self._db_path,
                 "log_dir": str(ticket_log_dir),
                 "log_max_bytes": self._config.logging.max_bytes,
                 "log_backup_count": self._config.logging.backup_count,
@@ -1693,7 +1694,6 @@ class Supervisor:
                 "project_name": project_name,
                 "slot_id": slot.slot_id,
                 "cwd": cwd,
-                "db_path": self._db_path,
                 "log_dir": str(ticket_log_dir),
                 "log_max_bytes": self._config.logging.max_bytes,
                 "log_backup_count": self._config.logging.backup_count,

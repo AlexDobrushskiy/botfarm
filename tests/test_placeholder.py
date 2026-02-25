@@ -22,19 +22,22 @@ def test_cli_version():
     assert "0.1.0" in result.output
 
 
-def test_status_command():
+def test_status_command(tmp_path, monkeypatch):
+    monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "nonexistent.db"))
     runner = CliRunner()
     result = runner.invoke(main, ["status"])
     assert result.exit_code == 0
 
 
-def test_history_command():
+def test_history_command(tmp_path, monkeypatch):
+    monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "nonexistent.db"))
     runner = CliRunner()
     result = runner.invoke(main, ["history"])
     assert result.exit_code == 0
 
 
-def test_limits_command():
+def test_limits_command(tmp_path, monkeypatch):
+    monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "nonexistent.db"))
     runner = CliRunner()
     result = runner.invoke(main, ["limits"])
     assert result.exit_code == 0

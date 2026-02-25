@@ -1652,26 +1652,32 @@ class TestConfigViewPage:
         assert resp.status_code == 200
         assert "not available" in resp.text
 
-    def test_config_view_masks_short_api_key(self, db_file, tmp_path):
-        config = BotfarmConfig(
-            projects=[
-                ProjectConfig(
-                    name="p", linear_team="T",
-                    base_dir="~/p", worktree_prefix="p-", slots=[1],
-                ),
-            ],
-            linear=LinearConfig(api_key="short"),
-        )
-        config.source_path = str(tmp_path / "config.yaml")
-        app = create_app(
-            db_path=db_file,
-            botfarm_config=config,
-        )
-        client = TestClient(app)
-        resp = client.get("/config")
-        body = resp.text
-        assert "short" not in body
-        assert "****" in body
+    def test_config_view_masks_short_api_key(self, tmp_path):
+        # Use a db in a separate temp dir so the db path displayed on
+        # the config page doesn't contain the test name substring.
+        import tempfile
+        with tempfile.TemporaryDirectory(prefix="botfarm_mask_") as td:
+            db = Path(td) / "botfarm.db"
+            init_db(db)
+            config = BotfarmConfig(
+                projects=[
+                    ProjectConfig(
+                        name="p", linear_team="T",
+                        base_dir="~/p", worktree_prefix="p-", slots=[1],
+                    ),
+                ],
+                linear=LinearConfig(api_key="short"),
+            )
+            config.source_path = str(tmp_path / "config.yaml")
+            app = create_app(
+                db_path=db,
+                botfarm_config=config,
+            )
+            client = TestClient(app)
+            resp = client.get("/config")
+            body = resp.text
+            assert "short" not in body
+            assert "****" in body
 
     def test_config_view_empty_webhook_shows_dash(self, db_file, tmp_path):
         config = BotfarmConfig(

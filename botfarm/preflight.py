@@ -16,7 +16,7 @@ from pathlib import Path
 
 from botfarm.config import BotfarmConfig
 from botfarm.credentials import CredentialError, _load_token
-from botfarm.db import SCHEMA_VERSION
+from botfarm.db import SCHEMA_VERSION, resolve_db_path
 from botfarm.linear import LinearAPIError, LinearClient
 
 logger = logging.getLogger(__name__)
@@ -213,9 +213,21 @@ def check_credentials() -> list[CheckResult]:
 
 
 def check_database(config: BotfarmConfig) -> list[CheckResult]:
-    """Verify DB file path is writable and schema version matches."""
+    """Verify DB file path is writable and schema version matches.
+
+    The database path is resolved from the ``BOTFARM_DB_PATH`` environment
+    variable via :func:`resolve_db_path`.
+    """
     results: list[CheckResult] = []
-    db_path = Path(config.database.path).expanduser()
+    try:
+        db_path = resolve_db_path()
+    except RuntimeError as exc:
+        results.append(CheckResult(
+            name="database",
+            passed=False,
+            message=str(exc),
+        ))
+        return results
     db_dir = db_path.parent
 
     if not db_dir.exists():

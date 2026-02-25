@@ -8,6 +8,7 @@ import pytest
 
 from botfarm.db import (
     SCHEMA_VERSION,
+    SchemaVersionError,
     count_tasks,
     get_distinct_projects,
     get_events,
@@ -23,6 +24,7 @@ from botfarm.db import (
     insert_usage_snapshot,
     load_all_slots,
     load_dispatch_state,
+    resolve_db_path,
     save_dispatch_state,
     update_task,
     upsert_slot,
@@ -33,7 +35,7 @@ from botfarm.db import (
 def conn(tmp_path):
     """Yield a fresh in-memory-style DB connection using a temp file."""
     db_file = tmp_path / "test.db"
-    connection = init_db(db_file)
+    connection = init_db(db_file, allow_migration=True)
     yield connection
     connection.close()
 
@@ -46,7 +48,7 @@ def conn(tmp_path):
 class TestInitDb:
     def test_creates_file_and_tables(self, tmp_path):
         db_file = tmp_path / "sub" / "botfarm.db"
-        c = init_db(db_file)
+        c = init_db(db_file, allow_migration=True)
         assert db_file.exists()
 
         tables = {
@@ -72,41 +74,65 @@ class TestInitDb:
 
     def test_idempotent_init(self, tmp_path):
         db_file = tmp_path / "botfarm.db"
-        c1 = init_db(db_file)
+        c1 = init_db(db_file, allow_migration=True)
         c1.close()
-        c2 = init_db(db_file)
+        c2 = init_db(db_file, allow_migration=True)
         row = c2.execute("SELECT version FROM schema_version").fetchone()
         assert row[0] == SCHEMA_VERSION
         c2.close()
 
     def test_schema_version_future_raises(self, tmp_path):
         db_file = tmp_path / "botfarm.db"
-        c = init_db(db_file)
+        c = init_db(db_file, allow_migration=True)
         c.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION + 99,))
         c.commit()
         c.close()
-        with pytest.raises(RuntimeError, match="Cannot downgrade"):
-            init_db(db_file)
+        with pytest.raises(SchemaVersionError, match="Cannot downgrade"):
+            init_db(db_file, allow_migration=True)
 
-    def test_botfarm_db_path_env_overrides(self, tmp_path, monkeypatch):
-        """When BOTFARM_DB_PATH is set, init_db uses that path instead of the provided one."""
-        real_db = tmp_path / "real.db"
-        override_db = tmp_path / "override" / "botfarm.db"
-        monkeypatch.setenv("BOTFARM_DB_PATH", str(override_db))
+    def test_resolve_db_path_from_env(self, tmp_path, monkeypatch):
+        """resolve_db_path returns the path from BOTFARM_DB_PATH env var."""
+        monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "test.db"))
+        result = resolve_db_path()
+        assert result == tmp_path / "test.db"
 
-        c = init_db(real_db)
-        c.close()
+    def test_resolve_db_path_expands_tilde(self, monkeypatch):
+        """resolve_db_path expands ~ in the path."""
+        monkeypatch.setenv("BOTFARM_DB_PATH", "~/.botfarm/botfarm.db")
+        from pathlib import Path
+        result = resolve_db_path()
+        assert "~" not in str(result)
+        assert result == Path.home() / ".botfarm" / "botfarm.db"
 
-        assert override_db.exists()
-        assert not real_db.exists()
+    def test_resolve_db_path_raises_when_unset(self, monkeypatch):
+        """resolve_db_path raises RuntimeError when env var is missing."""
+        monkeypatch.delenv("BOTFARM_DB_PATH", raising=False)
+        with pytest.raises(RuntimeError, match="BOTFARM_DB_PATH"):
+            resolve_db_path()
 
-    def test_botfarm_db_path_env_not_set(self, tmp_path, monkeypatch):
-        """Without BOTFARM_DB_PATH, init_db uses the provided path."""
+    def test_resolve_db_path_raises_when_empty(self, monkeypatch):
+        """resolve_db_path raises RuntimeError when env var is empty."""
+        monkeypatch.setenv("BOTFARM_DB_PATH", "")
+        with pytest.raises(RuntimeError, match="BOTFARM_DB_PATH"):
+            resolve_db_path()
+
+    def test_init_db_uses_provided_path(self, tmp_path, monkeypatch):
+        """init_db uses the explicitly provided path, not BOTFARM_DB_PATH."""
         monkeypatch.delenv("BOTFARM_DB_PATH", raising=False)
         db_file = tmp_path / "normal.db"
-        c = init_db(db_file)
+        c = init_db(db_file, allow_migration=True)
         c.close()
         assert db_file.exists()
+
+    def test_schema_version_older_without_migration_raises(self, tmp_path):
+        """init_db raises SchemaVersionError for older schema without allow_migration."""
+        db_file = tmp_path / "botfarm.db"
+        c = init_db(db_file, allow_migration=True)
+        c.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION - 1,))
+        c.commit()
+        c.close()
+        with pytest.raises(SchemaVersionError, match="older than expected"):
+            init_db(db_file, allow_migration=False)
 
     def test_migration_v1_to_v2(self, tmp_path):
         """Simulate a v1 database and verify migration adds new columns."""
@@ -174,7 +200,7 @@ class TestInitDb:
         conn.close()
 
         # Re-open via init_db — should migrate
-        c2 = init_db(db_file)
+        c2 = init_db(db_file, allow_migration=True)
         row = c2.execute("SELECT version FROM schema_version").fetchone()
         assert row[0] == SCHEMA_VERSION
 
@@ -255,7 +281,7 @@ class TestInitDb:
         conn.close()
 
         # Re-open via init_db — should migrate to v3
-        c2 = init_db(db_file)
+        c2 = init_db(db_file, allow_migration=True)
         row = c2.execute("SELECT version FROM schema_version").fetchone()
         assert row[0] == SCHEMA_VERSION
 
@@ -377,7 +403,7 @@ class TestInitDb:
         conn.close()
 
         # Re-open via init_db — should migrate to v5
-        c2 = init_db(db_file)
+        c2 = init_db(db_file, allow_migration=True)
         row = c2.execute("SELECT version FROM schema_version").fetchone()
         assert row[0] == SCHEMA_VERSION
 

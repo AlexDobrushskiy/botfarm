@@ -251,7 +251,7 @@ def test_load_config_defaults(tmp_path):
 
     assert config.linear.poll_interval_seconds == 120
     assert config.linear.exclude_tags == ["Human"]
-    assert config.database.path == "~/.botfarm/botfarm.db"
+    assert config.database.path == ""
 
 
 def test_load_config_poll_interval_zero(tmp_path):

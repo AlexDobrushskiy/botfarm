@@ -56,7 +56,7 @@ def _make_config(tmp_path: Path) -> BotfarmConfig:
             poll_interval_seconds=10,
             exclude_tags=["Human"],
         ),
-        database=DatabaseConfig(path=str(tmp_path / "test.db")),
+        database=DatabaseConfig(),
     )
 
 
@@ -84,8 +84,9 @@ def tmp_config(tmp_path):
 
 
 @pytest.fixture()
-def supervisor(tmp_config, tmp_path):
+def supervisor(tmp_config, tmp_path, monkeypatch):
     """Create a Supervisor with mocked pollers (no real Linear calls)."""
+    monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "test.db"))
     mock_poller = MagicMock()
     mock_poller.project_name = "test-project"
     mock_poller.poll.return_value = PollResult(candidates=[], auto_close_parents=[])
@@ -99,7 +100,7 @@ def supervisor(tmp_config, tmp_path):
 @pytest.fixture()
 def conn(tmp_path):
     db_file = tmp_path / "test.db"
-    connection = init_db(db_file)
+    connection = init_db(db_file, allow_migration=True)
     yield connection
     connection.close()
 
@@ -820,12 +821,13 @@ class TestSleep:
 
 class TestWorkerEntry:
     @patch("botfarm.supervisor.run_pipeline")
-    def test_successful_pipeline_sends_success(self, mock_pipeline, tmp_path):
+    def test_successful_pipeline_sends_success(self, mock_pipeline, tmp_path, monkeypatch):
         import multiprocessing
         db_path = str(tmp_path / "test.db")
+        monkeypatch.setenv("BOTFARM_DB_PATH", db_path)
         q = multiprocessing.Queue()
 
-        conn = init_db(db_path)
+        conn = init_db(db_path, allow_migration=True)
         task_id = insert_task(
             conn,
             ticket_id="TST-1",
@@ -848,7 +850,6 @@ class TestWorkerEntry:
             project_name="proj",
             slot_id=1,
             cwd=str(tmp_path),
-            db_path=db_path,
             result_queue=q,
             max_turns=None,
         )
@@ -860,12 +861,13 @@ class TestWorkerEntry:
         assert wr.slot_id == 1
 
     @patch("botfarm.supervisor.run_pipeline")
-    def test_failed_pipeline_sends_failure(self, mock_pipeline, tmp_path):
+    def test_failed_pipeline_sends_failure(self, mock_pipeline, tmp_path, monkeypatch):
         import multiprocessing
         db_path = str(tmp_path / "test.db")
+        monkeypatch.setenv("BOTFARM_DB_PATH", db_path)
         q = multiprocessing.Queue()
 
-        conn = init_db(db_path)
+        conn = init_db(db_path, allow_migration=True)
         task_id = insert_task(
             conn,
             ticket_id="TST-2",
@@ -890,7 +892,6 @@ class TestWorkerEntry:
             project_name="proj",
             slot_id=1,
             cwd=str(tmp_path),
-            db_path=db_path,
             result_queue=q,
             max_turns=None,
         )
@@ -901,12 +902,13 @@ class TestWorkerEntry:
         assert wr.failure_stage == "implement"
 
     @patch("botfarm.supervisor.run_pipeline")
-    def test_exception_sends_failure(self, mock_pipeline, tmp_path):
+    def test_exception_sends_failure(self, mock_pipeline, tmp_path, monkeypatch):
         import multiprocessing
         db_path = str(tmp_path / "test.db")
+        monkeypatch.setenv("BOTFARM_DB_PATH", db_path)
         q = multiprocessing.Queue()
 
-        conn = init_db(db_path)
+        conn = init_db(db_path, allow_migration=True)
         task_id = insert_task(
             conn,
             ticket_id="TST-3",
@@ -927,7 +929,6 @@ class TestWorkerEntry:
             project_name="proj",
             slot_id=1,
             cwd=str(tmp_path),
-            db_path=db_path,
             result_queue=q,
             max_turns=None,
         )
@@ -1676,7 +1677,8 @@ class TestTickWithPausedSlots:
 
 
 class TestMultiProject:
-    def test_dispatches_across_projects(self, tmp_path):
+    def test_dispatches_across_projects(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "test.db"))
         config = BotfarmConfig(
             projects=[
                 ProjectConfig(
@@ -1698,7 +1700,7 @@ class TestMultiProject:
                 api_key="test-key",
                 poll_interval_seconds=10,
             ),
-            database=DatabaseConfig(path=str(tmp_path / "test.db")),
+            database=DatabaseConfig(),
         )
         (tmp_path / "alpha").mkdir()
         (tmp_path / "beta").mkdir()
@@ -1953,8 +1955,9 @@ class TestCheckTimeouts:
             supervisor._tick()
             mock_timeouts.assert_called_once()
 
-    def test_timeout_with_custom_config(self, tmp_path):
+    def test_timeout_with_custom_config(self, tmp_path, monkeypatch):
         """Custom timeout_minutes values are respected."""
+        monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "test.db"))
         config = _make_config(tmp_path)
         config.agents.timeout_minutes = {"implement": 10, "review": 5, "fix": 8}
         (tmp_path / "repo").mkdir()
@@ -2823,13 +2826,14 @@ def _make_config_custom_statuses(tmp_path: Path) -> BotfarmConfig:
             comment_on_completion=True,
             comment_on_limit_pause=True,
         ),
-        database=DatabaseConfig(path=str(tmp_path / "test.db")),
+        database=DatabaseConfig(),
     )
 
 
 @pytest.fixture()
-def supervisor_custom_statuses(tmp_path):
+def supervisor_custom_statuses(tmp_path, monkeypatch):
     """Create a Supervisor with custom status names."""
+    monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "test.db"))
     config = _make_config_custom_statuses(tmp_path)
     (tmp_path / "repo").mkdir()
 
@@ -2962,8 +2966,9 @@ class TestCommentPosting:
         assert "implement" in comment_body
         assert "some error" in comment_body
 
-    def test_failure_comment_disabled(self, tmp_path):
+    def test_failure_comment_disabled(self, tmp_path, monkeypatch):
         """comment_on_failure=False suppresses failure comments."""
+        monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "test.db"))
         config = BotfarmConfig(
             projects=[
                 ProjectConfig(
@@ -2979,7 +2984,7 @@ class TestCommentPosting:
                 poll_interval_seconds=10,
                 comment_on_failure=False,
             ),
-            database=DatabaseConfig(path=str(tmp_path / "test.db")),
+            database=DatabaseConfig(),
         )
         (tmp_path / "repo").mkdir()
 
