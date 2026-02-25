@@ -206,6 +206,14 @@
             background: var(--pico-card-background-color);
             border-radius: var(--pico-border-radius);
         }
+
+        /* Clickable row hover effect */
+        table tbody tr[onclick] {
+            transition: background-color 0.15s ease;
+        }
+        table tbody tr[onclick]:hover {
+            background-color: var(--pico-form-element-background-color);
+        }
     </style>
     <script>
     function updateCountdowns() {
