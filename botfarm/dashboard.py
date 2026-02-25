@@ -787,7 +787,7 @@ def create_app(
                 "port": cfg.dashboard.port,
             },
             "database": {
-                "path": cfg.database.path,
+                "path": str(app.state.db_path),
             },
         }
 

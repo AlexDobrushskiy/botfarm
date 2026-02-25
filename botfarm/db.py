@@ -203,9 +203,8 @@ def init_db(
         When ``True``, automatically migrate an older schema to the
         current version.  When ``False`` (default), a version mismatch
         raises ``SchemaVersionError`` so that migrations are never
-        applied silently.  The supervisor and CLI should pass ``True``;
-        worker subprocesses and Claude subprocesses should leave it at
-        the default.
+        applied silently.  The supervisor passes ``True``; CLI commands
+        and worker subprocesses should leave it at the default.
 
     Returns a sqlite3.Connection with WAL mode and foreign keys enabled.
     """
