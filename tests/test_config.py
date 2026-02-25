@@ -249,7 +249,7 @@ def test_load_config_defaults(tmp_path):
     config_path = _write_config(tmp_path, MINIMAL_CONFIG)
     config = load_config(config_path)
 
-    assert config.linear.poll_interval_seconds == 120
+    assert config.linear.poll_interval_seconds == 30
     assert config.linear.exclude_tags == ["Human"]
     assert config.database.path == ""
 
