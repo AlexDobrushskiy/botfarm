@@ -354,16 +354,26 @@ def _run_ci_fix(
     )
 
 
+def _is_protected_branch(branch: str) -> bool:
+    """Return True if the branch must never be deleted."""
+    if branch == "main":
+        return True
+    if re.match(r"^slot-\d+-placeholder$", branch):
+        return True
+    return False
+
+
 def _run_merge(
     pr_url: str,
     *,
     cwd: str | Path,
     log_file: Path | None = None,
     placeholder_branch: str | None = None,
+    feature_branch: str | None = None,
 ) -> StageResult:
     """MERGE stage — Squash merge the PR, then checkout placeholder branch."""
     proc = subprocess.run(
-        ["gh", "pr", "merge", pr_url, "--squash", "--delete-branch"],
+        ["gh", "pr", "merge", pr_url, "--squash"],
         capture_output=True,
         text=True,
         cwd=str(cwd),
@@ -398,6 +408,30 @@ def _run_merge(
                 placeholder_branch,
                 checkout.stderr[:300],
             )
+
+    # Delete the local feature branch to prevent stale branch accumulation.
+    if feature_branch:
+        if _is_protected_branch(feature_branch):
+            logger.warning(
+                "Refusing to delete protected branch '%s'", feature_branch,
+            )
+        else:
+            delete = subprocess.run(
+                ["git", "branch", "-D", feature_branch],
+                capture_output=True,
+                text=True,
+                cwd=str(cwd),
+            )
+            if delete.returncode != 0:
+                logger.warning(
+                    "Failed to delete local feature branch '%s': %s",
+                    feature_branch,
+                    delete.stderr[:300],
+                )
+            else:
+                logger.info(
+                    "Deleted local feature branch '%s'", feature_branch,
+                )
 
     return StageResult(stage="merge", success=True)
 
@@ -435,6 +469,7 @@ def run_pipeline(
     db_path: str | Path | None = None,
     log_dir: str | Path | None = None,
     placeholder_branch: str | None = None,
+    feature_branch: str | None = None,
     max_turns: dict[str, int] | None = None,
     pr_checks_timeout: int = 600,
     max_review_iterations: int = 3,
@@ -520,6 +555,7 @@ def run_pipeline(
         db_path=db_path,
         log_dir=Path(log_dir) if log_dir else None,
         placeholder_branch=placeholder_branch,
+        feature_branch=feature_branch,
         subprocess_env=subprocess_env,
     )
 
@@ -674,6 +710,7 @@ class _PipelineContext:
     db_path: str | Path | None = None
     log_dir: Path | None = None
     placeholder_branch: str | None = None
+    feature_branch: str | None = None
     subprocess_env: dict[str, str] | None = None
 
     def run_and_record(
@@ -717,6 +754,7 @@ class _PipelineContext:
                 pr_checks_timeout=self.pr_checks_timeout,
                 log_file=log_file,
                 placeholder_branch=self.placeholder_branch,
+                feature_branch=self.feature_branch,
                 env=self.subprocess_env,
             )
         except Exception as exc:
@@ -967,6 +1005,7 @@ def _execute_stage(
     pr_checks_timeout: int,
     log_file: Path | None = None,
     placeholder_branch: str | None = None,
+    feature_branch: str | None = None,
     env: dict[str, str] | None = None,
 ) -> StageResult:
     """Dispatch to the appropriate stage runner."""
@@ -987,7 +1026,7 @@ def _execute_stage(
     elif stage == "merge":
         if not pr_url:
             raise ValueError(f"{stage} stage requires pr_url")
-        return _run_merge(pr_url, cwd=cwd, log_file=log_file, placeholder_branch=placeholder_branch)
+        return _run_merge(pr_url, cwd=cwd, log_file=log_file, placeholder_branch=placeholder_branch, feature_branch=feature_branch)
     else:
         raise ValueError(f"Unknown stage: {stage}")
 
