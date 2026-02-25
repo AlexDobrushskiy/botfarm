@@ -10,6 +10,11 @@
     <style>
         :root { --pico-font-size: 15px; }
         nav ul { margin-bottom: 0; }
+        nav.container-fluid a[aria-current="page"] {
+            font-weight: 600;
+            color: var(--pico-primary);
+            border-bottom: 2px solid var(--pico-primary);
+        }
         .status-free { color: var(--pico-ins-color); }
         .status-busy { color: var(--pico-color-yellow-500, #eab308); }
         .status-paused_limit { color: var(--pico-color-purple-400, #c084fc); }
