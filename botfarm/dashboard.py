@@ -12,6 +12,7 @@ import json
 import logging
 import sqlite3
 import threading
+import yaml
 from datetime import datetime, timezone
 from itertools import groupby
 from collections.abc import Callable
@@ -1547,7 +1548,7 @@ def create_app(
                 if stripped and not stripped.startswith("#") and "=" in stripped:
                     key = stripped.partition("=")[0].strip()
                     if key in data:
-                        lines.append(f"{key}={data[key]}")
+                        lines.append(f'{key}="{data[key]}"')
                         existing_keys.add(key)
                         continue
                 lines.append(line)
@@ -1555,10 +1556,26 @@ def create_app(
         # Append new keys not already in the file
         for key, value in data.items():
             if key not in existing_keys:
-                lines.append(f"{key}={value}")
+                lines.append(f'{key}="{value}"')
 
         env_path.parent.mkdir(parents=True, exist_ok=True)
-        env_path.write_text("\n".join(lines) + "\n")
+        content = "\n".join(lines) + "\n"
+        # Atomic write: temp file + os.replace to avoid partial writes
+        import tempfile
+        import os
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(env_path.parent), suffix=".env.tmp",
+        )
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(content)
+            os.replace(tmp_path, str(env_path))
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
     @app.get("/identities", response_class=HTMLResponse)
     def identities_page(request: Request):
@@ -1655,7 +1672,6 @@ def create_app(
         # Write config.yaml: plain fields as values, secret fields as ${VAR} refs
         if (yaml_updates or yaml_env_refs) and config_path and config_path.exists():
             try:
-                import yaml
                 raw = config_path.read_text()
                 data = yaml.safe_load(raw)
                 if not isinstance(data, dict):

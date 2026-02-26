@@ -3436,7 +3436,7 @@ class TestIdentitiesUpdate:
         # .env should have the token
         env_path = config_path.parent / ".env"
         env_content = env_path.read_text()
-        assert "CODER_GITHUB_TOKEN=ghp_newsecret123" in env_content
+        assert 'CODER_GITHUB_TOKEN="ghp_newsecret123"' in env_content
 
     def test_update_coder_secret_writes_env_ref_to_yaml(self, setup):
         client, _, config_path, _ = setup
@@ -3457,8 +3457,8 @@ class TestIdentitiesUpdate:
         assert resp.status_code == 200
         env_path = config_path.parent / ".env"
         env_content = env_path.read_text()
-        assert "REVIEWER_GITHUB_TOKEN=ghp_reviewernew" in env_content
-        assert "REVIEWER_LINEAR_API_KEY=lin_api_new" in env_content
+        assert 'REVIEWER_GITHUB_TOKEN="ghp_reviewernew"' in env_content
+        assert 'REVIEWER_LINEAR_API_KEY="lin_api_new"' in env_content
 
     def test_update_sets_restart_required(self, setup):
         client, _, _, _ = setup
@@ -3482,7 +3482,7 @@ class TestIdentitiesUpdate:
         assert resp.status_code == 200
         # .env has secret
         env_path = config_path.parent / ".env"
-        assert "CODER_GITHUB_TOKEN=ghp_mixed123" in env_path.read_text()
+        assert 'CODER_GITHUB_TOKEN="ghp_mixed123"' in env_path.read_text()
         # YAML has env ref for secret, plain value for non-secret
         data = yaml.safe_load(config_path.read_text())
         assert data["identities"]["coder"]["github_token"] == "${CODER_GITHUB_TOKEN}"
@@ -3542,7 +3542,7 @@ class TestIdentitiesUpdate:
         })
         env_content = env_path.read_text()
         assert "EXISTING_KEY=keepme" in env_content
-        assert "CODER_GITHUB_TOKEN=ghp_new" in env_content
+        assert 'CODER_GITHUB_TOKEN="ghp_new"' in env_content
 
     def test_env_file_updates_existing_secret(self, setup):
         client, _, config_path, _ = setup
@@ -3552,7 +3552,7 @@ class TestIdentitiesUpdate:
             "coder": {"github_token": "ghp_updated"},
         })
         env_content = env_path.read_text()
-        assert "CODER_GITHUB_TOKEN=ghp_updated" in env_content
+        assert 'CODER_GITHUB_TOKEN="ghp_updated"' in env_content
         assert "old_value" not in env_content
 
     def test_yaml_creates_identities_section_if_missing(self, db_file, tmp_path):
