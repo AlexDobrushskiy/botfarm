@@ -5,7 +5,7 @@
 **Steps:**
 1. Navigate to `/`
 2. Observe the slots table
-3. Verify each row shows: Project, Slot ID, Status, Ticket ID/Title, Pipeline progress, Context fill %, Elapsed time
+3. Verify each row shows: Project, Slot ID, Status, Ticket ID/Title, Pipeline progress, Context fill %, Elapsed time, Links
 **Expected Result:** All slots render with correct data; status badges use appropriate color coding (e.g. busy=active, free=neutral, failed=red)
 **Priority:** P0
 
@@ -100,12 +100,22 @@
 **Expected Result:** POST to `/api/resume` is sent. Supervisor resumes dispatching. Button state changes accordingly
 **Priority:** P0
 
-## Scenario: Slot row links to task detail
+## Scenario: Slot "detail" link navigates to task detail
 **Preconditions:** A slot has an active or recent task
 **Steps:**
 1. Navigate to `/`
-2. Click on a slot row with a task
+2. Locate the slot row with a task
+3. Click the "detail" link in the Links column
 **Expected Result:** Navigates to `/task/{task_id}` for the associated task
+**Priority:** P1
+
+## Scenario: Slot "logs" link navigates to log viewer
+**Preconditions:** A slot is in busy state with an active task
+**Steps:**
+1. Navigate to `/`
+2. Locate the busy slot row
+3. Click the "logs" link in the Links column
+**Expected Result:** Navigates to `/task/{task_id}/logs` for the associated task
 **Priority:** P1
 
 ## Scenario: Resume countdown timer for paused_limit slots
