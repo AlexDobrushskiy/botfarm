@@ -1265,6 +1265,25 @@ class TestRunPipeline:
         assert task["status"] == "failed"
 
     @patch("botfarm.worker._execute_stage")
+    def test_investigation_short_circuits_after_implement(self, mock_exec, conn, task_id, tmp_path):
+        """Investigation tickets succeed after implement with no PR URL."""
+        mock_exec.return_value = _mock_stage_result("implement", pr_url=None)
+        result = run_pipeline(
+            ticket_id="SMA-99",
+            ticket_labels=["Investigation"],
+            task_id=task_id,
+            cwd=tmp_path,
+            conn=conn,
+        )
+        assert result.success is True
+        assert result.stages_completed == ["implement"]
+        assert result.pr_url is None
+
+        task = get_task(conn, task_id)
+        assert task["status"] == "completed"
+        assert task["completed_at"] is not None
+
+    @patch("botfarm.worker._execute_stage")
     def test_review_failure_stops_pipeline(self, mock_exec, conn, task_id, tmp_path):
         """Review stage fails → pipeline stops, only implement recorded."""
         mock_exec.side_effect = [

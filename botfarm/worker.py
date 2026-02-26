@@ -446,7 +446,7 @@ def _is_investigation(labels: list[str] | None) -> bool:
     """Return True if the ticket has an Investigation label (case-insensitive)."""
     if not labels:
         return False
-    return any(l.lower() == _INVESTIGATION_LABEL for l in labels)
+    return any(lbl.lower() == _INVESTIGATION_LABEL for lbl in labels)
 
 
 def _build_implement_prompt(ticket_id: str, labels: list[str] | None) -> str:
@@ -1003,6 +1003,19 @@ def run_pipeline(
             conn.commit()
             if slot_manager and project and slot_id is not None:
                 slot_manager.set_pr_url(project, slot_id, pr_url)
+
+        # Investigation tickets short-circuit after implement — no PR expected
+        if stage == "implement" and _is_investigation(ticket_labels):
+            pipeline.success = True
+            update_task(
+                conn,
+                task_id,
+                status="completed",
+                turns=pipeline.total_turns,
+                completed_at=datetime.now(timezone.utc).isoformat(),
+            )
+            conn.commit()
+            return pipeline
 
         # If implement didn't produce a PR URL, we can't continue
         if stage == "implement" and not pr_url:

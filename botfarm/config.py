@@ -65,7 +65,7 @@ agents:
     implement: 120
     review: 30
     fix: 60
-  # timeout_overrides:
+  # timeout_overrides (first matching label wins; order matters):
   #   Investigation:
   #     implement: 30
   timeout_grace_seconds: 10
@@ -249,7 +249,7 @@ def resolve_stage_timeout(
     ``None`` if the stage has no configured timeout.
     """
     if ticket_labels:
-        labels_lower = {l.lower() for l in ticket_labels}
+        labels_lower = {lbl.lower() for lbl in ticket_labels}
         for label, overrides in agents_cfg.timeout_overrides.items():
             if label.lower() in labels_lower and stage in overrides:
                 return overrides[stage]
@@ -421,9 +421,12 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
     if isinstance(raw_overrides, dict):
         for label, stages in raw_overrides.items():
             if isinstance(stages, dict):
-                timeout_overrides[str(label)] = {
-                    k: int(v) for k, v in stages.items()
-                }
+                try:
+                    timeout_overrides[str(label)] = {
+                        k: int(v) for k, v in stages.items()
+                    }
+                except (ValueError, TypeError) as exc:
+                    raise ConfigError(f"agents.timeout_overrides.{label}: {exc}")
 
     agents = AgentsConfig(
         max_review_iterations=int(agents_data.get("max_review_iterations", 3)),

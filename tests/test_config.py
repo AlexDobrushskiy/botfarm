@@ -594,7 +594,7 @@ def test_load_config_timeout_overrides_non_int_rejected(tmp_path):
         },
     }
     config_path = _write_config(tmp_path, data)
-    with pytest.raises((ConfigError, ValueError)):
+    with pytest.raises(ConfigError, match="timeout_overrides"):
         load_config(config_path)
 
 
