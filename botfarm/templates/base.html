@@ -288,6 +288,92 @@
         table tbody tr[onclick]:hover {
             background-color: var(--pico-form-element-background-color);
         }
+
+        /* Live output link (task detail page) */
+        .live-output-link {
+            display: inline-flex;
+            align-items: center;
+            margin-bottom: 1rem;
+            padding: 0.5rem 1rem;
+            font-size: 0.9rem;
+            text-decoration: none;
+        }
+
+        /* Shared log-live-badge for use across pages */
+        .log-live-badge {
+            background: #ef4444;
+            color: #fff;
+            padding: 0.15rem 0.5rem;
+            border-radius: 0.25rem;
+            font-size: 0.7rem;
+            font-weight: 700;
+            letter-spacing: 0.05em;
+            animation: pulse-live 2s ease-in-out infinite;
+        }
+        @keyframes pulse-live {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+
+        /* Embeddable log stream panel (partials/log_stream.html) */
+        .log-stream-panel {
+            margin-top: 0.5rem;
+        }
+        .log-stream-header {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.25rem 0;
+        }
+        .log-stream-stage {
+            font-weight: 600;
+            text-transform: capitalize;
+            font-size: 0.85rem;
+        }
+        .log-stream-live {
+            background: #ef4444;
+            color: #fff;
+            padding: 0.1rem 0.4rem;
+            border-radius: 0.2rem;
+            font-size: 0.65rem;
+            font-weight: 700;
+            animation: pulse-live 2s ease-in-out infinite;
+        }
+        .log-stream-done {
+            background: var(--pico-ins-color);
+            color: #fff;
+            padding: 0.1rem 0.4rem;
+            border-radius: 0.2rem;
+            font-size: 0.65rem;
+            font-weight: 700;
+        }
+        .log-stream-terminal {
+            background: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: var(--pico-border-radius);
+            padding: 0.5rem;
+            overflow: auto;
+            min-height: 100px;
+        }
+        .log-stream-terminal pre {
+            margin: 0;
+            padding: 0;
+            background: transparent;
+            color: #c9d1d9;
+            font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+            font-size: 0.75rem;
+            line-height: 1.4;
+            white-space: pre-wrap;
+            word-break: break-all;
+            border: none;
+        }
+        /* Log line color-coding by event type */
+        .log-line-assistant  { color: #79c0ff; }
+        .log-line-tool_use   { color: #d2a8ff; }
+        .log-line-tool_result { color: #8b949e; }
+        .log-line-result     { color: #3fb950; font-weight: 600; }
+        .log-line-system     { color: #8b949e; font-style: italic; }
+        .log-line-log        { color: #c9d1d9; }
     </style>
     <script>
     function updateCountdowns() {

@@ -56,6 +56,154 @@ logger = logging.getLogger(__name__)
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 
 
+# ---------------------------------------------------------------------------
+# NDJSON line formatting for SSE log streaming
+# ---------------------------------------------------------------------------
+
+
+def format_ndjson_line(raw_line: str) -> tuple[str, str]:
+    """Parse a raw NDJSON line and return ``(event_type, formatted_text)``.
+
+    *event_type* is one of: ``assistant``, ``tool_use``, ``tool_result``,
+    ``result``, ``system``, or ``log`` (fallback for non-JSON lines).
+
+    *formatted_text* is a human-readable summary of the event suitable for
+    display in a terminal-style log viewer.
+    """
+    stripped = raw_line.strip()
+    if not stripped:
+        return ("log", "")
+
+    try:
+        event = json.loads(stripped)
+    except (json.JSONDecodeError, ValueError):
+        # Not JSON — pass through as-is
+        return ("log", stripped)
+
+    if not isinstance(event, dict):
+        return ("log", stripped)
+
+    msg_type = event.get("type", "")
+
+    if msg_type == "assistant":
+        return _format_assistant(event)
+    if msg_type == "user":
+        return _format_user(event)
+    if msg_type == "result":
+        return _format_result(event)
+
+    # Other NDJSON event types (e.g. system messages) — show type as prefix
+    if msg_type:
+        return ("system", f"[{msg_type}]")
+
+    return ("log", stripped)
+
+
+def _format_assistant(event: dict) -> tuple[str, str]:
+    """Format an ``assistant`` NDJSON event.
+
+    Extracts text content and lists tool_use calls.
+    """
+    message = event.get("message") or {}
+    content_blocks = message.get("content") or []
+
+    parts: list[str] = []
+    tool_lines: list[str] = []
+
+    for block in content_blocks:
+        block_type = block.get("type", "")
+        if block_type == "text":
+            text = block.get("text", "").strip()
+            if text:
+                parts.append(text)
+        elif block_type == "tool_use":
+            tool_name = block.get("name", "unknown")
+            tool_input = block.get("input") or {}
+            summary = _summarize_tool_input(tool_name, tool_input)
+            tool_lines.append(f"  -> {tool_name}({summary})")
+
+    lines: list[str] = []
+    if parts:
+        lines.append("\n".join(parts))
+    if tool_lines:
+        lines.extend(tool_lines)
+
+    if not lines:
+        return ("assistant", "[assistant turn]")
+    return ("assistant", "\n".join(lines))
+
+
+def _format_user(event: dict) -> tuple[str, str]:
+    """Format a ``user`` NDJSON event (tool results)."""
+    message = event.get("message") or {}
+    content_blocks = message.get("content") or []
+
+    results: list[str] = []
+    for block in content_blocks:
+        block_type = block.get("type", "")
+        if block_type == "tool_result":
+            is_error = block.get("is_error", False)
+            status = "ERROR" if is_error else "ok"
+            # Content may be a string or list of content blocks
+            content = block.get("content", "")
+            snippet = ""
+            if isinstance(content, str):
+                snippet = content[:120]
+            elif isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") == "text":
+                        snippet = item.get("text", "")[:120]
+                        break
+            if snippet:
+                results.append(f"  [{status}] {snippet}")
+            else:
+                results.append(f"  [{status}]")
+
+    if not results:
+        return ("tool_result", "[tool results]")
+    return ("tool_result", "\n".join(results))
+
+
+def _format_result(event: dict) -> tuple[str, str]:
+    """Format a ``result`` NDJSON event (stage completion)."""
+    num_turns = event.get("num_turns", 0)
+    duration_ms = event.get("duration_ms", 0)
+    duration_s = duration_ms / 1000.0 if duration_ms else 0
+    subtype = event.get("subtype", "")
+    is_error = event.get("is_error", False)
+    result_text = (event.get("result") or "")[:200]
+
+    parts = [f"Completed in {num_turns} turns ({duration_s:.1f}s)"]
+    if subtype:
+        parts[0] += f" [{subtype}]"
+    if is_error:
+        parts[0] += " [ERROR]"
+    if result_text:
+        parts.append(result_text)
+    return ("result", "\n".join(parts))
+
+
+def _summarize_tool_input(tool_name: str, tool_input: dict) -> str:
+    """Produce a short summary of tool input for display."""
+    if tool_name in ("Read", "Glob"):
+        return tool_input.get("file_path") or tool_input.get("pattern", "")
+    if tool_name == "Edit":
+        fp = tool_input.get("file_path", "")
+        return fp
+    if tool_name == "Write":
+        return tool_input.get("file_path", "")
+    if tool_name == "Bash":
+        cmd = tool_input.get("command", "")
+        return cmd[:80] if cmd else ""
+    if tool_name == "Grep":
+        return tool_input.get("pattern", "")
+    # Generic: show first key=value
+    for k, v in tool_input.items():
+        sv = str(v)[:60]
+        return f"{k}={sv}"
+    return ""
+
+
 def build_pipeline_state(
     stage_runs: list[dict], task_status: str | None,
 ) -> list[dict]:
@@ -1487,7 +1635,14 @@ def create_app(
 
     @app.get("/api/logs/{ticket_id}/{stage}/stream")
     async def stream_log(ticket_id: str, stage: str):
-        """SSE endpoint that tails the active log file for a running stage."""
+        """SSE endpoint that tails the active log file for a running stage.
+
+        Each NDJSON line is parsed and transformed into a human-readable
+        event.  The SSE ``event`` field reflects the message type
+        (``assistant``, ``tool_use``, ``tool_result``, ``result``,
+        ``system``, or ``log`` for non-JSON lines) so the client can
+        style each category differently.
+        """
         log_file = _find_latest_log(ticket_id, stage)
         if log_file is None:
             return PlainTextResponse("No log file found", status_code=404)
@@ -1498,7 +1653,12 @@ def create_app(
                     while True:
                         line = await asyncio.to_thread(f.readline)
                         if line:
-                            yield {"event": "log", "data": line.rstrip("\n")}
+                            event_type, formatted = format_ndjson_line(line)
+                            if formatted:
+                                yield {
+                                    "event": event_type,
+                                    "data": formatted,
+                                }
                         else:
                             # Check if the stage is still active
                             if not await asyncio.to_thread(

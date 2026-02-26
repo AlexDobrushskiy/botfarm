@@ -79,9 +79,18 @@
 
     var evtSource = new EventSource("/api/logs/{{ ticket_id }}/{{ current_stage }}/stream");
 
-    evtSource.addEventListener("log", function(e) {
-        output.textContent += e.data + "\n";
+    function appendLine(text, cls) {
+        var span = document.createElement("span");
+        span.className = "log-line log-line-" + cls;
+        span.textContent = text + "\n";
+        output.appendChild(span);
         scrollToBottom();
+    }
+
+    // Listen for all formatted event types from the SSE stream
+    var eventTypes = ["assistant", "tool_use", "tool_result", "result", "system", "log"];
+    eventTypes.forEach(function(t) {
+        evtSource.addEventListener(t, function(e) { appendLine(e.data, t); });
     });
 
     evtSource.addEventListener("done", function(e) {
@@ -157,16 +166,8 @@
         font-weight: 600;
         text-transform: capitalize;
     }
-    .log-live-badge {
-        background: #ef4444;
-        color: #fff;
-        padding: 0.15rem 0.5rem;
-        border-radius: 0.25rem;
-        font-size: 0.7rem;
-        font-weight: 700;
-        letter-spacing: 0.05em;
-        animation: pulse-live 2s ease-in-out infinite;
-    }
+    /* log-live-badge, log-done-badge, and pulse-live animation
+       are defined in base.html for cross-page reuse */
     .log-done-badge {
         background: var(--pico-ins-color);
         color: #fff;
@@ -175,10 +176,6 @@
         font-size: 0.7rem;
         font-weight: 700;
         letter-spacing: 0.05em;
-    }
-    @keyframes pulse-live {
-        0%, 100% { opacity: 1; }
-        50% { opacity: 0.6; }
     }
     .log-scroll-btn {
         margin-left: auto;
