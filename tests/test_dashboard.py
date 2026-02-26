@@ -2609,3 +2609,258 @@ class TestPausedManualSlotDisplay:
         resp = client.get("/partials/slots")
         assert resp.status_code == 200
         assert "paused manual" in resp.text
+
+
+# --- Log Viewer ---
+
+
+class TestLogViewer:
+    """Tests for the live log viewer feature."""
+
+    @pytest.fixture()
+    def logs_setup(self, tmp_path):
+        """Create DB + log files for testing the log viewer."""
+        db_path = tmp_path / "logtest.db"
+        conn = init_db(db_path)
+        task_id = insert_task(
+            conn,
+            ticket_id="LOG-1",
+            title="Log test",
+            project="my-project",
+            slot=1,
+            status="completed",
+        )
+        update_task(
+            conn,
+            task_id,
+            started_at="2026-02-26T10:00:00+00:00",
+            completed_at="2026-02-26T11:00:00+00:00",
+        )
+        insert_stage_run(
+            conn,
+            task_id=task_id,
+            stage="implement",
+            iteration=1,
+            turns=10,
+            duration_seconds=1800.0,
+        )
+        insert_stage_run(
+            conn,
+            task_id=task_id,
+            stage="review",
+            iteration=1,
+            turns=5,
+            duration_seconds=600.0,
+        )
+        conn.commit()
+        conn.close()
+
+        # Create log files
+        logs_dir = tmp_path / "logs"
+        ticket_log_dir = logs_dir / "LOG-1"
+        ticket_log_dir.mkdir(parents=True)
+        (ticket_log_dir / "implement-20260226-100000.log").write_text(
+            "Starting implement stage\nDoing work...\nDone.\n"
+        )
+        (ticket_log_dir / "review-20260226-103000.log").write_text(
+            "Reviewing PR\nLooks good.\n"
+        )
+
+        return db_path, logs_dir
+
+    def test_log_viewer_page_returns_200(self, logs_setup):
+        db_path, logs_dir = logs_setup
+        app = create_app(db_path=db_path, logs_dir=logs_dir)
+        client = TestClient(app)
+        resp = client.get("/task/LOG-1/logs")
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers["content-type"]
+
+    def test_log_viewer_shows_stage_tabs(self, logs_setup):
+        db_path, logs_dir = logs_setup
+        app = create_app(db_path=db_path, logs_dir=logs_dir)
+        client = TestClient(app)
+        resp = client.get("/task/LOG-1/logs")
+        body = resp.text
+        assert "implement" in body
+        assert "review" in body
+
+    def test_log_viewer_stage_page_returns_200(self, logs_setup):
+        db_path, logs_dir = logs_setup
+        app = create_app(db_path=db_path, logs_dir=logs_dir)
+        client = TestClient(app)
+        resp = client.get("/task/LOG-1/logs/implement")
+        assert resp.status_code == 200
+
+    def test_log_viewer_shows_log_content(self, logs_setup):
+        db_path, logs_dir = logs_setup
+        app = create_app(db_path=db_path, logs_dir=logs_dir)
+        client = TestClient(app)
+        resp = client.get("/task/LOG-1/logs/implement")
+        body = resp.text
+        assert "Starting implement stage" in body
+        assert "Doing work..." in body
+
+    def test_log_viewer_no_logs_dir(self, tmp_path):
+        """Without logs_dir, log viewer shows no logs available."""
+        db_path = tmp_path / "nolog.db"
+        conn = init_db(db_path)
+        insert_task(
+            conn, ticket_id="NL-1", title="No logs",
+            project="proj", slot=1, status="completed",
+        )
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=db_path)
+        client = TestClient(app)
+        resp = client.get("/task/NL-1/logs")
+        assert resp.status_code == 200
+        assert "No log files available" in resp.text
+
+    def test_log_viewer_no_log_files(self, tmp_path):
+        """With logs_dir but no files for ticket, shows no logs available."""
+        db_path = tmp_path / "empty.db"
+        conn = init_db(db_path)
+        insert_task(
+            conn, ticket_id="EMP-1", title="Empty",
+            project="proj", slot=1, status="completed",
+        )
+        conn.commit()
+        conn.close()
+        logs_dir = tmp_path / "logs"
+        logs_dir.mkdir()
+        app = create_app(db_path=db_path, logs_dir=logs_dir)
+        client = TestClient(app)
+        resp = client.get("/task/EMP-1/logs")
+        assert resp.status_code == 200
+        assert "No log files available" in resp.text
+
+    def test_log_content_api_returns_text(self, logs_setup):
+        db_path, logs_dir = logs_setup
+        app = create_app(db_path=db_path, logs_dir=logs_dir)
+        client = TestClient(app)
+        resp = client.get("/api/logs/LOG-1/implement/content")
+        assert resp.status_code == 200
+        assert "text/plain" in resp.headers["content-type"]
+        assert "Starting implement stage" in resp.text
+
+    def test_log_content_api_404_no_file(self, logs_setup):
+        db_path, logs_dir = logs_setup
+        app = create_app(db_path=db_path, logs_dir=logs_dir)
+        client = TestClient(app)
+        resp = client.get("/api/logs/LOG-1/merge/content")
+        assert resp.status_code == 404
+
+    def test_log_content_api_404_no_ticket(self, logs_setup):
+        db_path, logs_dir = logs_setup
+        app = create_app(db_path=db_path, logs_dir=logs_dir)
+        client = TestClient(app)
+        resp = client.get("/api/logs/NONEXIST-1/implement/content")
+        assert resp.status_code == 404
+
+    def test_stream_endpoint_404_no_file(self, logs_setup):
+        db_path, logs_dir = logs_setup
+        app = create_app(db_path=db_path, logs_dir=logs_dir)
+        client = TestClient(app)
+        resp = client.get("/api/logs/LOG-1/merge/stream")
+        assert resp.status_code == 404
+
+    def test_log_viewer_back_link_to_task_detail(self, logs_setup):
+        db_path, logs_dir = logs_setup
+        app = create_app(db_path=db_path, logs_dir=logs_dir)
+        client = TestClient(app)
+        resp = client.get("/task/LOG-1/logs")
+        assert "Back to Task Detail" in resp.text
+
+    def test_log_viewer_active_stage_tab(self, logs_setup):
+        db_path, logs_dir = logs_setup
+        app = create_app(db_path=db_path, logs_dir=logs_dir)
+        client = TestClient(app)
+        resp = client.get("/task/LOG-1/logs/implement")
+        assert "log-stage-tab-active" in resp.text
+
+    def test_log_viewer_review_content(self, logs_setup):
+        db_path, logs_dir = logs_setup
+        app = create_app(db_path=db_path, logs_dir=logs_dir)
+        client = TestClient(app)
+        resp = client.get("/task/LOG-1/logs/review")
+        assert "Reviewing PR" in resp.text
+        assert "Looks good" in resp.text
+
+
+class TestLogViewerBusySlot:
+    """Tests for log viewer on busy (live) slots."""
+
+    def test_busy_slot_shows_logs_link(self, tmp_path):
+        """Busy slot should show a 'logs' link."""
+        db_path = tmp_path / "busy.db"
+        conn = init_db(db_path)
+        _seed_slot(
+            conn, "proj", 1, status="busy",
+            ticket_id="T-1", ticket_title="Test",
+            stage="implement",
+        )
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=db_path)
+        client = TestClient(app)
+        resp = client.get("/partials/slots")
+        assert "/task/T-1/logs" in resp.text
+        assert ">logs</a>" in resp.text
+
+    def test_free_slot_no_logs_link(self, tmp_path):
+        """Free slot should not show a 'logs' link."""
+        db_path = tmp_path / "free.db"
+        conn = init_db(db_path)
+        _seed_slot(conn, "proj", 1, status="free")
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=db_path)
+        client = TestClient(app)
+        resp = client.get("/partials/slots")
+        assert ">logs</a>" not in resp.text
+
+    def test_live_badge_shown_for_busy_stage(self, tmp_path):
+        """When a stage is actively running, show LIVE badge."""
+        db_path = tmp_path / "live.db"
+        conn = init_db(db_path)
+        task_id = insert_task(
+            conn, ticket_id="LIVE-1", title="Live test",
+            project="proj", slot=1, status="in_progress",
+        )
+        _seed_slot(
+            conn, "proj", 1, status="busy",
+            ticket_id="LIVE-1", ticket_title="Live test",
+            stage="implement",
+        )
+        conn.commit()
+        conn.close()
+
+        logs_dir = tmp_path / "logs"
+        ticket_log_dir = logs_dir / "LIVE-1"
+        ticket_log_dir.mkdir(parents=True)
+        (ticket_log_dir / "implement-20260226-100000.log").write_text(
+            "Working...\n"
+        )
+
+        app = create_app(db_path=db_path, logs_dir=logs_dir)
+        client = TestClient(app)
+        resp = client.get("/task/LIVE-1/logs/implement")
+        assert resp.status_code == 200
+        assert "LIVE" in resp.text
+        assert "log-live-badge" in resp.text
+
+
+class TestTaskDetailLogLinks:
+    """Tests for log links on the task detail page."""
+
+    def test_stage_runs_table_has_logs_column(self, client):
+        resp = client.get("/task/TST-1")
+        body = resp.text
+        assert "<th>Logs</th>" in body
+
+    def test_stage_runs_have_log_view_links(self, client):
+        resp = client.get("/task/TST-1")
+        body = resp.text
+        assert "/task/TST-1/logs/implement" in body
+        assert "/task/TST-1/logs/review" in body

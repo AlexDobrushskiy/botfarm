@@ -827,6 +827,7 @@ class Supervisor:
                 db_path=self._db_path,
                 linear_workspace=self._config.linear.workspace,
                 botfarm_config=self._config,
+                logs_dir=self._log_dir,
                 on_pause=self.request_pause,
                 on_resume=self.request_resume,
                 on_update=self.request_update,

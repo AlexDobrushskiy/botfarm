@@ -1,0 +1,216 @@
+{% extends "base.html" %}
+{% set active_page = "history" %}
+{% block title %}{% if ticket_id %}{{ ticket_id }} Logs{% else %}Log Viewer{% endif %} - Botfarm{% endblock %}
+{% block content %}
+
+<p>
+    {% if task %}
+    <a href="/task/{{ task.ticket_id }}">&larr; Back to Task Detail</a>
+    {% else %}
+    <a href="/history">&larr; Back to Task History</a>
+    {% endif %}
+</p>
+
+<h1>
+    {% if task %}
+    <a href="{{ linear_url(task.ticket_id) }}" target="_blank">{{ task.ticket_id }}</a>
+    &mdash; Logs
+    {% else %}
+    {{ ticket_id }} &mdash; Logs
+    {% endif %}
+</h1>
+
+{% if stages_with_logs %}
+<!-- Stage tabs -->
+<nav class="log-stage-tabs">
+    {% for stage in stages_with_logs %}
+    <a href="/task/{{ ticket_id }}/logs/{{ stage }}"
+       class="log-stage-tab{% if stage == current_stage %} log-stage-tab-active{% endif %}">
+        {{ stage | replace("_", " ") }}
+    </a>
+    {% endfor %}
+</nav>
+
+{% if current_stage %}
+<!-- Log viewer controls -->
+<div class="log-controls">
+    <span class="log-stage-label">{{ current_stage | replace("_", " ") }}</span>
+    {% if is_live %}
+    <span class="log-live-badge">LIVE</span>
+    {% endif %}
+    <button id="scroll-toggle" class="log-scroll-btn" onclick="toggleAutoScroll()">
+        Auto-scroll: ON
+    </button>
+</div>
+
+<!-- Log output -->
+<div id="log-container" class="log-terminal">
+    <pre id="log-output">{% if log_content %}{{ log_content }}{% elif not is_live %}No log content available.{% endif %}</pre>
+</div>
+
+{% if is_live %}
+<script>
+(function() {
+    var output = document.getElementById("log-output");
+    var container = document.getElementById("log-container");
+    var scrollBtn = document.getElementById("scroll-toggle");
+    var autoScroll = true;
+
+    function scrollToBottom() {
+        if (autoScroll) {
+            container.scrollTop = container.scrollHeight;
+        }
+    }
+
+    window.toggleAutoScroll = function() {
+        autoScroll = !autoScroll;
+        scrollBtn.textContent = "Auto-scroll: " + (autoScroll ? "ON" : "OFF");
+        if (autoScroll) scrollToBottom();
+    };
+
+    // Pause auto-scroll when user scrolls up manually
+    container.addEventListener("scroll", function() {
+        var atBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 50;
+        if (!atBottom && autoScroll) {
+            autoScroll = false;
+            scrollBtn.textContent = "Auto-scroll: OFF";
+        }
+    });
+
+    var evtSource = new EventSource("/api/logs/{{ ticket_id }}/{{ current_stage }}/stream");
+
+    evtSource.addEventListener("log", function(e) {
+        output.textContent += e.data + "\n";
+        scrollToBottom();
+    });
+
+    evtSource.addEventListener("done", function(e) {
+        evtSource.close();
+        var badge = document.querySelector(".log-live-badge");
+        if (badge) {
+            badge.textContent = "COMPLETED";
+            badge.classList.remove("log-live-badge");
+            badge.classList.add("log-done-badge");
+        }
+    });
+
+    evtSource.addEventListener("error", function(e) {
+        evtSource.close();
+    });
+
+    // Initial scroll to bottom
+    scrollToBottom();
+})();
+</script>
+{% else %}
+<script>
+(function() {
+    var container = document.getElementById("log-container");
+    var scrollBtn = document.getElementById("scroll-toggle");
+    // For static content, start scrolled to bottom
+    container.scrollTop = container.scrollHeight;
+    // Auto-scroll toggle is not meaningful for static content, but keep for consistency
+    window.toggleAutoScroll = function() {};
+    scrollBtn.style.display = "none";
+})();
+</script>
+{% endif %}
+
+{% endif %}
+
+{% else %}
+<p>No log files available for this task.</p>
+{% endif %}
+
+<style>
+    .log-stage-tabs {
+        display: flex;
+        gap: 0;
+        margin-bottom: 0;
+        border-bottom: 2px solid var(--pico-muted-color);
+    }
+    .log-stage-tab {
+        padding: 0.5rem 1rem;
+        text-decoration: none;
+        color: var(--pico-muted-color);
+        border-bottom: 2px solid transparent;
+        margin-bottom: -2px;
+        font-size: 0.9rem;
+        text-transform: capitalize;
+    }
+    .log-stage-tab:hover {
+        color: var(--pico-primary);
+    }
+    .log-stage-tab-active {
+        color: var(--pico-primary);
+        border-bottom-color: var(--pico-primary);
+        font-weight: 600;
+    }
+    .log-controls {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        padding: 0.5rem 0;
+        margin-bottom: 0.5rem;
+    }
+    .log-stage-label {
+        font-weight: 600;
+        text-transform: capitalize;
+    }
+    .log-live-badge {
+        background: #ef4444;
+        color: #fff;
+        padding: 0.15rem 0.5rem;
+        border-radius: 0.25rem;
+        font-size: 0.7rem;
+        font-weight: 700;
+        letter-spacing: 0.05em;
+        animation: pulse-live 2s ease-in-out infinite;
+    }
+    .log-done-badge {
+        background: var(--pico-ins-color);
+        color: #fff;
+        padding: 0.15rem 0.5rem;
+        border-radius: 0.25rem;
+        font-size: 0.7rem;
+        font-weight: 700;
+        letter-spacing: 0.05em;
+    }
+    @keyframes pulse-live {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.6; }
+    }
+    .log-scroll-btn {
+        margin-left: auto;
+        padding: 0.25rem 0.75rem;
+        font-size: 0.8rem;
+        border-radius: var(--pico-border-radius);
+        border: 1px solid var(--pico-muted-color);
+        background: transparent;
+        color: var(--pico-color);
+        cursor: pointer;
+    }
+    .log-terminal {
+        background: #0d1117;
+        border: 1px solid #30363d;
+        border-radius: var(--pico-border-radius);
+        padding: 1rem;
+        overflow: auto;
+        max-height: 70vh;
+        min-height: 300px;
+    }
+    .log-terminal pre {
+        margin: 0;
+        padding: 0;
+        background: transparent;
+        color: #c9d1d9;
+        font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+        font-size: 0.8rem;
+        line-height: 1.5;
+        white-space: pre-wrap;
+        word-break: break-all;
+        border: none;
+    }
+</style>
+
+{% endblock %}

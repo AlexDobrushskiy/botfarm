@@ -84,6 +84,9 @@
                 {% if slot.ticket_id %}
                 <a href="/task/{{ slot.ticket_id }}" title="Task detail">detail</a>
                 {% endif %}
+                {% if slot.ticket_id and slot.status == "busy" %}
+                <a href="/task/{{ slot.ticket_id }}/logs" title="View logs">logs</a>
+                {% endif %}
                 {% if slot.pr_url %}
                 <a href="{{ slot.pr_url }}" target="_blank" rel="noopener" title="Pull request">PR</a>
                 {% endif %}
