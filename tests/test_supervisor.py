@@ -3329,8 +3329,8 @@ class TestCommentPosting:
         sup._handle_limit_hit(wr)
 
         poller = sup._pollers["test-project"]
-        poller.add_comment.assert_called_once()
-        comment_body = poller.add_comment.call_args[0][1]
+        poller.add_comment_as_owner.assert_called_once()
+        comment_body = poller.add_comment_as_owner.call_args[0][1]
         assert "usage limit" in comment_body.lower()
         assert "implement" in comment_body
 
@@ -3351,7 +3351,7 @@ class TestCommentPosting:
         supervisor._handle_limit_hit(wr)
 
         poller = supervisor._pollers["test-project"]
-        poller.add_comment.assert_not_called()
+        poller.add_comment_as_owner.assert_not_called()
 
     def test_failure_comment_error_does_not_break_handling(self, supervisor):
         """If posting the failure comment fails, the slot is still freed."""

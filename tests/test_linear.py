@@ -7,7 +7,14 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 
-from botfarm.config import BotfarmConfig, DatabaseConfig, LinearConfig, ProjectConfig
+from botfarm.config import (
+    BotfarmConfig,
+    CoderIdentity,
+    DatabaseConfig,
+    IdentitiesConfig,
+    LinearConfig,
+    ProjectConfig,
+)
 from botfarm.linear import (
     LINEAR_API_URL,
     LinearAPIError,
@@ -1220,3 +1227,138 @@ class TestLinearPollerProjectFilter:
             status_name="Todo",
             project_name="",
         )
+
+
+# ---------------------------------------------------------------------------
+# Coder client routing
+# ---------------------------------------------------------------------------
+
+
+class TestCoderClientRouting:
+    """When a separate coder client is provided, coder operations use it."""
+
+    def _make_poller_with_coder(self):
+        owner_client = MagicMock(spec=LinearClient)
+        coder_client = MagicMock(spec=LinearClient)
+        owner_client.get_team_states.return_value = {
+            "Todo": "s1",
+            "In Progress": "s2",
+            "Done": "s3",
+        }
+        project = _make_project()
+        poller = LinearPoller(
+            client=owner_client,
+            project=project,
+            exclude_tags=["Human"],
+            coder_client=coder_client,
+        )
+        return poller, owner_client, coder_client
+
+    def test_move_issue_uses_coder_client(self):
+        poller, owner, coder = self._make_poller_with_coder()
+        poller.move_issue("i1", "In Progress")
+        coder.update_issue_state.assert_called_once_with("i1", "s2")
+        owner.update_issue_state.assert_not_called()
+
+    def test_add_comment_uses_coder_client(self):
+        poller, owner, coder = self._make_poller_with_coder()
+        poller.add_comment("i1", "Hello")
+        coder.add_comment.assert_called_once_with("i1", "Hello")
+        owner.add_comment.assert_not_called()
+
+    def test_add_comment_as_owner_uses_owner_client(self):
+        poller, owner, coder = self._make_poller_with_coder()
+        poller.add_comment_as_owner("i1", "System message")
+        owner.add_comment.assert_called_once_with("i1", "System message")
+        coder.add_comment.assert_not_called()
+
+    def test_poll_uses_owner_client(self):
+        poller, owner, coder = self._make_poller_with_coder()
+        owner.fetch_team_issues.return_value = []
+        poller.poll()
+        owner.fetch_team_issues.assert_called_once()
+        coder.fetch_team_issues.assert_not_called()
+
+    def test_assign_issue_uses_owner_client(self):
+        poller, owner, coder = self._make_poller_with_coder()
+        poller.assign_issue("i1", "user-123")
+        owner.assign_issue.assert_called_once_with("i1", "user-123")
+        coder.assign_issue.assert_not_called()
+
+    def test_fallback_when_no_coder_client(self):
+        """Without coder_client, all operations use the owner client."""
+        client = MagicMock(spec=LinearClient)
+        client.get_team_states.return_value = {
+            "Todo": "s1", "In Progress": "s2", "Done": "s3",
+        }
+        project = _make_project()
+        poller = LinearPoller(
+            client=client, project=project, exclude_tags=["Human"],
+        )
+        poller.move_issue("i1", "In Progress")
+        client.update_issue_state.assert_called_once_with("i1", "s2")
+
+        poller.add_comment("i1", "test")
+        client.add_comment.assert_called_once_with("i1", "test")
+
+        poller.add_comment_as_owner("i1", "system")
+        assert client.add_comment.call_count == 2
+
+
+class TestCreatePollersCoderClient:
+    """create_pollers creates a separate coder client when configured."""
+
+    def test_coder_client_created_when_key_set(self):
+        config = BotfarmConfig(
+            projects=[_make_project(slots=[1])],
+            linear=LinearConfig(api_key="owner-key"),
+            database=DatabaseConfig(),
+            identities=IdentitiesConfig(
+                coder=CoderIdentity(linear_api_key="coder-key"),
+            ),
+        )
+        pollers = create_pollers(config)
+        poller = pollers[0]
+        assert poller._coder_client is not poller._client
+        assert poller._coder_client._api_key == "coder-key"
+        assert poller._client._api_key == "owner-key"
+
+    def test_no_coder_client_when_key_empty(self):
+        config = BotfarmConfig(
+            projects=[_make_project(slots=[1])],
+            linear=LinearConfig(api_key="owner-key"),
+            database=DatabaseConfig(),
+            identities=IdentitiesConfig(
+                coder=CoderIdentity(linear_api_key=""),
+            ),
+        )
+        pollers = create_pollers(config)
+        poller = pollers[0]
+        assert poller._coder_client is poller._client
+
+    def test_no_coder_client_when_identities_default(self):
+        config = BotfarmConfig(
+            projects=[_make_project(slots=[1])],
+            linear=LinearConfig(api_key="owner-key"),
+            database=DatabaseConfig(),
+        )
+        pollers = create_pollers(config)
+        poller = pollers[0]
+        assert poller._coder_client is poller._client
+
+    def test_coder_client_shared_across_pollers(self):
+        config = BotfarmConfig(
+            projects=[
+                _make_project(name="a", slots=[1]),
+                _make_project(name="b", slots=[2]),
+            ],
+            linear=LinearConfig(api_key="owner-key"),
+            database=DatabaseConfig(),
+            identities=IdentitiesConfig(
+                coder=CoderIdentity(linear_api_key="coder-key"),
+            ),
+        )
+        pollers = create_pollers(config)
+        assert pollers[0]._coder_client is pollers[1]._coder_client
+        assert pollers[0]._client is pollers[1]._client
+        assert pollers[0]._coder_client is not pollers[0]._client

@@ -1477,7 +1477,7 @@ class Supervisor:
             poller = self._pollers.get(wr.project)
             if poller:
                 try:
-                    poller.add_comment(
+                    poller.add_comment_as_owner(
                         slot.ticket_id,
                         f"Botfarm worker paused due to usage limit hit "
                         f"at stage `{wr.failure_stage}`. "
