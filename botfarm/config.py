@@ -431,6 +431,11 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
                 }
             except (ValueError, TypeError) as exc:
                 raise ConfigError(f"agents.timeout_overrides.{label}: {exc}")
+    elif raw_overrides:
+        raise ConfigError(
+            "agents.timeout_overrides must be a mapping of label names to "
+            f"stage overrides, got {type(raw_overrides).__name__}"
+        )
 
     agents = AgentsConfig(
         max_review_iterations=int(agents_data.get("max_review_iterations", 3)),
