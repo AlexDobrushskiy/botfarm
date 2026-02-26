@@ -14,12 +14,14 @@ import os
 import re
 import sqlite3
 import subprocess
+import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from botfarm.db import insert_event, insert_stage_run, update_task
+from botfarm.db import delete_stage_run, insert_event, insert_stage_run, update_stage_run_context_fill, update_task
 from botfarm.slots import update_slot_stage
 
 logger = logging.getLogger(__name__)
@@ -188,6 +190,199 @@ def run_claude(
     return parse_claude_output(proc.stdout)
 
 
+# Default context window size for per-turn fill calculation when the final
+# result hasn't been received yet.  200k is the current window for Claude
+# Opus/Sonnet models.
+_DEFAULT_CONTEXT_WINDOW = 200_000
+
+# Type alias for the per-turn context fill callback.
+ContextFillCallback = Callable[[int, float], None]
+
+
+def _compute_turn_context_fill(
+    usage: dict,
+    context_window: int,
+) -> float | None:
+    """Compute context fill % from a single assistant turn's usage data.
+
+    Unlike ``_compute_context_fill()`` (which uses cumulative data and
+    excludes cache_read to avoid double-counting), this per-turn formula
+    **includes** cache_read_input_tokens because per-API-call usage
+    reports the full cached input read at each turn.
+    """
+    input_tokens = usage.get("input_tokens", 0)
+    cache_creation = usage.get("cache_creation_input_tokens", 0)
+    cache_read = usage.get("cache_read_input_tokens", 0)
+    output_tokens = usage.get("output_tokens", 0)
+
+    total = input_tokens + cache_creation + cache_read + output_tokens
+    if context_window <= 0 or total == 0:
+        return None
+    return round(total / context_window * 100, 2)
+
+
+def _parse_stream_result(result_data: dict) -> ClaudeResult:
+    """Parse a stream-json ``result`` message into a ``ClaudeResult``.
+
+    The ``result`` message in stream-json contains the same fields as the
+    single JSON blob from ``--output-format json``.
+    """
+    duration_ms = result_data.get("duration_ms", 0)
+
+    usage = result_data.get("usage") or {}
+    input_tokens = usage.get("input_tokens", 0)
+    output_tokens = usage.get("output_tokens", 0)
+    cache_read = usage.get("cache_read_input_tokens", 0)
+    cache_creation = usage.get("cache_creation_input_tokens", 0)
+
+    total_cost_usd = result_data.get("total_cost_usd", 0.0) or 0.0
+
+    model_usage = result_data.get("modelUsage")
+    model_usage_json = json.dumps(model_usage) if model_usage else None
+
+    context_fill_pct = _compute_context_fill(
+        input_tokens, cache_creation, output_tokens, model_usage,
+    )
+
+    return ClaudeResult(
+        session_id=result_data.get("session_id", ""),
+        num_turns=result_data.get("num_turns", 0),
+        duration_seconds=duration_ms / 1000.0,
+        exit_subtype=result_data.get("subtype", ""),
+        result_text=result_data.get("result", ""),
+        is_error=bool(result_data.get("is_error", False)),
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_input_tokens=cache_read,
+        cache_creation_input_tokens=cache_creation,
+        total_cost_usd=total_cost_usd,
+        context_fill_pct=context_fill_pct,
+        model_usage_json=model_usage_json,
+    )
+
+
+def run_claude_streaming(
+    prompt: str,
+    *,
+    cwd: str | Path,
+    max_turns: int,
+    log_file: Path | None = None,
+    env: dict[str, str] | None = None,
+    on_context_fill: ContextFillCallback | None = None,
+) -> ClaudeResult:
+    """Run ``claude`` with streaming output and per-turn context fill callbacks.
+
+    Uses ``--output-format stream-json --verbose`` to receive NDJSON
+    output line-by-line.  On each ``assistant`` message, computes the
+    current context fill % and invokes *on_context_fill(turn_number,
+    context_fill_pct)* if provided.
+
+    The final ``result`` message is parsed into a ``ClaudeResult``
+    identical to what ``run_claude()`` returns.
+
+    Stderr is drained on a separate thread to prevent pipe deadlocks.
+    """
+    cmd = [
+        "claude",
+        "-p",
+        "--output-format", "stream-json",
+        "--verbose",
+        "--dangerously-skip-permissions",
+        "--max-turns", str(max_turns),
+    ]
+    logger.info("Running claude (streaming) with max_turns=%d in %s", max_turns, cwd)
+
+    subprocess_env = None
+    if env:
+        subprocess_env = {**os.environ, **env}
+
+    proc = subprocess.Popen(
+        cmd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=str(cwd),
+        env=subprocess_env,
+    )
+
+    # Write prompt and close stdin
+    proc.stdin.write(prompt)
+    proc.stdin.close()
+
+    # Drain stderr on a background thread to prevent deadlock
+    stderr_lines: list[str] = []
+
+    def _drain_stderr():
+        for line in proc.stderr:
+            stderr_lines.append(line)
+
+    stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
+    stderr_thread.start()
+
+    # Read stdout line-by-line (NDJSON)
+    stdout_lines: list[str] = []
+    turn_number = 0
+    claude_result: ClaudeResult | None = None
+
+    for line in proc.stdout:
+        stdout_lines.append(line)
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        try:
+            event = json.loads(stripped)
+        except json.JSONDecodeError:
+            logger.debug("Skipping non-JSON stream line: %s", stripped[:100])
+            continue
+
+        msg_type = event.get("type")
+
+        if msg_type == "assistant":
+            turn_number += 1
+            usage = (event.get("message") or {}).get("usage")
+            if usage and on_context_fill is not None:
+                fill_pct = _compute_turn_context_fill(usage, _DEFAULT_CONTEXT_WINDOW)
+                if fill_pct is not None:
+                    try:
+                        on_context_fill(turn_number, fill_pct)
+                    except Exception:
+                        logger.debug(
+                            "on_context_fill callback failed", exc_info=True,
+                        )
+
+        elif msg_type == "result":
+            claude_result = _parse_stream_result(event)
+
+    proc.wait()
+    stderr_thread.join(timeout=5)
+
+    stdout_text = "".join(stdout_lines)
+    stderr_text = "".join(stderr_lines)
+
+    if log_file is not None:
+        _write_subprocess_log(log_file, stdout_text, stderr_text)
+
+    if proc.returncode != 0:
+        logger.error(
+            "claude (streaming) exited with code %d\nstderr: %s",
+            proc.returncode,
+            stderr_text[:500] if stderr_text else "(empty)",
+        )
+        raise subprocess.CalledProcessError(
+            proc.returncode, cmd, output=stdout_text, stderr=stderr_text,
+        )
+
+    if claude_result is None:
+        raise RuntimeError(
+            "claude stream-json produced no result message; "
+            f"stdout length={len(stdout_text)}"
+        )
+
+    return claude_result
+
+
 # ---------------------------------------------------------------------------
 # Stage result
 # ---------------------------------------------------------------------------
@@ -206,6 +401,29 @@ class StageResult:
 
 
 # ---------------------------------------------------------------------------
+# Claude invocation helper
+# ---------------------------------------------------------------------------
+
+
+def _invoke_claude(
+    prompt: str,
+    *,
+    cwd: str | Path,
+    max_turns: int,
+    log_file: Path | None = None,
+    env: dict[str, str] | None = None,
+    on_context_fill: ContextFillCallback | None = None,
+) -> ClaudeResult:
+    """Run Claude via streaming or non-streaming path depending on callback."""
+    if on_context_fill is not None:
+        return run_claude_streaming(
+            prompt, cwd=cwd, max_turns=max_turns,
+            log_file=log_file, env=env, on_context_fill=on_context_fill,
+        )
+    return run_claude(prompt, cwd=cwd, max_turns=max_turns, log_file=log_file, env=env)
+
+
+# ---------------------------------------------------------------------------
 # Individual stage implementations
 # ---------------------------------------------------------------------------
 
@@ -217,6 +435,7 @@ def _run_implement(
     max_turns: int,
     log_file: Path | None = None,
     env: dict[str, str] | None = None,
+    on_context_fill: ContextFillCallback | None = None,
 ) -> StageResult:
     """IMPLEMENT stage — Claude Code implements the ticket and creates a PR."""
     prompt = (
@@ -224,7 +443,10 @@ def _run_implement(
         "Follow the Linear Tickets workflow in CLAUDE.md. "
         "Complete all steps through PR creation. Do not stop until the PR is created."
     )
-    result = run_claude(prompt, cwd=cwd, max_turns=max_turns, log_file=log_file, env=env)
+    result = _invoke_claude(
+        prompt, cwd=cwd, max_turns=max_turns, log_file=log_file,
+        env=env, on_context_fill=on_context_fill,
+    )
 
     if result.is_error:
         return StageResult(
@@ -252,6 +474,7 @@ def _run_review(
     max_turns: int,
     log_file: Path | None = None,
     env: dict[str, str] | None = None,
+    on_context_fill: ContextFillCallback | None = None,
 ) -> StageResult:
     """REVIEW stage — Fresh Claude Code reviews the PR and posts comments."""
     owner, repo, number = _parse_pr_url(pr_url)
@@ -277,7 +500,10 @@ def _run_review(
         "  VERDICT: APPROVED\n"
         "  VERDICT: CHANGES_REQUESTED"
     )
-    result = run_claude(prompt, cwd=cwd, max_turns=max_turns, log_file=log_file, env=env)
+    result = _invoke_claude(
+        prompt, cwd=cwd, max_turns=max_turns, log_file=log_file,
+        env=env, on_context_fill=on_context_fill,
+    )
 
     if result.is_error:
         return StageResult(
@@ -304,6 +530,7 @@ def _run_fix(
     max_turns: int,
     log_file: Path | None = None,
     env: dict[str, str] | None = None,
+    on_context_fill: ContextFillCallback | None = None,
 ) -> StageResult:
     """FIX stage — Fresh Claude Code addresses review comments and pushes fixes."""
     owner, repo, number = _parse_pr_url(pr_url)
@@ -322,7 +549,10 @@ def _run_fix(
         "- If fixed but clarification helps: reply \"Fixed — [what changed]\"\n"
         "- If intentionally not fixed: reply with a brief explanation why"
     )
-    result = run_claude(prompt, cwd=cwd, max_turns=max_turns, log_file=log_file, env=env)
+    result = _invoke_claude(
+        prompt, cwd=cwd, max_turns=max_turns, log_file=log_file,
+        env=env, on_context_fill=on_context_fill,
+    )
 
     if result.is_error:
         return StageResult(
@@ -383,6 +613,7 @@ def _run_ci_fix(
     max_turns: int,
     log_file: Path | None = None,
     env: dict[str, str] | None = None,
+    on_context_fill: ContextFillCallback | None = None,
 ) -> StageResult:
     """FIX stage variant — Claude Code fixes CI failures using CI output context."""
     prompt = (
@@ -391,7 +622,10 @@ def _run_ci_fix(
         "then run tests locally, commit and push the fixes.\n\n"
         f"CI failure output:\n{ci_failure_output[:2000]}"
     )
-    result = run_claude(prompt, cwd=cwd, max_turns=max_turns, log_file=log_file, env=env)
+    result = _invoke_claude(
+        prompt, cwd=cwd, max_turns=max_turns, log_file=log_file,
+        env=env, on_context_fill=on_context_fill,
+    )
 
     if result.is_error:
         return StageResult(
@@ -788,6 +1022,11 @@ class _PipelineContext:
     ) -> StageResult | None:
         """Execute a stage, record it, accumulate metrics.
 
+        For Claude-based stages (implement, review, fix), inserts a
+        placeholder ``stage_runs`` row before execution and updates its
+        ``context_fill_pct`` in-place on every assistant turn via the
+        streaming runner.  This enables real-time dashboard monitoring.
+
         Returns the ``StageResult`` on success, or ``None`` if the stage
         failed (in which case ``pipeline`` is updated with the failure).
         """
@@ -810,6 +1049,27 @@ class _PipelineContext:
         log_file = _make_stage_log_path(self.log_dir, stage, iteration)
         wall_start = time.monotonic()
 
+        # For Claude-based stages, insert a placeholder stage_run row
+        # so per-turn context fill updates have a target row to update.
+        on_context_fill: ContextFillCallback | None = None
+        stage_run_id: int | None = None
+        uses_claude = stage in ("implement", "review", "fix")
+
+        if uses_claude:
+            stage_run_id = insert_stage_run(
+                self.conn,
+                task_id=self.task_id,
+                stage=stage,
+                iteration=iteration,
+            )
+            self.conn.commit()
+
+            _conn = self.conn
+            _sr_id = stage_run_id
+
+            def on_context_fill(turn: int, fill_pct: float) -> None:
+                update_stage_run_context_fill(_conn, _sr_id, fill_pct)
+
         try:
             result = _execute_stage(
                 stage,
@@ -821,15 +1081,21 @@ class _PipelineContext:
                 log_file=log_file,
                 placeholder_branch=self.placeholder_branch,
                 env=self.subprocess_env,
+                on_context_fill=on_context_fill,
             )
         except Exception as exc:
             logger.error("Stage '%s' raised: %s", stage, exc)
+            if stage_run_id is not None:
+                delete_stage_run(self.conn, stage_run_id)
             self.pipeline.failure_stage = stage
             self.pipeline.failure_reason = str(exc)[:500]
             _record_failure(self.conn, self.task_id, self.pipeline)
             return None
 
-        return self._finish_stage(stage, result, wall_start, iteration)
+        return self._finish_stage(
+            stage, result, wall_start, iteration,
+            stage_run_id=stage_run_id,
+        )
 
     def run_and_record_result(
         self,
@@ -838,6 +1104,7 @@ class _PipelineContext:
         *,
         wall_start: float,
         iteration: int = 1,
+        stage_run_id: int | None = None,
     ) -> StageResult | None:
         """Record a pre-computed StageResult, accumulate metrics.
 
@@ -846,7 +1113,10 @@ class _PipelineContext:
 
         Returns the ``StageResult`` on success, or ``None`` on failure.
         """
-        return self._finish_stage(stage, result, wall_start, iteration)
+        return self._finish_stage(
+            stage, result, wall_start, iteration,
+            stage_run_id=stage_run_id,
+        )
 
     def _finish_stage(
         self,
@@ -854,8 +1124,15 @@ class _PipelineContext:
         result: StageResult,
         wall_start: float,
         iteration: int,
+        *,
+        stage_run_id: int | None = None,
     ) -> StageResult | None:
-        """Shared logic for recording a stage result and updating metrics."""
+        """Shared logic for recording a stage result and updating metrics.
+
+        If *stage_run_id* is provided, the placeholder row inserted
+        before streaming execution is updated in-place instead of
+        inserting a new row.
+        """
         wall_elapsed = time.monotonic() - wall_start
 
         _record_stage_run(
@@ -865,6 +1142,7 @@ class _PipelineContext:
             result=result,
             wall_elapsed=wall_elapsed,
             iteration=iteration,
+            stage_run_id=stage_run_id,
         )
 
         if result.claude_result:
@@ -999,14 +1277,31 @@ def _run_ci_retry_loop(
         # --- FIX (with CI context) — call _run_ci_fix directly ---
         log_file = _make_stage_log_path(ctx.log_dir, "ci_fix", retry)
         wall_start = time.monotonic()
+
+        # Insert placeholder for live context fill updates
+        ci_fix_stage_run_id = insert_stage_run(
+            ctx.conn,
+            task_id=ctx.task_id,
+            stage="fix",
+            iteration=retry,
+        )
+        ctx.conn.commit()
+
+        _sr_id = ci_fix_stage_run_id
+
+        def _ci_fix_on_fill(turn: int, fill_pct: float) -> None:
+            update_stage_run_context_fill(ctx.conn, _sr_id, fill_pct)
+
         try:
             fix_result = _run_ci_fix(
                 pr_url, ci_failure_output=ci_failure_output,
                 cwd=ctx.cwd, max_turns=ctx.turns_cfg.get("fix", 100),
                 log_file=log_file, env=ctx.subprocess_env,
+                on_context_fill=_ci_fix_on_fill,
             )
         except Exception as exc:
             logger.error("CI fix stage raised: %s", exc)
+            delete_stage_run(ctx.conn, ci_fix_stage_run_id)
             ctx.pipeline.failure_stage = "fix"
             ctx.pipeline.failure_reason = str(exc)[:500]
             _record_failure(ctx.conn, ctx.task_id, ctx.pipeline)
@@ -1014,6 +1309,7 @@ def _run_ci_retry_loop(
 
         fix_result = ctx.run_and_record_result(
             "fix", fix_result, wall_start=wall_start, iteration=retry,
+            stage_run_id=ci_fix_stage_run_id,
         )
         if fix_result is None:
             return False  # failure recorded by run_and_record_result
@@ -1070,18 +1366,28 @@ def _execute_stage(
     log_file: Path | None = None,
     placeholder_branch: str | None = None,
     env: dict[str, str] | None = None,
+    on_context_fill: ContextFillCallback | None = None,
 ) -> StageResult:
     """Dispatch to the appropriate stage runner."""
     if stage == "implement":
-        return _run_implement(ticket_id, cwd=cwd, max_turns=max_turns, log_file=log_file, env=env)
+        return _run_implement(
+            ticket_id, cwd=cwd, max_turns=max_turns, log_file=log_file,
+            env=env, on_context_fill=on_context_fill,
+        )
     elif stage == "review":
         if not pr_url:
             raise ValueError(f"{stage} stage requires pr_url")
-        return _run_review(pr_url, cwd=cwd, max_turns=max_turns, log_file=log_file, env=env)
+        return _run_review(
+            pr_url, cwd=cwd, max_turns=max_turns, log_file=log_file,
+            env=env, on_context_fill=on_context_fill,
+        )
     elif stage == "fix":
         if not pr_url:
             raise ValueError(f"{stage} stage requires pr_url")
-        return _run_fix(pr_url, cwd=cwd, max_turns=max_turns, log_file=log_file, env=env)
+        return _run_fix(
+            pr_url, cwd=cwd, max_turns=max_turns, log_file=log_file,
+            env=env, on_context_fill=on_context_fill,
+        )
     elif stage == "pr_checks":
         if not pr_url:
             raise ValueError(f"{stage} stage requires pr_url")
@@ -1107,26 +1413,61 @@ def _record_stage_run(
     result: StageResult,
     wall_elapsed: float,
     iteration: int = 1,
+    stage_run_id: int | None = None,
 ) -> None:
-    """Insert a stage_run row from the result."""
+    """Insert or update a stage_run row from the result.
+
+    When *stage_run_id* is provided (streaming path), the existing
+    placeholder row is updated with final metrics.  Otherwise a new
+    row is inserted (non-streaming path).
+    """
     cr = result.claude_result
-    insert_stage_run(
-        conn,
-        task_id=task_id,
-        stage=stage,
-        iteration=iteration,
-        session_id=cr.session_id if cr else None,
-        turns=cr.num_turns if cr else 0,
-        duration_seconds=cr.duration_seconds if cr else wall_elapsed,
-        exit_subtype=cr.exit_subtype if cr else None,
-        input_tokens=cr.input_tokens if cr else 0,
-        output_tokens=cr.output_tokens if cr else 0,
-        cache_read_input_tokens=cr.cache_read_input_tokens if cr else 0,
-        cache_creation_input_tokens=cr.cache_creation_input_tokens if cr else 0,
-        total_cost_usd=cr.total_cost_usd if cr else 0.0,
-        context_fill_pct=cr.context_fill_pct if cr else None,
-        model_usage_json=cr.model_usage_json if cr else None,
-    )
+    if stage_run_id is not None:
+        # Update the placeholder row created before streaming execution
+        conn.execute(
+            """
+            UPDATE stage_runs SET
+                session_id = ?, turns = ?, duration_seconds = ?,
+                exit_subtype = ?,
+                input_tokens = ?, output_tokens = ?,
+                cache_read_input_tokens = ?, cache_creation_input_tokens = ?,
+                total_cost_usd = ?, context_fill_pct = ?,
+                model_usage_json = ?
+            WHERE id = ?
+            """,
+            (
+                cr.session_id if cr else None,
+                cr.num_turns if cr else 0,
+                cr.duration_seconds if cr else wall_elapsed,
+                cr.exit_subtype if cr else None,
+                cr.input_tokens if cr else 0,
+                cr.output_tokens if cr else 0,
+                cr.cache_read_input_tokens if cr else 0,
+                cr.cache_creation_input_tokens if cr else 0,
+                cr.total_cost_usd if cr else 0.0,
+                cr.context_fill_pct if cr else None,
+                cr.model_usage_json if cr else None,
+                stage_run_id,
+            ),
+        )
+    else:
+        insert_stage_run(
+            conn,
+            task_id=task_id,
+            stage=stage,
+            iteration=iteration,
+            session_id=cr.session_id if cr else None,
+            turns=cr.num_turns if cr else 0,
+            duration_seconds=cr.duration_seconds if cr else wall_elapsed,
+            exit_subtype=cr.exit_subtype if cr else None,
+            input_tokens=cr.input_tokens if cr else 0,
+            output_tokens=cr.output_tokens if cr else 0,
+            cache_read_input_tokens=cr.cache_read_input_tokens if cr else 0,
+            cache_creation_input_tokens=cr.cache_creation_input_tokens if cr else 0,
+            total_cost_usd=cr.total_cost_usd if cr else 0.0,
+            context_fill_pct=cr.context_fill_pct if cr else None,
+            model_usage_json=cr.model_usage_json if cr else None,
+        )
     conn.commit()
 
 

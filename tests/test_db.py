@@ -31,6 +31,7 @@ from botfarm.db import (
     resolve_db_path,
     save_dispatch_state,
     save_queue_entries,
+    update_stage_run_context_fill,
     update_task,
     upsert_slot,
 )
@@ -1166,6 +1167,44 @@ class TestStageRuns:
         assert row["total_cost_usd"] == pytest.approx(0.0)
         assert row["context_fill_pct"] is None
         assert row["model_usage_json"] is None
+
+
+class TestUpdateStageRunContextFill:
+    def test_updates_context_fill_in_place(self, conn):
+        tid = insert_task(
+            conn, ticket_id="CF-1", title="Fill test", project="p", slot=1
+        )
+        sr_id = insert_stage_run(conn, task_id=tid, stage="implement")
+        conn.commit()
+
+        # Initially None
+        runs = get_stage_runs(conn, tid)
+        assert runs[0]["context_fill_pct"] is None
+
+        # Update to 25.5%
+        update_stage_run_context_fill(conn, sr_id, 25.5)
+        runs = get_stage_runs(conn, tid)
+        assert runs[0]["context_fill_pct"] == pytest.approx(25.5)
+
+        # Update again (overwrite) to 60.0%
+        update_stage_run_context_fill(conn, sr_id, 60.0)
+        runs = get_stage_runs(conn, tid)
+        assert runs[0]["context_fill_pct"] == pytest.approx(60.0)
+
+    def test_does_not_affect_other_rows(self, conn):
+        tid = insert_task(
+            conn, ticket_id="CF-2", title="Multi", project="p", slot=1
+        )
+        sr_id_1 = insert_stage_run(
+            conn, task_id=tid, stage="implement", context_fill_pct=10.0,
+        )
+        sr_id_2 = insert_stage_run(conn, task_id=tid, stage="review")
+        conn.commit()
+
+        update_stage_run_context_fill(conn, sr_id_2, 55.0)
+        runs = get_stage_runs(conn, tid)
+        assert runs[0]["context_fill_pct"] == pytest.approx(10.0)  # unchanged
+        assert runs[1]["context_fill_pct"] == pytest.approx(55.0)  # updated
 
 
 class TestStageRunAggregates:

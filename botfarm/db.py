@@ -373,6 +373,33 @@ def get_stage_runs(conn: sqlite3.Connection, task_id: int) -> list[sqlite3.Row]:
     ).fetchall()
 
 
+def update_stage_run_context_fill(
+    conn: sqlite3.Connection,
+    stage_run_id: int,
+    context_fill_pct: float,
+) -> None:
+    """Update the context_fill_pct for a stage run in-place.
+
+    Called per-turn during streaming execution to provide real-time
+    context fill data to the dashboard.
+    """
+    conn.execute(
+        "UPDATE stage_runs SET context_fill_pct = ? WHERE id = ?",
+        (context_fill_pct, stage_run_id),
+    )
+    conn.commit()
+
+
+def delete_stage_run(conn: sqlite3.Connection, stage_run_id: int) -> None:
+    """Delete a stage_run row by id.
+
+    Used to clean up placeholder rows when a stage fails before
+    producing final metrics, preventing orphaned rows with NULL data.
+    """
+    conn.execute("DELETE FROM stage_runs WHERE id = ?", (stage_run_id,))
+    conn.commit()
+
+
 def get_latest_context_fill_by_ticket(
     conn: sqlite3.Connection, ticket_ids: list[str],
 ) -> dict[str, float | None]:
