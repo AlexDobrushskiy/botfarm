@@ -1989,10 +1989,12 @@ class Supervisor:
             slot=slot.slot_id,
             status="in_progress",
         )
+        on_extra = self._usage_poller.state.is_on_extra_usage
         update_task(
             self._conn,
             task_id,
             started_at=datetime.now(timezone.utc).isoformat(),
+            started_on_extra_usage=int(on_extra),
         )
         self._conn.commit()
 

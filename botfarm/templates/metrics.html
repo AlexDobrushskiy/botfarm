@@ -84,6 +84,12 @@
         <h2>${{ "%.2f"|format(metrics.total_cost_usd) }}</h2>
         <p>Total Cost</p>
     </article>
+    {% if metrics.extra_usage_cost_usd > 0 %}
+    <article class="metric-card">
+        <h2><span class="status-busy">${{ "%.2f"|format(metrics.extra_usage_cost_usd) }}</span></h2>
+        <p>Extra Usage Cost</p>
+    </article>
+    {% endif %}
     <article class="metric-card">
         <h2>{% if metrics.avg_context_fill_pct is not none %}{{ "%.1f"|format(metrics.avg_context_fill_pct) }}%{% else %}-{% endif %}</h2>
         <p>Avg Context Fill</p>

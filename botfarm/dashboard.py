@@ -371,6 +371,10 @@ def create_app(
                     "resets_at": usage_row["resets_at"],
                     "resets_at_5h": usage_row["resets_at"],
                     "resets_at_7d": usage_row["resets_at_7d"],
+                    "extra_usage_enabled": bool(usage_row["extra_usage_enabled"]) if usage_row["extra_usage_enabled"] is not None else False,
+                    "extra_usage_monthly_limit": usage_row["extra_usage_monthly_limit"],
+                    "extra_usage_used_credits": usage_row["extra_usage_used_credits"],
+                    "extra_usage_utilization": usage_row["extra_usage_utilization"],
                 }
                 last_usage_check = usage_row["created_at"]
 
@@ -725,6 +729,7 @@ def create_app(
         "total_output_tokens": 0,
         "total_cost_usd": 0.0,
         "max_context_fill_pct": None,
+        "extra_usage_cost_usd": 0.0,
     }
 
     def _enrich_tasks(
@@ -762,6 +767,7 @@ def create_app(
             agg = aggregates.get(task.get("id"), _EMPTY_TASK_AGGREGATES)
             task["total_cost_usd"] = agg["total_cost_usd"]
             task["max_context_fill_pct"] = agg["max_context_fill_pct"]
+            task["extra_usage_cost_usd"] = agg["extra_usage_cost_usd"]
         return tasks
 
     PAGE_SIZE = 25
@@ -881,11 +887,16 @@ def create_app(
         total_input = sum(s.get("input_tokens") or 0 for s in stages)
         total_output = sum(s.get("output_tokens") or 0 for s in stages)
         total_cost = sum(s.get("total_cost_usd") or 0.0 for s in stages)
+        extra_usage_cost = sum(
+            s.get("total_cost_usd") or 0.0
+            for s in stages if s.get("on_extra_usage")
+        )
         fills = [s["context_fill_pct"] for s in stages if s.get("context_fill_pct") is not None]
         return {
             "total_input_tokens": total_input,
             "total_output_tokens": total_output,
             "total_cost": total_cost,
+            "extra_usage_cost": extra_usage_cost,
             "max_context_fill": max(fills) if fills else None,
         }
 
@@ -1042,6 +1053,7 @@ def create_app(
                 "SELECT SUM(sr.input_tokens) as total_in, "
                 "SUM(sr.output_tokens) as total_out, "
                 "SUM(sr.total_cost_usd) as total_cost, "
+                "SUM(CASE WHEN sr.on_extra_usage THEN sr.total_cost_usd ELSE 0 END) as extra_cost, "
                 "AVG(sr.context_fill_pct) as avg_fill, "
                 "COUNT(DISTINCT CASE WHEN sr.context_fill_pct > 80 THEN sr.task_id END) as tasks_over_80 "
                 "FROM stage_runs sr "
@@ -1052,6 +1064,7 @@ def create_app(
                 metrics["total_input_tokens"] = token_row["total_in"] or 0
                 metrics["total_output_tokens"] = token_row["total_out"] or 0
                 metrics["total_cost_usd"] = token_row["total_cost"] or 0.0
+                metrics["extra_usage_cost_usd"] = token_row["extra_cost"] or 0.0
                 metrics["avg_context_fill_pct"] = token_row["avg_fill"]
                 metrics["tasks_over_80_pct_fill"] = token_row["tasks_over_80"] or 0
         except sqlite3.OperationalError:
@@ -1079,7 +1092,8 @@ def create_app(
         "completed_today": 0, "completed_week": 0,
         "completed_month": 0, "failure_reasons": [],
         "total_input_tokens": 0, "total_output_tokens": 0,
-        "total_cost_usd": 0.0, "avg_context_fill_pct": None,
+        "total_cost_usd": 0.0, "extra_usage_cost_usd": 0.0,
+        "avg_context_fill_pct": None,
         "tasks_over_80_pct_fill": 0,
     }
 
