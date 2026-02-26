@@ -31,7 +31,7 @@ from types import FrameType
 
 from botfarm.config import BotfarmConfig, IdentitiesConfig, ProjectConfig, resolve_stage_timeout
 from botfarm.db import get_task, init_db, insert_event, insert_task, resolve_db_path, save_queue_entries, update_task
-from botfarm.linear import LinearPoller, create_pollers
+from botfarm.linear import LinearClient, LinearPoller, create_pollers
 from botfarm.notifications import Notifier
 from botfarm.preflight import log_preflight_summary, run_preflight_checks
 from botfarm.slots import SlotManager, SlotState, _is_pid_alive
@@ -323,6 +323,23 @@ class Supervisor:
         # Environment overrides for supervisor-level git/gh commands
         # (GIT_SSH_COMMAND, GH_TOKEN from coder identity).
         self._git_env = build_git_env(config.identities)
+
+        # Coder Linear self-assignment: cache the coder's viewer ID once at
+        # startup so dispatched tickets can be auto-assigned to the coder bot.
+        coder_key = config.identities.coder.linear_api_key
+        if coder_key:
+            try:
+                coder_linear = LinearClient(api_key=coder_key)
+                self._coder_viewer_id: str | None = coder_linear.get_viewer_id()
+                self._coder_linear: LinearClient | None = coder_linear
+                logger.info("Cached coder Linear viewer ID: %s", self._coder_viewer_id)
+            except Exception:
+                logger.warning("Failed to resolve coder viewer ID — auto-assignment disabled")
+                self._coder_viewer_id = None
+                self._coder_linear = None
+        else:
+            self._coder_viewer_id = None
+            self._coder_linear = None
 
     @property
     def slot_manager(self) -> SlotManager:
@@ -2097,6 +2114,13 @@ class Supervisor:
                 issue.identifier, in_progress,
             )
             return
+
+        # Auto-assign ticket to coder bot (best-effort)
+        if self._coder_linear:
+            try:
+                self._coder_linear.assign_issue(issue.identifier, self._coder_viewer_id)
+            except Exception:
+                logger.warning("Failed to assign %s to coder bot — continuing", issue.identifier)
 
         # Assign ticket to slot (with labels for timeout overrides)
         self._slot_manager.assign_ticket(
