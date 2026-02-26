@@ -47,6 +47,18 @@ _CODER_STAGES = frozenset({"implement", "fix", "pr_checks", "merge"})
 _REVIEWER_STAGES = frozenset({"review"})
 
 
+def _build_ssh_command(key_path_str: str) -> str:
+    """Return a ``GIT_SSH_COMMAND`` value for the given SSH key path."""
+    key_path = Path(key_path_str).expanduser()
+    return (
+        f"ssh -i {key_path} "
+        "-o IdentitiesOnly=yes "
+        "-o StrictHostKeyChecking=accept-new "
+        "-o ControlMaster=no "
+        "-o ControlPath=none"
+    )
+
+
 def build_git_env(identities: IdentitiesConfig) -> dict[str, str] | None:
     """Build env dict with coder SSH key and GH_TOKEN for supervisor-level git operations.
 
@@ -57,14 +69,7 @@ def build_git_env(identities: IdentitiesConfig) -> dict[str, str] | None:
     coder = identities.coder
     env: dict[str, str] = {}
     if coder.ssh_key_path:
-        key_path = Path(coder.ssh_key_path).expanduser()
-        env["GIT_SSH_COMMAND"] = (
-            f"ssh -i {key_path} "
-            "-o IdentitiesOnly=yes "
-            "-o StrictHostKeyChecking=accept-new "
-            "-o ControlMaster=no "
-            "-o ControlPath=none"
-        )
+        env["GIT_SSH_COMMAND"] = _build_ssh_command(coder.ssh_key_path)
     if coder.github_token:
         env["GH_TOKEN"] = coder.github_token
     return env if env else None
@@ -81,14 +86,7 @@ def build_coder_env(
 
     identity = identities.coder
     if identity.ssh_key_path:
-        key_path = Path(identity.ssh_key_path).expanduser()
-        env["GIT_SSH_COMMAND"] = (
-            f"ssh -i {key_path} "
-            "-o IdentitiesOnly=yes "
-            "-o StrictHostKeyChecking=accept-new "
-            "-o ControlMaster=no "
-            "-o ControlPath=none"
-        )
+        env["GIT_SSH_COMMAND"] = _build_ssh_command(identity.ssh_key_path)
     if identity.github_token:
         env["GH_TOKEN"] = identity.github_token
     if identity.git_author_name:
