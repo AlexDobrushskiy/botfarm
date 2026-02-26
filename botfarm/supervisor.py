@@ -905,6 +905,7 @@ class Supervisor:
                 on_resume=self.request_resume,
                 on_update=self.request_update,
                 update_failed_event=self._update_failed_event,
+                git_env=self._git_env,
             )
 
         # Initial usage poll so we have data before the first dispatch

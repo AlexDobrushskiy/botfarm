@@ -7,6 +7,7 @@ Provides functions to check how many commits the local HEAD is behind
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -32,13 +33,11 @@ def commits_behind(
 
     Returns 0 when already up-to-date or on any git error.
     """
-    import os as _os
-
     kwargs: dict = {"capture_output": True, "text": True, "timeout": 30}
     if repo_dir is not None:
         kwargs["cwd"] = str(repo_dir)
     if env:
-        kwargs["env"] = {**_os.environ, **env}
+        kwargs["env"] = {**os.environ, **env}
 
     try:
         subprocess.run(
@@ -77,13 +76,11 @@ def pull_and_install(
 
     Returns ``True`` on success, ``False`` on any error.
     """
-    import os as _os
-
     kwargs: dict = {"capture_output": True, "text": True, "timeout": 120}
     if repo_dir is not None:
         kwargs["cwd"] = str(repo_dir)
     if env:
-        kwargs["env"] = {**_os.environ, **env}
+        kwargs["env"] = {**os.environ, **env}
 
     try:
         subprocess.run(

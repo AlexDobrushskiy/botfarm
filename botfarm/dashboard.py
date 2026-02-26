@@ -277,6 +277,7 @@ def create_app(
     on_resume: Callable[[], None] | None = None,
     on_update: Callable[[], None] | None = None,
     update_failed_event: threading.Event | None = None,
+    git_env: dict[str, str] | None = None,
 ) -> FastAPI:
     """Create the FastAPI dashboard application.
 
@@ -322,6 +323,7 @@ def create_app(
     app.state.update_in_progress = False
     app.state.update_failed_event = update_failed_event
     app.state.logs_dir = Path(logs_dir).expanduser() if logs_dir else None
+    app.state.git_env = git_env
 
     # --- Helpers ---
 
@@ -1195,7 +1197,7 @@ def create_app(
                 return _last_update_check["commits_behind"]
 
         try:
-            count = commits_behind()
+            count = commits_behind(env=app.state.git_env)
         except Exception:
             logger.warning("Update check failed", exc_info=True)
             count = 0
@@ -1725,6 +1727,7 @@ def start_dashboard(
     on_resume: Callable[[], None] | None = None,
     on_update: Callable[[], None] | None = None,
     update_failed_event: threading.Event | None = None,
+    git_env: dict[str, str] | None = None,
 ) -> threading.Thread | None:
     """Start the dashboard server in a background daemon thread.
 
@@ -1742,6 +1745,7 @@ def start_dashboard(
         on_resume=on_resume,
         on_update=on_update,
         update_failed_event=update_failed_event,
+        git_env=git_env,
     )
 
     def _run():
