@@ -1035,7 +1035,7 @@ class Supervisor:
         )
 
         try:
-            os.killpg(os.getpgid(pid), signal.SIGTERM)
+            os.kill(pid, signal.SIGTERM)
         except (OSError, ProcessLookupError):
             pass  # already dead
 
@@ -1068,8 +1068,8 @@ class Supervisor:
         project = slot.project
 
         try:
-            os.killpg(os.getpgid(pid), 0)  # check if still alive
-            os.killpg(os.getpgid(pid), signal.SIGKILL)
+            os.kill(pid, 0)  # check if still alive
+            os.kill(pid, signal.SIGKILL)
             logger.warning(
                 "Worker PID %d did not exit after SIGTERM, sent SIGKILL", pid,
             )
