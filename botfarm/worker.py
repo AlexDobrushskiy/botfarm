@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from botfarm.config import IdentitiesConfig
 from botfarm.db import delete_stage_run, insert_event, insert_stage_run, is_extra_usage_active, update_stage_run_context_fill, update_task
 from botfarm.slots import update_slot_stage
 
@@ -38,6 +39,58 @@ DEFAULT_MAX_TURNS: dict[str, int] = {
     "review": 100,
     "fix": 100,
 }
+
+# Stages that run under the coder identity
+_CODER_STAGES = frozenset({"implement", "fix", "pr_checks", "merge"})
+
+# Stages that run under the reviewer identity
+_REVIEWER_STAGES = frozenset({"review"})
+
+
+def build_coder_env(
+    identities: IdentitiesConfig,
+    slot_db_path: str | Path | None = None,
+) -> dict[str, str]:
+    """Build environment overrides for coder stages (implement, fix, pr_checks, merge)."""
+    env: dict[str, str] = {}
+    if slot_db_path:
+        env["BOTFARM_DB_PATH"] = str(slot_db_path)
+
+    identity = identities.coder
+    if identity.ssh_key_path:
+        key_path = Path(identity.ssh_key_path).expanduser()
+        env["GIT_SSH_COMMAND"] = (
+            f"ssh -i {key_path} "
+            "-o IdentitiesOnly=yes "
+            "-o StrictHostKeyChecking=accept-new "
+            "-o ControlMaster=no "
+            "-o ControlPath=none"
+        )
+    if identity.github_token:
+        env["GH_TOKEN"] = identity.github_token
+    if identity.git_author_name:
+        env["GIT_AUTHOR_NAME"] = identity.git_author_name
+        env["GIT_COMMITTER_NAME"] = identity.git_author_name
+    if identity.git_author_email:
+        env["GIT_AUTHOR_EMAIL"] = identity.git_author_email
+        env["GIT_COMMITTER_EMAIL"] = identity.git_author_email
+    return env
+
+
+def build_reviewer_env(
+    identities: IdentitiesConfig,
+    slot_db_path: str | Path | None = None,
+) -> dict[str, str]:
+    """Build environment overrides for reviewer stages (review)."""
+    env: dict[str, str] = {}
+    if slot_db_path:
+        env["BOTFARM_DB_PATH"] = str(slot_db_path)
+
+    reviewer_identity = identities.reviewer
+    if reviewer_identity.github_token:
+        env["GH_TOKEN"] = reviewer_identity.github_token
+    return env
+
 
 # ---------------------------------------------------------------------------
 # Claude subprocess result
@@ -609,8 +662,10 @@ def _run_pr_checks(
     cwd: str | Path,
     timeout: int = 600,
     log_file: Path | None = None,
+    env: dict[str, str] | None = None,
 ) -> StageResult:
     """PR_CHECKS stage — Wait for CI checks to pass. No Claude Code invocation."""
+    subprocess_env = {**os.environ, **env} if env else None
     start = time.monotonic()
     try:
         proc = subprocess.run(
@@ -619,6 +674,7 @@ def _run_pr_checks(
             text=True,
             cwd=str(cwd),
             timeout=timeout,
+            env=subprocess_env,
         )
         if log_file is not None:
             _write_subprocess_log(log_file, proc.stdout, proc.stderr)
@@ -691,8 +747,11 @@ def _run_merge(
     cwd: str | Path,
     log_file: Path | None = None,
     placeholder_branch: str | None = None,
+    env: dict[str, str] | None = None,
 ) -> StageResult:
     """MERGE stage — Squash merge the PR, then checkout placeholder branch."""
+    subprocess_env = {**os.environ, **env} if env else None
+
     # Capture the current branch name before merge/checkout so we can
     # delete the actual feature branch afterwards (not a stale name
     # threaded through the pipeline).
@@ -702,6 +761,7 @@ def _run_merge(
         capture_output=True,
         text=True,
         cwd=str(cwd),
+        env=subprocess_env,
     )
     if rev_parse.returncode == 0:
         feature_branch = rev_parse.stdout.strip() or None
@@ -716,6 +776,7 @@ def _run_merge(
         capture_output=True,
         text=True,
         cwd=str(cwd),
+        env=subprocess_env,
     )
     if log_file is not None:
         _write_subprocess_log(log_file, proc.stdout, proc.stderr)
@@ -723,7 +784,7 @@ def _run_merge(
         # The merge command failed, but the PR may have actually been merged
         # (e.g. post-merge git checkout fails in worktree environments).
         # Check the actual PR state before reporting failure.
-        if _check_pr_merged(pr_url, cwd):
+        if _check_pr_merged(pr_url, cwd, env=subprocess_env):
             logger.info(
                 "gh pr merge returned non-zero but PR is actually merged: %s",
                 pr_url,
@@ -740,6 +801,7 @@ def _run_merge(
             capture_output=True,
             text=True,
             cwd=str(cwd),
+            env=subprocess_env,
         )
         if checkout.returncode != 0:
             logger.warning(
@@ -760,6 +822,7 @@ def _run_merge(
                 capture_output=True,
                 text=True,
                 cwd=str(cwd),
+                env=subprocess_env,
             )
             if delete.returncode != 0:
                 logger.warning(
@@ -816,6 +879,7 @@ def run_pipeline(
     resume_session_id: str | None = None,  # TODO: wire through to run_claude_streaming --resume
     slot_db_path: str | Path | None = None,
     pause_event: multiprocessing.Event | None = None,
+    identities: IdentitiesConfig | None = None,
 ) -> PipelineResult:
     """Execute the full implement→review→fix→pr_checks→merge pipeline.
 
@@ -873,10 +937,12 @@ def run_pipeline(
     # Determine which stages to skip when resuming
     skipping = resume_from_stage is not None
 
-    # Build env overrides for Claude subprocesses (DB isolation)
-    subprocess_env = None
-    if slot_db_path:
-        subprocess_env = {"BOTFARM_DB_PATH": str(slot_db_path)}
+    # Build per-role env overrides for Claude subprocesses.
+    # When identities are configured, coder stages get SSH/git/GH_TOKEN
+    # and reviewer stages get their own GH_TOKEN.
+    ident = identities or IdentitiesConfig()
+    coder_env = build_coder_env(ident, slot_db_path) or None
+    reviewer_env = build_reviewer_env(ident, slot_db_path) or None
 
     # Shared context for _run_and_record helper
     ctx = _PipelineContext(
@@ -894,7 +960,8 @@ def run_pipeline(
         db_path=db_path,
         log_dir=Path(log_dir) if log_dir else None,
         placeholder_branch=placeholder_branch,
-        subprocess_env=subprocess_env,
+        coder_env=coder_env,
+        reviewer_env=reviewer_env,
     )
 
     for stage in STAGES:
@@ -1061,7 +1128,14 @@ class _PipelineContext:
     db_path: str | Path | None = None
     log_dir: Path | None = None
     placeholder_branch: str | None = None
-    subprocess_env: dict[str, str] | None = None
+    coder_env: dict[str, str] | None = None
+    reviewer_env: dict[str, str] | None = None
+
+    def _env_for_stage(self, stage: str) -> dict[str, str] | None:
+        """Return the appropriate env dict for a given stage."""
+        if stage in _REVIEWER_STAGES:
+            return self.reviewer_env
+        return self.coder_env
 
     def run_and_record(
         self,
@@ -1135,7 +1209,7 @@ class _PipelineContext:
                 pr_checks_timeout=self.pr_checks_timeout,
                 log_file=log_file,
                 placeholder_branch=self.placeholder_branch,
-                env=self.subprocess_env,
+                env=self._env_for_stage(stage),
                 on_context_fill=on_context_fill,
             )
         except Exception as exc:
@@ -1364,7 +1438,7 @@ def _run_ci_retry_loop(
             fix_result = _run_ci_fix(
                 pr_url, ci_failure_output=ci_failure_output,
                 cwd=ctx.cwd, max_turns=ctx.turns_cfg.get("fix", 100),
-                log_file=log_file, env=ctx.subprocess_env,
+                log_file=log_file, env=ctx._env_for_stage("fix"),
                 on_context_fill=_ci_fix_on_fill,
             )
         except Exception as exc:
@@ -1463,7 +1537,7 @@ def _execute_stage(
     elif stage == "pr_checks":
         if not pr_url:
             raise ValueError(f"{stage} stage requires pr_url")
-        return _run_pr_checks(pr_url, cwd=cwd, timeout=pr_checks_timeout, log_file=log_file)
+        return _run_pr_checks(pr_url, cwd=cwd, timeout=pr_checks_timeout, log_file=log_file, env=env)
     elif stage == "merge":
         if not pr_url:
             raise ValueError(f"{stage} stage requires pr_url")
@@ -1472,6 +1546,7 @@ def _execute_stage(
             cwd=cwd,
             log_file=log_file,
             placeholder_branch=placeholder_branch,
+            env=env,
         )
     else:
         raise ValueError(f"Unknown stage: {stage}")
@@ -1686,7 +1761,7 @@ def _write_subprocess_log(
         logger.warning("Failed to write subprocess log to %s", log_file, exc_info=True)
 
 
-def _check_pr_merged(pr_url: str, cwd: str | Path) -> bool:
+def _check_pr_merged(pr_url: str, cwd: str | Path, *, env: dict[str, str] | None = None) -> bool:
     """Check whether a PR has been merged by querying its state.
 
     Returns ``True`` if the PR state is ``MERGED``, ``False`` otherwise.
@@ -1698,6 +1773,7 @@ def _check_pr_merged(pr_url: str, cwd: str | Path) -> bool:
             text=True,
             cwd=str(cwd),
             timeout=15,
+            env=env,
         )
         if proc.returncode == 0:
             return proc.stdout.strip().upper() == "MERGED"
