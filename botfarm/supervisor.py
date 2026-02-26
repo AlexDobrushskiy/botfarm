@@ -916,6 +916,8 @@ class Supervisor:
         # even when no state mutations occurred during this tick.
         self._slot_manager.save()
 
+        self._log_tick_summary()
+
     # ------------------------------------------------------------------
     # Reconciliation
     # ------------------------------------------------------------------
@@ -2188,6 +2190,62 @@ class Supervisor:
             logger.info(
                 "Cleaned up slot DB for %s/%d: %s", project_name, slot_id, slot_dir,
             )
+
+    # ------------------------------------------------------------------
+    # Tick summary
+    # ------------------------------------------------------------------
+
+    def _log_tick_summary(self) -> None:
+        """Log a one-line summary of slot states at the end of each tick."""
+        busy = self._slot_manager.busy_slots()
+        free_count = len(self._slot_manager.free_slots())
+        paused_limit_count = len(self._slot_manager.paused_limit_slots())
+        paused_manual_count = len(self._slot_manager.paused_manual_slots())
+
+        if not busy and not paused_limit_count and not paused_manual_count:
+            logger.debug(
+                "Tick: all slots free (%d)", free_count,
+            )
+            return
+
+        now = datetime.now(timezone.utc)
+        parts: list[str] = []
+        for slot in busy:
+            elapsed_str = "?"
+            if slot.started_at:
+                try:
+                    started = datetime.fromisoformat(
+                        slot.started_at.replace("Z", "+00:00"),
+                    )
+                    elapsed_min = int((now - started).total_seconds() / 60)
+                    if elapsed_min >= 60:
+                        elapsed_str = f"{elapsed_min // 60}h{elapsed_min % 60}m"
+                    else:
+                        elapsed_str = f"{elapsed_min}m"
+                except (ValueError, TypeError):
+                    pass
+            stage = slot.stage or "starting"
+            parts.append(
+                f"{slot.project}/{slot.slot_id}: {slot.ticket_id} {stage} {elapsed_str}",
+            )
+
+        busy_desc = f"{len(busy)} busy ({', '.join(parts)})"
+
+        counts: list[str] = [f"{free_count} free"]
+        if paused_limit_count:
+            counts.append(f"{paused_limit_count} paused_limit")
+        if paused_manual_count:
+            counts.append(f"{paused_manual_count} paused_manual")
+
+        usage_str = ""
+        state = self._usage_poller.state
+        if state.utilization_5h is not None:
+            usage_str = f" | usage 5h={state.utilization_5h * 100:.0f}%"
+
+        logger.info(
+            "Tick: %s, %s%s",
+            busy_desc, ", ".join(counts), usage_str,
+        )
 
     # ------------------------------------------------------------------
     # Log maintenance

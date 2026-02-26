@@ -3717,3 +3717,144 @@ class TestManualPauseResume:
         supervisor._reconcile_workers()
 
         assert ("test-project", 1) not in supervisor._pause_events
+
+
+# ---------------------------------------------------------------------------
+# Tick summary logging
+# ---------------------------------------------------------------------------
+
+
+class TestLogTickSummary:
+    """Tests for _log_tick_summary() — one-line worker status per tick."""
+
+    def _make_busy_slot(self, supervisor, ticket_id="TST-1", stage="implement",
+                        started_minutes_ago=45, slot_id=1):
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", slot_id,
+            ticket_id=ticket_id, ticket_title="Test", branch="b1",
+        )
+        sm.update_stage("test-project", slot_id, stage=stage)
+        slot = sm.get_slot("test-project", slot_id)
+        started = (datetime.now(timezone.utc) - timedelta(minutes=started_minutes_ago))
+        slot.started_at = started.isoformat()
+        return slot
+
+    def test_all_free_logs_debug(self, supervisor, caplog):
+        """When all slots are free, log at DEBUG level (not INFO)."""
+        with caplog.at_level(logging.DEBUG, logger="botfarm.supervisor"):
+            supervisor._log_tick_summary()
+
+        debug_msgs = [r for r in caplog.records if r.levelno == logging.DEBUG]
+        info_msgs = [r for r in caplog.records if r.levelno == logging.INFO]
+        assert any("all slots free" in r.message for r in debug_msgs)
+        assert not any("Tick:" in r.message for r in info_msgs)
+
+    def test_busy_slot_logs_info(self, supervisor, caplog):
+        """A busy slot produces an INFO log with ticket, stage, elapsed."""
+        self._make_busy_slot(supervisor, ticket_id="TST-1", stage="implement",
+                            started_minutes_ago=45)
+
+        with caplog.at_level(logging.INFO, logger="botfarm.supervisor"):
+            supervisor._log_tick_summary()
+
+        info_msgs = [r for r in caplog.records if r.levelno == logging.INFO]
+        assert len(info_msgs) == 1
+        msg = info_msgs[0].message
+        assert "1 busy" in msg
+        assert "TST-1" in msg
+        assert "implement" in msg
+        assert "45m" in msg
+        assert "1 free" in msg
+
+    def test_elapsed_hours_format(self, supervisor, caplog):
+        """Elapsed time >= 60 minutes shows hours+minutes format."""
+        self._make_busy_slot(supervisor, started_minutes_ago=125)
+
+        with caplog.at_level(logging.INFO, logger="botfarm.supervisor"):
+            supervisor._log_tick_summary()
+
+        info_msgs = [r for r in caplog.records if r.levelno == logging.INFO]
+        msg = info_msgs[0].message
+        assert "2h5m" in msg
+
+    def test_multiple_busy_slots(self, supervisor, caplog):
+        """Multiple busy slots are listed in summary."""
+        self._make_busy_slot(supervisor, ticket_id="TST-1", stage="implement",
+                            started_minutes_ago=10, slot_id=1)
+        self._make_busy_slot(supervisor, ticket_id="TST-2", stage="review",
+                            started_minutes_ago=5, slot_id=2)
+
+        with caplog.at_level(logging.INFO, logger="botfarm.supervisor"):
+            supervisor._log_tick_summary()
+
+        info_msgs = [r for r in caplog.records if r.levelno == logging.INFO]
+        msg = info_msgs[0].message
+        assert "2 busy" in msg
+        assert "TST-1" in msg
+        assert "TST-2" in msg
+        assert "0 free" in msg
+
+    def test_includes_usage_percentage(self, supervisor, caplog):
+        """Usage 5h percentage is included when available."""
+        self._make_busy_slot(supervisor)
+        supervisor._usage_poller._state.utilization_5h = 0.52
+
+        with caplog.at_level(logging.INFO, logger="botfarm.supervisor"):
+            supervisor._log_tick_summary()
+
+        info_msgs = [r for r in caplog.records if r.levelno == logging.INFO]
+        msg = info_msgs[0].message
+        assert "usage 5h=52%" in msg
+
+    def test_no_usage_when_unavailable(self, supervisor, caplog):
+        """No usage string when utilization_5h is None."""
+        self._make_busy_slot(supervisor)
+        supervisor._usage_poller._state.utilization_5h = None
+
+        with caplog.at_level(logging.INFO, logger="botfarm.supervisor"):
+            supervisor._log_tick_summary()
+
+        info_msgs = [r for r in caplog.records if r.levelno == logging.INFO]
+        msg = info_msgs[0].message
+        assert "usage" not in msg
+
+    def test_paused_limit_slots_counted(self, supervisor, caplog):
+        """Paused-limit slots are counted in the summary."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.update_stage("test-project", 1, stage="implement")
+        sm.mark_paused_limit("test-project", 1)
+
+        with caplog.at_level(logging.INFO, logger="botfarm.supervisor"):
+            supervisor._log_tick_summary()
+
+        info_msgs = [r for r in caplog.records if r.levelno == logging.INFO]
+        msg = info_msgs[0].message
+        assert "1 paused_limit" in msg
+
+    def test_paused_manual_slots_counted(self, supervisor, caplog):
+        """Paused-manual slots are counted in the summary."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.update_stage("test-project", 1, stage="implement")
+        sm.mark_paused_manual("test-project", 1)
+
+        with caplog.at_level(logging.INFO, logger="botfarm.supervisor"):
+            supervisor._log_tick_summary()
+
+        info_msgs = [r for r in caplog.records if r.levelno == logging.INFO]
+        msg = info_msgs[0].message
+        assert "1 paused_manual" in msg
+
+    def test_tick_calls_log_tick_summary(self, supervisor):
+        """_tick() calls _log_tick_summary()."""
+        with patch.object(supervisor, "_log_tick_summary") as mock_summary:
+            supervisor._tick()
+            mock_summary.assert_called_once()
