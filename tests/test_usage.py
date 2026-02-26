@@ -44,6 +44,37 @@ HIGH_USAGE_RESPONSE = {
     },
 }
 
+EXTRA_USAGE_RESPONSE = {
+    "five_hour": {
+        "utilization": 100,
+        "resets_at": "2026-02-12T22:00:00Z",
+    },
+    "seven_day": {
+        "utilization": 58,
+        "resets_at": "2026-02-18T00:00:00Z",
+    },
+    "extra_usage": {
+        "is_enabled": True,
+        "monthly_limit": 5000,
+        "used_credits": 2344.0,
+        "utilization": 46.88,
+    },
+}
+
+EXTRA_USAGE_DISABLED_RESPONSE = {
+    "five_hour": {
+        "utilization": 100,
+        "resets_at": "2026-02-12T22:00:00Z",
+    },
+    "seven_day": {
+        "utilization": 58,
+        "resets_at": "2026-02-18T00:00:00Z",
+    },
+    "extra_usage": {
+        "is_enabled": False,
+    },
+}
+
 
 # ---------------------------------------------------------------------------
 # UsageState
@@ -58,6 +89,13 @@ class TestUsageState:
         assert state.resets_at_5h is None
         assert state.resets_at_7d is None
 
+    def test_extra_usage_defaults(self):
+        state = UsageState()
+        assert state.extra_usage_enabled is False
+        assert state.extra_usage_monthly_limit is None
+        assert state.extra_usage_used_credits is None
+        assert state.extra_usage_utilization is None
+
     def test_to_dict(self):
         state = UsageState(
             utilization_5h=0.42,
@@ -66,17 +104,33 @@ class TestUsageState:
             resets_at_7d="2026-02-18T00:00:00Z",
         )
         d = state.to_dict()
-        assert d == {
-            "utilization_5h": 0.42,
-            "utilization_7d": 0.15,
-            "resets_at_5h": "2026-02-12T22:00:00Z",
-            "resets_at_7d": "2026-02-18T00:00:00Z",
-        }
+        assert d["utilization_5h"] == 0.42
+        assert d["utilization_7d"] == 0.15
+        assert d["resets_at_5h"] == "2026-02-12T22:00:00Z"
+        assert d["resets_at_7d"] == "2026-02-18T00:00:00Z"
+        assert d["extra_usage_enabled"] is False
+
+    def test_to_dict_with_extra_usage(self):
+        state = UsageState(
+            utilization_5h=1.0,
+            utilization_7d=0.58,
+            extra_usage_enabled=True,
+            extra_usage_monthly_limit=5000.0,
+            extra_usage_used_credits=2344.0,
+            extra_usage_utilization=46.88,
+        )
+        d = state.to_dict()
+        assert d["extra_usage_enabled"] is True
+        assert d["extra_usage_monthly_limit"] == 5000.0
+        assert d["extra_usage_used_credits"] == 2344.0
+        assert d["extra_usage_utilization"] == 46.88
 
     def test_to_dict_none_values(self):
         state = UsageState()
         d = state.to_dict()
-        assert all(v is None for v in d.values())
+        assert d["utilization_5h"] is None
+        assert d["utilization_7d"] is None
+        assert d["extra_usage_enabled"] is False
 
     # --- should_pause_with_thresholds ---
 
@@ -167,6 +221,28 @@ class TestUsageState:
         )
         assert paused is False
         assert reason is None
+
+    # --- is_on_extra_usage ---
+
+    def test_is_on_extra_usage_disabled(self):
+        state = UsageState(utilization_5h=1.0, extra_usage_enabled=False)
+        assert state.is_on_extra_usage is False
+
+    def test_is_on_extra_usage_below_100(self):
+        state = UsageState(utilization_5h=0.85, extra_usage_enabled=True)
+        assert state.is_on_extra_usage is False
+
+    def test_is_on_extra_usage_5h_at_100(self):
+        state = UsageState(utilization_5h=1.0, utilization_7d=0.5, extra_usage_enabled=True)
+        assert state.is_on_extra_usage is True
+
+    def test_is_on_extra_usage_7d_at_100(self):
+        state = UsageState(utilization_5h=0.5, utilization_7d=1.0, extra_usage_enabled=True)
+        assert state.is_on_extra_usage is True
+
+    def test_is_on_extra_usage_both_none(self):
+        state = UsageState(extra_usage_enabled=True)
+        assert state.is_on_extra_usage is False
 
 
 # ---------------------------------------------------------------------------
@@ -348,6 +424,46 @@ class TestUsagePollerParsing:
 
         assert state.utilization_5h is None
         assert state.utilization_7d is None
+
+    def test_extra_usage_parsed(self, poller, conn):
+        with patch.object(poller, "_fetch", return_value=EXTRA_USAGE_RESPONSE):
+            state = poller.force_poll(conn)
+
+        assert state.utilization_5h == 1.0
+        assert state.extra_usage_enabled is True
+        assert state.extra_usage_monthly_limit == 5000
+        assert state.extra_usage_used_credits == 2344.0
+        assert state.extra_usage_utilization == 46.88
+
+        # Verify DB snapshot includes extra usage
+        snapshots = get_usage_snapshots(conn, limit=1)
+        assert len(snapshots) == 1
+        assert snapshots[0]["extra_usage_enabled"] == 1
+        assert snapshots[0]["extra_usage_monthly_limit"] == pytest.approx(5000)
+        assert snapshots[0]["extra_usage_used_credits"] == pytest.approx(2344.0)
+        assert snapshots[0]["extra_usage_utilization"] == pytest.approx(46.88)
+
+    def test_extra_usage_disabled_parsed(self, poller, conn):
+        with patch.object(poller, "_fetch", return_value=EXTRA_USAGE_DISABLED_RESPONSE):
+            state = poller.force_poll(conn)
+
+        assert state.extra_usage_enabled is False
+        assert state.extra_usage_monthly_limit is None
+        assert state.extra_usage_used_credits is None
+
+    def test_no_extra_usage_field(self, poller, conn):
+        with patch.object(poller, "_fetch", return_value=SAMPLE_USAGE_RESPONSE):
+            state = poller.force_poll(conn)
+
+        assert state.extra_usage_enabled is False
+        assert state.extra_usage_monthly_limit is None
+
+    def test_extra_usage_null_response(self, poller, conn):
+        response = {**SAMPLE_USAGE_RESPONSE, "extra_usage": None}
+        with patch.object(poller, "_fetch", return_value=response):
+            state = poller.force_poll(conn)
+
+        assert state.extra_usage_enabled is False
 
 
 # ---------------------------------------------------------------------------

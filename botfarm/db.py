@@ -208,6 +208,7 @@ def update_task(
         "pr_url",
         "pipeline_stage",
         "review_state",
+        "started_on_extra_usage",
     }
     bad = set(fields) - allowed
     if bad:
@@ -332,6 +333,7 @@ def insert_stage_run(
     context_fill_pct: float | None = None,
     model_usage_json: str | None = None,
     log_file_path: str | None = None,
+    on_extra_usage: bool = False,
 ) -> int:
     """Insert a stage run record and return its id."""
     cur = conn.execute(
@@ -342,8 +344,8 @@ def insert_stage_run(
              input_tokens, output_tokens, cache_read_input_tokens,
              cache_creation_input_tokens, total_cost_usd,
              context_fill_pct, model_usage_json, log_file_path,
-             created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             on_extra_usage, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             task_id,
@@ -362,6 +364,7 @@ def insert_stage_run(
             context_fill_pct,
             model_usage_json,
             log_file_path,
+            int(on_extra_usage),
             _now_iso(),
         ),
     )
@@ -437,7 +440,7 @@ def get_stage_run_aggregates(
     """Return aggregated token usage per task for a batch of task IDs.
 
     Returns a dict mapping task_id -> {total_input_tokens, total_output_tokens,
-    total_cost_usd, max_context_fill_pct}.
+    total_cost_usd, max_context_fill_pct, extra_usage_cost_usd}.
     """
     if not task_ids:
         return {}
@@ -447,7 +450,8 @@ def get_stage_run_aggregates(
         "SUM(input_tokens) as total_input_tokens, "
         "SUM(output_tokens) as total_output_tokens, "
         "SUM(total_cost_usd) as total_cost_usd, "
-        "MAX(context_fill_pct) as max_context_fill_pct "
+        "MAX(context_fill_pct) as max_context_fill_pct, "
+        "SUM(CASE WHEN on_extra_usage THEN total_cost_usd ELSE 0 END) as extra_usage_cost_usd "
         f"FROM stage_runs WHERE task_id IN ({placeholders}) "
         "GROUP BY task_id",
         task_ids,
@@ -458,6 +462,7 @@ def get_stage_run_aggregates(
             "total_output_tokens": r["total_output_tokens"] or 0,
             "total_cost_usd": r["total_cost_usd"] or 0.0,
             "max_context_fill_pct": r["max_context_fill_pct"],
+            "extra_usage_cost_usd": r["extra_usage_cost_usd"] or 0.0,
         }
         for r in rows
     }
@@ -474,14 +479,27 @@ def insert_usage_snapshot(
     utilization_7d: float | None = None,
     resets_at: str | None = None,
     resets_at_7d: str | None = None,
+    extra_usage_enabled: bool = False,
+    extra_usage_monthly_limit: float | None = None,
+    extra_usage_used_credits: float | None = None,
+    extra_usage_utilization: float | None = None,
 ) -> int:
     """Insert a usage snapshot and return its id."""
     cur = conn.execute(
         """
-        INSERT INTO usage_snapshots (utilization_5h, utilization_7d, resets_at, resets_at_7d, created_at)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO usage_snapshots
+            (utilization_5h, utilization_7d, resets_at, resets_at_7d,
+             extra_usage_enabled, extra_usage_monthly_limit,
+             extra_usage_used_credits, extra_usage_utilization,
+             created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (utilization_5h, utilization_7d, resets_at, resets_at_7d, _now_iso()),
+        (
+            utilization_5h, utilization_7d, resets_at, resets_at_7d,
+            int(extra_usage_enabled), extra_usage_monthly_limit,
+            extra_usage_used_credits, extra_usage_utilization,
+            _now_iso(),
+        ),
     )
     return cur.lastrowid
 
@@ -494,6 +512,25 @@ def get_usage_snapshots(
         "SELECT * FROM usage_snapshots ORDER BY created_at DESC LIMIT ?",
         (limit,),
     ).fetchall()
+
+
+def is_extra_usage_active(conn: sqlite3.Connection) -> bool:
+    """Check whether extra usage is currently active based on the latest snapshot.
+
+    Returns True if extra usage is enabled and either 5h or 7d utilization
+    is at 100% (meaning included usage is exhausted).
+    """
+    row = conn.execute(
+        "SELECT extra_usage_enabled, utilization_5h, utilization_7d "
+        "FROM usage_snapshots ORDER BY created_at DESC LIMIT 1"
+    ).fetchone()
+    if row is None:
+        return False
+    if not row["extra_usage_enabled"]:
+        return False
+    u5h = row["utilization_5h"]
+    u7d = row["utilization_7d"]
+    return (u5h is not None and u5h >= 1.0) or (u7d is not None and u7d >= 1.0)
 
 
 # ---------------------------------------------------------------------------

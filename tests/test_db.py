@@ -26,6 +26,7 @@ from botfarm.db import (
     insert_stage_run,
     insert_task,
     insert_usage_snapshot,
+    is_extra_usage_active,
     load_all_slots,
     load_dispatch_state,
     resolve_db_path,
@@ -1343,6 +1344,137 @@ class TestUsageSnapshots:
             insert_usage_snapshot(conn, utilization_5h=0.5)
         rows = get_usage_snapshots(conn, limit=2)
         assert len(rows) == 2
+
+    def test_extra_usage_columns(self, conn):
+        sid = insert_usage_snapshot(
+            conn,
+            utilization_5h=1.0,
+            utilization_7d=0.58,
+            extra_usage_enabled=True,
+            extra_usage_monthly_limit=5000.0,
+            extra_usage_used_credits=2344.0,
+            extra_usage_utilization=46.88,
+        )
+        rows = get_usage_snapshots(conn)
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["extra_usage_enabled"] == 1
+        assert row["extra_usage_monthly_limit"] == pytest.approx(5000.0)
+        assert row["extra_usage_used_credits"] == pytest.approx(2344.0)
+        assert row["extra_usage_utilization"] == pytest.approx(46.88)
+
+    def test_extra_usage_columns_default(self, conn):
+        insert_usage_snapshot(conn, utilization_5h=0.5)
+        rows = get_usage_snapshots(conn)
+        row = rows[0]
+        assert row["extra_usage_enabled"] == 0
+        assert row["extra_usage_monthly_limit"] is None
+        assert row["extra_usage_used_credits"] is None
+        assert row["extra_usage_utilization"] is None
+
+
+# ---------------------------------------------------------------------------
+# Extra usage active check
+# ---------------------------------------------------------------------------
+
+
+class TestIsExtraUsageActive:
+    def test_no_snapshots(self, conn):
+        assert is_extra_usage_active(conn) is False
+
+    def test_extra_usage_disabled(self, conn):
+        insert_usage_snapshot(
+            conn, utilization_5h=1.0, extra_usage_enabled=False,
+        )
+        assert is_extra_usage_active(conn) is False
+
+    def test_extra_usage_enabled_below_100(self, conn):
+        insert_usage_snapshot(
+            conn, utilization_5h=0.85, extra_usage_enabled=True,
+        )
+        assert is_extra_usage_active(conn) is False
+
+    def test_extra_usage_enabled_5h_at_100(self, conn):
+        insert_usage_snapshot(
+            conn, utilization_5h=1.0, utilization_7d=0.5,
+            extra_usage_enabled=True,
+        )
+        assert is_extra_usage_active(conn) is True
+
+    def test_extra_usage_enabled_7d_at_100(self, conn):
+        insert_usage_snapshot(
+            conn, utilization_5h=0.5, utilization_7d=1.0,
+            extra_usage_enabled=True,
+        )
+        assert is_extra_usage_active(conn) is True
+
+    def test_uses_latest_snapshot(self, conn):
+        # Insert older snapshot with extra usage active
+        insert_usage_snapshot(
+            conn, utilization_5h=1.0, extra_usage_enabled=True,
+        )
+        # Insert newer snapshot with extra usage inactive
+        insert_usage_snapshot(
+            conn, utilization_5h=0.3, extra_usage_enabled=True,
+        )
+        assert is_extra_usage_active(conn) is False
+
+
+# ---------------------------------------------------------------------------
+# Stage run on_extra_usage
+# ---------------------------------------------------------------------------
+
+
+class TestStageRunOnExtraUsage:
+    def test_on_extra_usage_flag(self, conn):
+        tid = insert_task(conn, ticket_id="EU-1", title="Extra", project="p", slot=1)
+        insert_stage_run(conn, task_id=tid, stage="implement", on_extra_usage=True,
+                         total_cost_usd=0.50)
+        runs = get_stage_runs(conn, tid)
+        assert runs[0]["on_extra_usage"] == 1
+
+    def test_on_extra_usage_defaults_false(self, conn):
+        tid = insert_task(conn, ticket_id="EU-2", title="NoExtra", project="p", slot=1)
+        insert_stage_run(conn, task_id=tid, stage="implement")
+        runs = get_stage_runs(conn, tid)
+        assert runs[0]["on_extra_usage"] == 0
+
+    def test_aggregates_include_extra_usage_cost(self, conn):
+        tid = insert_task(conn, ticket_id="EU-3", title="MixedExtra", project="p", slot=1)
+        insert_stage_run(conn, task_id=tid, stage="implement",
+                         total_cost_usd=0.10, on_extra_usage=True)
+        insert_stage_run(conn, task_id=tid, stage="review",
+                         total_cost_usd=0.05, on_extra_usage=False)
+        insert_stage_run(conn, task_id=tid, stage="fix",
+                         total_cost_usd=0.08, on_extra_usage=True)
+        result = get_stage_run_aggregates(conn, [tid])
+        assert result[tid]["total_cost_usd"] == pytest.approx(0.23)
+        assert result[tid]["extra_usage_cost_usd"] == pytest.approx(0.18)
+
+    def test_aggregates_no_extra_usage(self, conn):
+        tid = insert_task(conn, ticket_id="EU-4", title="NoExtra", project="p", slot=1)
+        insert_stage_run(conn, task_id=tid, stage="implement",
+                         total_cost_usd=0.10, on_extra_usage=False)
+        result = get_stage_run_aggregates(conn, [tid])
+        assert result[tid]["extra_usage_cost_usd"] == pytest.approx(0.0)
+
+
+# ---------------------------------------------------------------------------
+# Task started_on_extra_usage
+# ---------------------------------------------------------------------------
+
+
+class TestTaskStartedOnExtraUsage:
+    def test_update_started_on_extra_usage(self, conn):
+        tid = insert_task(conn, ticket_id="TEU-1", title="Extra", project="p", slot=1)
+        update_task(conn, tid, started_on_extra_usage=1)
+        task = get_task(conn, tid)
+        assert task["started_on_extra_usage"] == 1
+
+    def test_started_on_extra_usage_defaults_false(self, conn):
+        tid = insert_task(conn, ticket_id="TEU-2", title="Normal", project="p", slot=1)
+        task = get_task(conn, tid)
+        assert task["started_on_extra_usage"] == 0
 
 
 # ---------------------------------------------------------------------------

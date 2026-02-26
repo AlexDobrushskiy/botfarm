@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from botfarm.db import delete_stage_run, insert_event, insert_stage_run, update_stage_run_context_fill, update_task
+from botfarm.db import delete_stage_run, insert_event, insert_stage_run, is_extra_usage_active, update_stage_run_context_fill, update_task
 from botfarm.slots import update_slot_stage
 
 logger = logging.getLogger(__name__)
@@ -1121,6 +1121,8 @@ class _PipelineContext:
         stage_run_id: int | None = None
         uses_claude = stage in ("implement", "review", "fix")
 
+        extra_usage = is_extra_usage_active(self.conn)
+
         if uses_claude:
             stage_run_id = insert_stage_run(
                 self.conn,
@@ -1128,6 +1130,7 @@ class _PipelineContext:
                 stage=stage,
                 iteration=iteration,
                 log_file_path=str(log_file) if log_file else None,
+                on_extra_usage=extra_usage,
             )
             self.conn.commit()
 
@@ -1163,6 +1166,7 @@ class _PipelineContext:
             stage, result, wall_start, iteration,
             stage_run_id=stage_run_id,
             log_file=log_file,
+            on_extra_usage=extra_usage,
         )
 
     def run_and_record_result(
@@ -1174,6 +1178,7 @@ class _PipelineContext:
         iteration: int = 1,
         stage_run_id: int | None = None,
         log_file: Path | None = None,
+        on_extra_usage: bool = False,
     ) -> StageResult | None:
         """Record a pre-computed StageResult, accumulate metrics.
 
@@ -1186,6 +1191,7 @@ class _PipelineContext:
             stage, result, wall_start, iteration,
             stage_run_id=stage_run_id,
             log_file=log_file,
+            on_extra_usage=on_extra_usage,
         )
 
     def _finish_stage(
@@ -1197,6 +1203,7 @@ class _PipelineContext:
         *,
         stage_run_id: int | None = None,
         log_file: Path | None = None,
+        on_extra_usage: bool = False,
     ) -> StageResult | None:
         """Shared logic for recording a stage result and updating metrics.
 
@@ -1215,6 +1222,7 @@ class _PipelineContext:
             iteration=iteration,
             stage_run_id=stage_run_id,
             log_file_path=str(log_file) if log_file else None,
+            on_extra_usage=on_extra_usage,
         )
 
         if result.claude_result:
@@ -1351,12 +1359,14 @@ def _run_ci_retry_loop(
         wall_start = time.monotonic()
 
         # Insert placeholder for live context fill updates
+        ci_fix_extra_usage = is_extra_usage_active(ctx.conn)
         ci_fix_stage_run_id = insert_stage_run(
             ctx.conn,
             task_id=ctx.task_id,
             stage="fix",
             iteration=retry,
             log_file_path=str(log_file) if log_file else None,
+            on_extra_usage=ci_fix_extra_usage,
         )
         ctx.conn.commit()
 
@@ -1384,6 +1394,7 @@ def _run_ci_retry_loop(
             "fix", fix_result, wall_start=wall_start, iteration=retry,
             stage_run_id=ci_fix_stage_run_id,
             log_file=log_file,
+            on_extra_usage=ci_fix_extra_usage,
         )
         if fix_result is None:
             return False  # failure recorded by run_and_record_result
@@ -1489,6 +1500,7 @@ def _record_stage_run(
     iteration: int = 1,
     stage_run_id: int | None = None,
     log_file_path: str | None = None,
+    on_extra_usage: bool = False,
 ) -> None:
     """Insert or update a stage_run row from the result.
 
@@ -1543,6 +1555,7 @@ def _record_stage_run(
             context_fill_pct=cr.context_fill_pct if cr else None,
             model_usage_json=cr.model_usage_json if cr else None,
             log_file_path=log_file_path,
+            on_extra_usage=on_extra_usage,
         )
     conn.commit()
 

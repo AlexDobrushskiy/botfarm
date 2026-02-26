@@ -17,6 +17,10 @@
 
 {% if snapshots %}
 <canvas id="usage-chart" style="max-height:400px"></canvas>
+{% set has_extra = snapshots | selectattr("extra_usage_enabled") | list | length > 0 %}
+{% if has_extra %}
+<canvas id="extra-usage-chart" style="max-height:300px; margin-top:1rem;"></canvas>
+{% endif %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <script>
     const snapshots = {{ snapshots | tojson }};
@@ -41,6 +45,29 @@
             },
         }
     });
+
+    {% if has_extra %}
+    const extraData = snapshots.map(s => s.extra_usage_used_credits != null ? s.extra_usage_used_credits : null);
+    const extraLimit = snapshots.map(s => s.extra_usage_monthly_limit != null ? s.extra_usage_monthly_limit : null);
+    new Chart(document.getElementById("extra-usage-chart"), {
+        type: "line",
+        data: {
+            labels: labels,
+            datasets: [
+                { label: "Extra Usage ($)", data: extraData, borderColor: "#ef4444", backgroundColor: "rgba(239,68,68,0.1)", fill: true, tension: 0.3, pointRadius: 2 },
+                { label: "Monthly Limit ($)", data: extraLimit, borderColor: "#94a3b8", borderDash: [5, 5], fill: false, tension: 0, pointRadius: 0 },
+            ]
+        },
+        options: {
+            responsive: true,
+            interaction: { intersect: false, mode: "index" },
+            scales: { y: { min: 0, title: { display: true, text: "USD ($)" } } },
+            plugins: {
+                tooltip: { callbacks: { label: ctx => ctx.dataset.label + ": $" + (ctx.parsed.y != null ? ctx.parsed.y.toFixed(2) : "N/A") } },
+            },
+        }
+    });
+    {% endif %}
 </script>
 
 <details>
@@ -54,6 +81,10 @@
                 <th>7-day (%)</th>
                 <th>5h Resets At</th>
                 <th>7d Resets At</th>
+                {% if has_extra %}
+                <th>Extra Usage ($)</th>
+                <th>Extra Limit ($)</th>
+                {% endif %}
             </tr>
         </thead>
         <tbody>
@@ -64,6 +95,10 @@
                 <td>{{ "%.1f"|format(s.utilization_7d * 100) if s.utilization_7d is not none else "-" }}</td>
                 <td>{% if s.resets_at %}<time data-timestamp="{{ s.resets_at }}" title="{{ s.resets_at[:19] }}">{{ s.resets_at[:19] }}</time>{% else %}-{% endif %}</td>
                 <td>{% if s.resets_at_7d %}<time data-timestamp="{{ s.resets_at_7d }}" title="{{ s.resets_at_7d[:19] }}">{{ s.resets_at_7d[:19] }}</time>{% else %}-{% endif %}</td>
+                {% if has_extra %}
+                <td>{{ "$%.2f"|format(s.extra_usage_used_credits) if s.extra_usage_used_credits is not none else "-" }}</td>
+                <td>{{ "$%.0f"|format(s.extra_usage_monthly_limit) if s.extra_usage_monthly_limit is not none else "-" }}</td>
+                {% endif %}
             </tr>
             {% endfor %}
         </tbody>

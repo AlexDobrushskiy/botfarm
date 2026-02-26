@@ -35,6 +35,10 @@ class UsageState:
     utilization_7d: float | None = None
     resets_at_5h: str | None = None
     resets_at_7d: str | None = None
+    extra_usage_enabled: bool = False
+    extra_usage_monthly_limit: float | None = None
+    extra_usage_used_credits: float | None = None
+    extra_usage_utilization: float | None = None
 
     def should_pause_with_thresholds(
         self,
@@ -67,12 +71,26 @@ class UsageState:
             )
         return False, None
 
+    @property
+    def is_on_extra_usage(self) -> bool:
+        """Return True if extra usage is enabled and included limits are exhausted."""
+        if not self.extra_usage_enabled:
+            return False
+        return (
+            (self.utilization_5h is not None and self.utilization_5h >= 1.0)
+            or (self.utilization_7d is not None and self.utilization_7d >= 1.0)
+        )
+
     def to_dict(self) -> dict:
         return {
             "utilization_5h": self.utilization_5h,
             "utilization_7d": self.utilization_7d,
             "resets_at_5h": self.resets_at_5h,
             "resets_at_7d": self.resets_at_7d,
+            "extra_usage_enabled": self.extra_usage_enabled,
+            "extra_usage_monthly_limit": self.extra_usage_monthly_limit,
+            "extra_usage_used_credits": self.extra_usage_used_credits,
+            "extra_usage_utilization": self.extra_usage_utilization,
         }
 
 
@@ -180,19 +198,36 @@ class UsagePoller:
         self._state.resets_at_5h = five_hour.get("resets_at")
         self._state.resets_at_7d = seven_day.get("resets_at")
 
+        extra = data.get("extra_usage") or {}
+        self._state.extra_usage_enabled = bool(extra.get("is_enabled"))
+        self._state.extra_usage_monthly_limit = extra.get("monthly_limit")
+        self._state.extra_usage_used_credits = extra.get("used_credits")
+        self._state.extra_usage_utilization = extra.get("utilization")
+
         insert_usage_snapshot(
             conn,
             utilization_5h=self._state.utilization_5h,
             utilization_7d=self._state.utilization_7d,
             resets_at=self._state.resets_at_5h,
             resets_at_7d=self._state.resets_at_7d,
+            extra_usage_enabled=self._state.extra_usage_enabled,
+            extra_usage_monthly_limit=self._state.extra_usage_monthly_limit,
+            extra_usage_used_credits=self._state.extra_usage_used_credits,
+            extra_usage_utilization=self._state.extra_usage_utilization,
         )
 
+        extra_msg = ""
+        if self._state.extra_usage_enabled:
+            extra_msg = (
+                f", extra_usage=${self._state.extra_usage_used_credits or 0:.2f}"
+                f"/${self._state.extra_usage_monthly_limit or 0:.0f}"
+            )
         logger.info(
-            "Usage snapshot: 5h=%.1f%%, 7d=%.1f%%, resets=%s",
+            "Usage snapshot: 5h=%.1f%%, 7d=%.1f%%, resets=%s%s",
             (self._state.utilization_5h or 0) * 100,
             (self._state.utilization_7d or 0) * 100,
             self._state.resets_at_5h or "unknown",
+            extra_msg,
         )
 
     def _purge_old_snapshots(self, conn: sqlite3.Connection) -> None:

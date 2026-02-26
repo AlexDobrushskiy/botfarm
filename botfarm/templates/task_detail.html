@@ -47,6 +47,12 @@
         <h2>${{ "%.4f"|format(task_totals.total_cost) }}</h2>
         <p>Total Cost</p>
     </article>
+    {% if task_totals.extra_usage_cost > 0 %}
+    <article class="metric-card">
+        <h2><span class="status-busy">${{ "%.4f"|format(task_totals.extra_usage_cost) }}</span></h2>
+        <p>Extra Usage Cost</p>
+    </article>
+    {% endif %}
     <article class="metric-card">
         <h2>
             {% if task_totals.max_context_fill is not none %}
@@ -56,6 +62,10 @@
         <p>Max Context Fill</p>
     </article>
 </div>
+
+{% if task.started_on_extra_usage %}
+<p style="margin-top: 0.5rem;"><small class="status-busy"><strong>Note:</strong> This task was started while extra usage was active (included usage limits exhausted).</small></p>
+{% endif %}
 
 {% if task.status == "in_progress" %}
 <a href="/task/{{ task.ticket_id }}/logs" class="live-output-link" role="button">
@@ -123,6 +133,7 @@
                 <th>Turns</th>
                 <th>Context Fill</th>
                 <th>Cost</th>
+                <th>Extra Usage</th>
                 <th>Input Tokens</th>
                 <th>Output Tokens</th>
                 <th>Session ID</th>
@@ -144,6 +155,7 @@
                     {% else %}-{% endif %}
                 </td>
                 <td>${{ "%.4f"|format(stage.total_cost_usd) if stage.total_cost_usd else "0.0000" }}</td>
+                <td>{% if stage.on_extra_usage %}<span class="status-busy">${{ "%.4f"|format(stage.total_cost_usd) if stage.total_cost_usd else "0.0000" }}</span>{% else %}-{% endif %}</td>
                 <td>{{ "{:,}".format(stage.input_tokens) if stage.input_tokens else "-" }}</td>
                 <td>{{ "{:,}".format(stage.output_tokens) if stage.output_tokens else "-" }}</td>
                 <td style="font-family: monospace; font-size: 0.8rem;">{{ stage.session_id[:12] if stage.session_id else "-" }}{% if stage.session_id and stage.session_id|length > 12 %}&hellip;{% endif %}</td>

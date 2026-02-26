@@ -29,6 +29,22 @@
         {% endif %}
     </div>
 </div>
+{% if usage.extra_usage_enabled %}
+<div style="margin-top: 0.75rem; padding: 0.75rem; border: 1px solid var(--pico-muted-border-color); border-radius: var(--pico-border-radius);">
+    <strong>Extra Usage:</strong>
+    {% if usage.extra_usage_used_credits is not none and usage.extra_usage_monthly_limit %}
+        <span class="{% if usage.extra_usage_utilization is not none and usage.extra_usage_utilization >= 80 %}status-failed{% elif usage.extra_usage_utilization is not none and usage.extra_usage_utilization >= 50 %}status-busy{% else %}status-free{% endif %}">
+            ${{ "%.2f"|format(usage.extra_usage_used_credits) }} / ${{ "%.0f"|format(usage.extra_usage_monthly_limit) }}
+        </span>
+        {% if usage.extra_usage_utilization is not none %}
+            ({{ "%.1f"|format(usage.extra_usage_utilization) }}%)
+        {% endif %}
+        <progress value="{{ usage.extra_usage_utilization|round|int if usage.extra_usage_utilization is not none else 0 }}" max="100" style="margin-bottom: 0; margin-top: 0.25rem;"></progress>
+    {% else %}
+        Enabled (no data yet)
+    {% endif %}
+</div>
+{% endif %}
 {% if last_usage_check %}
 <small style="display: block; margin-top: 0.5rem;">Last checked: {{ elapsed(last_usage_check) }} ago</small>
 {% if usage_stale %}
