@@ -29,7 +29,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import FrameType
 
-from botfarm.config import BotfarmConfig, ProjectConfig, resolve_stage_timeout
+from botfarm.config import BotfarmConfig, IdentitiesConfig, ProjectConfig, resolve_stage_timeout
 from botfarm.db import get_task, init_db, insert_event, insert_task, resolve_db_path, save_queue_entries, update_task
 from botfarm.linear import LinearPoller, create_pollers
 from botfarm.notifications import Notifier
@@ -92,6 +92,7 @@ def _worker_entry(
     placeholder_branch: str | None = None,
     slot_db_path: str | None = None,
     pause_event: multiprocessing.Event | None = None,
+    identities: IdentitiesConfig | None = None,
 ) -> None:
     """Entry point for a worker subprocess.
 
@@ -139,6 +140,7 @@ def _worker_entry(
             resume_session_id=resume_session_id,
             slot_db_path=slot_db_path,
             pause_event=pause_event,
+            identities=identities,
         )
         if result.paused:
             result_queue.put(_WorkerResult(
@@ -657,6 +659,7 @@ class Supervisor:
                 "placeholder_branch": self._slot_placeholder_branch(slot.slot_id),
                 "slot_db_path": slot_db,
                 "pause_event": pause_event,
+                "identities": self._config.identities,
             },
             daemon=False,
         )
@@ -1630,6 +1633,7 @@ class Supervisor:
                 "placeholder_branch": self._slot_placeholder_branch(slot.slot_id),
                 "slot_db_path": slot_db,
                 "pause_event": pause_event,
+                "identities": self._config.identities,
             },
             daemon=False,
         )
@@ -1795,6 +1799,7 @@ class Supervisor:
                 "placeholder_branch": self._slot_placeholder_branch(slot.slot_id),
                 "slot_db_path": slot_db,
                 "pause_event": pause_event,
+                "identities": self._config.identities,
             },
             daemon=False,
         )
@@ -2149,6 +2154,7 @@ class Supervisor:
                 "placeholder_branch": self._slot_placeholder_branch(slot.slot_id),
                 "slot_db_path": slot_db,
                 "pause_event": pause_event,
+                "identities": self._config.identities,
             },
             daemon=False,  # Not daemon — survives supervisor exit
         )

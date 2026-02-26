@@ -11,15 +11,21 @@ import pytest
 
 from botfarm.db import get_stage_runs, get_task, init_db, insert_stage_run, insert_task
 from botfarm.slots import SlotManager
+from botfarm.config import CoderIdentity, IdentitiesConfig, ReviewerIdentity
 from botfarm.worker import (
     STAGES,
     ClaudeResult,
     PipelineResult,
     StageResult,
+    _CODER_STAGES,
     _DEFAULT_CONTEXT_WINDOW,
+    _PipelineContext,
+    _REVIEWER_STAGES,
     _build_implement_prompt,
     _compute_turn_context_fill,
     _is_investigation,
+    build_coder_env,
+    build_reviewer_env,
     parse_stream_json_result,
     parse_claude_output,
     run_claude_streaming,
@@ -939,7 +945,7 @@ class TestRunMerge:
         result = _run_merge(PR_URL, cwd=tmp_path)
         assert result.success is True
         assert result.stage == "merge"
-        mock_check.assert_called_once_with(PR_URL, tmp_path)
+        mock_check.assert_called_once_with(PR_URL, tmp_path, env=None)
 
     @patch("botfarm.worker._check_pr_merged", return_value=False)
     @patch("botfarm.worker.subprocess.run")
@@ -2730,3 +2736,173 @@ class TestRunImplementWithLabels:
         prompt = mock_claude.call_args.args[0]
         assert "investigation ticket" in prompt
         assert "Do not create a PR" in prompt
+
+
+# ---------------------------------------------------------------------------
+# Identity env building tests
+# ---------------------------------------------------------------------------
+
+
+class TestBuildCoderEnv:
+    def test_full_config(self):
+        ident = IdentitiesConfig(
+            coder=CoderIdentity(
+                github_token="gh-tok-123",
+                ssh_key_path="~/.ssh/coder_key",
+                git_author_name="Coder Bot",
+                git_author_email="coder@example.com",
+            ),
+        )
+        env = build_coder_env(ident, slot_db_path="/tmp/slot.db")
+
+        assert env["BOTFARM_DB_PATH"] == "/tmp/slot.db"
+        assert env["GH_TOKEN"] == "gh-tok-123"
+        assert "ssh -i" in env["GIT_SSH_COMMAND"]
+        assert "coder_key" in env["GIT_SSH_COMMAND"]
+        assert "-o IdentitiesOnly=yes" in env["GIT_SSH_COMMAND"]
+        assert env["GIT_AUTHOR_NAME"] == "Coder Bot"
+        assert env["GIT_COMMITTER_NAME"] == "Coder Bot"
+        assert env["GIT_AUTHOR_EMAIL"] == "coder@example.com"
+        assert env["GIT_COMMITTER_EMAIL"] == "coder@example.com"
+
+    def test_empty_config(self):
+        """Empty identities should produce empty env (backward compat)."""
+        ident = IdentitiesConfig()
+        env = build_coder_env(ident)
+        assert env == {}
+
+    def test_partial_config(self):
+        """Only populated fields should appear in env."""
+        ident = IdentitiesConfig(
+            coder=CoderIdentity(github_token="tok"),
+        )
+        env = build_coder_env(ident)
+        assert env == {"GH_TOKEN": "tok"}
+        assert "GIT_SSH_COMMAND" not in env
+        assert "GIT_AUTHOR_NAME" not in env
+
+    def test_slot_db_path_only(self):
+        ident = IdentitiesConfig()
+        env = build_coder_env(ident, slot_db_path="/tmp/db.sqlite")
+        assert env == {"BOTFARM_DB_PATH": "/tmp/db.sqlite"}
+
+    def test_ssh_key_path_expanded(self):
+        ident = IdentitiesConfig(
+            coder=CoderIdentity(ssh_key_path="~/my_key"),
+        )
+        env = build_coder_env(ident)
+        assert "~" not in env["GIT_SSH_COMMAND"]
+        assert "my_key" in env["GIT_SSH_COMMAND"]
+
+
+class TestBuildReviewerEnv:
+    def test_full_config(self):
+        ident = IdentitiesConfig(
+            reviewer=ReviewerIdentity(github_token="rev-tok-456"),
+        )
+        env = build_reviewer_env(ident, slot_db_path="/tmp/slot.db")
+        assert env == {
+            "BOTFARM_DB_PATH": "/tmp/slot.db",
+            "GH_TOKEN": "rev-tok-456",
+        }
+
+    def test_empty_config(self):
+        ident = IdentitiesConfig()
+        env = build_reviewer_env(ident)
+        assert env == {}
+
+    def test_slot_db_path_only(self):
+        ident = IdentitiesConfig()
+        env = build_reviewer_env(ident, slot_db_path="/tmp/db.sqlite")
+        assert env == {"BOTFARM_DB_PATH": "/tmp/db.sqlite"}
+
+
+class TestPipelineContextEnvForStage:
+    def _make_ctx(self, coder_env=None, reviewer_env=None):
+        return _PipelineContext(
+            ticket_id="SMA-1",
+            ticket_labels=[],
+            task_id=1,
+            cwd="/tmp",
+            conn=MagicMock(),
+            turns_cfg={},
+            pr_checks_timeout=600,
+            pipeline=PipelineResult(ticket_id="SMA-1", success=False, stages_completed=[]),
+            coder_env=coder_env,
+            reviewer_env=reviewer_env,
+        )
+
+    def test_coder_stages_get_coder_env(self):
+        coder = {"GH_TOKEN": "coder-tok"}
+        reviewer = {"GH_TOKEN": "reviewer-tok"}
+        ctx = self._make_ctx(coder_env=coder, reviewer_env=reviewer)
+
+        for stage in _CODER_STAGES:
+            assert ctx._env_for_stage(stage) is coder, f"stage={stage}"
+
+    def test_reviewer_stages_get_reviewer_env(self):
+        coder = {"GH_TOKEN": "coder-tok"}
+        reviewer = {"GH_TOKEN": "reviewer-tok"}
+        ctx = self._make_ctx(coder_env=coder, reviewer_env=reviewer)
+
+        for stage in _REVIEWER_STAGES:
+            assert ctx._env_for_stage(stage) is reviewer, f"stage={stage}"
+
+    def test_none_envs_return_none(self):
+        ctx = self._make_ctx()
+        for stage in STAGES:
+            assert ctx._env_for_stage(stage) is None
+
+
+class TestPrChecksEnvPropagation:
+    @patch("botfarm.worker.subprocess.run")
+    def test_env_propagated_to_subprocess(self, mock_run, tmp_path):
+        """_run_pr_checks should pass merged env to subprocess.run."""
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["gh"], returncode=0, stdout="OK", stderr=""
+        )
+        env = {"GH_TOKEN": "test-token"}
+        _run_pr_checks(PR_URL, cwd=tmp_path, env=env)
+
+        call_kwargs = mock_run.call_args[1]
+        assert call_kwargs["env"] is not None
+        assert call_kwargs["env"]["GH_TOKEN"] == "test-token"
+
+    @patch("botfarm.worker.subprocess.run")
+    def test_no_env_passes_none(self, mock_run, tmp_path):
+        """When env is None, subprocess_env should be None."""
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["gh"], returncode=0, stdout="OK", stderr=""
+        )
+        _run_pr_checks(PR_URL, cwd=tmp_path)
+
+        call_kwargs = mock_run.call_args[1]
+        assert call_kwargs["env"] is None
+
+
+class TestMergeEnvPropagation:
+    @patch("botfarm.worker.subprocess.run")
+    def test_env_propagated_to_all_subprocess_calls(self, mock_run, tmp_path):
+        """_run_merge should pass env to all subprocess.run calls."""
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["gh"], returncode=0, stdout="Merged", stderr=""
+        )
+        env = {"GH_TOKEN": "merge-token"}
+        _run_merge(PR_URL, cwd=tmp_path, env=env)
+
+        for call in mock_run.call_args_list:
+            call_kwargs = call[1]
+            assert call_kwargs["env"] is not None
+            assert call_kwargs["env"]["GH_TOKEN"] == "merge-token"
+
+    @patch("botfarm.worker.subprocess.run")
+    def test_no_env_passes_none(self, mock_run, tmp_path):
+        """When env is None, subprocess calls get env=None."""
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["gh"], returncode=0, stdout="Merged", stderr=""
+        )
+        _run_merge(PR_URL, cwd=tmp_path)
+
+        for call in mock_run.call_args_list:
+            call_kwargs = call[1]
+            assert call_kwargs["env"] is None
