@@ -1310,6 +1310,8 @@ def create_app(
         if not logs_base:
             return []
         ticket_dir = logs_base / ticket_id
+        if not ticket_dir.resolve().is_relative_to(logs_base.resolve()):
+            return []
         if not ticket_dir.is_dir():
             return []
         files = []
@@ -1352,7 +1354,10 @@ def create_app(
                     found.add(s)
                     break
             # Also match ci_fix logs
-            if name.startswith("ci_fix"):
+            if name.startswith("ci_fix") and (
+                len(name) == len("ci_fix")
+                or name[len("ci_fix")] in ("-", ".")
+            ):
                 found.add("ci_fix")
         return [s for s in list(STAGES) + ["ci_fix"] if s in found]
 
@@ -1376,27 +1381,30 @@ def create_app(
             conn.close()
         return False
 
+    def _resolve_task(task_id: str) -> tuple[dict | None, str]:
+        """Resolve task_id (numeric or ticket_id) to (task_dict, ticket_id)."""
+        conn = _get_db()
+        if not conn:
+            return None, task_id
+        try:
+            task_row = None
+            try:
+                task_row = get_task(conn, int(task_id))
+            except ValueError:
+                pass
+            if task_row is None:
+                task_row = get_task_by_ticket(conn, task_id)
+            if task_row is not None:
+                task = dict(task_row)
+                return task, task["ticket_id"]
+            return None, task_id
+        finally:
+            conn.close()
+
     @app.get("/task/{task_id}/logs", response_class=HTMLResponse)
     def log_viewer_page(request: Request, task_id: str):
         """Log viewer page — shows available stages, redirects to latest."""
-        task = None
-        conn = _get_db()
-        ticket_id = task_id  # May be overridden if task_id is a numeric DB ID
-        if conn:
-            try:
-                task_row = None
-                try:
-                    int_id = int(task_id)
-                    task_row = get_task(conn, int_id)
-                except ValueError:
-                    pass
-                if task_row is None:
-                    task_row = get_task_by_ticket(conn, task_id)
-                if task_row is not None:
-                    task = dict(task_row)
-                    ticket_id = task["ticket_id"]
-            finally:
-                conn.close()
+        task, ticket_id = _resolve_task(task_id)
 
         available = _available_stages_with_logs(ticket_id)
         if not available:
@@ -1419,6 +1427,17 @@ def create_app(
                 active_stage = s
                 break
         default_stage = active_stage or available[-1]
+        is_live = _is_stage_active(ticket_id, default_stage)
+
+        # Load content for completed stages
+        log_content = None
+        if not is_live:
+            log_file = _find_latest_log(ticket_id, default_stage)
+            if log_file:
+                try:
+                    log_content = log_file.read_text(errors="replace")
+                except OSError:
+                    log_content = None
 
         return templates.TemplateResponse("log_viewer.html", {
             "request": request,
@@ -1426,8 +1445,8 @@ def create_app(
             "ticket_id": ticket_id,
             "stages_with_logs": available,
             "current_stage": default_stage,
-            "log_content": None,
-            "is_live": _is_stage_active(ticket_id, default_stage),
+            "log_content": log_content,
+            "is_live": is_live,
             "linear_url": _linear_url,
             "supervisor": _supervisor_status(_read_state()),
         })
@@ -1435,24 +1454,7 @@ def create_app(
     @app.get("/task/{task_id}/logs/{stage}", response_class=HTMLResponse)
     def log_viewer_stage_page(request: Request, task_id: str, stage: str):
         """Log viewer page for a specific stage."""
-        task = None
-        conn = _get_db()
-        ticket_id = task_id
-        if conn:
-            try:
-                task_row = None
-                try:
-                    int_id = int(task_id)
-                    task_row = get_task(conn, int_id)
-                except ValueError:
-                    pass
-                if task_row is None:
-                    task_row = get_task_by_ticket(conn, task_id)
-                if task_row is not None:
-                    task = dict(task_row)
-                    ticket_id = task["ticket_id"]
-            finally:
-                conn.close()
+        task, ticket_id = _resolve_task(task_id)
 
         available = _available_stages_with_logs(ticket_id)
         is_live = _is_stage_active(ticket_id, stage)
