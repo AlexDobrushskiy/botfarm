@@ -403,8 +403,10 @@ class LinearPoller:
         project: ProjectConfig,
         exclude_tags: list[str],
         todo_status: str = "Todo",
+        coder_client: LinearClient | None = None,
     ) -> None:
         self._client = client
+        self._coder_client = coder_client or client
         self._project = project
         self._exclude_tags = set(tag.lower() for tag in exclude_tags)
         self._todo_status = todo_status
@@ -532,9 +534,9 @@ class LinearPoller:
         return state_id
 
     def move_issue(self, issue_id: str, state_name: str) -> None:
-        """Move an issue to the named workflow state."""
+        """Move an issue to the named workflow state (uses coder client)."""
         state_id = self.get_state_id(state_name)
-        self._client.update_issue_state(issue_id, state_id)
+        self._coder_client.update_issue_state(issue_id, state_id)
         logger.info("Moved issue %s to '%s'", issue_id, state_name)
 
     def assign_issue(self, issue_id: str, assignee_id: str) -> None:
@@ -543,19 +545,32 @@ class LinearPoller:
         logger.info("Assigned issue %s to user %s", issue_id, assignee_id)
 
     def add_comment(self, issue_id: str, body: str) -> None:
-        """Add a comment to an issue."""
+        """Add a comment to an issue (uses coder client)."""
+        self._coder_client.add_comment(issue_id, body)
+
+    def add_comment_as_owner(self, issue_id: str, body: str) -> None:
+        """Add a comment using the owner's client (for system-level notifications)."""
         self._client.add_comment(issue_id, body)
 
 
 def create_pollers(config: BotfarmConfig) -> list[LinearPoller]:
-    """Create one LinearPoller per configured project."""
+    """Create one LinearPoller per configured project.
+
+    When ``identities.coder.linear_api_key`` is configured, a separate
+    ``LinearClient`` is created for coder-initiated operations (moving
+    tickets, posting comments) so they appear under the coder bot's identity.
+    Polling always uses the owner's client.
+    """
     client = LinearClient(api_key=config.linear.api_key)
+    coder_key = config.identities.coder.linear_api_key
+    coder_client = LinearClient(api_key=coder_key) if coder_key else None
     return [
         LinearPoller(
             client=client,
             project=project,
             exclude_tags=config.linear.exclude_tags,
             todo_status=config.linear.todo_status,
+            coder_client=coder_client,
         )
         for project in config.projects
     ]
