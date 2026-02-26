@@ -331,6 +331,7 @@ def insert_stage_run(
     total_cost_usd: float = 0.0,
     context_fill_pct: float | None = None,
     model_usage_json: str | None = None,
+    log_file_path: str | None = None,
 ) -> int:
     """Insert a stage run record and return its id."""
     cur = conn.execute(
@@ -340,8 +341,9 @@ def insert_stage_run(
              duration_seconds, exit_subtype, was_limit_restart,
              input_tokens, output_tokens, cache_read_input_tokens,
              cache_creation_input_tokens, total_cost_usd,
-             context_fill_pct, model_usage_json, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             context_fill_pct, model_usage_json, log_file_path,
+             created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             task_id,
@@ -359,6 +361,7 @@ def insert_stage_run(
             total_cost_usd,
             context_fill_pct,
             model_usage_json,
+            log_file_path,
             _now_iso(),
         ),
     )

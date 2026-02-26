@@ -18,7 +18,7 @@ from botfarm.worker import (
     StageResult,
     _DEFAULT_CONTEXT_WINDOW,
     _compute_turn_context_fill,
-    _parse_stream_result,
+    parse_stream_json_result,
     parse_claude_output,
     run_claude,
     run_claude_streaming,
@@ -375,7 +375,7 @@ class TestRunClaude:
 
 
 # ---------------------------------------------------------------------------
-# _compute_turn_context_fill / _parse_stream_result / run_claude_streaming
+# _compute_turn_context_fill / parse_stream_json_result / run_claude_streaming
 # ---------------------------------------------------------------------------
 
 
@@ -441,7 +441,7 @@ class TestParseStreamResult:
                 }
             },
         }
-        result = _parse_stream_result(data)
+        result = parse_stream_json_result(data)
         assert result.session_id == "sess-stream"
         assert result.num_turns == 10
         assert result.duration_seconds == 30.0
@@ -459,7 +459,7 @@ class TestParseStreamResult:
             "session_id": "sess-1",
             "result": "ok",
         }
-        result = _parse_stream_result(data)
+        result = parse_stream_json_result(data)
         assert result.input_tokens == 0
         assert result.output_tokens == 0
         assert result.context_fill_pct is None
@@ -1694,6 +1694,44 @@ class TestRunPipelineStreamingContextFill:
                 assert has_cb, f"{stage} should have on_context_fill"
             else:
                 assert not has_cb, f"{stage} should NOT have on_context_fill"
+
+    @patch("botfarm.worker._execute_stage")
+    def test_log_file_path_recorded_in_stage_runs(
+        self, mock_exec, conn, task_id, tmp_path,
+    ):
+        """Stage runs record the log file path in the database."""
+        mock_exec.side_effect = [
+            _mock_stage_result("implement", pr_url=PR_URL, turns=5),
+            _mock_stage_result("review", review_approved=True),
+            _mock_stage_result("pr_checks"),
+            _mock_stage_result("merge"),
+        ]
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        result = run_pipeline(
+            ticket_id="SMA-99",
+            task_id=task_id,
+            cwd=tmp_path,
+            conn=conn,
+            max_review_iterations=3,
+            log_dir=log_dir,
+        )
+        assert result.success is True
+
+        runs = get_stage_runs(conn, task_id)
+        # Claude-based stages (implement, review) should have log_file_path set
+        # in both placeholder insert and final record
+        for run in runs:
+            if run["stage"] in ("implement", "review"):
+                assert run["log_file_path"] is not None, (
+                    f"{run['stage']} should have log_file_path"
+                )
+                assert str(log_dir) in run["log_file_path"]
+            elif run["stage"] in ("pr_checks", "merge"):
+                # Non-Claude stages record log_file_path in _record_stage_run
+                assert run["log_file_path"] is not None, (
+                    f"{run['stage']} should have log_file_path"
+                )
 
 
 # ---------------------------------------------------------------------------
