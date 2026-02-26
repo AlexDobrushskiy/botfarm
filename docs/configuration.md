@@ -181,6 +181,26 @@ notifications:
 
 ---
 
+### `identities`
+
+Optional credentials for separate coder and reviewer identities. When empty (the default), the system falls back to system-level git/gh auth. This allows gradual adoption — configure one identity at a time.
+
+```yaml
+identities:
+  coder:
+    github_token: ${CODER_GITHUB_TOKEN}          # PAT for gh CLI
+    ssh_key_path: ~/.botfarm/coder_id_ed25519     # Private key for git SSH
+    git_author_name: "Coder Bot"                  # Git commit author name
+    git_author_email: "coder-bot@example.com"     # Git commit author email
+    linear_api_key: ${CODER_LINEAR_API_KEY}       # Coder's own Linear API key
+  reviewer:
+    github_token: ${REVIEWER_GITHUB_TOKEN}        # PAT for gh CLI (review commands)
+```
+
+All fields default to empty string. Environment variable expansion (`${VAR}`) works in all string fields.
+
+---
+
 ## Minimal Working Example
 
 ```yaml

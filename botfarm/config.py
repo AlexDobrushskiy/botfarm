@@ -70,6 +70,16 @@ agents:
   #     implement: 30
   timeout_grace_seconds: 10
 
+# identities:
+#   coder:
+#     github_token: ${CODER_GITHUB_TOKEN}
+#     ssh_key_path: ~/.botfarm/coder_id_ed25519
+#     git_author_name: "Coder Bot"
+#     git_author_email: "coder-bot@example.com"
+#     linear_api_key: ${CODER_LINEAR_API_KEY}
+#   reviewer:
+#     github_token: ${REVIEWER_GITHUB_TOKEN}
+
 # notifications:
 #   webhook_url: https://hooks.slack.com/services/...
 #   webhook_format: slack  # or "discord"
@@ -152,6 +162,26 @@ class NotificationsConfig:
 
 
 @dataclass
+class CoderIdentity:
+    github_token: str = ""
+    ssh_key_path: str = ""
+    git_author_name: str = ""
+    git_author_email: str = ""
+    linear_api_key: str = ""
+
+
+@dataclass
+class ReviewerIdentity:
+    github_token: str = ""
+
+
+@dataclass
+class IdentitiesConfig:
+    coder: CoderIdentity = field(default_factory=CoderIdentity)
+    reviewer: ReviewerIdentity = field(default_factory=ReviewerIdentity)
+
+
+@dataclass
 class BotfarmConfig:
     projects: list[ProjectConfig]
     linear: LinearConfig = field(default_factory=LinearConfig)
@@ -161,6 +191,7 @@ class BotfarmConfig:
     agents: AgentsConfig = field(default_factory=AgentsConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     notifications: NotificationsConfig = field(default_factory=NotificationsConfig)
+    identities: IdentitiesConfig = field(default_factory=IdentitiesConfig)
     source_path: str = ""  # Set by load_config to the source file path
 
 
@@ -365,6 +396,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
     known_keys = {
         "projects", "linear", "database", "usage_limits",
         "dashboard", "agents", "logging", "notifications",
+        "identities",
     }
     unknown = set(data.keys()) - known_keys
     if unknown:
@@ -461,6 +493,22 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         rate_limit_seconds=int(notif_data.get("rate_limit_seconds", 300)),
     )
 
+    ident_data = data.get("identities", {})
+    coder_data = ident_data.get("coder", {}) if isinstance(ident_data, dict) else {}
+    reviewer_data = ident_data.get("reviewer", {}) if isinstance(ident_data, dict) else {}
+    identities = IdentitiesConfig(
+        coder=CoderIdentity(
+            github_token=str(coder_data.get("github_token", "")),
+            ssh_key_path=str(coder_data.get("ssh_key_path", "")),
+            git_author_name=str(coder_data.get("git_author_name", "")),
+            git_author_email=str(coder_data.get("git_author_email", "")),
+            linear_api_key=str(coder_data.get("linear_api_key", "")),
+        ),
+        reviewer=ReviewerIdentity(
+            github_token=str(reviewer_data.get("github_token", "")),
+        ),
+    )
+
     if "state_file" in data:
         logger.warning(
             "The 'state_file' config key is deprecated and ignored — all "
@@ -476,6 +524,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         agents=agents,
         logging=logging_cfg,
         notifications=notifications,
+        identities=identities,
     )
 
     _validate_config(config)
