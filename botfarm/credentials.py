@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 USAGE_API_URL = "https://api.anthropic.com/api/oauth/usage"
 USAGE_API_BETA_HEADER = "oauth-2025-04-20"
+USAGE_API_TIMEOUT = httpx.Timeout(30, connect=10)
 
 # Linux credential file location
 LINUX_CREDENTIALS_PATH = Path.home() / ".claude" / ".credentials.json"
@@ -174,7 +175,7 @@ async def fetch_usage(
                 "Authorization": f"Bearer {token}",
                 "anthropic-beta": USAGE_API_BETA_HEADER,
             },
-            timeout=30,
+            timeout=USAGE_API_TIMEOUT,
         )
         resp.raise_for_status()
         return resp.json()

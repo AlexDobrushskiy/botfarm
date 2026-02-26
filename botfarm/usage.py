@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 
 import httpx
 
-from botfarm.credentials import CredentialManager, fetch_usage
+from botfarm.credentials import USAGE_API_TIMEOUT, CredentialManager, fetch_usage
 from botfarm.db import insert_usage_snapshot
 
 logger = logging.getLogger(__name__)
@@ -25,6 +25,15 @@ DEFAULT_RETENTION_DAYS = 30
 # Default thresholds (from ticket SMA-79)
 DEFAULT_PAUSE_5H_THRESHOLD = 0.85
 DEFAULT_PAUSE_7D_THRESHOLD = 0.90
+
+# Retry configuration for transient connection errors
+MAX_RETRIES = 3
+RETRY_BACKOFF_SECONDS = (2, 5)  # backoff delays between retries
+TRANSIENT_EXCEPTIONS = (
+    httpx.ConnectTimeout,
+    httpx.ConnectError,
+    httpx.PoolTimeout,
+)
 
 
 @dataclass
@@ -110,6 +119,7 @@ class UsagePoller:
     _state: UsageState = field(default_factory=UsageState)
     _last_poll: float = 0.0
     _last_polled_fresh: bool = field(default=False, repr=False)
+    _client: httpx.AsyncClient | None = field(default=None, repr=False)
 
     @property
     def state(self) -> UsageState:
@@ -143,8 +153,18 @@ class UsagePoller:
         self._do_poll(conn)
         return self._state
 
+    def _get_client(self) -> httpx.AsyncClient:
+        """Return the persistent HTTP client, creating it on first use."""
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(timeout=USAGE_API_TIMEOUT)
+        return self._client
+
     def close(self) -> None:
-        """Clean up resources (currently a no-op)."""
+        """Clean up the persistent HTTP client."""
+        if self._client is not None and not self._client.is_closed:
+            loop = _get_or_create_event_loop()
+            loop.run_until_complete(self._client.aclose())
+            self._client = None
 
     def _do_poll(self, conn: sqlite3.Connection) -> None:
         """Execute one poll cycle: fetch → parse → store → purge."""
@@ -182,9 +202,39 @@ class UsagePoller:
         conn.commit()
 
     def _fetch(self, token: str) -> dict:
-        """Call the usage API synchronously via asyncio."""
+        """Call the usage API synchronously via asyncio, with retry for transient errors."""
         loop = _get_or_create_event_loop()
-        return loop.run_until_complete(fetch_usage(token))
+        return loop.run_until_complete(self._fetch_with_retry(token))
+
+    async def _fetch_with_retry(self, token: str) -> dict:
+        """Fetch usage data, retrying on transient connection errors."""
+        client = self._get_client()
+        last_exc: Exception | None = None
+        for attempt in range(MAX_RETRIES):
+            try:
+                return await fetch_usage(token, client=client)
+            except TRANSIENT_EXCEPTIONS as exc:
+                last_exc = exc
+                if attempt < MAX_RETRIES - 1:
+                    delay = RETRY_BACKOFF_SECONDS[attempt]
+                    logger.warning(
+                        "Transient error on usage API (attempt %d/%d): %s — "
+                        "retrying in %ds",
+                        attempt + 1,
+                        MAX_RETRIES,
+                        exc,
+                        delay,
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    logger.warning(
+                        "Transient error on usage API (attempt %d/%d): %s — "
+                        "all retries exhausted",
+                        attempt + 1,
+                        MAX_RETRIES,
+                        exc,
+                    )
+        raise last_exc  # type: ignore[misc]
 
     def _parse_and_store(self, data: dict, conn: sqlite3.Connection) -> None:
         """Parse the API response and update in-memory state + database."""
@@ -254,6 +304,8 @@ def refresh_usage_snapshot(conn: sqlite3.Connection) -> UsageState | None:
     except Exception:
         logger.warning("Failed to refresh usage data from API", exc_info=True)
         return None
+    finally:
+        poller.close()
     if poller.last_polled_fresh and poller.state.utilization_5h is not None:
         return poller.state
     return None
