@@ -21,6 +21,7 @@ Modules under `botfarm/`:
 - `dashboard.py` — Optional FastAPI + htmx web dashboard (background thread in supervisor)
 
 Docs under `docs/`:
+- `linear-workflow.md` — Detailed ticket creation, sizing, and workflow guide
 - `configuration.md` — Full config reference with examples
 - `runtime-files.md` — `~/.botfarm/` directory layout, logs, and temporary files
 - `database.md` — SQLite schema, tables, event types, migration history
@@ -44,19 +45,31 @@ All runtime data lives under `~/.botfarm/` (see `docs/runtime-files.md` for full
 - `slots/<project>-<slot_id>/` — temporary sandboxed DB copies (auto-cleaned)
 
 ## Workflow: Linear Tickets
-When working on a Linear ticket:
-1. Fetch ticket details via Linear MCP
-2. Move ticket to "In Progress"
-3. `git fetch origin && git checkout -b <branch name> origin/main`; for branch name use linear git branch name
-4. Delete previous working branch if it exists (NEVER delete: main, slot-1-placeholder)
-5. Run baseline tests before starting work
-6. Implement changes
-7. Add/update tests
-8. Run full test suite — fix until green
-9. Commit, push
-10. Create PR via `gh` — link ticket
-11. Move ticket to "In Review"
-12. If you identify out-of-scope issues during work — create Linear tickets for them
+For full details on ticket creation, sizing, and all ticket types see `docs/linear-workflow.md`.
+
+### Implementation Tickets
+The supervisor handles status transitions (→ In Progress before, → In Review/Done after). Agent focuses on code:
+1. Fetch ticket details via Linear MCP (`get_issue`) — use the `gitBranchName` field for the branch name
+2. `git fetch origin && git checkout -b <gitBranchName> origin/main`
+3. Delete previous working branch if it exists (NEVER delete: main, slot-1-placeholder)
+4. Run baseline tests before starting work
+5. Implement changes
+6. Add/update tests
+7. Run full test suite — fix until green
+8. Commit, push
+9. Create PR via `gh` (Linear-GitHub integration auto-links via branch name)
+10. If you identify out-of-scope issues — create new Linear tickets for them
+
+### Investigation Tickets (label: `Investigation`)
+No PR created. Agent researches and posts findings as a Linear comment, then creates follow-up tickets.
+Review/fix loop happens via Linear comments (not GitHub).
+
+### Creating Tickets
+- Always use team "Smart AI Coach", project "Bot farm"
+- If a task may consume >60% of 200k context — split into smaller tickets
+- Use parent tickets to group related work; set dependencies (`blocks`/`is blocked by`)
+- Use `Investigation` label for research tasks, `Human` label for tasks requiring human action
+- If blocked by a Human ticket, notify the human via a Linear comment on the blocking ticket
 
 ## Testing
 - Run tests in a subagent that returns ONLY: pass/fail summary + failing test details
@@ -72,9 +85,6 @@ When working on a Linear ticket:
 - Validate with: `botfarm --help`
 - Branch protection: NEVER delete `main` or `slot-1-placeholder`
 
-## Linear
-- When creating Linear tickets, always use team "Smart AI Coach" and project "Bot farm"
-
 ## PR Process
-- Clear description linking Linear ticket
-- Concise but meaningful
+- Clear, concise description
+- Linear-GitHub integration handles ticket linking automatically via branch name
