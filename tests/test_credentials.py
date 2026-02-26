@@ -10,6 +10,7 @@ import httpx
 import pytest
 
 from botfarm.credentials import (
+    USAGE_API_TIMEOUT,
     USAGE_API_URL,
     CredentialError,
     CredentialManager,
@@ -334,7 +335,7 @@ async def test_fetch_usage_success():
             "Authorization": "Bearer test-token",
             "anthropic-beta": "oauth-2025-04-20",
         },
-        timeout=30,
+        timeout=USAGE_API_TIMEOUT,
     )
 
 
@@ -372,3 +373,11 @@ async def test_fetch_usage_with_external_client():
 
     assert result == expected
     mock_client.get.assert_called_once()
+
+
+# --- Timeout configuration ---
+
+
+def test_usage_api_timeout_has_separate_connect_and_read():
+    assert USAGE_API_TIMEOUT.connect == 10
+    assert USAGE_API_TIMEOUT.read == 30
