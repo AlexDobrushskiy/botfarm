@@ -1842,6 +1842,36 @@ class TestCheckTimeouts:
         # Slot is still busy after SIGTERM — not yet marked failed
         assert slot.status == "busy"
 
+    def test_timeout_event_recorded_at_sigterm_time(self, supervisor):
+        """Timeout event is persisted at SIGTERM time (phase 1), not at SIGKILL.
+
+        This ensures the event survives supervisor crashes between phases.
+        """
+        now = datetime.now(timezone.utc)
+        started = (now - timedelta(minutes=130)).isoformat()
+        self._make_busy_slot(supervisor, stage_started_at=started)
+
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        # Phase 1 only: send SIGTERM — do NOT escalate to SIGKILL
+        with patch("botfarm.supervisor.os.kill"):
+            supervisor._check_timeouts()
+
+        # Event should already be recorded even though slot is still busy
+        events = get_events(supervisor._conn, event_type="timeout")
+        assert len(events) == 1
+        assert "stage=implement" in events[0]["detail"]
+        assert "elapsed=" in events[0]["detail"]
+        assert "limit=" in events[0]["detail"]
+
+        # Slot is still busy — only SIGTERM sent, not yet marked failed
+        assert supervisor.slot_manager.get_slot("test-project", 1).status == "busy"
+
     def test_timeout_escalates_to_sigkill_after_grace(self, supervisor):
         """After grace period, SIGKILL is sent and slot marked failed."""
         now = datetime.now(timezone.utc)

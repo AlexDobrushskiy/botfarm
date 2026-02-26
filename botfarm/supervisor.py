@@ -1044,6 +1044,18 @@ class Supervisor:
         slot.sigterm_sent_at = _now_iso()
         self._slot_manager.save()
 
+        # Record timeout event immediately so it survives supervisor crashes.
+        # Previously this was in _maybe_escalate_kill (next tick), but if the
+        # supervisor crashed between SIGTERM and SIGKILL the event was lost.
+        task_id = self._find_task_id(slot.ticket_id)
+        insert_event(
+            self._conn,
+            task_id=task_id,
+            event_type="timeout",
+            detail=f"stage={stage}, elapsed={elapsed:.0f}s, limit={int(limit)}s",
+        )
+        self._conn.commit()
+
     def _maybe_escalate_kill(
         self,
         slot: SlotState,
@@ -1082,31 +1094,12 @@ class Supervisor:
         if proc is not None:
             proc.join(timeout=2)
 
-        # Compute elapsed from stage start for event detail
-        elapsed = 0.0
-        limit = 0
-        try:
-            stage_start = datetime.fromisoformat(
-                slot.stage_started_at.replace("Z", "+00:00"),
-            )
-            elapsed = (now - stage_start).total_seconds()
-            limit_minutes = self._config.agents.timeout_minutes.get(stage, 0)
-            limit = limit_minutes * 60
-        except (ValueError, TypeError, AttributeError):
-            pass
-
         # Mark slot as failed
         reason = f"timeout in stage {stage}"
         self._slot_manager.mark_failed(project, slot.slot_id, reason=reason)
 
-        # Log event and update task
+        # Update task status (timeout event was already recorded in _send_sigterm)
         task_id = self._find_task_id(slot.ticket_id)
-        insert_event(
-            self._conn,
-            task_id=task_id,
-            event_type="timeout",
-            detail=f"stage={stage}, elapsed={elapsed:.0f}s, limit={int(limit)}s",
-        )
         if task_id is not None:
             update_task(
                 self._conn,
