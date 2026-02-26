@@ -133,6 +133,37 @@ class TestCheckGitRepos:
         assert not results[0].passed
         assert "timed out" in results[0].message
 
+    def test_passes_env_to_subprocess(self, tmp_path):
+        base = tmp_path / "myrepo"
+        base.mkdir()
+        (base / ".git").mkdir()
+        config = _make_config(tmp_path, projects=[ProjectConfig(
+            name="p1", linear_team="T", base_dir=str(base),
+            worktree_prefix="p-", slots=[1],
+        )])
+        custom_env = {"GIT_SSH_COMMAND": "ssh -i /my/key"}
+        with patch("botfarm.preflight.subprocess.run") as mock_run:
+            mock_run.return_value.returncode = 0
+            results = check_git_repos(config, env=custom_env)
+        assert len(results) == 1
+        assert results[0].passed
+        call_env = mock_run.call_args.kwargs.get("env")
+        assert call_env is not None
+        assert call_env["GIT_SSH_COMMAND"] == "ssh -i /my/key"
+
+    def test_no_env_when_none(self, tmp_path):
+        base = tmp_path / "myrepo"
+        base.mkdir()
+        (base / ".git").mkdir()
+        config = _make_config(tmp_path, projects=[ProjectConfig(
+            name="p1", linear_team="T", base_dir=str(base),
+            worktree_prefix="p-", slots=[1],
+        )])
+        with patch("botfarm.preflight.subprocess.run") as mock_run:
+            mock_run.return_value.returncode = 0
+            check_git_repos(config, env=None)
+        assert mock_run.call_args.kwargs.get("env") is None
+
 
 # ---------------------------------------------------------------------------
 # check_worktree_dirs

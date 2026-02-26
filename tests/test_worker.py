@@ -25,6 +25,7 @@ from botfarm.worker import (
     _compute_turn_context_fill,
     _is_investigation,
     build_coder_env,
+    build_git_env,
     build_reviewer_env,
     parse_stream_json_result,
     parse_claude_output,
@@ -2741,6 +2742,72 @@ class TestRunImplementWithLabels:
 # ---------------------------------------------------------------------------
 # Identity env building tests
 # ---------------------------------------------------------------------------
+
+
+class TestBuildGitEnv:
+    """Tests for build_git_env — supervisor-level SSH/GH_TOKEN env."""
+
+    def test_full_config(self):
+        ident = IdentitiesConfig(
+            coder=CoderIdentity(
+                github_token="gh-tok-123",
+                ssh_key_path="~/.ssh/coder_key",
+            ),
+        )
+        env = build_git_env(ident)
+        assert env is not None
+        assert env["GH_TOKEN"] == "gh-tok-123"
+        assert "ssh -i" in env["GIT_SSH_COMMAND"]
+        assert "coder_key" in env["GIT_SSH_COMMAND"]
+        assert "-o IdentitiesOnly=yes" in env["GIT_SSH_COMMAND"]
+
+    def test_returns_none_when_empty(self):
+        """Empty identities should return None."""
+        ident = IdentitiesConfig()
+        assert build_git_env(ident) is None
+
+    def test_ssh_only(self):
+        ident = IdentitiesConfig(
+            coder=CoderIdentity(ssh_key_path="~/.ssh/my_key"),
+        )
+        env = build_git_env(ident)
+        assert env is not None
+        assert "GIT_SSH_COMMAND" in env
+        assert "GH_TOKEN" not in env
+
+    def test_gh_token_only(self):
+        ident = IdentitiesConfig(
+            coder=CoderIdentity(github_token="tok"),
+        )
+        env = build_git_env(ident)
+        assert env == {"GH_TOKEN": "tok"}
+
+    def test_ssh_key_path_expanded(self):
+        ident = IdentitiesConfig(
+            coder=CoderIdentity(ssh_key_path="~/my_key"),
+        )
+        env = build_git_env(ident)
+        assert env is not None
+        assert "~" not in env["GIT_SSH_COMMAND"]
+        assert "my_key" in env["GIT_SSH_COMMAND"]
+
+    def test_does_not_include_git_author_or_db_path(self):
+        """build_git_env should NOT include author or DB path (unlike build_coder_env)."""
+        ident = IdentitiesConfig(
+            coder=CoderIdentity(
+                github_token="tok",
+                ssh_key_path="~/.ssh/key",
+                git_author_name="Bot",
+                git_author_email="bot@example.com",
+            ),
+        )
+        env = build_git_env(ident)
+        assert env is not None
+        assert "GIT_AUTHOR_NAME" not in env
+        assert "GIT_COMMITTER_NAME" not in env
+        assert "GIT_AUTHOR_EMAIL" not in env
+        assert "GIT_COMMITTER_EMAIL" not in env
+        assert "BOTFARM_DB_PATH" not in env
 
 
 class TestBuildCoderEnv:

@@ -37,8 +37,17 @@ class CheckResult:
 # ---------------------------------------------------------------------------
 
 
-def check_git_repos(config: BotfarmConfig) -> list[CheckResult]:
-    """Verify each project's base_dir exists and is a git repository."""
+def check_git_repos(
+    config: BotfarmConfig,
+    *,
+    env: dict[str, str] | None = None,
+) -> list[CheckResult]:
+    """Verify each project's base_dir exists and is a git repository.
+
+    When *env* is provided (e.g. ``GIT_SSH_COMMAND``), it is merged into
+    the current environment for the ``git ls-remote`` call.
+    """
+    subprocess_env = {**os.environ, **env} if env else None
     results: list[CheckResult] = []
     for project in config.projects:
         base = Path(project.base_dir).expanduser()
@@ -64,6 +73,7 @@ def check_git_repos(config: BotfarmConfig) -> list[CheckResult]:
                 capture_output=True,
                 text=True,
                 timeout=15,
+                env=subprocess_env,
             )
             if proc.returncode != 0:
                 results.append(CheckResult(
@@ -346,12 +356,20 @@ def check_notifications_webhook(config: BotfarmConfig) -> list[CheckResult]:
 # ---------------------------------------------------------------------------
 
 
-def run_preflight_checks(config: BotfarmConfig) -> list[CheckResult]:
-    """Run all pre-flight checks and return collected results."""
+def run_preflight_checks(
+    config: BotfarmConfig,
+    *,
+    env: dict[str, str] | None = None,
+) -> list[CheckResult]:
+    """Run all pre-flight checks and return collected results.
+
+    When *env* is provided, it is forwarded to checks that run git
+    subprocesses (e.g. ``check_git_repos``).
+    """
     results: list[CheckResult] = []
     results.extend(check_config_consistency(config))
     results.extend(check_database(config))
-    results.extend(check_git_repos(config))
+    results.extend(check_git_repos(config, env=env))
     results.extend(check_worktree_dirs(config))
     results.extend(check_linear_api(config))
     results.extend(check_credentials())

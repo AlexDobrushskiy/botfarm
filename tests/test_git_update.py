@@ -85,6 +85,31 @@ class TestCommitsBehind:
         assert commits_behind() == 0
 
 
+    @patch("botfarm.git_update.subprocess.run")
+    def test_passes_env_to_subprocess(self, mock_run):
+        mock_run.side_effect = [
+            MagicMock(returncode=0),  # git fetch
+            MagicMock(returncode=0, stdout="2\n"),  # git rev-list
+        ]
+        custom_env = {"GIT_SSH_COMMAND": "ssh -i /my/key"}
+        result = commits_behind(env=custom_env)
+        assert result == 2
+        for call in mock_run.call_args_list:
+            call_env = call.kwargs.get("env")
+            assert call_env is not None
+            assert call_env["GIT_SSH_COMMAND"] == "ssh -i /my/key"
+
+    @patch("botfarm.git_update.subprocess.run")
+    def test_no_env_when_none(self, mock_run):
+        mock_run.side_effect = [
+            MagicMock(returncode=0),
+            MagicMock(returncode=0, stdout="0\n"),
+        ]
+        commits_behind(env=None)
+        for call in mock_run.call_args_list:
+            assert "env" not in call.kwargs
+
+
 class TestPullAndInstall:
     @patch("botfarm.git_update.subprocess.run")
     def test_success(self, mock_run):
@@ -126,6 +151,29 @@ class TestPullAndInstall:
     def test_file_not_found(self, mock_run):
         mock_run.side_effect = FileNotFoundError("git")
         assert pull_and_install() is False
+
+    @patch("botfarm.git_update.subprocess.run")
+    def test_passes_env_to_subprocess(self, mock_run):
+        mock_run.side_effect = [
+            MagicMock(returncode=0),  # git pull
+            MagicMock(returncode=0),  # pip install
+        ]
+        custom_env = {"GIT_SSH_COMMAND": "ssh -i /my/key"}
+        assert pull_and_install(env=custom_env) is True
+        for call in mock_run.call_args_list:
+            call_env = call.kwargs.get("env")
+            assert call_env is not None
+            assert call_env["GIT_SSH_COMMAND"] == "ssh -i /my/key"
+
+    @patch("botfarm.git_update.subprocess.run")
+    def test_no_env_when_none(self, mock_run):
+        mock_run.side_effect = [
+            MagicMock(returncode=0),
+            MagicMock(returncode=0),
+        ]
+        pull_and_install(env=None)
+        for call in mock_run.call_args_list:
+            assert "env" not in call.kwargs
 
     @patch("botfarm.git_update.subprocess.run")
     def test_uses_sys_executable_for_pip(self, mock_run):
