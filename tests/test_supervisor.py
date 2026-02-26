@@ -2523,6 +2523,126 @@ class TestRecoverOnStartup:
 
         mock_resume.assert_called_once_with(slot, resume_from_stage="pr_checks")
 
+    # --- Failed / completed_pending_cleanup recovery tests ---
+
+    def test_failed_slot_cleaned_up_during_recovery(self, supervisor):
+        """Failed slot is cleaned up immediately during startup recovery."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.mark_failed("test-project", 1, reason="crash")
+
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="failed",
+        )
+        supervisor._conn.commit()
+
+        with patch.object(supervisor, "_handle_failed_slot") as mock_handle:
+            supervisor._recover_on_startup()
+
+        mock_handle.assert_called_once()
+        assert mock_handle.call_args[0][0].ticket_id == "TST-1"
+        events = get_events(supervisor._conn, event_type="startup_recovery")
+        assert len(events) == 1
+        assert "slots_processed=1" in events[0]["detail"]
+
+    def test_completed_pending_cleanup_slot_cleaned_up_during_recovery(self, supervisor):
+        """Completed slot pending cleanup is cleaned up during startup recovery."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.mark_completed("test-project", 1)
+
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        with patch.object(supervisor, "_handle_completed_slot") as mock_handle:
+            supervisor._recover_on_startup()
+
+        mock_handle.assert_called_once()
+        assert mock_handle.call_args[0][0].ticket_id == "TST-1"
+        events = get_events(supervisor._conn, event_type="startup_recovery")
+        assert len(events) == 1
+
+    def test_failed_slot_cleanup_error_does_not_crash_recovery(self, supervisor):
+        """If _handle_failed_slot raises, recovery continues without crashing."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.mark_failed("test-project", 1, reason="crash")
+
+        with patch.object(
+            supervisor, "_handle_failed_slot",
+            side_effect=RuntimeError("Linear API down"),
+        ):
+            # Should not raise — the error is caught and logged
+            supervisor._recover_on_startup()
+
+        # Slot is still failed (cleanup didn't succeed), but recovery didn't crash
+        assert sm.get_slot("test-project", 1).status == "failed"
+        events = get_events(supervisor._conn, event_type="startup_recovery")
+        assert len(events) == 1
+        assert "slots_processed=1" in events[0]["detail"]
+
+    def test_completed_pending_cleanup_error_does_not_crash_recovery(self, supervisor):
+        """If _handle_completed_slot raises, recovery continues without crashing."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.mark_completed("test-project", 1)
+
+        with patch.object(
+            supervisor, "_handle_completed_slot",
+            side_effect=RuntimeError("Linear API down"),
+        ):
+            supervisor._recover_on_startup()
+
+        # Slot is still completed_pending_cleanup (cleanup didn't succeed)
+        assert sm.get_slot("test-project", 1).status == "completed_pending_cleanup"
+        events = get_events(supervisor._conn, event_type="startup_recovery")
+        assert len(events) == 1
+
+    def test_mixed_recovery_counts_all_slot_types(self, supervisor):
+        """Recovery processes busy, failed, and completed_pending_cleanup slots."""
+        sm = supervisor.slot_manager
+        # Slot 1: failed
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test 1", branch="b1",
+        )
+        sm.mark_failed("test-project", 1, reason="crash")
+        # Slot 2: completed_pending_cleanup
+        sm.assign_ticket(
+            "test-project", 2,
+            ticket_id="TST-2", ticket_title="Test 2", branch="b2",
+        )
+        sm.mark_completed("test-project", 2)
+
+        with (
+            patch.object(supervisor, "_handle_failed_slot") as mock_failed,
+            patch.object(supervisor, "_handle_completed_slot") as mock_completed,
+        ):
+            supervisor._recover_on_startup()
+
+        mock_failed.assert_called_once()
+        mock_completed.assert_called_once()
+        events = get_events(supervisor._conn, event_type="startup_recovery")
+        assert "slots_processed=2" in events[0]["detail"]
+
 
 class TestNextStageAfter:
     """Tests for _next_stage_after — the stage ordering helper."""
