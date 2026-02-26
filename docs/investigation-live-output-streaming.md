@@ -100,7 +100,7 @@ proc = subprocess.Popen(
 proc.stdin.write(prompt)
 proc.stdin.close()
 
-for line in proc.stdout:
+for line in iter(proc.stdout.readline, ""):
     log_fh.write(line)        # Real-time log file append
     log_fh.flush()
     event = json.loads(line)
@@ -252,7 +252,7 @@ log_fh = log_file.open("w")  # File exists immediately
 #### Append lines as they arrive
 
 ```python
-for line in proc.stdout:
+for line in iter(proc.stdout.readline, ""):
     log_fh.write(line)
     log_fh.flush()  # Ensure immediate disk write for concurrent readers
 ```
