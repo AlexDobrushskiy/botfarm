@@ -337,6 +337,10 @@ class Supervisor:
           - If the PID is still alive, re-attach monitoring.
           - If the PID is dead, check if a PR was created/merged to
             determine outcome; otherwise mark as failed.
+        For each slot that was failed or completed_pending_cleanup:
+          - Run cleanup immediately (move Linear ticket, free slot).
+          - If cleanup fails (e.g. network error), log a warning and
+            let ``_handle_finished_slots`` retry on the first tick.
         For each slot that was paused_limit:
           - These will be handled by ``_handle_paused_slots`` in the
             normal tick loop — no special startup action needed.
@@ -360,6 +364,43 @@ class Supervisor:
                 else:
                     self._recover_dead_worker(slot)
                     recovered_count += 1
+            elif slot.status == "failed":
+                # Slot was marked failed but cleanup didn't complete
+                # (supervisor crashed between mark_failed and
+                # _handle_failed_slot). Run cleanup now so the Linear
+                # ticket is moved and the slot is freed immediately.
+                try:
+                    self._handle_failed_slot(slot)
+                    logger.info(
+                        "Recovered failed slot %s/%d during startup",
+                        slot.project, slot.slot_id,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to clean up slot %s/%d during startup "
+                        "— will retry on first tick",
+                        slot.project, slot.slot_id,
+                        exc_info=True,
+                    )
+                recovered_count += 1
+            elif slot.status == "completed_pending_cleanup":
+                # Slot completed but cleanup didn't finish (supervisor
+                # crashed between mark_completed and
+                # _handle_completed_slot). Run cleanup now.
+                try:
+                    self._handle_completed_slot(slot)
+                    logger.info(
+                        "Recovered completed slot %s/%d during startup",
+                        slot.project, slot.slot_id,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to clean up slot %s/%d during startup "
+                        "— will retry on first tick",
+                        slot.project, slot.slot_id,
+                        exc_info=True,
+                    )
+                recovered_count += 1
 
         # Reconcile DB task records with slot state
         self._reconcile_db_tasks()
