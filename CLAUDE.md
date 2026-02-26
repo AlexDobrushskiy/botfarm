@@ -22,6 +22,7 @@ Modules under `botfarm/`:
 
 Docs under `docs/`:
 - `linear-workflow.md` — Detailed ticket creation, sizing, and workflow guide
+- `linear-archiving.md` — How to archive Done tickets (filtering, sorting, GraphQL API)
 - `configuration.md` — Full config reference with examples
 - `runtime-files.md` — `~/.botfarm/` directory layout, logs, and temporary files
 - `database.md` — SQLite schema, tables, event types, migration history
