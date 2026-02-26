@@ -57,6 +57,12 @@
     </article>
 </div>
 
+{% if task.status == "in_progress" %}
+<a href="/task/{{ task.ticket_id }}/logs" class="live-output-link" role="button">
+    <span class="log-live-badge" style="margin-right: 0.4rem;">LIVE</span> View Live Output
+</a>
+{% endif %}
+
 <!-- Pipeline stepper -->
 {% if pipeline %}
 <div class="pipeline-stepper" role="img" aria-label="Pipeline progress">

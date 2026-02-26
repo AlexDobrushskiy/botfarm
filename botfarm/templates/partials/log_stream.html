@@ -1,0 +1,66 @@
+{# Embeddable SSE log stream panel.
+   Requires template variables:
+     - stream_ticket_id: ticket identifier (e.g. "SMA-42")
+     - stream_stage: pipeline stage name (e.g. "implement")
+   Optional:
+     - stream_max_height: CSS max-height (default "40vh")
+#}
+{% set max_h = stream_max_height | default("40vh") %}
+
+<div class="log-stream-panel" id="log-stream-{{ stream_ticket_id }}-{{ stream_stage }}">
+    <div class="log-stream-header">
+        <span class="log-stream-stage">{{ stream_stage | replace("_", " ") }}</span>
+        <span class="log-stream-badge log-stream-live">LIVE</span>
+    </div>
+    <div class="log-stream-terminal" style="max-height: {{ max_h }};">
+        <pre class="log-stream-output"></pre>
+    </div>
+</div>
+
+<script>
+(function() {
+    var panel = document.getElementById("log-stream-{{ stream_ticket_id }}-{{ stream_stage }}");
+    var output = panel.querySelector(".log-stream-output");
+    var terminal = panel.querySelector(".log-stream-terminal");
+    var badge = panel.querySelector(".log-stream-badge");
+    var autoScroll = true;
+
+    function scrollToBottom() {
+        if (autoScroll) terminal.scrollTop = terminal.scrollHeight;
+    }
+
+    terminal.addEventListener("scroll", function() {
+        var atBottom = terminal.scrollHeight - terminal.scrollTop - terminal.clientHeight < 50;
+        if (!atBottom) autoScroll = false;
+        else autoScroll = true;
+    });
+
+    function appendLine(text, cls) {
+        var span = document.createElement("span");
+        span.className = "log-line log-line-" + cls;
+        span.textContent = text + "\n";
+        output.appendChild(span);
+        scrollToBottom();
+    }
+
+    var evtSource = new EventSource("/api/logs/{{ stream_ticket_id }}/{{ stream_stage }}/stream");
+
+    var eventTypes = ["assistant", "tool_use", "tool_result", "result", "system", "log"];
+    eventTypes.forEach(function(t) {
+        evtSource.addEventListener(t, function(e) { appendLine(e.data, t); });
+    });
+
+    evtSource.addEventListener("done", function() {
+        evtSource.close();
+        badge.textContent = "DONE";
+        badge.classList.remove("log-stream-live");
+        badge.classList.add("log-stream-done");
+    });
+
+    evtSource.addEventListener("error", function() {
+        evtSource.close();
+        badge.textContent = "DISCONNECTED";
+        badge.classList.remove("log-stream-live");
+    });
+})();
+</script>

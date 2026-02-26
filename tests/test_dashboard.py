@@ -15,7 +15,7 @@ from botfarm.config import (
     NotificationsConfig,
     ProjectConfig,
 )
-from botfarm.dashboard import build_pipeline_state, create_app, start_dashboard
+from botfarm.dashboard import build_pipeline_state, create_app, format_ndjson_line, start_dashboard
 from botfarm.db import (
     count_tasks,
     get_distinct_projects,
@@ -2864,3 +2864,328 @@ class TestTaskDetailLogLinks:
         body = resp.text
         assert "/task/TST-1/logs/implement" in body
         assert "/task/TST-1/logs/review" in body
+
+
+class TestFormatNdjsonLine:
+    """Tests for the NDJSON line formatting function."""
+
+    def test_empty_line(self):
+        event_type, text = format_ndjson_line("")
+        assert event_type == "log"
+        assert text == ""
+
+    def test_non_json_line(self):
+        event_type, text = format_ndjson_line("plain text log line")
+        assert event_type == "log"
+        assert text == "plain text log line"
+
+    def test_assistant_text_content(self):
+        line = json.dumps({
+            "type": "assistant",
+            "message": {
+                "content": [{"type": "text", "text": "Hello, I will help you."}],
+            },
+        })
+        event_type, text = format_ndjson_line(line)
+        assert event_type == "assistant"
+        assert "Hello, I will help you." in text
+
+    def test_assistant_tool_use(self):
+        line = json.dumps({
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {"type": "text", "text": "Let me read that file."},
+                    {"type": "tool_use", "name": "Read", "input": {"file_path": "/foo/bar.py"}},
+                ],
+            },
+        })
+        event_type, text = format_ndjson_line(line)
+        assert event_type == "assistant"
+        assert "Let me read that file." in text
+        assert "Read" in text
+        assert "/foo/bar.py" in text
+
+    def test_assistant_empty_content(self):
+        line = json.dumps({
+            "type": "assistant",
+            "message": {"content": []},
+        })
+        event_type, text = format_ndjson_line(line)
+        assert event_type == "assistant"
+        assert "[assistant turn]" in text
+
+    def test_user_tool_result_ok(self):
+        line = json.dumps({
+            "type": "user",
+            "message": {
+                "content": [{
+                    "type": "tool_result",
+                    "is_error": False,
+                    "content": "File contents here...",
+                }],
+            },
+        })
+        event_type, text = format_ndjson_line(line)
+        assert event_type == "tool_result"
+        assert "[ok]" in text
+        assert "File contents" in text
+
+    def test_user_tool_result_error(self):
+        line = json.dumps({
+            "type": "user",
+            "message": {
+                "content": [{
+                    "type": "tool_result",
+                    "is_error": True,
+                    "content": "Permission denied",
+                }],
+            },
+        })
+        event_type, text = format_ndjson_line(line)
+        assert event_type == "tool_result"
+        assert "[ERROR]" in text
+
+    def test_result_event(self):
+        line = json.dumps({
+            "type": "result",
+            "num_turns": 15,
+            "duration_ms": 45000,
+            "subtype": "end_turn",
+            "is_error": False,
+            "result": "Task completed successfully",
+        })
+        event_type, text = format_ndjson_line(line)
+        assert event_type == "result"
+        assert "15 turns" in text
+        assert "45.0s" in text
+        assert "end_turn" in text
+        assert "Task completed successfully" in text
+
+    def test_result_event_error(self):
+        line = json.dumps({
+            "type": "result",
+            "num_turns": 5,
+            "duration_ms": 10000,
+            "is_error": True,
+            "result": "Something went wrong",
+        })
+        event_type, text = format_ndjson_line(line)
+        assert event_type == "result"
+        assert "[ERROR]" in text
+
+    def test_unknown_json_type(self):
+        line = json.dumps({"type": "ping"})
+        event_type, text = format_ndjson_line(line)
+        assert event_type == "system"
+        assert "[ping]" in text
+
+    def test_json_without_type(self):
+        line = json.dumps({"foo": "bar"})
+        event_type, text = format_ndjson_line(line)
+        assert event_type == "log"
+
+    def test_invalid_json(self):
+        event_type, text = format_ndjson_line("{bad json")
+        assert event_type == "log"
+        assert "{bad json" in text
+
+    def test_bash_tool_summarized(self):
+        line = json.dumps({
+            "type": "assistant",
+            "message": {
+                "content": [{
+                    "type": "tool_use",
+                    "name": "Bash",
+                    "input": {"command": "git status"},
+                }],
+            },
+        })
+        event_type, text = format_ndjson_line(line)
+        assert event_type == "tool_use"
+        assert "Bash" in text
+        assert "git status" in text
+
+    def test_edit_tool_summarized(self):
+        line = json.dumps({
+            "type": "assistant",
+            "message": {
+                "content": [{
+                    "type": "tool_use",
+                    "name": "Edit",
+                    "input": {"file_path": "/src/main.py"},
+                }],
+            },
+        })
+        event_type, text = format_ndjson_line(line)
+        assert event_type == "tool_use"
+        assert "Edit" in text
+        assert "/src/main.py" in text
+
+    def test_grep_tool_summarized(self):
+        line = json.dumps({
+            "type": "assistant",
+            "message": {
+                "content": [{
+                    "type": "tool_use",
+                    "name": "Grep",
+                    "input": {"pattern": "def foo"},
+                }],
+            },
+        })
+        event_type, text = format_ndjson_line(line)
+        assert event_type == "tool_use"
+        assert "Grep" in text
+        assert "def foo" in text
+
+    def test_tool_result_content_as_list(self):
+        line = json.dumps({
+            "type": "user",
+            "message": {
+                "content": [{
+                    "type": "tool_result",
+                    "is_error": False,
+                    "content": [{"type": "text", "text": "Result text here"}],
+                }],
+            },
+        })
+        event_type, text = format_ndjson_line(line)
+        assert event_type == "tool_result"
+        assert "Result text here" in text
+
+    def test_whitespace_stripped(self):
+        event_type, text = format_ndjson_line("   \n  ")
+        assert event_type == "log"
+        assert text == ""
+
+    def test_stderr_marker(self):
+        event_type, text = format_ndjson_line("--- STDERR ---")
+        assert event_type == "log"
+        assert "STDERR" in text
+
+
+class TestTaskDetailLiveOutput:
+    """Tests for the 'View Live Output' link on the task detail page."""
+
+    def test_in_progress_task_shows_live_link(self, tmp_path):
+        db_path = tmp_path / "live.db"
+        conn = init_db(db_path)
+        task_id = insert_task(
+            conn, ticket_id="LIVE-2", title="In progress task",
+            project="proj", slot=1, status="in_progress",
+        )
+        insert_stage_run(conn, task_id=task_id, stage="implement",
+                         iteration=1, turns=5, duration_seconds=300.0)
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=db_path)
+        client = TestClient(app)
+        resp = client.get("/task/LIVE-2")
+        body = resp.text
+        assert "View Live Output" in body
+        assert "/task/LIVE-2/logs" in body
+        assert "log-live-badge" in body
+
+    def test_completed_task_no_live_link(self, client):
+        # TST-1 is a completed task in the default fixture
+        resp = client.get("/task/TST-1")
+        body = resp.text
+        assert "View Live Output" not in body
+
+    def test_failed_task_no_live_link(self, tmp_path):
+        db_path = tmp_path / "fail.db"
+        conn = init_db(db_path)
+        insert_task(
+            conn, ticket_id="FAIL-1", title="Failed task",
+            project="proj", slot=1, status="failed",
+        )
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=db_path)
+        client = TestClient(app)
+        resp = client.get("/task/FAIL-1")
+        assert "View Live Output" not in resp.text
+
+
+class TestSSEStreamFormatting:
+    """Tests for the SSE stream endpoint with NDJSON formatting."""
+
+    def test_stream_returns_formatted_events(self, tmp_path):
+        """SSE stream should transform NDJSON into formatted event types."""
+        db_path = tmp_path / "stream.db"
+        conn = init_db(db_path)
+        task_id = insert_task(
+            conn, ticket_id="STR-1", title="Stream test",
+            project="proj", slot=1, status="in_progress",
+        )
+        conn.commit()
+        conn.close()
+
+        # Create a log file with NDJSON content
+        logs_dir = tmp_path / "logs"
+        ticket_log_dir = logs_dir / "STR-1"
+        ticket_log_dir.mkdir(parents=True)
+        ndjson_content = (
+            json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "Working on it"}]}}) + "\n"
+            + json.dumps({"type": "user", "message": {"content": [{"type": "tool_result", "is_error": False, "content": "ok"}]}}) + "\n"
+            + json.dumps({"type": "result", "num_turns": 3, "duration_ms": 5000, "result": "Done"}) + "\n"
+        )
+        (ticket_log_dir / "implement-20260226-100000.log").write_text(ndjson_content)
+
+        app = create_app(db_path=db_path, logs_dir=logs_dir)
+        client = TestClient(app)
+        resp = client.get("/api/logs/STR-1/implement/stream")
+        assert resp.status_code == 200
+
+    def test_stream_404_no_log(self, tmp_path):
+        db_path = tmp_path / "empty.db"
+        conn = init_db(db_path)
+        insert_task(
+            conn, ticket_id="NF-1", title="No file",
+            project="proj", slot=1, status="in_progress",
+        )
+        conn.commit()
+        conn.close()
+        logs_dir = tmp_path / "logs"
+        logs_dir.mkdir()
+        app = create_app(db_path=db_path, logs_dir=logs_dir)
+        client = TestClient(app)
+        resp = client.get("/api/logs/NF-1/implement/stream")
+        assert resp.status_code == 404
+
+
+class TestLogViewerFormattedEvents:
+    """Tests for the updated log viewer template with event type styling."""
+
+    def test_live_viewer_includes_event_type_handlers(self, tmp_path):
+        """Live log viewer should register handlers for all event types."""
+        db_path = tmp_path / "live.db"
+        conn = init_db(db_path)
+        task_id = insert_task(
+            conn, ticket_id="EVT-1", title="Event test",
+            project="proj", slot=1, status="in_progress",
+        )
+        _seed_slot(
+            conn, "proj", 1, status="busy",
+            ticket_id="EVT-1", ticket_title="Event test",
+            stage="implement",
+        )
+        conn.commit()
+        conn.close()
+
+        logs_dir = tmp_path / "logs"
+        ticket_log_dir = logs_dir / "EVT-1"
+        ticket_log_dir.mkdir(parents=True)
+        (ticket_log_dir / "implement-20260226-100000.log").write_text("test\n")
+
+        app = create_app(db_path=db_path, logs_dir=logs_dir)
+        client = TestClient(app)
+        resp = client.get("/task/EVT-1/logs/implement")
+        body = resp.text
+        assert resp.status_code == 200
+        assert "LIVE" in body
+        # Check that the JS registers handlers for formatted event types
+        assert "assistant" in body
+        assert "tool_use" in body
+        assert "tool_result" in body
+        assert "appendLine" in body
