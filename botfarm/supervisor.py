@@ -1895,9 +1895,11 @@ class Supervisor:
                 )
                 continue
 
-            # Persist queue for dashboard visibility
+            # Persist queue for dashboard visibility (candidates + blocked, sorted together)
+            all_queue_issues = list(poll_result.candidates) + list(poll_result.blocked)
+            all_queue_issues.sort(key=lambda i: i.sort_order)
             try:
-                save_queue_entries(self._conn, project_name, poll_result.candidates)
+                save_queue_entries(self._conn, project_name, all_queue_issues)
             except Exception:
                 self._conn.rollback()
                 logger.exception("Failed to persist queue entries for %s", project_name)

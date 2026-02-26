@@ -19,11 +19,20 @@
             </tr>
         </thead>
         <tbody>
+            {% set ns = namespace(next_unblocked_found=false) %}
             {% for entry in proj.entries %}
-            <tr{% if entry.position == 0 %} style="font-weight: 600;"{% endif %}>
-                <td>{% if entry.position == 0 %}<mark>Next</mark>{% else %}{{ entry.position + 1 }}{% endif %}</td>
+            {% set is_blocked = entry.blocked_by is not none %}
+            {% set is_next = not is_blocked and not ns.next_unblocked_found %}
+            {% if is_next %}{% set ns.next_unblocked_found = true %}{% endif %}
+            <tr{% if is_blocked %} style="opacity: 0.45;"{% elif is_next %} style="font-weight: 600;"{% endif %}{% if is_blocked %} title="Blocked by {{ entry.blocked_by | join(', ') }}"{% endif %}>
+                <td>{% if is_blocked %}&#x1F512;{% elif is_next %}<mark>Next</mark>{% else %}{{ entry.position + 1 }}{% endif %}</td>
                 <td><a href="{{ linear_url(entry.ticket_id) }}" target="_blank" rel="noopener">{{ entry.ticket_id }}</a></td>
-                <td>{{ entry.ticket_title }}</td>
+                <td>
+                    {{ entry.ticket_title }}
+                    {% if is_blocked %}
+                    <small style="color: var(--pico-muted-color);"> — blocked by {{ entry.blocked_by | join(', ') }}</small>
+                    {% endif %}
+                </td>
                 <td>{{ priority_labels.get(entry.priority, "Normal") }}</td>
             </tr>
             {% endfor %}

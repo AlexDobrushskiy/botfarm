@@ -689,6 +689,7 @@ class TestLinearPollerPoll:
         ]
         result = poller.poll()
         assert [c.identifier for c in result.candidates] == ["SMA-1", "SMA-3"]
+        assert [b.identifier for b in result.blocked] == ["SMA-2"]
 
     def test_filters_inverse_blocked_tickets(self):
         """Tickets blocked via inverseRelations are also filtered out."""
@@ -701,6 +702,7 @@ class TestLinearPollerPoll:
         result = poller.poll()
         # SMA-2 is blocked (regardless of how blocked_by was populated)
         assert [c.identifier for c in result.candidates] == ["SMA-1", "SMA-3"]
+        assert [b.identifier for b in result.blocked] == ["SMA-2"]
 
     def test_unblocked_tickets_not_filtered(self):
         poller = self._make_poller()
@@ -710,6 +712,18 @@ class TestLinearPollerPoll:
         ]
         result = poller.poll()
         assert len(result.candidates) == 2
+        assert len(result.blocked) == 0
+
+    def test_blocked_issues_sorted_by_sort_order(self):
+        """Blocked issues should be sorted by sort_order."""
+        poller = self._make_poller()
+        poller._client.fetch_team_issues.return_value = [
+            _make_issue(id="a", identifier="SMA-1", sort_order=3.0, blocked_by=["SMA-10"]),
+            _make_issue(id="b", identifier="SMA-2", sort_order=1.0, blocked_by=["SMA-10"]),
+            _make_issue(id="c", identifier="SMA-3", sort_order=2.0, blocked_by=["SMA-10"]),
+        ]
+        result = poller.poll()
+        assert [b.identifier for b in result.blocked] == ["SMA-2", "SMA-3", "SMA-1"]
 
     def test_excludes_tags(self):
         poller = self._make_poller(exclude_tags=["Human", "Manual"])
@@ -867,6 +881,7 @@ class TestLinearPollerParentHandling:
         result = poller.poll()
         assert isinstance(result, PollResult)
         assert result.candidates == []
+        assert result.blocked == []
         assert result.auto_close_parents == []
 
 
