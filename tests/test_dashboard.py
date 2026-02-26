@@ -34,11 +34,13 @@ from botfarm.db import (
 )
 
 
-def _seed_queue_entry(conn, project, position, ticket_id, ticket_title, priority=3, url="", snapshot_at="2026-02-25T12:00:00+00:00"):
+def _seed_queue_entry(conn, project, position, ticket_id, ticket_title, priority=3, url="", snapshot_at="2026-02-25T12:00:00+00:00", blocked_by=None):
     """Helper to seed a queue entry row in the DB."""
+    import json as _json
+    blocked_by_json = _json.dumps(blocked_by) if blocked_by else None
     conn.execute(
-        "INSERT INTO queue_entries (project, position, ticket_id, ticket_title, priority, sort_order, url, snapshot_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (project, position, ticket_id, ticket_title, priority, 0.0, url or f"https://linear.app/issue/{ticket_id}", snapshot_at),
+        "INSERT INTO queue_entries (project, position, ticket_id, ticket_title, priority, sort_order, url, snapshot_at, blocked_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (project, position, ticket_id, ticket_title, priority, 0.0, url or f"https://linear.app/issue/{ticket_id}", snapshot_at, blocked_by_json),
     )
     conn.commit()
 
@@ -436,6 +438,62 @@ class TestPartialQueue:
         resp = c.get("/partials/queue")
         body = resp.text
         assert "Last polled:" in body
+
+    def test_queue_blocked_entry_greyed_out(self, tmp_path):
+        """Blocked entries should render with reduced opacity."""
+        db_path = tmp_path / "q.db"
+        conn = init_db(db_path)
+        _seed_queue_entry(conn, "proj", 0, "P-1", "Blocked task", blocked_by=["P-0"])
+        conn.close()
+        app = create_app(db_path=db_path)
+        c = TestClient(app)
+        resp = c.get("/partials/queue")
+        body = resp.text
+        assert "opacity: 0.45" in body
+        assert "blocked by P-0" in body
+
+    def test_queue_blocked_entry_no_next_marker(self, tmp_path):
+        """Blocked entry at position 0 should NOT get the 'Next' marker."""
+        db_path = tmp_path / "q.db"
+        conn = init_db(db_path)
+        _seed_queue_entry(conn, "proj", 0, "P-1", "Blocked first", blocked_by=["P-0"])
+        _seed_queue_entry(conn, "proj", 1, "P-2", "Unblocked second")
+        conn.close()
+        app = create_app(db_path=db_path)
+        c = TestClient(app)
+        resp = c.get("/partials/queue")
+        body = resp.text
+        # P-2 (unblocked) should be marked Next, not P-1 (blocked)
+        assert "<mark>Next</mark>" in body
+        # The lock icon should appear for the blocked entry (rendered as HTML entity)
+        assert "&#x1F512;" in body
+
+    def test_queue_blocked_shows_multiple_blockers(self, tmp_path):
+        """Blocked entry should list all blocking ticket IDs."""
+        db_path = tmp_path / "q.db"
+        conn = init_db(db_path)
+        _seed_queue_entry(conn, "proj", 0, "P-3", "Multi-blocked", blocked_by=["P-1", "P-2"])
+        conn.close()
+        app = create_app(db_path=db_path)
+        c = TestClient(app)
+        resp = c.get("/partials/queue")
+        body = resp.text
+        assert "P-1" in body
+        assert "P-2" in body
+        assert "blocked by P-1, P-2" in body
+
+    def test_queue_unblocked_entry_no_blocked_styling(self, tmp_path):
+        """Unblocked entries should not have blocked styling."""
+        db_path = tmp_path / "q.db"
+        conn = init_db(db_path)
+        _seed_queue_entry(conn, "proj", 0, "P-1", "Normal task")
+        conn.close()
+        app = create_app(db_path=db_path)
+        c = TestClient(app)
+        resp = c.get("/partials/queue")
+        body = resp.text
+        assert "opacity: 0.45" not in body
+        assert "blocked by" not in body
 
 
 # --- Slot Panel enhancements ---

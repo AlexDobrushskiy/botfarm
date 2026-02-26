@@ -164,11 +164,13 @@ class PollResult:
 
     Attributes:
         candidates: Issues eligible for dispatch, sorted by sort order.
+        blocked: Issues blocked by unresolved issues, sorted by sort order.
         auto_close_parents: Parent issues whose children are all done,
             ready to be auto-closed by the supervisor.
     """
 
     candidates: list[LinearIssue]
+    blocked: list[LinearIssue]
     auto_close_parents: list[LinearIssue]
 
 
@@ -393,6 +395,7 @@ class LinearPoller:
         )
 
         pre_parent_candidates = []
+        blocked_issues = []
         for issue in issues:
             issue_labels = set(
                 label.lower() for label in (issue.labels or [])
@@ -414,10 +417,11 @@ class LinearPoller:
 
             if issue.blocked_by:
                 logger.debug(
-                    "Skipping %s: blocked by unresolved issue(s) %s",
+                    "Blocked %s: blocked by unresolved issue(s) %s",
                     issue.identifier,
                     issue.blocked_by,
                 )
+                blocked_issues.append(issue)
                 continue
 
             pre_parent_candidates.append(issue)
@@ -456,15 +460,17 @@ class LinearPoller:
         # Sort by sortOrder ascending — lower value = higher in the Linear UI list.
         # This respects the manual drag-and-drop ordering set by the user.
         candidates.sort(key=lambda i: i.sort_order)
+        blocked_issues.sort(key=lambda i: i.sort_order)
 
         logger.debug(
-            "Polled %s: %d Todo issues, %d candidates, %d auto-close parents",
+            "Polled %s: %d Todo issues, %d candidates, %d blocked, %d auto-close parents",
             self._project.linear_team,
             len(issues),
             len(candidates),
+            len(blocked_issues),
             len(auto_close_parents),
         )
-        return PollResult(candidates=candidates, auto_close_parents=auto_close_parents)
+        return PollResult(candidates=candidates, blocked=blocked_issues, auto_close_parents=auto_close_parents)
 
     def get_state_id(self, state_name: str) -> str:
         """Look up a workflow state ID by name, caching the result."""

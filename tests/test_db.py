@@ -663,7 +663,7 @@ class TestInitDb:
 
         # Verify columns
         cols = {r[1] for r in c2.execute("PRAGMA table_info(queue_entries)").fetchall()}
-        assert cols == {"id", "project", "position", "ticket_id", "ticket_title", "priority", "sort_order", "url", "snapshot_at"}
+        assert cols == {"id", "project", "position", "ticket_id", "ticket_title", "priority", "sort_order", "url", "snapshot_at", "blocked_by"}
 
         c2.close()
 
@@ -806,10 +806,10 @@ class TestInitDb:
 
 class TestMigrationInfrastructure:
     def test_discover_migrations(self):
-        """All 8 SQL migration files are discovered with correct numbering."""
+        """All 10 SQL migration files are discovered with correct numbering."""
         migrations = _discover_migrations()
-        assert len(migrations) >= 8
-        for version in range(1, 9):
+        assert len(migrations) >= 10
+        for version in range(1, 11):
             assert version in migrations
             assert migrations[version].suffix == ".sql"
 
@@ -1481,12 +1481,13 @@ class TestDispatchState:
 class _FakeIssue:
     """Minimal stand-in for LinearIssue with the fields save_queue_entries needs."""
 
-    def __init__(self, identifier, title, priority, sort_order, url):
+    def __init__(self, identifier, title, priority, sort_order, url, blocked_by=None):
         self.identifier = identifier
         self.title = title
         self.priority = priority
         self.sort_order = sort_order
         self.url = url
+        self.blocked_by = blocked_by
 
 
 class TestQueueEntries:
@@ -1554,3 +1555,31 @@ class TestQueueEntries:
         assert len(alpha_rows) == 0
         assert len(beta_rows) == 1
         assert beta_rows[0]["ticket_id"] == "SMA-2"
+
+    def test_save_blocked_by_persisted(self, conn):
+        """blocked_by list should be stored as JSON."""
+        candidates = [
+            _FakeIssue("SMA-1", "Blocked", 2, 1.0, "https://linear.app/1", blocked_by=["SMA-10", "SMA-11"]),
+        ]
+        save_queue_entries(conn, "proj", candidates, "2026-02-25T00:00:00Z")
+        rows = conn.execute("SELECT * FROM queue_entries WHERE project = ?", ("proj",)).fetchall()
+        assert len(rows) == 1
+        assert rows[0]["blocked_by"] == '["SMA-10", "SMA-11"]'
+
+    def test_save_unblocked_has_null_blocked_by(self, conn):
+        """Unblocked issues should have NULL blocked_by."""
+        candidates = [
+            _FakeIssue("SMA-1", "Normal", 2, 1.0, "https://linear.app/1", blocked_by=None),
+        ]
+        save_queue_entries(conn, "proj", candidates, "2026-02-25T00:00:00Z")
+        rows = conn.execute("SELECT * FROM queue_entries WHERE project = ?", ("proj",)).fetchall()
+        assert rows[0]["blocked_by"] is None
+
+    def test_save_empty_blocked_by_is_null(self, conn):
+        """Empty blocked_by list should be stored as NULL."""
+        candidates = [
+            _FakeIssue("SMA-1", "Normal", 2, 1.0, "https://linear.app/1", blocked_by=[]),
+        ]
+        save_queue_entries(conn, "proj", candidates, "2026-02-25T00:00:00Z")
+        rows = conn.execute("SELECT * FROM queue_entries WHERE project = ?", ("proj",)).fetchall()
+        assert rows[0]["blocked_by"] is None

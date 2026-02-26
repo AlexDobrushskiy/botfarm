@@ -617,14 +617,21 @@ def load_dispatch_state(conn: sqlite3.Connection) -> tuple[bool, str | None, str
 
 
 def save_queue_entries(conn: sqlite3.Connection, project: str, candidates: list, snapshot_at: str | None = None) -> None:
-    """Replace queue entries for a project with fresh poll results."""
+    """Replace queue entries for a project with fresh poll results.
+
+    Each item in *candidates* must have identifier, title, priority,
+    sort_order, and url attributes.  An optional ``blocked_by`` attribute
+    (list of blocker identifiers or None) is persisted as a JSON string.
+    """
     if snapshot_at is None:
         snapshot_at = _now_iso()
     conn.execute("DELETE FROM queue_entries WHERE project = ?", (project,))
     for i, issue in enumerate(candidates):
+        blocked_by = getattr(issue, "blocked_by", None)
+        blocked_by_json = json.dumps(blocked_by) if blocked_by else None
         conn.execute(
-            "INSERT INTO queue_entries (project, position, ticket_id, ticket_title, priority, sort_order, url, snapshot_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (project, i, issue.identifier, issue.title, issue.priority, issue.sort_order, issue.url, snapshot_at),
+            "INSERT INTO queue_entries (project, position, ticket_id, ticket_title, priority, sort_order, url, snapshot_at, blocked_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (project, i, issue.identifier, issue.title, issue.priority, issue.sort_order, issue.url, snapshot_at, blocked_by_json),
         )
     conn.commit()
 

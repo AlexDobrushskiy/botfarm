@@ -376,7 +376,7 @@ def create_app(
 
             # Read queue entries grouped by project
             queue_rows = conn.execute(
-                "SELECT project, position, ticket_id, ticket_title, priority, url, snapshot_at "
+                "SELECT project, position, ticket_id, ticket_title, priority, url, snapshot_at, blocked_by "
                 "FROM queue_entries ORDER BY project, position"
             ).fetchall()
 
@@ -394,6 +394,7 @@ def create_app(
                             "ticket_title": r["ticket_title"],
                             "priority": r["priority"],
                             "url": r["url"],
+                            "blocked_by": json.loads(r["blocked_by"]) if r["blocked_by"] else None,
                         }
                         for r in entries
                     ],
