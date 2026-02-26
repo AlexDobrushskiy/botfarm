@@ -200,8 +200,10 @@ class UsagePoller:
 
         extra = data.get("extra_usage") or {}
         self._state.extra_usage_enabled = bool(extra.get("is_enabled"))
-        self._state.extra_usage_monthly_limit = extra.get("monthly_limit")
-        self._state.extra_usage_used_credits = extra.get("used_credits")
+        raw_limit = extra.get("monthly_limit")
+        self._state.extra_usage_monthly_limit = raw_limit / 100 if raw_limit is not None else None
+        raw_credits = extra.get("used_credits")
+        self._state.extra_usage_used_credits = raw_credits / 100 if raw_credits is not None else None
         self._state.extra_usage_utilization = extra.get("utilization")
 
         insert_usage_snapshot(
@@ -220,7 +222,7 @@ class UsagePoller:
         if self._state.extra_usage_enabled:
             extra_msg = (
                 f", extra_usage=${self._state.extra_usage_used_credits or 0:.2f}"
-                f"/${self._state.extra_usage_monthly_limit or 0:.0f}"
+                f"/${self._state.extra_usage_monthly_limit or 0:.2f}"
             )
         logger.info(
             "Usage snapshot: 5h=%.1f%%, 7d=%.1f%%, resets=%s%s",
