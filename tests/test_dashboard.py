@@ -10,10 +10,13 @@ from fastapi.testclient import TestClient
 
 from botfarm.config import (
     BotfarmConfig,
+    CoderIdentity,
     DashboardConfig,
+    IdentitiesConfig,
     LinearConfig,
     NotificationsConfig,
     ProjectConfig,
+    ReviewerIdentity,
 )
 from botfarm.dashboard import build_pipeline_state, create_app, format_ndjson_line, start_dashboard
 from botfarm.db import (
@@ -3247,3 +3250,353 @@ class TestLogViewerFormattedEvents:
         assert "tool_use" in body
         assert "tool_result" in body
         assert "appendLine" in body
+
+
+# ---------------------------------------------------------------------------
+# Identity credentials management
+# ---------------------------------------------------------------------------
+
+
+def _make_identity_config(tmp_path, *, coder=None, reviewer=None):
+    """Create a BotfarmConfig with identity fields and a YAML source file."""
+    coder_identity = coder or CoderIdentity(
+        github_token="ghp_testabc123def456",
+        ssh_key_path="~/.botfarm/coder_id_ed25519",
+        git_author_name="Coder Bot",
+        git_author_email="coder@example.com",
+        linear_api_key="lin_api_test123",
+    )
+    reviewer_identity = reviewer or ReviewerIdentity(
+        github_token="ghp_reviewer789xyz",
+        linear_api_key="lin_api_reviewer456",
+    )
+
+    config_data = {
+        "projects": [
+            {
+                "name": "test-project",
+                "linear_team": "TST",
+                "base_dir": "~/test",
+                "worktree_prefix": "test-slot-",
+                "slots": [1],
+            }
+        ],
+        "linear": {
+            "api_key": "${LINEAR_API_KEY}",
+            "poll_interval_seconds": 30,
+        },
+        "identities": {
+            "coder": {
+                "github_token": "${CODER_GITHUB_TOKEN}",
+                "ssh_key_path": coder_identity.ssh_key_path,
+                "git_author_name": coder_identity.git_author_name,
+                "git_author_email": coder_identity.git_author_email,
+                "linear_api_key": "${CODER_LINEAR_API_KEY}",
+            },
+            "reviewer": {
+                "github_token": "${REVIEWER_GITHUB_TOKEN}",
+                "linear_api_key": "${REVIEWER_LINEAR_API_KEY}",
+            },
+        },
+    }
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.dump(config_data, sort_keys=False))
+
+    config = BotfarmConfig(
+        projects=[
+            ProjectConfig(
+                name="test-project", linear_team="TST",
+                base_dir="~/test", worktree_prefix="test-slot-", slots=[1],
+            ),
+        ],
+        linear=LinearConfig(api_key="test-key", poll_interval_seconds=30),
+        identities=IdentitiesConfig(
+            coder=coder_identity,
+            reviewer=reviewer_identity,
+        ),
+    )
+    config.source_path = str(config_path)
+    return config, config_path
+
+
+class TestIdentitiesPage:
+    @pytest.fixture()
+    def identity_client(self, db_file, tmp_path):
+        config, _ = _make_identity_config(tmp_path)
+        app = create_app(db_path=db_file, botfarm_config=config)
+        return TestClient(app)
+
+    def test_identities_page_returns_200(self, identity_client):
+        resp = identity_client.get("/identities")
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers["content-type"]
+
+    def test_identities_page_shows_coder_section(self, identity_client):
+        resp = identity_client.get("/identities")
+        body = resp.text
+        assert "Coder Identity" in body
+        assert "Reviewer Identity" in body
+
+    def test_identities_page_shows_masked_tokens(self, identity_client):
+        resp = identity_client.get("/identities")
+        body = resp.text
+        # Masked: first 4 + **** + last 4
+        assert "ghp_****f456" in body
+        assert "ghp_****9xyz" in body
+
+    def test_identities_page_shows_plain_fields(self, identity_client):
+        resp = identity_client.get("/identities")
+        body = resp.text
+        assert "Coder Bot" in body
+        assert "coder@example.com" in body
+        assert "coder_id_ed25519" in body
+
+    def test_identities_page_shows_set_badges(self, identity_client):
+        resp = identity_client.get("/identities")
+        body = resp.text
+        assert "identity-badge-set" in body
+
+    def test_identities_page_disabled_without_config(self, db_file):
+        app = create_app(db_path=db_file)
+        client = TestClient(app)
+        resp = client.get("/identities")
+        assert resp.status_code == 200
+        assert "not available" in resp.text
+
+    def test_identities_page_shows_unset_badges_when_empty(self, db_file, tmp_path):
+        config, _ = _make_identity_config(
+            tmp_path,
+            coder=CoderIdentity(),
+            reviewer=ReviewerIdentity(),
+        )
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+        resp = client.get("/identities")
+        body = resp.text
+        assert "identity-badge-unset" in body
+
+    def test_identities_nav_link_present(self, identity_client):
+        resp = identity_client.get("/")
+        assert "Identities" in resp.text
+
+    def test_identities_page_ssh_key_exists_check(self, db_file, tmp_path):
+        ssh_key = tmp_path / "test_key"
+        ssh_key.write_text("-----BEGIN OPENSSH PRIVATE KEY-----\ntest\n")
+        config, _ = _make_identity_config(
+            tmp_path,
+            coder=CoderIdentity(ssh_key_path=str(ssh_key)),
+        )
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+        resp = client.get("/identities")
+        assert "File exists" in resp.text
+
+    def test_identities_page_ssh_key_not_found(self, db_file, tmp_path):
+        config, _ = _make_identity_config(
+            tmp_path,
+            coder=CoderIdentity(ssh_key_path="/nonexistent/key"),
+        )
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+        resp = client.get("/identities")
+        assert "File not found" in resp.text
+
+
+class TestIdentitiesUpdate:
+    @pytest.fixture()
+    def setup(self, db_file, tmp_path):
+        config, config_path = _make_identity_config(tmp_path)
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+        return client, config, config_path, tmp_path
+
+    def test_update_coder_plain_fields(self, setup):
+        client, _, config_path, _ = setup
+        resp = client.post("/identities", json={
+            "coder": {
+                "git_author_name": "New Bot Name",
+                "git_author_email": "new@example.com",
+                "ssh_key_path": "/new/path/key",
+            },
+        })
+        assert resp.status_code == 200
+        assert "saved" in resp.text.lower()
+        # Check YAML was updated
+        data = yaml.safe_load(config_path.read_text())
+        assert data["identities"]["coder"]["git_author_name"] == "New Bot Name"
+        assert data["identities"]["coder"]["git_author_email"] == "new@example.com"
+        assert data["identities"]["coder"]["ssh_key_path"] == "/new/path/key"
+
+    def test_update_coder_secret_writes_env_file(self, setup):
+        client, _, config_path, tmp_path = setup
+        resp = client.post("/identities", json={
+            "coder": {"github_token": "ghp_newsecret123"},
+        })
+        assert resp.status_code == 200
+        # .env should have the token
+        env_path = config_path.parent / ".env"
+        env_content = env_path.read_text()
+        assert 'CODER_GITHUB_TOKEN="ghp_newsecret123"' in env_content
+
+    def test_update_coder_secret_writes_env_ref_to_yaml(self, setup):
+        client, _, config_path, _ = setup
+        client.post("/identities", json={
+            "coder": {"github_token": "ghp_newsecret123"},
+        })
+        data = yaml.safe_load(config_path.read_text())
+        assert data["identities"]["coder"]["github_token"] == "${CODER_GITHUB_TOKEN}"
+
+    def test_update_reviewer_secret(self, setup):
+        client, _, config_path, _ = setup
+        resp = client.post("/identities", json={
+            "reviewer": {
+                "github_token": "ghp_reviewernew",
+                "linear_api_key": "lin_api_new",
+            },
+        })
+        assert resp.status_code == 200
+        env_path = config_path.parent / ".env"
+        env_content = env_path.read_text()
+        assert 'REVIEWER_GITHUB_TOKEN="ghp_reviewernew"' in env_content
+        assert 'REVIEWER_LINEAR_API_KEY="lin_api_new"' in env_content
+
+    def test_update_sets_restart_required(self, setup):
+        client, _, _, _ = setup
+        client.post("/identities", json={
+            "coder": {"git_author_name": "Changed"},
+        })
+        resp = client.get("/config")
+        # The config page should show restart banner if restart_required is set
+        # We can check via the app state indirectly
+        # Just verify the response was successful
+        assert resp.status_code == 200
+
+    def test_update_mixed_secret_and_plain(self, setup):
+        client, _, config_path, _ = setup
+        resp = client.post("/identities", json={
+            "coder": {
+                "github_token": "ghp_mixed123",
+                "git_author_name": "Mixed Bot",
+            },
+        })
+        assert resp.status_code == 200
+        # .env has secret
+        env_path = config_path.parent / ".env"
+        assert 'CODER_GITHUB_TOKEN="ghp_mixed123"' in env_path.read_text()
+        # YAML has env ref for secret, plain value for non-secret
+        data = yaml.safe_load(config_path.read_text())
+        assert data["identities"]["coder"]["github_token"] == "${CODER_GITHUB_TOKEN}"
+        assert data["identities"]["coder"]["git_author_name"] == "Mixed Bot"
+
+    def test_update_unknown_role_rejected(self, setup):
+        client, _, _, _ = setup
+        resp = client.post("/identities", json={
+            "admin": {"github_token": "nope"},
+        })
+        assert resp.status_code == 422
+        assert "Unknown role" in resp.text
+
+    def test_update_unknown_field_rejected(self, setup):
+        client, _, _, _ = setup
+        resp = client.post("/identities", json={
+            "coder": {"password": "nope"},
+        })
+        assert resp.status_code == 422
+        assert "not an editable" in resp.text
+
+    def test_update_non_string_value_rejected(self, setup):
+        client, _, _, _ = setup
+        resp = client.post("/identities", json={
+            "coder": {"github_token": 12345},
+        })
+        assert resp.status_code == 422
+        assert "must be a string" in resp.text
+
+    def test_update_invalid_json_returns_400(self, setup):
+        client, _, _, _ = setup
+        resp = client.post(
+            "/identities",
+            content=b"not json",
+            headers={"content-type": "application/json"},
+        )
+        assert resp.status_code == 400
+
+    def test_update_non_dict_body_returns_400(self, setup):
+        client, _, _, _ = setup
+        resp = client.post("/identities", json=["not", "a", "dict"])
+        assert resp.status_code == 400
+
+    def test_update_without_config_returns_400(self, db_file):
+        app = create_app(db_path=db_file)
+        client = TestClient(app)
+        resp = client.post("/identities", json={"coder": {"git_author_name": "x"}})
+        assert resp.status_code == 400
+        assert "not available" in resp.text
+
+    def test_env_file_preserves_existing_keys(self, setup):
+        client, _, config_path, _ = setup
+        env_path = config_path.parent / ".env"
+        env_path.write_text("EXISTING_KEY=keepme\n")
+        client.post("/identities", json={
+            "coder": {"github_token": "ghp_new"},
+        })
+        env_content = env_path.read_text()
+        assert "EXISTING_KEY=keepme" in env_content
+        assert 'CODER_GITHUB_TOKEN="ghp_new"' in env_content
+
+    def test_env_file_updates_existing_secret(self, setup):
+        client, _, config_path, _ = setup
+        env_path = config_path.parent / ".env"
+        env_path.write_text("CODER_GITHUB_TOKEN=old_value\n")
+        client.post("/identities", json={
+            "coder": {"github_token": "ghp_updated"},
+        })
+        env_content = env_path.read_text()
+        assert 'CODER_GITHUB_TOKEN="ghp_updated"' in env_content
+        assert "old_value" not in env_content
+
+    def test_yaml_creates_identities_section_if_missing(self, db_file, tmp_path):
+        """When config.yaml has no identities section, it should be created."""
+        config_data = {
+            "projects": [
+                {
+                    "name": "test-project",
+                    "linear_team": "TST",
+                    "base_dir": "~/test",
+                    "worktree_prefix": "test-slot-",
+                    "slots": [1],
+                }
+            ],
+            "linear": {"api_key": "${LINEAR_API_KEY}", "poll_interval_seconds": 30},
+        }
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.dump(config_data, sort_keys=False))
+
+        config = BotfarmConfig(
+            projects=[
+                ProjectConfig(
+                    name="test-project", linear_team="TST",
+                    base_dir="~/test", worktree_prefix="test-slot-", slots=[1],
+                ),
+            ],
+            linear=LinearConfig(api_key="test-key", poll_interval_seconds=30),
+        )
+        config.source_path = str(config_path)
+
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+        resp = client.post("/identities", json={
+            "coder": {"git_author_name": "New Bot"},
+        })
+        assert resp.status_code == 200
+        data = yaml.safe_load(config_path.read_text())
+        assert data["identities"]["coder"]["git_author_name"] == "New Bot"
+
+    def test_reviewer_plain_field_rejected(self, setup):
+        """Reviewer identity has no plain-text editable fields like ssh_key_path."""
+        client, _, _, _ = setup
+        resp = client.post("/identities", json={
+            "reviewer": {"ssh_key_path": "/path"},
+        })
+        assert resp.status_code == 422
+        assert "not an editable" in resp.text

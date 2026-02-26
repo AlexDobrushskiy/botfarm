@@ -1,0 +1,353 @@
+{% extends "base.html" %}
+{% set active_page = "identities" %}
+{% block title %}Identities - Botfarm{% endblock %}
+{% block content %}
+<style>
+    .identity-card {
+        border: 1px solid var(--pico-muted-border-color);
+        border-radius: var(--pico-border-radius);
+        padding: 1rem 1.5rem;
+        margin-bottom: 1.5rem;
+    }
+    .identity-card h3 { margin-bottom: 0.75rem; }
+    .identity-badge {
+        display: inline-block;
+        padding: 0.1rem 0.5rem;
+        border-radius: 1rem;
+        font-size: 0.8rem;
+        font-weight: 600;
+        margin-left: 0.5rem;
+        vertical-align: middle;
+    }
+    .identity-badge-set {
+        background: rgba(34, 197, 94, 0.15);
+        color: var(--pico-ins-color);
+    }
+    .identity-badge-unset {
+        background: rgba(239, 68, 68, 0.15);
+        color: var(--pico-del-color);
+    }
+    .identity-badge-warning {
+        background: rgba(245, 158, 11, 0.15);
+        color: var(--pico-color-yellow-500, #eab308);
+    }
+    .config-tabs {
+        display: flex;
+        gap: 0;
+        border-bottom: 2px solid var(--pico-muted-border-color);
+        margin-bottom: 1.5rem;
+    }
+    .config-tab {
+        padding: 0.6rem 1.5rem;
+        cursor: pointer;
+        border: none;
+        background: none;
+        color: var(--pico-muted-color);
+        font-size: 1rem;
+        font-weight: 600;
+        border-bottom: 2px solid transparent;
+        margin-bottom: -2px;
+        width: auto;
+    }
+    .config-tab:hover { color: var(--pico-color); }
+    .config-tab.active {
+        color: var(--pico-primary);
+        border-bottom-color: var(--pico-primary);
+    }
+    .config-tab-content { display: none; }
+    .config-tab-content.active { display: block; }
+    .config-section { margin-bottom: 2rem; }
+    .config-section table td:first-child {
+        white-space: nowrap;
+        font-weight: 600;
+        width: 40%;
+    }
+    .config-section table { font-size: 0.9rem; }
+    .config-feedback {
+        padding: 0.75rem 1rem;
+        border-radius: var(--pico-border-radius);
+        margin-bottom: 1rem;
+    }
+    .config-feedback.success {
+        background: rgba(34, 197, 94, 0.15);
+        color: var(--pico-ins-color);
+    }
+    .config-feedback.error {
+        background: rgba(239, 68, 68, 0.15);
+        color: var(--pico-del-color);
+    }
+    .config-feedback.warning {
+        background: rgba(245, 158, 11, 0.15);
+        color: var(--pico-color-yellow-500, #eab308);
+    }
+    .config-feedback ul { margin: 0.25rem 0 0 1.25rem; padding: 0; }
+    .restart-banner {
+        background: rgba(245, 158, 11, 0.2);
+        border: 1px solid var(--pico-color-yellow-500, #eab308);
+        color: var(--pico-color-yellow-500, #eab308);
+        padding: 0.75rem 1rem;
+        border-radius: var(--pico-border-radius);
+        margin-bottom: 1.5rem;
+        font-weight: bold;
+    }
+    .secret-field-row {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+    .secret-field-row input { flex: 1; margin-bottom: 0; }
+    .secret-note {
+        font-size: 0.8rem;
+        color: var(--pico-muted-color);
+        margin-top: 0.25rem;
+    }
+</style>
+
+<h1>Identities</h1>
+
+{% if not identity.configured %}
+<p>Identity configuration is not available (no config object provided).</p>
+{% else %}
+
+<div class="config-tabs">
+    <button class="config-tab active" onclick="switchIdentityTab('view')">View</button>
+    <button class="config-tab" onclick="switchIdentityTab('edit')">Edit</button>
+</div>
+
+{# ==================== VIEW TAB ==================== #}
+<div id="tab-view" class="config-tab-content active">
+
+<div class="identity-card">
+    <h3>Coder Identity</h3>
+    <figure>
+    <table>
+        <tbody>
+            <tr>
+                <td>GitHub Token</td>
+                <td>
+                    {% if identity.coder.github_token_set %}
+                    <code>{{ identity.coder.github_token }}</code>
+                    <span class="identity-badge identity-badge-set">Set</span>
+                    {% else %}
+                    <span class="identity-badge identity-badge-unset">Not set</span>
+                    {% endif %}
+                </td>
+            </tr>
+            <tr>
+                <td>SSH Key Path</td>
+                <td>
+                    {% if identity.coder.ssh_key_path %}
+                    <code>{{ identity.coder.ssh_key_path }}</code>
+                    {% if identity.coder.ssh_key_exists %}
+                    <span class="identity-badge identity-badge-set">File exists</span>
+                    {% else %}
+                    <span class="identity-badge identity-badge-warning">File not found</span>
+                    {% endif %}
+                    {% else %}
+                    <span class="identity-badge identity-badge-unset">Not set</span>
+                    {% endif %}
+                </td>
+            </tr>
+            <tr>
+                <td>Git Author Name</td>
+                <td>{{ identity.coder.git_author_name or "-" }}</td>
+            </tr>
+            <tr>
+                <td>Git Author Email</td>
+                <td>{{ identity.coder.git_author_email or "-" }}</td>
+            </tr>
+            <tr>
+                <td>Linear API Key</td>
+                <td>
+                    {% if identity.coder.linear_api_key_set %}
+                    <code>{{ identity.coder.linear_api_key }}</code>
+                    <span class="identity-badge identity-badge-set">Set</span>
+                    {% else %}
+                    <span class="identity-badge identity-badge-unset">Not set</span>
+                    {% endif %}
+                </td>
+            </tr>
+        </tbody>
+    </table>
+    </figure>
+</div>
+
+<div class="identity-card">
+    <h3>Reviewer Identity</h3>
+    <figure>
+    <table>
+        <tbody>
+            <tr>
+                <td>GitHub Token</td>
+                <td>
+                    {% if identity.reviewer.github_token_set %}
+                    <code>{{ identity.reviewer.github_token }}</code>
+                    <span class="identity-badge identity-badge-set">Set</span>
+                    {% else %}
+                    <span class="identity-badge identity-badge-unset">Not set</span>
+                    {% endif %}
+                </td>
+            </tr>
+            <tr>
+                <td>Linear API Key</td>
+                <td>
+                    {% if identity.reviewer.linear_api_key_set %}
+                    <code>{{ identity.reviewer.linear_api_key }}</code>
+                    <span class="identity-badge identity-badge-set">Set</span>
+                    {% else %}
+                    <span class="identity-badge identity-badge-unset">Not set</span>
+                    {% endif %}
+                </td>
+            </tr>
+        </tbody>
+    </table>
+    </figure>
+</div>
+
+</div>
+
+{# ==================== EDIT TAB ==================== #}
+<div id="tab-edit" class="config-tab-content">
+
+<div class="restart-banner" role="alert">
+    All identity changes require a supervisor restart to take effect. Secrets are stored in <code>.env</code>, not in config.yaml.
+</div>
+
+<div class="identity-card">
+    <h3>Coder Identity</h3>
+    <div id="feedback-coder"></div>
+    <form onsubmit="return saveIdentity(event, 'coder')">
+        <label for="coder-github_token">
+            GitHub Token
+            <input type="password" id="coder-github_token" name="github_token"
+                   placeholder="{{ identity.coder.github_token or 'ghp_...' }}" autocomplete="off">
+            <small class="secret-note">Leave empty to keep current value. Stored in .env file.</small>
+        </label>
+
+        <label for="coder-ssh_key_path">
+            SSH Key Path
+            <input type="text" id="coder-ssh_key_path" name="ssh_key_path"
+                   value="{{ identity.coder.ssh_key_path }}" placeholder="~/.botfarm/coder_id_ed25519">
+        </label>
+
+        <div class="grid">
+            <label for="coder-git_author_name">
+                Git Author Name
+                <input type="text" id="coder-git_author_name" name="git_author_name"
+                       value="{{ identity.coder.git_author_name }}" placeholder="Coder Bot">
+            </label>
+            <label for="coder-git_author_email">
+                Git Author Email
+                <input type="email" id="coder-git_author_email" name="git_author_email"
+                       value="{{ identity.coder.git_author_email }}" placeholder="coder-bot@example.com">
+            </label>
+        </div>
+
+        <label for="coder-linear_api_key">
+            Linear API Key
+            <input type="password" id="coder-linear_api_key" name="linear_api_key"
+                   placeholder="{{ identity.coder.linear_api_key or 'lin_api_...' }}" autocomplete="off">
+            <small class="secret-note">Leave empty to keep current value. Stored in .env file.</small>
+        </label>
+
+        <button type="submit">Save Coder Identity</button>
+    </form>
+</div>
+
+<div class="identity-card">
+    <h3>Reviewer Identity</h3>
+    <div id="feedback-reviewer"></div>
+    <form onsubmit="return saveIdentity(event, 'reviewer')">
+        <label for="reviewer-github_token">
+            GitHub Token
+            <input type="password" id="reviewer-github_token" name="github_token"
+                   placeholder="{{ identity.reviewer.github_token or 'ghp_...' }}" autocomplete="off">
+            <small class="secret-note">Leave empty to keep current value. Stored in .env file.</small>
+        </label>
+
+        <label for="reviewer-linear_api_key">
+            Linear API Key
+            <input type="password" id="reviewer-linear_api_key" name="linear_api_key"
+                   placeholder="{{ identity.reviewer.linear_api_key or 'lin_api_...' }}" autocomplete="off">
+            <small class="secret-note">Leave empty to keep current value. Stored in .env file.</small>
+        </label>
+
+        <button type="submit">Save Reviewer Identity</button>
+    </form>
+</div>
+
+</div>
+
+<script>
+function switchIdentityTab(tabName) {
+    var tabs = document.querySelectorAll(".config-tab");
+    var contents = document.querySelectorAll(".config-tab-content");
+    for (var i = 0; i < tabs.length; i++) {
+        tabs[i].classList.remove("active");
+    }
+    for (var i = 0; i < contents.length; i++) {
+        contents[i].classList.remove("active");
+    }
+    document.getElementById("tab-" + tabName).classList.add("active");
+    var activeTab = tabName === "view" ? tabs[0] : tabs[1];
+    activeTab.classList.add("active");
+}
+
+function saveIdentity(event, role) {
+    event.preventDefault();
+    var form = event.target;
+    var feedbackEl = document.getElementById("feedback-" + role);
+    var payload = {};
+    payload[role] = {};
+
+    var inputs = form.querySelectorAll("input");
+    for (var i = 0; i < inputs.length; i++) {
+        var input = inputs[i];
+        var value = input.value.trim();
+        // Skip empty password fields (keep current value)
+        if (input.type === "password" && !value) {
+            continue;
+        }
+        payload[role][input.name] = value;
+    }
+
+    // Nothing to save
+    if (Object.keys(payload[role]).length === 0) {
+        feedbackEl.innerHTML = '<div class="config-feedback warning" role="alert">No changes to save.</div>';
+        setTimeout(function() { feedbackEl.innerHTML = ""; }, 3000);
+        return false;
+    }
+
+    feedbackEl.innerHTML = "";
+    var btn = form.querySelector("button[type=submit]");
+    btn.setAttribute("aria-busy", "true");
+
+    fetch("/identities", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(payload)
+    })
+    .then(function(resp) { return resp.text().then(function(html) { return {ok: resp.ok, html: html}; }); })
+    .then(function(result) {
+        feedbackEl.innerHTML = result.html;
+        btn.removeAttribute("aria-busy");
+        if (result.ok) {
+            // Clear password fields after successful save
+            var passwords = form.querySelectorAll("input[type=password]");
+            for (var i = 0; i < passwords.length; i++) {
+                passwords[i].value = "";
+            }
+            setTimeout(function() { feedbackEl.innerHTML = ""; }, 5000);
+        }
+    })
+    .catch(function() {
+        feedbackEl.innerHTML = '<div class="config-feedback error" role="alert">Network error.</div>';
+        btn.removeAttribute("aria-busy");
+    });
+
+    return false;
+}
+</script>
+
+{% endif %}
+{% endblock %}
