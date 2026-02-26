@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
+import stat
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -351,6 +352,222 @@ def check_notifications_webhook(config: BotfarmConfig) -> list[CheckResult]:
     )]
 
 
+def check_identity_ssh_key(config: BotfarmConfig) -> list[CheckResult]:
+    """Validate coder SSH key if configured."""
+    results: list[CheckResult] = []
+    ssh_key_path = config.identities.coder.ssh_key_path
+    if not ssh_key_path:
+        return results  # Not configured — nothing to check
+
+    key_path = Path(ssh_key_path).expanduser()
+
+    # File must exist (critical)
+    if not key_path.exists():
+        results.append(CheckResult(
+            name="identity_ssh_key",
+            passed=False,
+            message=f"SSH key file does not exist: {key_path}",
+        ))
+        return results
+
+    # File permissions should be 600 (warn only)
+    try:
+        mode = key_path.stat().st_mode
+        if mode & (stat.S_IRGRP | stat.S_IWGRP | stat.S_IROTH | stat.S_IWOTH):
+            results.append(CheckResult(
+                name="identity_ssh_key:permissions",
+                passed=False,
+                message=(
+                    f"SSH key file has overly permissive mode "
+                    f"{oct(stat.S_IMODE(mode))} — expected 0o600: {key_path}"
+                ),
+                critical=False,
+            ))
+    except OSError as exc:
+        results.append(CheckResult(
+            name="identity_ssh_key:permissions",
+            passed=False,
+            message=f"Cannot stat SSH key file: {exc}",
+            critical=False,
+        ))
+
+    # File should look like a valid SSH private key (critical)
+    try:
+        with open(key_path) as f:
+            first_line = f.readline()
+        if not first_line.startswith("-----BEGIN"):
+            results.append(CheckResult(
+                name="identity_ssh_key",
+                passed=False,
+                message=f"SSH key file does not look like a private key: {key_path}",
+            ))
+            return results
+    except (OSError, UnicodeDecodeError) as exc:
+        results.append(CheckResult(
+            name="identity_ssh_key",
+            passed=False,
+            message=f"Cannot read SSH key file: {exc}",
+        ))
+        return results
+
+    # Test SSH connectivity to GitHub (warn only)
+    try:
+        proc = subprocess.run(
+            ["ssh", "-T", "-o", "StrictHostKeyChecking=accept-new",
+             "-o", "BatchMode=yes", "-i", str(key_path), "git@github.com"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        # ssh -T git@github.com returns exit code 1 on success with a greeting
+        if proc.returncode not in (0, 1) or "successfully authenticated" not in proc.stderr.lower():
+            results.append(CheckResult(
+                name="identity_ssh_key:github_ssh",
+                passed=False,
+                message=f"SSH to GitHub failed: {proc.stderr.strip()[:200]}",
+                critical=False,
+            ))
+        else:
+            results.append(CheckResult(
+                name="identity_ssh_key:github_ssh",
+                passed=True,
+                message="OK — SSH connectivity to GitHub verified",
+                critical=False,
+            ))
+    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+        results.append(CheckResult(
+            name="identity_ssh_key:github_ssh",
+            passed=False,
+            message=f"SSH connectivity test failed: {exc}",
+            critical=False,
+        ))
+
+    if not any(r.name == "identity_ssh_key" and not r.passed for r in results):
+        results.append(CheckResult(
+            name="identity_ssh_key",
+            passed=True,
+            message=f"OK — {key_path}",
+        ))
+
+    return results
+
+
+def check_identity_github_tokens(config: BotfarmConfig) -> list[CheckResult]:
+    """Validate GitHub tokens for coder and reviewer identities."""
+    results: list[CheckResult] = []
+
+    tokens = [
+        ("coder", config.identities.coder.github_token),
+        ("reviewer", config.identities.reviewer.github_token),
+    ]
+
+    for role, token in tokens:
+        if not token:
+            continue  # Not configured — skip
+
+        # Test API access with gh api user
+        try:
+            proc = subprocess.run(
+                ["gh", "api", "user"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                env={**os.environ, "GH_TOKEN": token},
+            )
+            if proc.returncode != 0:
+                results.append(CheckResult(
+                    name=f"identity_github_token:{role}",
+                    passed=False,
+                    message=f"GitHub token for {role} failed API check: {proc.stderr.strip()[:200]}",
+                ))
+            else:
+                results.append(CheckResult(
+                    name=f"identity_github_token:{role}",
+                    passed=True,
+                    message=f"OK — {role} GitHub token verified",
+                ))
+        except subprocess.TimeoutExpired:
+            results.append(CheckResult(
+                name=f"identity_github_token:{role}",
+                passed=False,
+                message=f"GitHub API check for {role} timed out after 15s",
+            ))
+        except FileNotFoundError:
+            results.append(CheckResult(
+                name=f"identity_github_token:{role}",
+                passed=False,
+                message=f"gh command not found — cannot check {role} GitHub token",
+            ))
+
+    return results
+
+
+def check_identity_linear_api_key(config: BotfarmConfig) -> list[CheckResult]:
+    """Validate coder and reviewer Linear API keys if configured."""
+    results: list[CheckResult] = []
+
+    keys = [
+        ("coder", config.identities.coder.linear_api_key),
+        ("reviewer", config.identities.reviewer.linear_api_key),
+    ]
+
+    for role, api_key in keys:
+        if not api_key:
+            continue  # Not configured — skip
+
+        client = LinearClient(api_key=api_key)
+        try:
+            client.get_viewer_id()
+            results.append(CheckResult(
+                name=f"identity_linear_key:{role}",
+                passed=True,
+                message=f"OK — {role} Linear API key verified",
+            ))
+        except LinearAPIError as exc:
+            results.append(CheckResult(
+                name=f"identity_linear_key:{role}",
+                passed=False,
+                message=f"{role.capitalize()} Linear API key failed: {exc}",
+            ))
+
+    return results
+
+
+def check_identity_cross_validation(config: BotfarmConfig) -> list[CheckResult]:
+    """Warn about potentially inconsistent identity configuration."""
+    results: list[CheckResult] = []
+    coder = config.identities.coder
+    reviewer = config.identities.reviewer
+
+    # SSH key set but no GitHub token (or vice versa)
+    if coder.ssh_key_path and not coder.github_token:
+        results.append(CheckResult(
+            name="identity_cross:coder_partial",
+            passed=False,
+            message="Coder SSH key is set but GitHub token is not — partial config may cause issues",
+            critical=False,
+        ))
+    if coder.github_token and not coder.ssh_key_path:
+        results.append(CheckResult(
+            name="identity_cross:coder_partial",
+            passed=False,
+            message="Coder GitHub token is set but SSH key is not — partial config may cause issues",
+            critical=False,
+        ))
+
+    # Reviewer token equals coder token
+    if (reviewer.github_token and coder.github_token
+            and reviewer.github_token == coder.github_token):
+        results.append(CheckResult(
+            name="identity_cross:same_github_token",
+            passed=False,
+            message="Reviewer and coder GitHub tokens are identical — should be different accounts",
+            critical=False,
+        ))
+
+    return results
+
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -374,6 +591,10 @@ def run_preflight_checks(
     results.extend(check_linear_api(config))
     results.extend(check_credentials())
     results.extend(check_notifications_webhook(config))
+    results.extend(check_identity_ssh_key(config))
+    results.extend(check_identity_github_tokens(config))
+    results.extend(check_identity_linear_api_key(config))
+    results.extend(check_identity_cross_validation(config))
     return results
 
 

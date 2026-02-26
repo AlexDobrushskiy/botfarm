@@ -2,6 +2,7 @@
 
 import os
 import sqlite3
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -9,10 +10,13 @@ import pytest
 
 from botfarm.config import (
     BotfarmConfig,
+    CoderIdentity,
     DatabaseConfig,
+    IdentitiesConfig,
     LinearConfig,
     NotificationsConfig,
     ProjectConfig,
+    ReviewerIdentity,
 )
 from botfarm.credentials import CredentialError, OAuthToken
 from botfarm.db import SCHEMA_VERSION
@@ -23,6 +27,10 @@ from botfarm.preflight import (
     check_credentials,
     check_database,
     check_git_repos,
+    check_identity_cross_validation,
+    check_identity_github_tokens,
+    check_identity_linear_api_key,
+    check_identity_ssh_key,
     check_linear_api,
     check_notifications_webhook,
     check_worktree_dirs,
@@ -37,6 +45,7 @@ def _make_config(
     projects: list[ProjectConfig] | None = None,
     linear: LinearConfig | None = None,
     notifications: NotificationsConfig | None = None,
+    identities: IdentitiesConfig | None = None,
 ) -> BotfarmConfig:
     """Build a BotfarmConfig with sensible defaults for testing."""
     if projects is None:
@@ -55,6 +64,7 @@ def _make_config(
         linear=linear or LinearConfig(api_key="lin_test_key"),
         database=DatabaseConfig(),
         notifications=notifications or NotificationsConfig(),
+        identities=identities or IdentitiesConfig(),
     )
 
 
@@ -443,6 +453,345 @@ class TestCheckNotificationsWebhook:
         assert len(results) == 1
         assert not results[0].passed
         assert not results[0].critical
+
+
+# ---------------------------------------------------------------------------
+# check_identity_ssh_key
+# ---------------------------------------------------------------------------
+
+
+class TestCheckIdentitySshKey:
+    def test_skip_when_not_configured(self, tmp_path):
+        config = _make_config(tmp_path)
+        results = check_identity_ssh_key(config)
+        assert len(results) == 0
+
+    def test_fail_file_missing(self, tmp_path):
+        config = _make_config(tmp_path, identities=IdentitiesConfig(
+            coder=CoderIdentity(ssh_key_path=str(tmp_path / "nonexistent_key")),
+        ))
+        results = check_identity_ssh_key(config)
+        assert len(results) == 1
+        assert not results[0].passed
+        assert results[0].critical
+        assert "does not exist" in results[0].message
+
+    def test_warn_bad_permissions(self, tmp_path):
+        key = tmp_path / "id_ed25519"
+        key.write_text("-----BEGIN OPENSSH PRIVATE KEY-----\nfakedata\n")
+        key.chmod(0o644)  # Group/other readable
+        config = _make_config(tmp_path, identities=IdentitiesConfig(
+            coder=CoderIdentity(ssh_key_path=str(key)),
+        ))
+        with patch("botfarm.preflight.subprocess.run") as mock_run:
+            mock_run.return_value.returncode = 1
+            mock_run.return_value.stderr = "successfully authenticated"
+            results = check_identity_ssh_key(config)
+        perm_results = [r for r in results if "permissions" in r.name]
+        assert len(perm_results) == 1
+        assert not perm_results[0].passed
+        assert not perm_results[0].critical  # Warning only
+
+    def test_pass_good_permissions(self, tmp_path):
+        key = tmp_path / "id_ed25519"
+        key.write_text("-----BEGIN OPENSSH PRIVATE KEY-----\nfakedata\n")
+        key.chmod(0o600)
+        config = _make_config(tmp_path, identities=IdentitiesConfig(
+            coder=CoderIdentity(ssh_key_path=str(key)),
+        ))
+        with patch("botfarm.preflight.subprocess.run") as mock_run:
+            mock_run.return_value.returncode = 1
+            mock_run.return_value.stderr = "successfully authenticated"
+            results = check_identity_ssh_key(config)
+        perm_results = [r for r in results if "permissions" in r.name]
+        assert len(perm_results) == 0
+
+    def test_fail_not_a_private_key(self, tmp_path):
+        key = tmp_path / "id_ed25519"
+        key.write_text("ssh-ed25519 AAAA... public key\n")
+        key.chmod(0o600)
+        config = _make_config(tmp_path, identities=IdentitiesConfig(
+            coder=CoderIdentity(ssh_key_path=str(key)),
+        ))
+        results = check_identity_ssh_key(config)
+        failed = [r for r in results if r.name == "identity_ssh_key" and not r.passed]
+        assert len(failed) == 1
+        assert "does not look like a private key" in failed[0].message
+
+    def test_fail_binary_key_file(self, tmp_path):
+        key = tmp_path / "id_ed25519"
+        key.write_bytes(b"\x80\x81\x82\xff\xfe")  # Invalid UTF-8
+        key.chmod(0o600)
+        config = _make_config(tmp_path, identities=IdentitiesConfig(
+            coder=CoderIdentity(ssh_key_path=str(key)),
+        ))
+        results = check_identity_ssh_key(config)
+        failed = [r for r in results if r.name == "identity_ssh_key" and not r.passed]
+        assert len(failed) == 1
+        assert "Cannot read SSH key file" in failed[0].message
+
+    def test_warn_github_ssh_fails(self, tmp_path):
+        key = tmp_path / "id_ed25519"
+        key.write_text("-----BEGIN OPENSSH PRIVATE KEY-----\nfakedata\n")
+        key.chmod(0o600)
+        config = _make_config(tmp_path, identities=IdentitiesConfig(
+            coder=CoderIdentity(ssh_key_path=str(key)),
+        ))
+        with patch("botfarm.preflight.subprocess.run") as mock_run:
+            mock_run.return_value.returncode = 255
+            mock_run.return_value.stderr = "Permission denied"
+            results = check_identity_ssh_key(config)
+        ssh_results = [r for r in results if "github_ssh" in r.name]
+        assert len(ssh_results) == 1
+        assert not ssh_results[0].passed
+        assert not ssh_results[0].critical
+
+    def test_pass_github_ssh_success(self, tmp_path):
+        key = tmp_path / "id_ed25519"
+        key.write_text("-----BEGIN OPENSSH PRIVATE KEY-----\nfakedata\n")
+        key.chmod(0o600)
+        config = _make_config(tmp_path, identities=IdentitiesConfig(
+            coder=CoderIdentity(ssh_key_path=str(key)),
+        ))
+        with patch("botfarm.preflight.subprocess.run") as mock_run:
+            mock_run.return_value.returncode = 1
+            mock_run.return_value.stderr = "Hi user! You've successfully authenticated"
+            results = check_identity_ssh_key(config)
+        ssh_results = [r for r in results if "github_ssh" in r.name]
+        assert len(ssh_results) == 1
+        assert ssh_results[0].passed
+
+    def test_warn_ssh_timeout(self, tmp_path):
+        key = tmp_path / "id_ed25519"
+        key.write_text("-----BEGIN OPENSSH PRIVATE KEY-----\nfakedata\n")
+        key.chmod(0o600)
+        config = _make_config(tmp_path, identities=IdentitiesConfig(
+            coder=CoderIdentity(ssh_key_path=str(key)),
+        ))
+        with patch("botfarm.preflight.subprocess.run",
+                    side_effect=subprocess.TimeoutExpired("ssh", 15)):
+            results = check_identity_ssh_key(config)
+        ssh_results = [r for r in results if "github_ssh" in r.name]
+        assert len(ssh_results) == 1
+        assert not ssh_results[0].passed
+        assert not ssh_results[0].critical
+
+
+# ---------------------------------------------------------------------------
+# check_identity_github_tokens
+# ---------------------------------------------------------------------------
+
+
+class TestCheckIdentityGithubTokens:
+    def test_skip_when_not_configured(self, tmp_path):
+        config = _make_config(tmp_path)
+        results = check_identity_github_tokens(config)
+        assert len(results) == 0
+
+    def test_pass_coder_token(self, tmp_path):
+        config = _make_config(tmp_path, identities=IdentitiesConfig(
+            coder=CoderIdentity(github_token="ghp_coder123"),
+        ))
+        with patch("botfarm.preflight.subprocess.run") as mock_run:
+            mock_run.return_value.returncode = 0
+            mock_run.return_value.stdout = '{"login":"bot"}'
+            results = check_identity_github_tokens(config)
+        assert len(results) == 1
+        assert results[0].passed
+        assert "coder" in results[0].name
+
+    def test_fail_coder_token(self, tmp_path):
+        config = _make_config(tmp_path, identities=IdentitiesConfig(
+            coder=CoderIdentity(github_token="ghp_bad"),
+        ))
+        with patch("botfarm.preflight.subprocess.run") as mock_run:
+            mock_run.return_value.returncode = 1
+            mock_run.return_value.stderr = "Bad credentials"
+            results = check_identity_github_tokens(config)
+        assert len(results) == 1
+        assert not results[0].passed
+        assert results[0].critical
+
+    def test_pass_both_tokens(self, tmp_path):
+        config = _make_config(tmp_path, identities=IdentitiesConfig(
+            coder=CoderIdentity(github_token="ghp_coder"),
+            reviewer=ReviewerIdentity(github_token="ghp_reviewer"),
+        ))
+        with patch("botfarm.preflight.subprocess.run") as mock_run:
+            mock_run.return_value.returncode = 0
+            results = check_identity_github_tokens(config)
+        assert len(results) == 2
+        assert all(r.passed for r in results)
+
+    def test_fail_timeout(self, tmp_path):
+        config = _make_config(tmp_path, identities=IdentitiesConfig(
+            coder=CoderIdentity(github_token="ghp_tok"),
+        ))
+        with patch("botfarm.preflight.subprocess.run",
+                    side_effect=subprocess.TimeoutExpired("gh", 15)):
+            results = check_identity_github_tokens(config)
+        assert len(results) == 1
+        assert not results[0].passed
+        assert "timed out" in results[0].message
+
+    def test_fail_gh_not_found_includes_role(self, tmp_path):
+        config = _make_config(tmp_path, identities=IdentitiesConfig(
+            coder=CoderIdentity(github_token="ghp_tok"),
+        ))
+        with patch("botfarm.preflight.subprocess.run",
+                    side_effect=FileNotFoundError("gh")):
+            results = check_identity_github_tokens(config)
+        assert len(results) == 1
+        assert not results[0].passed
+        assert "coder" in results[0].message
+        assert "gh command not found" in results[0].message
+
+    def test_passes_token_as_env(self, tmp_path):
+        config = _make_config(tmp_path, identities=IdentitiesConfig(
+            coder=CoderIdentity(github_token="ghp_mytoken"),
+        ))
+        with patch("botfarm.preflight.subprocess.run") as mock_run:
+            mock_run.return_value.returncode = 0
+            check_identity_github_tokens(config)
+        call_env = mock_run.call_args.kwargs.get("env")
+        assert call_env is not None
+        assert call_env["GH_TOKEN"] == "ghp_mytoken"
+
+
+# ---------------------------------------------------------------------------
+# check_identity_linear_api_key
+# ---------------------------------------------------------------------------
+
+
+class TestCheckIdentityLinearApiKey:
+    def test_skip_when_not_configured(self, tmp_path):
+        config = _make_config(tmp_path)
+        results = check_identity_linear_api_key(config)
+        assert len(results) == 0
+
+    def test_pass_valid_key(self, tmp_path):
+        config = _make_config(tmp_path, identities=IdentitiesConfig(
+            coder=CoderIdentity(linear_api_key="lin_api_abc"),
+        ))
+        with patch.object(
+            __import__("botfarm.linear", fromlist=["LinearClient"]).LinearClient,
+            "get_viewer_id",
+            return_value="user-123",
+        ):
+            results = check_identity_linear_api_key(config)
+        assert len(results) == 1
+        assert results[0].passed
+
+    def test_fail_invalid_key(self, tmp_path):
+        config = _make_config(tmp_path, identities=IdentitiesConfig(
+            coder=CoderIdentity(linear_api_key="lin_api_bad"),
+        ))
+        with patch.object(
+            __import__("botfarm.linear", fromlist=["LinearClient"]).LinearClient,
+            "get_viewer_id",
+            side_effect=LinearAPIError("Unauthorized"),
+        ):
+            results = check_identity_linear_api_key(config)
+        assert len(results) == 1
+        assert not results[0].passed
+        assert results[0].critical
+
+    def test_pass_reviewer_key(self, tmp_path):
+        config = _make_config(tmp_path, identities=IdentitiesConfig(
+            reviewer=ReviewerIdentity(linear_api_key="lin_api_rev"),
+        ))
+        with patch.object(
+            __import__("botfarm.linear", fromlist=["LinearClient"]).LinearClient,
+            "get_viewer_id",
+            return_value="user-456",
+        ):
+            results = check_identity_linear_api_key(config)
+        assert len(results) == 1
+        assert results[0].passed
+        assert "reviewer" in results[0].name
+
+    def test_pass_both_keys(self, tmp_path):
+        config = _make_config(tmp_path, identities=IdentitiesConfig(
+            coder=CoderIdentity(linear_api_key="lin_api_coder"),
+            reviewer=ReviewerIdentity(linear_api_key="lin_api_rev"),
+        ))
+        with patch.object(
+            __import__("botfarm.linear", fromlist=["LinearClient"]).LinearClient,
+            "get_viewer_id",
+            return_value="user-123",
+        ):
+            results = check_identity_linear_api_key(config)
+        assert len(results) == 2
+        assert all(r.passed for r in results)
+        roles = {r.name.split(":")[-1] for r in results}
+        assert roles == {"coder", "reviewer"}
+
+
+# ---------------------------------------------------------------------------
+# check_identity_cross_validation
+# ---------------------------------------------------------------------------
+
+
+class TestCheckIdentityCrossValidation:
+    def test_no_warnings_when_empty(self, tmp_path):
+        config = _make_config(tmp_path)
+        results = check_identity_cross_validation(config)
+        assert len(results) == 0
+
+    def test_no_warnings_when_both_set(self, tmp_path):
+        config = _make_config(tmp_path, identities=IdentitiesConfig(
+            coder=CoderIdentity(
+                github_token="ghp_coder",
+                ssh_key_path="/some/key",
+            ),
+        ))
+        results = check_identity_cross_validation(config)
+        assert len(results) == 0
+
+    def test_warn_ssh_without_github_token(self, tmp_path):
+        config = _make_config(tmp_path, identities=IdentitiesConfig(
+            coder=CoderIdentity(ssh_key_path="/some/key"),
+        ))
+        results = check_identity_cross_validation(config)
+        assert len(results) == 1
+        assert not results[0].passed
+        assert not results[0].critical
+        assert "SSH key is set but GitHub token is not" in results[0].message
+
+    def test_warn_github_token_without_ssh(self, tmp_path):
+        config = _make_config(tmp_path, identities=IdentitiesConfig(
+            coder=CoderIdentity(github_token="ghp_tok"),
+        ))
+        results = check_identity_cross_validation(config)
+        assert len(results) == 1
+        assert not results[0].passed
+        assert not results[0].critical
+        assert "GitHub token is set but SSH key is not" in results[0].message
+
+    def test_warn_same_github_tokens(self, tmp_path):
+        config = _make_config(tmp_path, identities=IdentitiesConfig(
+            coder=CoderIdentity(
+                github_token="ghp_same",
+                ssh_key_path="/some/key",
+            ),
+            reviewer=ReviewerIdentity(github_token="ghp_same"),
+        ))
+        results = check_identity_cross_validation(config)
+        assert len(results) == 1
+        assert not results[0].passed
+        assert not results[0].critical
+        assert "identical" in results[0].message
+
+    def test_no_warning_different_tokens(self, tmp_path):
+        config = _make_config(tmp_path, identities=IdentitiesConfig(
+            coder=CoderIdentity(
+                github_token="ghp_coder",
+                ssh_key_path="/some/key",
+            ),
+            reviewer=ReviewerIdentity(github_token="ghp_reviewer"),
+        ))
+        results = check_identity_cross_validation(config)
+        assert len(results) == 0
 
 
 # ---------------------------------------------------------------------------
