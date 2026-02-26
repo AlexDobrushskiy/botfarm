@@ -598,6 +598,20 @@ def test_load_config_timeout_overrides_non_int_rejected(tmp_path):
         load_config(config_path)
 
 
+def test_load_config_timeout_overrides_non_dict_value_rejected(tmp_path):
+    data = {
+        **MINIMAL_CONFIG,
+        "agents": {
+            "timeout_overrides": {
+                "Investigation": 30,
+            },
+        },
+    }
+    config_path = _write_config(tmp_path, data)
+    with pytest.raises(ConfigError, match="timeout_overrides.Investigation"):
+        load_config(config_path)
+
+
 # --- resolve_stage_timeout ---
 
 

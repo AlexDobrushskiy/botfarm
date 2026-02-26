@@ -238,8 +238,8 @@ class UsagePoller:
 
     def _parse_and_store(self, data: dict, conn: sqlite3.Connection) -> None:
         """Parse the API response and update in-memory state + database."""
-        five_hour = data.get("five_hour", {})
-        seven_day = data.get("seven_day", {})
+        five_hour = data.get("five_hour") or {}
+        seven_day = data.get("seven_day") or {}
 
         raw_5h = five_hour.get("utilization")
         self._state.utilization_5h = raw_5h / 100 if raw_5h is not None else None

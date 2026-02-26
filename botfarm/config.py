@@ -420,13 +420,17 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
     timeout_overrides: dict[str, dict[str, int]] = {}
     if isinstance(raw_overrides, dict):
         for label, stages in raw_overrides.items():
-            if isinstance(stages, dict):
-                try:
-                    timeout_overrides[str(label)] = {
-                        k: int(v) for k, v in stages.items()
-                    }
-                except (ValueError, TypeError) as exc:
-                    raise ConfigError(f"agents.timeout_overrides.{label}: {exc}")
+            if not isinstance(stages, dict):
+                raise ConfigError(
+                    f"agents.timeout_overrides.{label}: value must be a mapping "
+                    f"of stage names to minutes, got {type(stages).__name__}"
+                )
+            try:
+                timeout_overrides[str(label)] = {
+                    k: int(v) for k, v in stages.items()
+                }
+            except (ValueError, TypeError) as exc:
+                raise ConfigError(f"agents.timeout_overrides.{label}: {exc}")
 
     agents = AgentsConfig(
         max_review_iterations=int(agents_data.get("max_review_iterations", 3)),
