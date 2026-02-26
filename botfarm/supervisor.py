@@ -62,6 +62,15 @@ class _WorkerResult:
     stages_completed: list[str] | None = None
 
 
+@dataclass
+class _StallInfo:
+    """Per-worker usage stall tracking data."""
+
+    dispatch_usage_5h: float | None
+    dispatch_time: float
+    warned: bool = False
+
+
 def _worker_entry(
     *,
     ticket_id: str,
@@ -303,6 +312,9 @@ class Supervisor:
 
         # Timestamp of last ticket log cleanup (runs at most once per hour)
         self._last_log_cleanup: float = 0.0
+
+        # Usage stall detection: (project, slot_id) -> _StallInfo
+        self._stall_tracking: dict[tuple[str, int], _StallInfo] = {}
 
     @property
     def slot_manager(self) -> SlotManager:
@@ -1877,11 +1889,58 @@ class Supervisor:
     # Usage polling
     # ------------------------------------------------------------------
 
+    _STALL_WARN_MINUTES = 30
+    _STALL_EPSILON = 0.005  # 0.5%
+
     def _poll_usage(self) -> None:
         """Poll the usage API and update slot manager state."""
         state = self._usage_poller.poll(self._conn)
         if self._usage_poller.last_polled_fresh:
             self._slot_manager.set_usage(state.to_dict())
+        self._check_usage_stalls()
+
+    def _check_usage_stalls(self) -> None:
+        """Warn if a busy worker's usage% hasn't moved since dispatch."""
+        current_5h = self._usage_poller.state.utilization_5h
+        if current_5h is None:
+            return
+
+        now = time.time()
+        busy_keys = {
+            (s.project, s.slot_id) for s in self._slot_manager.busy_slots()
+        }
+
+        # Clean up tracking for slots that are no longer busy
+        stale = [k for k in self._stall_tracking if k not in busy_keys]
+        for k in stale:
+            del self._stall_tracking[k]
+
+        for key, info in self._stall_tracking.items():
+            if key not in busy_keys:
+                continue
+            if info.warned:
+                continue
+            if info.dispatch_usage_5h is None:
+                continue
+
+            elapsed_min = (now - info.dispatch_time) / 60
+            if elapsed_min < self._STALL_WARN_MINUTES:
+                continue
+
+            delta = abs(current_5h - info.dispatch_usage_5h)
+            if delta < self._STALL_EPSILON:
+                info.warned = True
+                slot = self._slot_manager.get_slot(key[0], key[1])
+                ticket = slot.ticket_id if slot else "?"
+                logger.warning(
+                    "Worker %s (%s/%d) usage stalled: "
+                    "5h=%.1f%% unchanged for %d minutes since dispatch",
+                    ticket,
+                    key[0],
+                    key[1],
+                    current_5h * 100,
+                    int(elapsed_min),
+                )
 
     # ------------------------------------------------------------------
     # Polling and dispatch
@@ -2091,6 +2150,12 @@ class Supervisor:
         logger.info(
             "Dispatched worker PID %d for %s in slot %s/%d",
             proc.pid, issue.identifier, project_name, slot.slot_id,
+        )
+
+        # Record usage at dispatch for stall detection
+        self._stall_tracking[key] = _StallInfo(
+            dispatch_usage_5h=self._usage_poller.state.utilization_5h,
+            dispatch_time=time.time(),
         )
 
     # ------------------------------------------------------------------
