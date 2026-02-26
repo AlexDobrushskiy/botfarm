@@ -20,6 +20,7 @@ from botfarm.worker import (
     run_claude,
     run_pipeline,
     _check_pr_merged,
+    _compute_context_fill,
     _extract_pr_url,
     _is_protected_branch,
     _make_stage_log_path,
@@ -148,6 +149,110 @@ class TestParseClaudeOutput:
     def test_invalid_json_raises(self):
         with pytest.raises(json.JSONDecodeError):
             parse_claude_output("not json")
+
+    def test_token_usage_fields(self):
+        raw = json.dumps({
+            "session_id": "sess-tok",
+            "num_turns": 3,
+            "duration_ms": 5000,
+            "subtype": "tool_use",
+            "result": "ok",
+            "is_error": False,
+            "total_cost_usd": 0.42,
+            "usage": {
+                "input_tokens": 1000,
+                "output_tokens": 500,
+                "cache_read_input_tokens": 200,
+                "cache_creation_input_tokens": 300,
+            },
+            "modelUsage": {
+                "claude-sonnet-4-6": {
+                    "inputTokens": 1000,
+                    "outputTokens": 500,
+                    "cacheReadInputTokens": 200,
+                    "cacheCreationInputTokens": 300,
+                    "contextWindow": 200000,
+                    "maxOutputTokens": 32000,
+                    "costUSD": 0.42,
+                }
+            },
+        })
+        result = parse_claude_output(raw)
+        assert result.input_tokens == 1000
+        assert result.output_tokens == 500
+        assert result.cache_read_input_tokens == 200
+        assert result.cache_creation_input_tokens == 300
+        assert result.total_cost_usd == pytest.approx(0.42)
+        # context_fill = (1000 + 300 + 500) / 200000 * 100 = 0.9%
+        assert result.context_fill_pct == pytest.approx(0.9)
+        assert result.model_usage_json is not None
+        parsed = json.loads(result.model_usage_json)
+        assert "claude-sonnet-4-6" in parsed
+
+    def test_token_usage_defaults_when_absent(self):
+        raw = _make_claude_json()
+        result = parse_claude_output(raw)
+        assert result.input_tokens == 0
+        assert result.output_tokens == 0
+        assert result.cache_read_input_tokens == 0
+        assert result.cache_creation_input_tokens == 0
+        assert result.total_cost_usd == 0.0
+        assert result.context_fill_pct is None
+        assert result.model_usage_json is None
+
+    def test_context_fill_ignores_cache_reads(self):
+        """cache_read_input_tokens should NOT count toward context fill."""
+        raw = json.dumps({
+            "result": "ok",
+            "usage": {
+                "input_tokens": 50000,
+                "output_tokens": 10000,
+                "cache_read_input_tokens": 100000,
+                "cache_creation_input_tokens": 20000,
+            },
+            "modelUsage": {
+                "claude-opus-4-6": {
+                    "contextWindow": 200000,
+                }
+            },
+        })
+        result = parse_claude_output(raw)
+        # unique = 50000 + 20000 + 10000 = 80000
+        # fill = 80000 / 200000 * 100 = 40.0
+        assert result.context_fill_pct == pytest.approx(40.0)
+
+    def test_context_fill_none_without_model_usage(self):
+        raw = json.dumps({
+            "result": "ok",
+            "usage": {"input_tokens": 100, "output_tokens": 50},
+        })
+        result = parse_claude_output(raw)
+        assert result.context_fill_pct is None
+
+
+class TestComputeContextFill:
+    def test_basic_calculation(self):
+        model_usage = {"model-a": {"contextWindow": 100000}}
+        pct = _compute_context_fill(5000, 2000, 3000, model_usage)
+        # (5000 + 2000 + 3000) / 100000 * 100 = 10.0
+        assert pct == pytest.approx(10.0)
+
+    def test_returns_none_without_model_usage(self):
+        assert _compute_context_fill(100, 50, 50, None) is None
+        assert _compute_context_fill(100, 50, 50, {}) is None
+
+    def test_returns_none_without_context_window(self):
+        model_usage = {"model-a": {"maxOutputTokens": 32000}}
+        assert _compute_context_fill(100, 50, 50, model_usage) is None
+
+    def test_uses_first_model_with_context_window(self):
+        model_usage = {
+            "model-a": {"maxOutputTokens": 32000},
+            "model-b": {"contextWindow": 200000},
+        }
+        pct = _compute_context_fill(10000, 5000, 5000, model_usage)
+        # (10000 + 5000 + 5000) / 200000 * 100 = 10.0
+        assert pct == pytest.approx(10.0)
 
 
 # ---------------------------------------------------------------------------
