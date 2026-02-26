@@ -365,6 +365,7 @@ def create_app(
     def index(request: Request):
         state = _read_state()
         slots = _enrich_slots_with_context_fill(state.get("slots", []))
+        slots = _enrich_slots_with_pipeline(slots)
         dispatch_paused = state.get("dispatch_paused", False)
         dispatch_pause_reason = state.get("dispatch_pause_reason")
         usage = state.get("usage", {})
@@ -411,10 +412,45 @@ def create_app(
             conn.close()
         return slots
 
+    def _compute_slot_pipeline(slot: dict) -> list[dict]:
+        """Compute compact pipeline visualization state for a slot row."""
+        completed = set(slot.get("stages_completed", []))
+        current = slot.get("stage")
+        is_failed = slot.get("status") == "failed"
+
+        pipeline = []
+        prev_completed = False
+        for stage_name in STAGES:
+            if stage_name in completed:
+                state = "completed"
+            elif stage_name == current:
+                state = "failed" if is_failed else "active"
+            else:
+                state = "pending"
+
+            connector = "completed" if prev_completed else "pending"
+            pipeline.append({
+                "name": stage_name,
+                "state": state,
+                "connector": connector,
+            })
+            prev_completed = (state == "completed")
+        return pipeline
+
+    def _enrich_slots_with_pipeline(slots: list[dict]) -> list[dict]:
+        """Add pipeline visualization data to non-free slots."""
+        for slot in slots:
+            if slot.get("stage") and slot.get("status") != "free":
+                slot["pipeline"] = _compute_slot_pipeline(slot)
+            else:
+                slot["pipeline"] = []
+        return slots
+
     @app.get("/partials/slots", response_class=HTMLResponse)
     def partial_slots(request: Request):
         state = _read_state()
         slots = _enrich_slots_with_context_fill(state.get("slots", []))
+        slots = _enrich_slots_with_pipeline(slots)
         dispatch_paused = state.get("dispatch_paused", False)
         dispatch_pause_reason = state.get("dispatch_pause_reason")
         return templates.TemplateResponse("partials/slots.html", {

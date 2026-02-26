@@ -13,10 +13,10 @@
             <th>Slot</th>
             <th>Status</th>
             <th>Ticket</th>
-            <th>Stage</th>
+            <th>Progress</th>
             <th>Context Fill</th>
             <th>Elapsed</th>
-            <th>PID</th>
+            <th>Links</th>
         </tr>
     </thead>
     <tbody>
@@ -26,8 +26,13 @@
             <td>{{ slot.slot_id }}</td>
             <td>
                 <span class="status-{{ slot.status }}">{{ slot.status | replace("_", " ") }}</span>
-                {% if slot.status == "paused_limit" and slot.resume_after %}
-                <br><small class="resume-countdown" data-resume="{{ slot.resume_after }}"></small>
+                {% if slot.status == "paused_limit" %}
+                    {% if slot.resume_after %}
+                    <br><small class="resume-countdown" data-resume="{{ slot.resume_after }}"></small>
+                    {% endif %}
+                    {% if slot.interrupted_by_limit %}
+                    <br><small class="slot-limit-label">limit interrupted</small>
+                    {% endif %}
                 {% endif %}
             </td>
             <td>
@@ -38,9 +43,30 @@
                 {% endif %}
             </td>
             <td>
-                {{ slot.stage or "-" }}
-                {% if slot.stage_iteration is defined and slot.stage_iteration > 1 %}
-                    (iter {{ slot.stage_iteration }})
+                {% if slot.pipeline %}
+                <div class="slot-pipeline">
+                    {% for step in slot.pipeline %}
+                    {% if not loop.first %}
+                    <div class="slot-pipe-line slot-pipe-line-{{ step.connector }}"></div>
+                    {% endif %}
+                    <div class="slot-pipe-dot slot-pipe-dot-{{ step.state }}" title="{{ step.name }}{% if step.name == slot.stage and slot.stage_iteration > 1 %} (iter {{ slot.stage_iteration }}){% endif %}">
+                        {%- if step.state == "completed" -%}&#10003;{%- elif step.state == "failed" -%}&#10005;{%- endif -%}
+                    </div>
+                    {% endfor %}
+                </div>
+                <div class="slot-pipeline-info">
+                    {{ slot.stage | replace("_", " ") }}
+                    {% if slot.stage_iteration > 1 %}
+                        <span class="slot-iter-badge">
+                            {%- if slot.stage == "fix" -%}loop {{ slot.stage_iteration }}
+                            {%- elif slot.stage == "pr_checks" -%}retry {{ slot.stage_iteration }}
+                            {%- else -%}iter {{ slot.stage_iteration }}
+                            {%- endif -%}
+                        </span>
+                    {% endif %}
+                </div>
+                {% else %}
+                -
                 {% endif %}
             </td>
             <td>
@@ -48,8 +74,20 @@
                 <span class="{{ context_fill_class(slot.context_fill_pct) }}">{{ "%.1f"|format(slot.context_fill_pct) }}%</span>
                 {% else %}-{% endif %}
             </td>
-            <td>{{ elapsed(slot.started_at) }}</td>
-            <td>{{ slot.pid or "-" }}</td>
+            <td>
+                {{ elapsed(slot.started_at) }}
+                {% if slot.stage_started_at and slot.stage %}
+                <br><small class="stage-elapsed">stage: {{ elapsed(slot.stage_started_at) }}</small>
+                {% endif %}
+            </td>
+            <td class="slot-links">
+                {% if slot.ticket_id %}
+                <a href="/task/{{ slot.ticket_id }}" title="Task detail">detail</a>
+                {% endif %}
+                {% if slot.pr_url %}
+                <a href="{{ slot.pr_url }}" target="_blank" rel="noopener" title="Pull request">PR</a>
+                {% endif %}
+            </td>
         </tr>
         {% endfor %}
     </tbody>
