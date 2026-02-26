@@ -664,6 +664,137 @@ class TestInitDb:
 
         c2.close()
 
+    def test_migration_008_adds_token_columns(self, tmp_path):
+        """Migration 008 adds token usage columns to stage_runs."""
+        db_file = tmp_path / "v7.db"
+        conn = sqlite3.connect(str(db_file))
+        conn.execute("PRAGMA foreign_keys=ON")
+        # Build a v7 schema (all tables through migration 007)
+        conn.executescript("""
+            CREATE TABLE tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticket_id TEXT NOT NULL UNIQUE,
+                title TEXT NOT NULL,
+                project TEXT NOT NULL,
+                slot INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL,
+                started_at TEXT,
+                completed_at TEXT,
+                turns INTEGER NOT NULL DEFAULT 0,
+                review_iterations INTEGER NOT NULL DEFAULT 0,
+                comments TEXT NOT NULL DEFAULT '',
+                limit_interruptions INTEGER NOT NULL DEFAULT 0,
+                failure_reason TEXT,
+                pr_url TEXT,
+                pipeline_stage TEXT,
+                review_state TEXT
+            );
+            CREATE TABLE stage_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id INTEGER NOT NULL REFERENCES tasks(id),
+                stage TEXT NOT NULL,
+                iteration INTEGER NOT NULL DEFAULT 1,
+                session_id TEXT,
+                turns INTEGER NOT NULL DEFAULT 0,
+                duration_seconds REAL,
+                exit_subtype TEXT,
+                was_limit_restart INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE usage_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                utilization_5h REAL,
+                utilization_7d REAL,
+                resets_at TEXT,
+                resets_at_7d TEXT,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE task_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id INTEGER REFERENCES tasks(id),
+                event_type TEXT NOT NULL,
+                detail TEXT,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE slots (
+                project TEXT NOT NULL,
+                slot_id INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'free',
+                ticket_id TEXT,
+                ticket_title TEXT,
+                branch TEXT,
+                pr_url TEXT,
+                stage TEXT,
+                stage_iteration INTEGER NOT NULL DEFAULT 0,
+                current_session_id TEXT,
+                started_at TEXT,
+                stage_started_at TEXT,
+                sigterm_sent_at TEXT,
+                pid INTEGER,
+                interrupted_by_limit INTEGER NOT NULL DEFAULT 0,
+                resume_after TEXT,
+                stages_completed TEXT,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(project, slot_id)
+            );
+            CREATE TABLE dispatch_state (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                paused INTEGER NOT NULL DEFAULT 0,
+                pause_reason TEXT,
+                supervisor_heartbeat TEXT,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE queue_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                ticket_id TEXT NOT NULL,
+                ticket_title TEXT NOT NULL,
+                priority INTEGER NOT NULL,
+                sort_order REAL NOT NULL,
+                url TEXT NOT NULL,
+                snapshot_at TEXT NOT NULL
+            );
+        """)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)"
+        )
+        conn.execute("INSERT INTO schema_version (version) VALUES (7)")
+        # Insert a pre-existing stage run
+        conn.execute(
+            "INSERT INTO tasks (ticket_id, title, project, slot, created_at) VALUES ('T-1', 'Old', 'p', 1, '2025-01-01')"
+        )
+        conn.execute(
+            "INSERT INTO stage_runs (task_id, stage, created_at) VALUES (1, 'implement', '2025-01-01')"
+        )
+        conn.commit()
+        conn.close()
+
+        # Re-open via init_db — should migrate to v8
+        c2 = init_db(db_file, allow_migration=True)
+        row = c2.execute("SELECT version FROM schema_version").fetchone()
+        assert row[0] == SCHEMA_VERSION
+
+        # New columns should exist
+        stage_cols = {r[1] for r in c2.execute("PRAGMA table_info(stage_runs)").fetchall()}
+        for col in ("input_tokens", "output_tokens", "cache_read_input_tokens",
+                     "cache_creation_input_tokens", "total_cost_usd",
+                     "context_fill_pct", "model_usage_json"):
+            assert col in stage_cols
+
+        # Pre-existing row should have defaults
+        old = c2.execute("SELECT * FROM stage_runs WHERE id = 1").fetchone()
+        assert old["input_tokens"] == 0
+        assert old["output_tokens"] == 0
+        assert old["cache_read_input_tokens"] == 0
+        assert old["cache_creation_input_tokens"] == 0
+        assert old["total_cost_usd"] == pytest.approx(0.0)
+        assert old["context_fill_pct"] is None
+        assert old["model_usage_json"] is None
+
+        c2.close()
+
 
 # ---------------------------------------------------------------------------
 # Migration infrastructure
@@ -672,10 +803,10 @@ class TestInitDb:
 
 class TestMigrationInfrastructure:
     def test_discover_migrations(self):
-        """All 7 SQL migration files are discovered with correct numbering."""
+        """All 8 SQL migration files are discovered with correct numbering."""
         migrations = _discover_migrations()
-        assert len(migrations) >= 7
-        for version in range(1, 8):
+        assert len(migrations) >= 8
+        for version in range(1, 9):
             assert version in migrations
             assert migrations[version].suffix == ".sql"
 
@@ -718,6 +849,12 @@ class TestMigrationInfrastructure:
         assert "cost_usd" not in task_cols
         stage_cols = {r[1] for r in c.execute("PRAGMA table_info(stage_runs)").fetchall()}
         assert "cost_usd" not in stage_cols
+
+        # Token usage columns from migration 008 should exist
+        for col in ("input_tokens", "output_tokens", "cache_read_input_tokens",
+                     "cache_creation_input_tokens", "total_cost_usd",
+                     "context_fill_pct", "model_usage_json"):
+            assert col in stage_cols, f"Missing column {col} in stage_runs"
 
         # Columns added in later migrations should exist
         assert "pr_url" in task_cols
@@ -983,6 +1120,50 @@ class TestStageRuns:
     def test_foreign_key_enforcement(self, conn):
         with pytest.raises(sqlite3.IntegrityError):
             insert_stage_run(conn, task_id=99999, stage="implement")
+
+    def test_token_usage_columns(self, conn):
+        tid = insert_task(
+            conn, ticket_id="SR-TOK", title="Token test", project="p", slot=1
+        )
+        model_json = '{"claude-opus-4-6": {"costUSD": 0.5}}'
+        sr_id = insert_stage_run(
+            conn,
+            task_id=tid,
+            stage="implement",
+            input_tokens=1000,
+            output_tokens=500,
+            cache_read_input_tokens=200,
+            cache_creation_input_tokens=300,
+            total_cost_usd=0.42,
+            context_fill_pct=0.9,
+            model_usage_json=model_json,
+        )
+        runs = get_stage_runs(conn, tid)
+        assert len(runs) == 1
+        row = runs[0]
+        assert row["input_tokens"] == 1000
+        assert row["output_tokens"] == 500
+        assert row["cache_read_input_tokens"] == 200
+        assert row["cache_creation_input_tokens"] == 300
+        assert row["total_cost_usd"] == pytest.approx(0.42)
+        assert row["context_fill_pct"] == pytest.approx(0.9)
+        assert row["model_usage_json"] == model_json
+
+    def test_token_usage_defaults(self, conn):
+        """Existing callers that omit token fields should still work (defaults)."""
+        tid = insert_task(
+            conn, ticket_id="SR-DEF", title="Default test", project="p", slot=1
+        )
+        insert_stage_run(conn, task_id=tid, stage="review")
+        runs = get_stage_runs(conn, tid)
+        row = runs[0]
+        assert row["input_tokens"] == 0
+        assert row["output_tokens"] == 0
+        assert row["cache_read_input_tokens"] == 0
+        assert row["cache_creation_input_tokens"] == 0
+        assert row["total_cost_usd"] == pytest.approx(0.0)
+        assert row["context_fill_pct"] is None
+        assert row["model_usage_json"] is None
 
 
 # ---------------------------------------------------------------------------

@@ -52,6 +52,13 @@ class ClaudeResult:
     exit_subtype: str
     result_text: str
     is_error: bool = False
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+    total_cost_usd: float = 0.0
+    context_fill_pct: float | None = None
+    model_usage_json: str | None = None
 
 
 def parse_claude_output(raw: str) -> ClaudeResult:
@@ -60,9 +67,30 @@ def parse_claude_output(raw: str) -> ClaudeResult:
     The expected shape is a JSON object with at least:
     ``session_id``, ``num_turns``, ``duration_ms``,
     ``is_error``, ``result``, and ``subtype``.
+
+    Also extracts token usage data from the ``usage`` and ``modelUsage``
+    objects when present, and computes ``context_fill_pct`` from the
+    primary model's context window.
     """
     data = json.loads(raw)
     duration_ms = data.get("duration_ms", 0)
+
+    # Token usage from top-level "usage" object
+    usage = data.get("usage") or {}
+    input_tokens = usage.get("input_tokens", 0)
+    output_tokens = usage.get("output_tokens", 0)
+    cache_read = usage.get("cache_read_input_tokens", 0)
+    cache_creation = usage.get("cache_creation_input_tokens", 0)
+
+    total_cost_usd = data.get("total_cost_usd", 0.0) or 0.0
+
+    # Per-model breakdown
+    model_usage = data.get("modelUsage")
+    model_usage_json = json.dumps(model_usage) if model_usage else None
+
+    # Compute context fill % from the primary model's contextWindow
+    context_fill_pct = _compute_context_fill(input_tokens, cache_creation, output_tokens, model_usage)
+
     return ClaudeResult(
         session_id=data.get("session_id", ""),
         num_turns=data.get("num_turns", 0),
@@ -70,7 +98,35 @@ def parse_claude_output(raw: str) -> ClaudeResult:
         exit_subtype=data.get("subtype", ""),
         result_text=data.get("result", ""),
         is_error=bool(data.get("is_error", False)),
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_input_tokens=cache_read,
+        cache_creation_input_tokens=cache_creation,
+        total_cost_usd=total_cost_usd,
+        context_fill_pct=context_fill_pct,
+        model_usage_json=model_usage_json,
     )
+
+
+def _compute_context_fill(
+    input_tokens: int,
+    cache_creation_input_tokens: int,
+    output_tokens: int,
+    model_usage: dict | None,
+) -> float | None:
+    """Compute context fill percentage from the primary model's context window.
+
+    Returns ``None`` when ``modelUsage`` is absent or has no ``contextWindow``.
+    """
+    if not model_usage:
+        return None
+    # Pick the first model entry that has a contextWindow
+    for _model, info in model_usage.items():
+        context_window = info.get("contextWindow")
+        if context_window and context_window > 0:
+            unique_tokens = input_tokens + cache_creation_input_tokens + output_tokens
+            return round(unique_tokens / context_window * 100, 2)
+    return None
 
 
 def run_claude(
@@ -1063,6 +1119,13 @@ def _record_stage_run(
         turns=cr.num_turns if cr else 0,
         duration_seconds=cr.duration_seconds if cr else wall_elapsed,
         exit_subtype=cr.exit_subtype if cr else None,
+        input_tokens=cr.input_tokens if cr else 0,
+        output_tokens=cr.output_tokens if cr else 0,
+        cache_read_input_tokens=cr.cache_read_input_tokens if cr else 0,
+        cache_creation_input_tokens=cr.cache_creation_input_tokens if cr else 0,
+        total_cost_usd=cr.total_cost_usd if cr else 0.0,
+        context_fill_pct=cr.context_fill_pct if cr else None,
+        model_usage_json=cr.model_usage_json if cr else None,
     )
     conn.commit()
 
