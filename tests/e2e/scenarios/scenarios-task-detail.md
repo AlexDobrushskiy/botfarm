@@ -17,11 +17,11 @@
 **Priority:** P0
 
 ## Scenario: Pipeline stepper — completed task
-**Preconditions:** A completed task with stages: implement (done), review (done), fix (done), pr_checks (done)
+**Preconditions:** A completed task with stages: implement (done), review (done), fix (done), pr_checks (done), merge (done)
 **Steps:**
 1. Navigate to `/task/{task_id}`
 2. Observe the pipeline stepper
-**Expected Result:** All stage nodes show green checkmark (✓). Connectors between nodes are green. Stages appear in canonical order
+**Expected Result:** All 5 stage nodes show green checkmark (✓). Connectors between nodes are green. Stages appear in canonical order: implement → review → fix → pr_checks → merge
 **Priority:** P0
 
 ## Scenario: Pipeline stepper — failed task

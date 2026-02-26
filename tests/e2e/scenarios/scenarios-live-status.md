@@ -39,7 +39,7 @@
 **Steps:**
 1. Navigate to `/`
 2. Observe the usage panel
-**Expected Result:** Both 5-hour and 7-day utilization show percentage values with progress bars. Reset timers display countdown. Colors reflect thresholds: green (<70%), yellow (<85%), red (>=85%)
+**Expected Result:** Both 5-hour and 7-day utilization show percentage values with progress bars. Reset timers display countdown. Colors reflect per-bar thresholds — **5-hour**: green (<70%), yellow (70–84%), red (>=85%); **7-day**: green (<75%), yellow (75–89%), red (>=90%)
 **Priority:** P0
 
 ## Scenario: Extra usage status displays when enabled

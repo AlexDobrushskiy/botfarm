@@ -1,11 +1,11 @@
 # E2E Test Scenarios: Log Viewer Page (`/task/{id}/logs`)
 
 ## Scenario: Stage tabs render for task with logs
-**Preconditions:** A task with log files for multiple stages (implement, review, fix)
+**Preconditions:** A task with log files for multiple stages (implement, review, fix, ci_fix)
 **Steps:**
 1. Navigate to `/task/{task_id}/logs`
 2. Observe the stage tab bar
-**Expected Result:** Horizontal tab bar shows all stages that have log files. First active or latest stage is auto-selected. Active tab is underlined in primary color
+**Expected Result:** Horizontal tab bar shows all stages that have log files, including ci_fix if present. Valid log stages are: implement, review, fix, pr_checks, merge, ci_fix. First active or latest stage is auto-selected. Active tab is underlined in primary color
 **Priority:** P0
 
 ## Scenario: Stage tab switching
@@ -148,6 +148,22 @@
 1. Navigate to `/task/{task_id}/logs`
 2. Click the back link
 **Expected Result:** Navigates to `/task/{task_id}` (task detail page). If no task found in DB, navigates to `/history`
+**Priority:** P2
+
+## Scenario: ci_fix stage tab appears when present
+**Preconditions:** A task where CI fix was triggered, generating ci_fix log files
+**Steps:**
+1. Navigate to `/task/{task_id}/logs`
+2. Observe the stage tab bar
+**Expected Result:** ci_fix stage appears as a selectable tab alongside the standard pipeline stages. Clicking it displays the ci_fix log content
+**Priority:** P2
+
+## Scenario: Large log file tail-truncated
+**Preconditions:** A task with a stage log file exceeding 2MB
+**Steps:**
+1. Navigate to `/task/{task_id}/logs/{stage}`
+2. Observe the log terminal content
+**Expected Result:** Log is tail-truncated to the last 2MB. A truncation notice "... (truncated, showing last 2 MB) ..." appears at the top of the displayed content
 **Priority:** P2
 
 ## Scenario: Very long log lines wrap correctly
