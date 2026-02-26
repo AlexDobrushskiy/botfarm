@@ -9,15 +9,19 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from botfarm.db import get_stage_runs, get_task, init_db, insert_task
+from botfarm.db import get_stage_runs, get_task, init_db, insert_stage_run, insert_task
 from botfarm.slots import SlotManager
 from botfarm.worker import (
     STAGES,
     ClaudeResult,
     PipelineResult,
     StageResult,
+    _DEFAULT_CONTEXT_WINDOW,
+    _compute_turn_context_fill,
+    _parse_stream_result,
     parse_claude_output,
     run_claude,
+    run_claude_streaming,
     run_pipeline,
     _check_pr_merged,
     _compute_context_fill,
@@ -368,6 +372,298 @@ class TestRunClaude:
 
         call_kwargs = mock_run.call_args.kwargs
         assert call_kwargs["env"] is None
+
+
+# ---------------------------------------------------------------------------
+# _compute_turn_context_fill / _parse_stream_result / run_claude_streaming
+# ---------------------------------------------------------------------------
+
+
+class TestComputeTurnContextFill:
+    def test_basic_calculation(self):
+        usage = {
+            "input_tokens": 1000,
+            "cache_creation_input_tokens": 500,
+            "cache_read_input_tokens": 8000,
+            "output_tokens": 500,
+        }
+        pct = _compute_turn_context_fill(usage, 200_000)
+        # (1000 + 500 + 8000 + 500) / 200000 * 100 = 5.0
+        assert pct == pytest.approx(5.0)
+
+    def test_includes_cache_read(self):
+        """Per-turn formula includes cache_read unlike cumulative formula."""
+        usage = {
+            "input_tokens": 100,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 50000,
+            "output_tokens": 100,
+        }
+        pct = _compute_turn_context_fill(usage, 200_000)
+        # (100 + 0 + 50000 + 100) / 200000 * 100 = 25.1
+        assert pct == pytest.approx(25.1)
+
+    def test_zero_context_window_returns_none(self):
+        usage = {"input_tokens": 100, "output_tokens": 50}
+        assert _compute_turn_context_fill(usage, 0) is None
+
+    def test_empty_usage_returns_none(self):
+        assert _compute_turn_context_fill({}, 200_000) is None
+
+    def test_missing_keys_treated_as_zero(self):
+        usage = {"input_tokens": 10000, "output_tokens": 5000}
+        pct = _compute_turn_context_fill(usage, 200_000)
+        # (10000 + 0 + 0 + 5000) / 200000 * 100 = 7.5
+        assert pct == pytest.approx(7.5)
+
+
+class TestParseStreamResult:
+    def test_basic_parse(self):
+        data = {
+            "session_id": "sess-stream",
+            "num_turns": 10,
+            "duration_ms": 30000,
+            "subtype": "end_turn",
+            "result": "All done",
+            "is_error": False,
+            "usage": {
+                "input_tokens": 5000,
+                "output_tokens": 2000,
+                "cache_read_input_tokens": 1000,
+                "cache_creation_input_tokens": 500,
+            },
+            "total_cost_usd": 0.15,
+            "modelUsage": {
+                "claude-opus-4-6": {
+                    "contextWindow": 200000,
+                    "inputTokens": 5000,
+                    "outputTokens": 2000,
+                }
+            },
+        }
+        result = _parse_stream_result(data)
+        assert result.session_id == "sess-stream"
+        assert result.num_turns == 10
+        assert result.duration_seconds == 30.0
+        assert result.result_text == "All done"
+        assert result.input_tokens == 5000
+        assert result.output_tokens == 2000
+        assert result.cache_read_input_tokens == 1000
+        assert result.cache_creation_input_tokens == 500
+        assert result.total_cost_usd == 0.15
+        assert result.context_fill_pct is not None
+        assert result.model_usage_json is not None
+
+    def test_missing_usage_defaults_to_zero(self):
+        data = {
+            "session_id": "sess-1",
+            "result": "ok",
+        }
+        result = _parse_stream_result(data)
+        assert result.input_tokens == 0
+        assert result.output_tokens == 0
+        assert result.context_fill_pct is None
+
+
+def _make_stream_ndjson(
+    *,
+    session_id="sess-stream",
+    num_turns=3,
+    result_text="Done streaming",
+    turns_usage=None,
+) -> str:
+    """Build NDJSON output simulating stream-json mode."""
+    lines = []
+    # init message
+    lines.append(json.dumps({
+        "type": "system",
+        "subtype": "init",
+        "session_id": session_id,
+    }))
+
+    # assistant turns with usage
+    if turns_usage is None:
+        turns_usage = [
+            {"input_tokens": 1000, "cache_creation_input_tokens": 500,
+             "cache_read_input_tokens": 30000, "output_tokens": 200},
+            {"input_tokens": 1, "cache_creation_input_tokens": 100,
+             "cache_read_input_tokens": 31700, "output_tokens": 300},
+            {"input_tokens": 1, "cache_creation_input_tokens": 50,
+             "cache_read_input_tokens": 32100, "output_tokens": 150},
+        ]
+    for usage in turns_usage:
+        lines.append(json.dumps({
+            "type": "assistant",
+            "message": {"usage": usage},
+        }))
+
+    # result message
+    lines.append(json.dumps({
+        "type": "result",
+        "session_id": session_id,
+        "num_turns": num_turns,
+        "duration_ms": 15000,
+        "subtype": "end_turn",
+        "result": result_text,
+        "is_error": False,
+        "usage": {
+            "input_tokens": 1002,
+            "output_tokens": 650,
+            "cache_read_input_tokens": 93800,
+            "cache_creation_input_tokens": 650,
+        },
+        "total_cost_usd": 0.10,
+        "modelUsage": {
+            "claude-opus-4-6": {
+                "contextWindow": 200000,
+                "inputTokens": 1002,
+                "outputTokens": 650,
+                "cacheReadInputTokens": 93800,
+                "cacheCreationInputTokens": 650,
+            }
+        },
+    }))
+    return "\n".join(lines) + "\n"
+
+
+class TestRunClaudeStreaming:
+    @patch("botfarm.worker.subprocess.Popen")
+    def test_success_parses_result(self, mock_popen, tmp_path):
+        ndjson = _make_stream_ndjson()
+        mock_proc = MagicMock()
+        mock_proc.stdin = MagicMock()
+        mock_proc.stdout = iter(ndjson.splitlines(keepends=True))
+        mock_proc.stderr = iter([])
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = 0
+        mock_popen.return_value = mock_proc
+
+        result = run_claude_streaming("do stuff", cwd=tmp_path, max_turns=10)
+        assert result.session_id == "sess-stream"
+        assert result.num_turns == 3
+        assert result.result_text == "Done streaming"
+        assert result.context_fill_pct is not None
+
+        # Verify command flags
+        cmd = mock_popen.call_args[0][0]
+        assert "stream-json" in cmd
+        assert "--verbose" in cmd
+
+    @patch("botfarm.worker.subprocess.Popen")
+    def test_invokes_context_fill_callback(self, mock_popen, tmp_path):
+        ndjson = _make_stream_ndjson()
+        mock_proc = MagicMock()
+        mock_proc.stdin = MagicMock()
+        mock_proc.stdout = iter(ndjson.splitlines(keepends=True))
+        mock_proc.stderr = iter([])
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = 0
+        mock_popen.return_value = mock_proc
+
+        callback_calls = []
+
+        def on_fill(turn, pct):
+            callback_calls.append((turn, pct))
+
+        run_claude_streaming(
+            "do stuff", cwd=tmp_path, max_turns=10,
+            on_context_fill=on_fill,
+        )
+        # 3 assistant turns → 3 callback invocations
+        assert len(callback_calls) == 3
+        assert callback_calls[0][0] == 1  # turn 1
+        assert callback_calls[1][0] == 2  # turn 2
+        assert callback_calls[2][0] == 3  # turn 3
+        # All fill percentages should be positive
+        for turn, pct in callback_calls:
+            assert pct > 0
+
+    @patch("botfarm.worker.subprocess.Popen")
+    def test_nonzero_exit_raises(self, mock_popen, tmp_path):
+        mock_proc = MagicMock()
+        mock_proc.stdin = MagicMock()
+        mock_proc.stdout = iter([])
+        mock_proc.stderr = iter(["error\n"])
+        mock_proc.returncode = 1
+        mock_proc.wait.return_value = 1
+        mock_popen.return_value = mock_proc
+
+        with pytest.raises(subprocess.CalledProcessError):
+            run_claude_streaming("do stuff", cwd=tmp_path, max_turns=10)
+
+    @patch("botfarm.worker.subprocess.Popen")
+    def test_no_result_message_raises(self, mock_popen, tmp_path):
+        """If stream ends without a result message, raises RuntimeError."""
+        ndjson = json.dumps({"type": "system", "subtype": "init"}) + "\n"
+        mock_proc = MagicMock()
+        mock_proc.stdin = MagicMock()
+        mock_proc.stdout = iter(ndjson.splitlines(keepends=True))
+        mock_proc.stderr = iter([])
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = 0
+        mock_popen.return_value = mock_proc
+
+        with pytest.raises(RuntimeError, match="no result message"):
+            run_claude_streaming("do stuff", cwd=tmp_path, max_turns=10)
+
+    @patch("botfarm.worker.subprocess.Popen")
+    def test_writes_log_file(self, mock_popen, tmp_path):
+        ndjson = _make_stream_ndjson()
+        mock_proc = MagicMock()
+        mock_proc.stdin = MagicMock()
+        mock_proc.stdout = iter(ndjson.splitlines(keepends=True))
+        mock_proc.stderr = iter(["some warning\n"])
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = 0
+        mock_popen.return_value = mock_proc
+
+        log_file = tmp_path / "logs" / "stream.log"
+        run_claude_streaming(
+            "do stuff", cwd=tmp_path, max_turns=10, log_file=log_file,
+        )
+        assert log_file.exists()
+        content = log_file.read_text()
+        assert "sess-stream" in content
+        assert "some warning" in content
+
+    @patch("botfarm.worker.subprocess.Popen")
+    def test_callback_exception_does_not_crash(self, mock_popen, tmp_path):
+        """Callback errors are logged but don't stop the stream."""
+        ndjson = _make_stream_ndjson()
+        mock_proc = MagicMock()
+        mock_proc.stdin = MagicMock()
+        mock_proc.stdout = iter(ndjson.splitlines(keepends=True))
+        mock_proc.stderr = iter([])
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = 0
+        mock_popen.return_value = mock_proc
+
+        def bad_callback(turn, pct):
+            raise RuntimeError("DB write failed")
+
+        # Should not raise
+        result = run_claude_streaming(
+            "do stuff", cwd=tmp_path, max_turns=10,
+            on_context_fill=bad_callback,
+        )
+        assert result.session_id == "sess-stream"
+
+    @patch("botfarm.worker.subprocess.Popen")
+    def test_env_passed_to_subprocess(self, mock_popen, tmp_path):
+        ndjson = _make_stream_ndjson()
+        mock_proc = MagicMock()
+        mock_proc.stdin = MagicMock()
+        mock_proc.stdout = iter(ndjson.splitlines(keepends=True))
+        mock_proc.stderr = iter([])
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = 0
+        mock_popen.return_value = mock_proc
+
+        env = {"BOTFARM_DB_PATH": "/tmp/slot.db"}
+        run_claude_streaming("do stuff", cwd=tmp_path, max_turns=10, env=env)
+
+        call_kwargs = mock_popen.call_args.kwargs
+        assert call_kwargs["env"]["BOTFARM_DB_PATH"] == "/tmp/slot.db"
 
 
 # ---------------------------------------------------------------------------
@@ -1193,6 +1489,78 @@ class TestRunPipeline:
         )
         for call in mock_exec.call_args_list:
             assert call.kwargs.get("log_file") is None
+
+
+# ---------------------------------------------------------------------------
+# run_pipeline — streaming context fill integration
+# ---------------------------------------------------------------------------
+
+
+class TestRunPipelineStreamingContextFill:
+    @patch("botfarm.worker._execute_stage")
+    def test_claude_stages_create_placeholder_and_update(
+        self, mock_exec, conn, task_id, tmp_path,
+    ):
+        """Claude-based stages insert a placeholder stage_run before execution,
+        then update it with final metrics."""
+        mock_exec.side_effect = [
+            _mock_stage_result("implement", pr_url=PR_URL, turns=10),
+            _mock_stage_result("review", review_approved=True),
+            _mock_stage_result("pr_checks"),
+            _mock_stage_result("merge"),
+        ]
+        result = run_pipeline(
+            ticket_id="SMA-99",
+            task_id=task_id,
+            cwd=tmp_path,
+            conn=conn,
+            max_review_iterations=3,
+        )
+        assert result.success is True
+
+        runs = get_stage_runs(conn, task_id)
+        # implement + review (approved, no fix) + pr_checks + merge = 4
+        assert len(runs) == 4
+        stages = [r["stage"] for r in runs]
+        assert "implement" in stages
+        assert "review" in stages
+
+        # Claude stages should have their data updated from the ClaudeResult
+        implement_run = [r for r in runs if r["stage"] == "implement"][0]
+        assert implement_run["turns"] == 10
+        assert implement_run["session_id"] == "sess-implement"
+
+    @patch("botfarm.worker._execute_stage")
+    def test_on_context_fill_passed_to_execute_stage(
+        self, mock_exec, conn, task_id, tmp_path,
+    ):
+        """_execute_stage receives on_context_fill for Claude-based stages."""
+        received_callbacks = []
+
+        def capture_execute(stage, **kwargs):
+            cb = kwargs.get("on_context_fill")
+            received_callbacks.append((stage, cb is not None))
+            return _mock_stage_result(
+                stage,
+                pr_url=PR_URL if stage == "implement" else None,
+                review_approved=True if stage == "review" else None,
+            )
+
+        mock_exec.side_effect = capture_execute
+        run_pipeline(
+            ticket_id="SMA-99",
+            task_id=task_id,
+            cwd=tmp_path,
+            conn=conn,
+            max_review_iterations=3,
+        )
+
+        # Claude stages should have a callback, others should not
+        for stage, has_cb in received_callbacks:
+            if stage in ("implement", "review", "fix"):
+                assert has_cb, f"{stage} should have on_context_fill"
+            else:
+                assert not has_cb, f"{stage} should NOT have on_context_fill"
 
 
 # ---------------------------------------------------------------------------
