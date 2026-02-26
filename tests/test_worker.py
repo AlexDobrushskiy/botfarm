@@ -20,7 +20,6 @@ from botfarm.worker import (
     _compute_turn_context_fill,
     parse_stream_json_result,
     parse_claude_output,
-    run_claude,
     run_claude_streaming,
     run_pipeline,
     _check_pr_merged,
@@ -257,121 +256,6 @@ class TestComputeContextFill:
         pct = _compute_context_fill(10000, 5000, 5000, model_usage)
         # (10000 + 5000 + 5000) / 200000 * 100 = 10.0
         assert pct == pytest.approx(10.0)
-
-
-# ---------------------------------------------------------------------------
-# run_claude
-# ---------------------------------------------------------------------------
-
-
-class TestRunClaude:
-    @patch("botfarm.worker.subprocess.run")
-    def test_success(self, mock_run, tmp_path):
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=["claude"],
-            returncode=0,
-            stdout=_make_claude_json(),
-            stderr="",
-        )
-        result = run_claude("do stuff", cwd=tmp_path, max_turns=10)
-        assert result.session_id == "sess-abc"
-        assert result.num_turns == 5
-
-        call_args = mock_run.call_args
-        cmd = call_args[0][0]
-        assert "claude" in cmd
-        assert "--max-turns" in cmd
-        assert "10" in cmd
-        assert "--dangerously-skip-permissions" in cmd
-        assert call_args.kwargs["input"] == "do stuff"
-
-    @patch("botfarm.worker.subprocess.run")
-    def test_nonzero_exit_raises(self, mock_run, tmp_path):
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=["claude"],
-            returncode=1,
-            stdout="",
-            stderr="error occurred",
-        )
-        with pytest.raises(subprocess.CalledProcessError) as exc_info:
-            run_claude("do stuff", cwd=tmp_path, max_turns=10)
-        assert exc_info.value.returncode == 1
-
-    @patch("botfarm.worker.subprocess.run")
-    def test_writes_log_file_on_success(self, mock_run, tmp_path):
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=["claude"],
-            returncode=0,
-            stdout=_make_claude_json(),
-            stderr="some warning",
-        )
-        log_file = tmp_path / "logs" / "test.log"
-        run_claude("do stuff", cwd=tmp_path, max_turns=10, log_file=log_file)
-        assert log_file.exists()
-        content = log_file.read_text()
-        assert "sess-abc" in content  # stdout (JSON) was written
-        assert "some warning" in content  # stderr was written
-
-    @patch("botfarm.worker.subprocess.run")
-    def test_writes_log_file_on_failure(self, mock_run, tmp_path):
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=["claude"],
-            returncode=1,
-            stdout="partial output",
-            stderr="error occurred",
-        )
-        log_file = tmp_path / "logs" / "test.log"
-        with pytest.raises(subprocess.CalledProcessError):
-            run_claude("do stuff", cwd=tmp_path, max_turns=10, log_file=log_file)
-        # Log file should still be written even when the process fails
-        assert log_file.exists()
-        content = log_file.read_text()
-        assert "partial output" in content
-        assert "error occurred" in content
-
-    @patch("botfarm.worker.subprocess.run")
-    def test_no_log_file_when_none(self, mock_run, tmp_path):
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=["claude"],
-            returncode=0,
-            stdout=_make_claude_json(),
-            stderr="",
-        )
-        # Should work without log_file (default None)
-        result = run_claude("do stuff", cwd=tmp_path, max_turns=10)
-        assert result.session_id == "sess-abc"
-
-    @patch("botfarm.worker.subprocess.run")
-    def test_env_passed_to_subprocess(self, mock_run, tmp_path):
-        """When env is provided, it is merged into os.environ for the subprocess."""
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=["claude"],
-            returncode=0,
-            stdout=_make_claude_json(),
-            stderr="",
-        )
-        env = {"BOTFARM_DB_PATH": "/tmp/slot.db"}
-        run_claude("do stuff", cwd=tmp_path, max_turns=10, env=env)
-
-        call_kwargs = mock_run.call_args.kwargs
-        assert call_kwargs["env"] is not None
-        assert call_kwargs["env"]["BOTFARM_DB_PATH"] == "/tmp/slot.db"
-        # Should also contain inherited env vars
-        assert "PATH" in call_kwargs["env"]
-
-    @patch("botfarm.worker.subprocess.run")
-    def test_env_none_no_env_override(self, mock_run, tmp_path):
-        """When env is None, subprocess inherits the default environment."""
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=["claude"],
-            returncode=0,
-            stdout=_make_claude_json(),
-            stderr="",
-        )
-        run_claude("do stuff", cwd=tmp_path, max_turns=10, env=None)
-
-        call_kwargs = mock_run.call_args.kwargs
-        assert call_kwargs["env"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -894,7 +778,7 @@ PR_URL = "https://github.com/owner/repo/pull/42"
 
 
 class TestRunImplement:
-    @patch("botfarm.worker.run_claude")
+    @patch("botfarm.worker.run_claude_streaming")
     def test_success_with_pr_url(self, mock_claude, tmp_path):
         mock_claude.return_value = ClaudeResult(
             session_id="s1",
@@ -909,7 +793,7 @@ class TestRunImplement:
         assert result.pr_url == PR_URL
         assert result.claude_result.num_turns == 10
 
-    @patch("botfarm.worker.run_claude")
+    @patch("botfarm.worker.run_claude_streaming")
     def test_success_without_pr_url(self, mock_claude, tmp_path):
         mock_claude.return_value = ClaudeResult(
             session_id="s1",
@@ -922,7 +806,7 @@ class TestRunImplement:
         assert result.success is True
         assert result.pr_url is None
 
-    @patch("botfarm.worker.run_claude")
+    @patch("botfarm.worker.run_claude_streaming")
     def test_is_error_returns_failure(self, mock_claude, tmp_path):
         mock_claude.return_value = ClaudeResult(
             session_id="s1",
@@ -938,7 +822,7 @@ class TestRunImplement:
 
 
 class TestRunReview:
-    @patch("botfarm.worker.run_claude")
+    @patch("botfarm.worker.run_claude_streaming")
     def test_success(self, mock_claude, tmp_path):
         mock_claude.return_value = ClaudeResult(
             session_id="s2",
@@ -951,7 +835,7 @@ class TestRunReview:
         assert result.success is True
         assert result.stage == "review"
 
-    @patch("botfarm.worker.run_claude")
+    @patch("botfarm.worker.run_claude_streaming")
     def test_is_error_returns_failure(self, mock_claude, tmp_path):
         mock_claude.return_value = ClaudeResult(
             session_id="s2",
@@ -967,7 +851,7 @@ class TestRunReview:
 
 
 class TestRunFix:
-    @patch("botfarm.worker.run_claude")
+    @patch("botfarm.worker.run_claude_streaming")
     def test_success(self, mock_claude, tmp_path):
         mock_claude.return_value = ClaudeResult(
             session_id="s3",
@@ -980,7 +864,7 @@ class TestRunFix:
         assert result.success is True
         assert result.stage == "fix"
 
-    @patch("botfarm.worker.run_claude")
+    @patch("botfarm.worker.run_claude_streaming")
     def test_is_error_returns_failure(self, mock_claude, tmp_path):
         mock_claude.return_value = ClaudeResult(
             session_id="s3",
@@ -2364,7 +2248,7 @@ class TestReviewIterationLoop:
 
 
 class TestRunCiFix:
-    @patch("botfarm.worker.run_claude")
+    @patch("botfarm.worker.run_claude_streaming")
     def test_success(self, mock_claude, tmp_path):
         mock_claude.return_value = ClaudeResult(
             session_id="s-ci",
@@ -2385,7 +2269,7 @@ class TestRunCiFix:
         assert "CI checks" in prompt
         assert "test_foo FAILED" in prompt
 
-    @patch("botfarm.worker.run_claude")
+    @patch("botfarm.worker.run_claude_streaming")
     def test_is_error_returns_failure(self, mock_claude, tmp_path):
         mock_claude.return_value = ClaudeResult(
             session_id="s-ci",
@@ -2401,7 +2285,7 @@ class TestRunCiFix:
         assert result.success is False
         assert "Claude reported error" in result.error
 
-    @patch("botfarm.worker.run_claude")
+    @patch("botfarm.worker.run_claude_streaming")
     def test_ci_output_truncated_at_2000_chars(self, mock_claude, tmp_path):
         mock_claude.return_value = ClaudeResult(
             session_id="s-ci",
@@ -2689,7 +2573,7 @@ class TestParsePrUrl:
 class TestPromptContent:
     """Verify that review and fix prompts contain expected substrings."""
 
-    @patch("botfarm.worker.run_claude")
+    @patch("botfarm.worker.run_claude_streaming")
     def test_review_prompt_contains_inline_comment_api(self, mock_claude, tmp_path):
         mock_claude.return_value = ClaudeResult(
             session_id="s", num_turns=1, duration_seconds=1.0,
@@ -2701,7 +2585,7 @@ class TestPromptContent:
         assert "inline" in prompt
         assert "{{" not in prompt
 
-    @patch("botfarm.worker.run_claude")
+    @patch("botfarm.worker.run_claude_streaming")
     def test_review_prompt_contains_verdict_instruction(self, mock_claude, tmp_path):
         mock_claude.return_value = ClaudeResult(
             session_id="s", num_turns=1, duration_seconds=1.0,
@@ -2712,7 +2596,7 @@ class TestPromptContent:
         assert "VERDICT: APPROVED" in prompt
         assert "VERDICT: CHANGES_REQUESTED" in prompt
 
-    @patch("botfarm.worker.run_claude")
+    @patch("botfarm.worker.run_claude_streaming")
     def test_review_prompt_requires_changes_requested_for_inline_comments(
         self, mock_claude, tmp_path,
     ):
@@ -2726,7 +2610,7 @@ class TestPromptContent:
         assert "ZERO actionable inline comments" in prompt
         assert "MUST use --request-changes" in prompt
 
-    @patch("botfarm.worker.run_claude")
+    @patch("botfarm.worker.run_claude_streaming")
     def test_fix_prompt_contains_inline_comment_api(self, mock_claude, tmp_path):
         mock_claude.return_value = ClaudeResult(
             session_id="s", num_turns=1, duration_seconds=1.0,
@@ -2737,7 +2621,7 @@ class TestPromptContent:
         assert "gh api repos/owner/repo/pulls/42/comments" in prompt
         assert "{{" not in prompt
 
-    @patch("botfarm.worker.run_claude")
+    @patch("botfarm.worker.run_claude_streaming")
     def test_fix_prompt_instructs_reply_to_comments(self, mock_claude, tmp_path):
         mock_claude.return_value = ClaudeResult(
             session_id="s", num_turns=1, duration_seconds=1.0,

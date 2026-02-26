@@ -131,65 +131,6 @@ def _compute_context_fill(
     return None
 
 
-def run_claude(
-    prompt: str,
-    *,
-    cwd: str | Path,
-    max_turns: int,
-    log_file: Path | None = None,
-    env: dict[str, str] | None = None,
-) -> ClaudeResult:
-    """Run ``claude`` as a subprocess and return the parsed result.
-
-    If *log_file* is provided, the raw stdout and stderr from the claude
-    subprocess are written to that file for later inspection.
-
-    If *env* is provided, those entries are merged into the current
-    process environment for the subprocess (e.g. ``BOTFARM_DB_PATH``
-    for DB isolation).
-
-    Raises ``subprocess.CalledProcessError`` if the process exits non-zero,
-    or ``json.JSONDecodeError`` / ``KeyError`` if the output is unexpected.
-    """
-    cmd = [
-        "claude",
-        "-p",
-        "--output-format", "json",
-        "--dangerously-skip-permissions",
-        "--max-turns", str(max_turns),
-    ]
-    logger.info("Running claude with max_turns=%d in %s", max_turns, cwd)
-
-    subprocess_env = None
-    if env:
-        subprocess_env = {**os.environ, **env}
-
-    proc = subprocess.run(
-        cmd,
-        input=prompt,
-        capture_output=True,
-        text=True,
-        cwd=str(cwd),
-        env=subprocess_env,
-    )
-
-    # Persist raw subprocess output to disk when a log file is configured
-    if log_file is not None:
-        _write_subprocess_log(log_file, proc.stdout, proc.stderr)
-
-    if proc.returncode != 0:
-        logger.error(
-            "claude exited with code %d\nstderr: %s",
-            proc.returncode,
-            proc.stderr[:500] if proc.stderr else "(empty)",
-        )
-        raise subprocess.CalledProcessError(
-            proc.returncode, cmd, output=proc.stdout, stderr=proc.stderr
-        )
-
-    return parse_claude_output(proc.stdout)
-
-
 # Default context window size for per-turn fill calculation when the final
 # result hasn't been received yet.  200k is the current window for Claude
 # Opus/Sonnet models.
@@ -280,7 +221,7 @@ def run_claude_streaming(
     context_fill_pct)* if provided.
 
     The final ``result`` message is parsed into a ``ClaudeResult``
-    identical to what ``run_claude()`` returns.
+    identical to what ``parse_claude_output()`` returns.
 
     Stderr is drained on a separate thread to prevent pipe deadlocks.
 
@@ -479,14 +420,18 @@ def _invoke_claude(
     on_context_fill: ContextFillCallback | None = None,
     timeout: float | None = None,
 ) -> ClaudeResult:
-    """Run Claude via streaming or non-streaming path depending on callback."""
-    if on_context_fill is not None:
-        return run_claude_streaming(
-            prompt, cwd=cwd, max_turns=max_turns,
-            log_file=log_file, env=env, on_context_fill=on_context_fill,
-            timeout=timeout,
-        )
-    return run_claude(prompt, cwd=cwd, max_turns=max_turns, log_file=log_file, env=env)
+    """Run Claude via the streaming runner.
+
+    Always uses ``run_claude_streaming()`` which writes logs incrementally
+    and supports watchdog-based timeouts.  The *on_context_fill* callback
+    is optional — when ``None``, streaming still works but per-turn
+    context fill updates are simply skipped.
+    """
+    return run_claude_streaming(
+        prompt, cwd=cwd, max_turns=max_turns,
+        log_file=log_file, env=env, on_context_fill=on_context_fill,
+        timeout=timeout,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -844,7 +789,7 @@ def run_pipeline(
     max_review_iterations: int = 3,
     max_ci_retries: int = 2,
     resume_from_stage: str | None = None,
-    resume_session_id: str | None = None,  # TODO: wire through to run_claude --resume
+    resume_session_id: str | None = None,  # TODO: wire through to run_claude_streaming --resume
     slot_db_path: str | Path | None = None,
     pause_event: multiprocessing.Event | None = None,
 ) -> PipelineResult:
