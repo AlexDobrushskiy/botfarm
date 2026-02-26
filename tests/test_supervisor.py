@@ -2084,6 +2084,81 @@ class TestCheckTimeouts:
         assert messages == []
         assert slot.status == "busy"
 
+    def test_timeout_override_uses_label_timeout(self, tmp_path, monkeypatch):
+        """Tickets with label-based timeout overrides use the shorter timeout."""
+        monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "test.db"))
+        config = _make_config(tmp_path)
+        config.agents.timeout_overrides = {"Investigation": {"implement": 20}}
+        (tmp_path / "repo").mkdir()
+
+        mock_poller = MagicMock()
+        mock_poller.project_name = "test-project"
+        mock_poller.poll.return_value = PollResult(candidates=[], blocked=[], auto_close_parents=[])
+
+        with patch("botfarm.supervisor.create_pollers", return_value=[mock_poller]):
+            sup = Supervisor(config, log_dir=tmp_path / "logs")
+
+        sm = sup.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+            ticket_labels=["Investigation"],
+        )
+        sm.update_stage("test-project", 1, stage="implement")
+        slot = sm.get_slot("test-project", 1)
+        now = datetime.now(timezone.utc)
+        # 25 minutes — over the Investigation override (20) but under default (120)
+        slot.stage_started_at = (now - timedelta(minutes=25)).isoformat()
+        slot.pid = 99999
+
+        insert_task(
+            sup._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        sup._conn.commit()
+
+        with patch("botfarm.supervisor.os.kill") as mock_kill:
+            sup._check_timeouts()
+            # Should have sent SIGTERM because 25 > 20 (override limit)
+            mock_kill.assert_called_once_with(99999, signal.SIGTERM)
+
+        sup._conn.close()
+
+    def test_timeout_override_no_match_uses_default(self, tmp_path, monkeypatch):
+        """Tickets without matching labels use the default timeout."""
+        monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "test.db"))
+        config = _make_config(tmp_path)
+        config.agents.timeout_overrides = {"Investigation": {"implement": 20}}
+        (tmp_path / "repo").mkdir()
+
+        mock_poller = MagicMock()
+        mock_poller.project_name = "test-project"
+        mock_poller.poll.return_value = PollResult(candidates=[], blocked=[], auto_close_parents=[])
+
+        with patch("botfarm.supervisor.create_pollers", return_value=[mock_poller]):
+            sup = Supervisor(config, log_dir=tmp_path / "logs")
+
+        sm = sup.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+            ticket_labels=["Bug"],
+        )
+        sm.update_stage("test-project", 1, stage="implement")
+        slot = sm.get_slot("test-project", 1)
+        now = datetime.now(timezone.utc)
+        # 25 minutes — under default (120), over Investigation override (20)
+        slot.stage_started_at = (now - timedelta(minutes=25)).isoformat()
+        slot.pid = 99999
+
+        with patch("botfarm.supervisor.os.kill") as mock_kill:
+            sup._check_timeouts()
+            # Should NOT timeout — default is 120 and we're at 25 minutes
+            mock_kill.assert_not_called()
+
+        sup._conn.close()
+
 
 # ---------------------------------------------------------------------------
 # Crash recovery on startup

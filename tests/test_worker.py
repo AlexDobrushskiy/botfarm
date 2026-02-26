@@ -17,7 +17,9 @@ from botfarm.worker import (
     PipelineResult,
     StageResult,
     _DEFAULT_CONTEXT_WINDOW,
+    _build_implement_prompt,
     _compute_turn_context_fill,
+    _is_investigation,
     parse_stream_json_result,
     parse_claude_output,
     run_claude_streaming,
@@ -2631,3 +2633,81 @@ class TestPromptContent:
         prompt = mock_claude.call_args.args[0]
         assert "comments/COMMENT_ID/replies" in prompt
         assert "Fixed" in prompt
+
+
+# ---------------------------------------------------------------------------
+# Investigation label detection and prompt selection
+# ---------------------------------------------------------------------------
+
+
+class TestIsInvestigation:
+    def test_none_labels(self):
+        assert _is_investigation(None) is False
+
+    def test_empty_labels(self):
+        assert _is_investigation([]) is False
+
+    def test_no_investigation_label(self):
+        assert _is_investigation(["Bug", "Feature"]) is False
+
+    def test_investigation_label_exact(self):
+        assert _is_investigation(["Investigation"]) is True
+
+    def test_investigation_label_case_insensitive(self):
+        assert _is_investigation(["investigation"]) is True
+        assert _is_investigation(["INVESTIGATION"]) is True
+
+    def test_investigation_among_others(self):
+        assert _is_investigation(["Bug", "Investigation", "Urgent"]) is True
+
+
+class TestBuildImplementPrompt:
+    def test_standard_prompt(self):
+        prompt = _build_implement_prompt("SMA-42", None)
+        assert "SMA-42" in prompt
+        assert "PR creation" in prompt
+        assert "Do not stop" in prompt
+
+    def test_standard_prompt_with_non_investigation_labels(self):
+        prompt = _build_implement_prompt("SMA-42", ["Bug", "Feature"])
+        assert "PR creation" in prompt
+
+    def test_investigation_prompt(self):
+        prompt = _build_implement_prompt("SMA-42", ["Investigation"])
+        assert "SMA-42" in prompt
+        assert "investigation ticket" in prompt
+        assert "Linear comment" in prompt
+        assert "follow-up" in prompt.lower()
+        assert "Do not create a PR" in prompt
+        assert "PR creation" not in prompt
+
+    def test_investigation_prompt_case_insensitive(self):
+        prompt = _build_implement_prompt("SMA-42", ["investigation"])
+        assert "investigation ticket" in prompt
+        assert "Do not create a PR" in prompt
+
+
+class TestRunImplementWithLabels:
+    @patch("botfarm.worker.run_claude_streaming")
+    def test_standard_ticket_uses_pr_prompt(self, mock_claude, tmp_path):
+        mock_claude.return_value = ClaudeResult(
+            session_id="s1", num_turns=10, duration_seconds=30.0,
+            exit_subtype="tool_use", result_text=f"Created PR: {PR_URL}",
+        )
+        _run_implement("SMA-1", cwd=tmp_path, max_turns=100)
+        prompt = mock_claude.call_args.args[0]
+        assert "PR creation" in prompt
+
+    @patch("botfarm.worker.run_claude_streaming")
+    def test_investigation_ticket_uses_investigation_prompt(self, mock_claude, tmp_path):
+        mock_claude.return_value = ClaudeResult(
+            session_id="s1", num_turns=10, duration_seconds=30.0,
+            exit_subtype="tool_use", result_text="Investigation complete.",
+        )
+        _run_implement(
+            "SMA-1", ticket_labels=["Investigation"],
+            cwd=tmp_path, max_turns=100,
+        )
+        prompt = mock_claude.call_args.args[0]
+        assert "investigation ticket" in prompt
+        assert "Do not create a PR" in prompt

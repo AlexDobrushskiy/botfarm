@@ -19,6 +19,7 @@ from botfarm.config import (
     create_default_config,
     expand_env_vars,
     load_config,
+    resolve_stage_timeout,
     validate_config_updates,
     validate_structural_config_updates,
     write_config_updates,
@@ -526,6 +527,129 @@ def test_load_config_timeout_grace_seconds_negative_rejected(tmp_path):
     config_path = _write_config(tmp_path, data)
     with pytest.raises(ConfigError, match="timeout_grace_seconds must be at least 0"):
         load_config(config_path)
+
+
+# --- Timeout overrides config ---
+
+
+def test_load_config_timeout_overrides_defaults(tmp_path):
+    config_path = _write_config(tmp_path, MINIMAL_CONFIG)
+    config = load_config(config_path)
+    assert config.agents.timeout_overrides == {}
+
+
+def test_load_config_timeout_overrides_valid(tmp_path):
+    data = {
+        **MINIMAL_CONFIG,
+        "agents": {
+            "timeout_overrides": {
+                "Investigation": {"implement": 30},
+                "Quick": {"implement": 15, "review": 10},
+            },
+        },
+    }
+    config_path = _write_config(tmp_path, data)
+    config = load_config(config_path)
+    assert config.agents.timeout_overrides == {
+        "Investigation": {"implement": 30},
+        "Quick": {"implement": 15, "review": 10},
+    }
+
+
+def test_load_config_timeout_overrides_unknown_stage_rejected(tmp_path):
+    data = {
+        **MINIMAL_CONFIG,
+        "agents": {
+            "timeout_overrides": {
+                "Investigation": {"implment": 30},
+            },
+        },
+    }
+    config_path = _write_config(tmp_path, data)
+    with pytest.raises(ConfigError, match="unknown stage 'implment'"):
+        load_config(config_path)
+
+
+def test_load_config_timeout_overrides_zero_rejected(tmp_path):
+    data = {
+        **MINIMAL_CONFIG,
+        "agents": {
+            "timeout_overrides": {
+                "Investigation": {"implement": 0},
+            },
+        },
+    }
+    config_path = _write_config(tmp_path, data)
+    with pytest.raises(ConfigError, match="must be at least 1"):
+        load_config(config_path)
+
+
+def test_load_config_timeout_overrides_non_int_rejected(tmp_path):
+    data = {
+        **MINIMAL_CONFIG,
+        "agents": {
+            "timeout_overrides": {
+                "Investigation": {"implement": "thirty"},
+            },
+        },
+    }
+    config_path = _write_config(tmp_path, data)
+    with pytest.raises((ConfigError, ValueError)):
+        load_config(config_path)
+
+
+# --- resolve_stage_timeout ---
+
+
+def test_resolve_stage_timeout_no_labels():
+    cfg = AgentsConfig(timeout_minutes={"implement": 120, "review": 30})
+    assert resolve_stage_timeout(cfg, "implement") == 120
+    assert resolve_stage_timeout(cfg, "review") == 30
+    assert resolve_stage_timeout(cfg, "merge") is None
+
+
+def test_resolve_stage_timeout_no_overrides():
+    cfg = AgentsConfig(timeout_minutes={"implement": 120})
+    assert resolve_stage_timeout(cfg, "implement", ["Bug", "Feature"]) == 120
+
+
+def test_resolve_stage_timeout_label_override():
+    cfg = AgentsConfig(
+        timeout_minutes={"implement": 120, "review": 30},
+        timeout_overrides={"Investigation": {"implement": 30}},
+    )
+    assert resolve_stage_timeout(cfg, "implement", ["Investigation"]) == 30
+    # Non-overridden stage falls back to default
+    assert resolve_stage_timeout(cfg, "review", ["Investigation"]) == 30
+
+
+def test_resolve_stage_timeout_case_insensitive():
+    cfg = AgentsConfig(
+        timeout_minutes={"implement": 120},
+        timeout_overrides={"Investigation": {"implement": 30}},
+    )
+    assert resolve_stage_timeout(cfg, "implement", ["investigation"]) == 30
+    assert resolve_stage_timeout(cfg, "implement", ["INVESTIGATION"]) == 30
+
+
+def test_resolve_stage_timeout_no_matching_label():
+    cfg = AgentsConfig(
+        timeout_minutes={"implement": 120},
+        timeout_overrides={"Investigation": {"implement": 30}},
+    )
+    assert resolve_stage_timeout(cfg, "implement", ["Bug"]) == 120
+
+
+def test_resolve_stage_timeout_first_match_wins():
+    cfg = AgentsConfig(
+        timeout_minutes={"implement": 120},
+        timeout_overrides={
+            "Investigation": {"implement": 30},
+            "Quick": {"implement": 15},
+        },
+    )
+    # Both labels match — first override key wins
+    assert resolve_stage_timeout(cfg, "implement", ["Quick", "Investigation"]) == 30
 
 
 # --- Linear status and comment config ---

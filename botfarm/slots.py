@@ -56,6 +56,7 @@ class SlotState:
     interrupted_by_limit: bool = False
     resume_after: str | None = None
     stages_completed: list[str] = field(default_factory=list)
+    ticket_labels: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -72,6 +73,13 @@ class SlotState:
         """Reconstruct a SlotState from a database row."""
         stages_raw = row["stages_completed"]
         stages = json.loads(stages_raw) if stages_raw else []
+        # ticket_labels may not exist in older schemas
+        labels_raw = None
+        try:
+            labels_raw = row["ticket_labels"]
+        except (IndexError, KeyError):
+            pass
+        labels = json.loads(labels_raw) if labels_raw else []
         return cls(
             project=row["project"],
             slot_id=row["slot_id"],
@@ -90,6 +98,7 @@ class SlotState:
             interrupted_by_limit=bool(row["interrupted_by_limit"]),
             resume_after=row["resume_after"],
             stages_completed=stages,
+            ticket_labels=labels,
         )
 
 
@@ -198,6 +207,7 @@ class SlotManager:
         ticket_id: str,
         ticket_title: str,
         branch: str,
+        ticket_labels: list[str] | None = None,
     ) -> SlotState:
         """Assign a ticket to a free slot, setting it to busy."""
         slot = self._require_slot(project, slot_id)
@@ -216,6 +226,7 @@ class SlotManager:
         slot.pr_url = None
         slot.interrupted_by_limit = False
         slot.stages_completed = []
+        slot.ticket_labels = ticket_labels or []
         self._save()
         return slot
 
@@ -310,6 +321,7 @@ class SlotManager:
         slot.interrupted_by_limit = False
         slot.resume_after = None
         slot.stages_completed = []
+        slot.ticket_labels = []
         self._save()
 
     def resume_slot(self, project: str, slot_id: int) -> None:
