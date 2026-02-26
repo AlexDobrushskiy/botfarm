@@ -3001,7 +3001,8 @@ class TestFormatNdjsonLine:
                 }],
             },
         })
-        _, text = format_ndjson_line(line)
+        event_type, text = format_ndjson_line(line)
+        assert event_type == "tool_use"
         assert "Bash" in text
         assert "git status" in text
 
@@ -3016,7 +3017,8 @@ class TestFormatNdjsonLine:
                 }],
             },
         })
-        _, text = format_ndjson_line(line)
+        event_type, text = format_ndjson_line(line)
+        assert event_type == "tool_use"
         assert "Edit" in text
         assert "/src/main.py" in text
 
@@ -3031,7 +3033,8 @@ class TestFormatNdjsonLine:
                 }],
             },
         })
-        _, text = format_ndjson_line(line)
+        event_type, text = format_ndjson_line(line)
+        assert event_type == "tool_use"
         assert "Grep" in text
         assert "def foo" in text
 

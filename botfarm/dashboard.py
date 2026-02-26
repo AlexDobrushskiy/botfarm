@@ -130,7 +130,11 @@ def _format_assistant(event: dict) -> tuple[str, str]:
 
     if not lines:
         return ("assistant", "[assistant turn]")
-    return ("assistant", "\n".join(lines))
+
+    # When only tool_use blocks are present (no text), categorise as "tool_use"
+    # so the dashboard can apply distinct purple styling.
+    event_type = "tool_use" if (tool_lines and not parts) else "assistant"
+    return (event_type, "\n".join(lines))
 
 
 def _format_user(event: dict) -> tuple[str, str]:
