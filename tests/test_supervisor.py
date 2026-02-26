@@ -1658,6 +1658,48 @@ class TestHandlePausedSlots:
 
             mock_fp.assert_called_once_with(supervisor._conn)
 
+    def test_resume_immediately_when_limits_disabled(self, supervisor):
+        """Disabling usage limits resumes paused slots even if resume_after is in the future."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.update_stage("test-project", 1, stage="implement", session_id="sess-1")
+        # Far-future resume_after — would normally block resume
+        sm.mark_paused_limit(
+            "test-project", 1,
+            resume_after="2099-01-01T00:00:00+00:00",
+        )
+
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        # Usage is high, but limits are disabled
+        supervisor._usage_poller._state.utilization_5h = 0.95
+        supervisor._usage_poller._state.utilization_7d = 0.95
+        supervisor._config.usage_limits.enabled = False
+
+        with (
+            patch.object(supervisor._usage_poller, "force_poll") as mock_fp,
+            patch("botfarm.supervisor.multiprocessing.Process") as MockProc,
+        ):
+            mock_proc = MagicMock()
+            mock_proc.pid = 555
+            MockProc.return_value = mock_proc
+
+            supervisor._handle_paused_slots()
+
+            # Should resume without polling or checking thresholds
+            mock_proc.start.assert_called_once()
+            mock_fp.assert_not_called()
+
+        assert sm.get_slot("test-project", 1).status == "busy"
+
 
 # ---------------------------------------------------------------------------
 # Tick includes paused slots phase

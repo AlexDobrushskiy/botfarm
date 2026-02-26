@@ -1469,9 +1469,15 @@ class Supervisor:
         """Check paused slots and resume them if their resume_after time has passed."""
         now = datetime.now(timezone.utc)
         paused = self._slot_manager.paused_limit_slots()
+        thresholds = self._config.usage_limits
 
         polled = False
         for slot in paused:
+            # If limits are disabled entirely, resume immediately
+            if not thresholds.enabled:
+                self._resume_paused_worker(slot)
+                continue
+
             if not self._is_ready_to_resume(slot, now):
                 continue
 
@@ -1481,7 +1487,6 @@ class Supervisor:
                 polled = True
 
             # Re-check usage API to confirm limits have actually reset
-            thresholds = self._config.usage_limits
             should_pause, _ = self._usage_poller.state.should_pause_with_thresholds(
                 five_hour_threshold=thresholds.pause_five_hour_threshold,
                 seven_day_threshold=thresholds.pause_seven_day_threshold,
