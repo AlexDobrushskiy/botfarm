@@ -122,6 +122,7 @@
                 <th>Session ID</th>
                 <th>Exit Subtype</th>
                 <th>Limit Restart</th>
+                <th>Logs</th>
             </tr>
         </thead>
         <tbody>
@@ -142,6 +143,7 @@
                 <td style="font-family: monospace; font-size: 0.8rem;">{{ stage.session_id[:12] if stage.session_id else "-" }}{% if stage.session_id and stage.session_id|length > 12 %}&hellip;{% endif %}</td>
                 <td>{{ stage.exit_subtype if stage.exit_subtype else "-" }}</td>
                 <td>{{ "Yes" if stage.was_limit_restart else "No" }}</td>
+                <td><a href="/task/{{ task.ticket_id }}/logs/{{ stage.stage }}" title="View logs">view</a></td>
             </tr>
             {% endfor %}
         </tbody>

@@ -6,6 +6,7 @@ polling. Designed to run inside the supervisor process as a background thread.
 
 from __future__ import annotations
 
+import asyncio
 import html
 import json
 import logging
@@ -17,8 +18,9 @@ from collections.abc import Callable
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.templating import Jinja2Templates
+from sse_starlette.sse import EventSourceResponse
 
 from botfarm.config import (
     BotfarmConfig,
@@ -118,6 +120,7 @@ def create_app(
     linear_workspace: str = "",
     botfarm_config: BotfarmConfig | None = None,
     state_file: str | Path | None = None,
+    logs_dir: str | Path | None = None,
     on_pause: Callable[[], None] | None = None,
     on_resume: Callable[[], None] | None = None,
     on_update: Callable[[], None] | None = None,
@@ -137,6 +140,9 @@ def create_app(
     state_file:
         Deprecated. Ignored. Kept only for backward compatibility during
         the transition period.
+    logs_dir:
+        Base directory for per-ticket log files (e.g. ``~/.botfarm/logs``).
+        When set, the log viewer feature is enabled.
     on_pause:
         Callback invoked when the user clicks Pause. Should be a callable
         with no arguments (e.g. ``supervisor.request_pause``).
@@ -163,6 +169,7 @@ def create_app(
     app.state.on_update = on_update
     app.state.update_in_progress = False
     app.state.update_failed_event = update_failed_event
+    app.state.logs_dir = Path(logs_dir).expanduser() if logs_dir else None
 
     # --- Helpers ---
 
@@ -1292,6 +1299,223 @@ def create_app(
             status_code=200,
         )
 
+    # --- Log viewer ---
+
+    def _find_log_files(ticket_id: str, stage: str | None = None) -> list[Path]:
+        """Find log files for a ticket, optionally filtered by stage.
+
+        Returns log files sorted by modification time (newest first).
+        """
+        logs_base = app.state.logs_dir
+        if not logs_base:
+            return []
+        ticket_dir = logs_base / ticket_id
+        if not ticket_dir.is_dir():
+            return []
+        files = []
+        for f in ticket_dir.iterdir():
+            if not f.is_file() or not f.name.endswith(".log"):
+                continue
+            if stage:
+                # Match files like "implement-20260226-123456.log" or
+                # "implement-iter2-20260226-123456.log"
+                if not f.name.startswith(stage):
+                    continue
+                # Make sure we don't match "implement" when looking for "fix"
+                # by checking the character after the stage name
+                rest = f.name[len(stage):]
+                if rest and rest[0] not in ("-", "."):
+                    continue
+            files.append(f)
+        files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        return files
+
+    def _find_latest_log(ticket_id: str, stage: str) -> Path | None:
+        """Find the most recent log file for a ticket + stage."""
+        files = _find_log_files(ticket_id, stage)
+        return files[0] if files else None
+
+    def _available_stages_with_logs(ticket_id: str) -> list[str]:
+        """Return stage names that have log files, in canonical order."""
+        files = _find_log_files(ticket_id)
+        if not files:
+            return []
+        # Extract stage name from filename (part before first '-' or '.')
+        found = set()
+        for f in files:
+            name = f.name
+            for s in STAGES:
+                if name.startswith(s) and (
+                    len(name) == len(s)
+                    or name[len(s)] in ("-", ".")
+                ):
+                    found.add(s)
+                    break
+            # Also match ci_fix logs
+            if name.startswith("ci_fix"):
+                found.add("ci_fix")
+        return [s for s in list(STAGES) + ["ci_fix"] if s in found]
+
+    def _is_stage_active(ticket_id: str, stage: str) -> bool:
+        """Check if a stage is currently running for this ticket."""
+        conn = _get_db()
+        if not conn:
+            return False
+        try:
+            rows = load_all_slots(conn)
+            for row in rows:
+                if (
+                    row["ticket_id"] == ticket_id
+                    and row["stage"] == stage
+                    and row["status"] == "busy"
+                ):
+                    return True
+        except sqlite3.OperationalError:
+            pass
+        finally:
+            conn.close()
+        return False
+
+    @app.get("/task/{task_id}/logs", response_class=HTMLResponse)
+    def log_viewer_page(request: Request, task_id: str):
+        """Log viewer page — shows available stages, redirects to latest."""
+        task = None
+        conn = _get_db()
+        ticket_id = task_id  # May be overridden if task_id is a numeric DB ID
+        if conn:
+            try:
+                task_row = None
+                try:
+                    int_id = int(task_id)
+                    task_row = get_task(conn, int_id)
+                except ValueError:
+                    pass
+                if task_row is None:
+                    task_row = get_task_by_ticket(conn, task_id)
+                if task_row is not None:
+                    task = dict(task_row)
+                    ticket_id = task["ticket_id"]
+            finally:
+                conn.close()
+
+        available = _available_stages_with_logs(ticket_id)
+        if not available:
+            return templates.TemplateResponse("log_viewer.html", {
+                "request": request,
+                "task": task,
+                "ticket_id": ticket_id,
+                "stages_with_logs": [],
+                "current_stage": None,
+                "log_content": None,
+                "is_live": False,
+                "linear_url": _linear_url,
+                "supervisor": _supervisor_status(_read_state()),
+            })
+
+        # Default to the most recent active stage, or the last available
+        active_stage = None
+        for s in reversed(available):
+            if _is_stage_active(ticket_id, s):
+                active_stage = s
+                break
+        default_stage = active_stage or available[-1]
+
+        return templates.TemplateResponse("log_viewer.html", {
+            "request": request,
+            "task": task,
+            "ticket_id": ticket_id,
+            "stages_with_logs": available,
+            "current_stage": default_stage,
+            "log_content": None,
+            "is_live": _is_stage_active(ticket_id, default_stage),
+            "linear_url": _linear_url,
+            "supervisor": _supervisor_status(_read_state()),
+        })
+
+    @app.get("/task/{task_id}/logs/{stage}", response_class=HTMLResponse)
+    def log_viewer_stage_page(request: Request, task_id: str, stage: str):
+        """Log viewer page for a specific stage."""
+        task = None
+        conn = _get_db()
+        ticket_id = task_id
+        if conn:
+            try:
+                task_row = None
+                try:
+                    int_id = int(task_id)
+                    task_row = get_task(conn, int_id)
+                except ValueError:
+                    pass
+                if task_row is None:
+                    task_row = get_task_by_ticket(conn, task_id)
+                if task_row is not None:
+                    task = dict(task_row)
+                    ticket_id = task["ticket_id"]
+            finally:
+                conn.close()
+
+        available = _available_stages_with_logs(ticket_id)
+        is_live = _is_stage_active(ticket_id, stage)
+
+        # For completed stages, load the full log content for static display
+        log_content = None
+        if not is_live:
+            log_file = _find_latest_log(ticket_id, stage)
+            if log_file:
+                try:
+                    log_content = log_file.read_text(errors="replace")
+                except OSError:
+                    log_content = None
+
+        return templates.TemplateResponse("log_viewer.html", {
+            "request": request,
+            "task": task,
+            "ticket_id": ticket_id,
+            "stages_with_logs": available,
+            "current_stage": stage,
+            "log_content": log_content,
+            "is_live": is_live,
+            "linear_url": _linear_url,
+            "supervisor": _supervisor_status(_read_state()),
+        })
+
+    @app.get("/api/logs/{ticket_id}/{stage}/stream")
+    async def stream_log(ticket_id: str, stage: str):
+        """SSE endpoint that tails the active log file for a running stage."""
+        log_file = _find_latest_log(ticket_id, stage)
+        if log_file is None:
+            return PlainTextResponse("No log file found", status_code=404)
+
+        async def event_generator():
+            try:
+                with open(log_file, errors="replace") as f:
+                    while True:
+                        line = f.readline()
+                        if line:
+                            yield {"event": "log", "data": line.rstrip("\n")}
+                        else:
+                            # Check if the stage is still active
+                            if not _is_stage_active(ticket_id, stage):
+                                yield {"event": "done", "data": ""}
+                                break
+                            await asyncio.sleep(0.5)
+            except OSError:
+                yield {"event": "error", "data": "Failed to read log file"}
+
+        return EventSourceResponse(event_generator())
+
+    @app.get("/api/logs/{ticket_id}/{stage}/content")
+    def get_log_content(ticket_id: str, stage: str):
+        """Return the full log content for a completed stage."""
+        log_file = _find_latest_log(ticket_id, stage)
+        if log_file is None:
+            return PlainTextResponse("No log file found", status_code=404)
+        try:
+            content = log_file.read_text(errors="replace")
+            return PlainTextResponse(content)
+        except OSError:
+            return PlainTextResponse("Failed to read log file", status_code=500)
+
     return app
 
 
@@ -1302,6 +1526,7 @@ def start_dashboard(
     linear_workspace: str = "",
     botfarm_config: BotfarmConfig | None = None,
     state_file: str | Path | None = None,
+    logs_dir: str | Path | None = None,
     on_pause: Callable[[], None] | None = None,
     on_resume: Callable[[], None] | None = None,
     on_update: Callable[[], None] | None = None,
@@ -1318,6 +1543,7 @@ def start_dashboard(
         db_path=db_path,
         linear_workspace=linear_workspace,
         botfarm_config=botfarm_config,
+        logs_dir=logs_dir,
         on_pause=on_pause,
         on_resume=on_resume,
         on_update=on_update,
