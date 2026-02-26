@@ -34,7 +34,7 @@
     <strong>Extra Usage:</strong>
     {% if usage.extra_usage_used_credits is not none and usage.extra_usage_monthly_limit %}
         <span class="{% if usage.extra_usage_utilization is not none and usage.extra_usage_utilization >= 80 %}status-failed{% elif usage.extra_usage_utilization is not none and usage.extra_usage_utilization >= 50 %}status-busy{% else %}status-free{% endif %}">
-            ${{ "%.2f"|format(usage.extra_usage_used_credits) }} / ${{ "%.0f"|format(usage.extra_usage_monthly_limit) }}
+            ${{ "%.2f"|format(usage.extra_usage_used_credits) }} / ${{ "%.2f"|format(usage.extra_usage_monthly_limit) }}
         </span>
         {% if usage.extra_usage_utilization is not none %}
             ({{ "%.1f"|format(usage.extra_usage_utilization) }}%)

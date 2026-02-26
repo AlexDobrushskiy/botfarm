@@ -115,14 +115,14 @@ class TestUsageState:
             utilization_5h=1.0,
             utilization_7d=0.58,
             extra_usage_enabled=True,
-            extra_usage_monthly_limit=5000.0,
-            extra_usage_used_credits=2344.0,
+            extra_usage_monthly_limit=50.0,
+            extra_usage_used_credits=23.44,
             extra_usage_utilization=46.88,
         )
         d = state.to_dict()
         assert d["extra_usage_enabled"] is True
-        assert d["extra_usage_monthly_limit"] == 5000.0
-        assert d["extra_usage_used_credits"] == 2344.0
+        assert d["extra_usage_monthly_limit"] == 50.0
+        assert d["extra_usage_used_credits"] == 23.44
         assert d["extra_usage_utilization"] == 46.88
 
     def test_to_dict_none_values(self):
@@ -431,16 +431,16 @@ class TestUsagePollerParsing:
 
         assert state.utilization_5h == 1.0
         assert state.extra_usage_enabled is True
-        assert state.extra_usage_monthly_limit == 5000
-        assert state.extra_usage_used_credits == 2344.0
+        assert state.extra_usage_monthly_limit == pytest.approx(50.0)
+        assert state.extra_usage_used_credits == pytest.approx(23.44)
         assert state.extra_usage_utilization == 46.88
 
         # Verify DB snapshot includes extra usage
         snapshots = get_usage_snapshots(conn, limit=1)
         assert len(snapshots) == 1
         assert snapshots[0]["extra_usage_enabled"] == 1
-        assert snapshots[0]["extra_usage_monthly_limit"] == pytest.approx(5000)
-        assert snapshots[0]["extra_usage_used_credits"] == pytest.approx(2344.0)
+        assert snapshots[0]["extra_usage_monthly_limit"] == pytest.approx(50.0)
+        assert snapshots[0]["extra_usage_used_credits"] == pytest.approx(23.44)
         assert snapshots[0]["extra_usage_utilization"] == pytest.approx(46.88)
 
     def test_extra_usage_disabled_parsed(self, poller, conn):

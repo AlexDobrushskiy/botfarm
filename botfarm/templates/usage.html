@@ -97,7 +97,7 @@
                 <td>{% if s.resets_at_7d %}<time data-timestamp="{{ s.resets_at_7d }}" title="{{ s.resets_at_7d[:19] }}">{{ s.resets_at_7d[:19] }}</time>{% else %}-{% endif %}</td>
                 {% if has_extra %}
                 <td>{{ "$%.2f"|format(s.extra_usage_used_credits) if s.extra_usage_used_credits is not none else "-" }}</td>
-                <td>{{ "$%.0f"|format(s.extra_usage_monthly_limit) if s.extra_usage_monthly_limit is not none else "-" }}</td>
+                <td>{{ "$%.2f"|format(s.extra_usage_monthly_limit) if s.extra_usage_monthly_limit is not none else "-" }}</td>
                 {% endif %}
             </tr>
             {% endfor %}
