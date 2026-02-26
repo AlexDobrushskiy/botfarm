@@ -518,6 +518,18 @@ class TestCheckIdentitySshKey:
         assert len(failed) == 1
         assert "does not look like a private key" in failed[0].message
 
+    def test_fail_binary_key_file(self, tmp_path):
+        key = tmp_path / "id_ed25519"
+        key.write_bytes(b"\x80\x81\x82\xff\xfe")  # Invalid UTF-8
+        key.chmod(0o600)
+        config = _make_config(tmp_path, identities=IdentitiesConfig(
+            coder=CoderIdentity(ssh_key_path=str(key)),
+        ))
+        results = check_identity_ssh_key(config)
+        failed = [r for r in results if r.name == "identity_ssh_key" and not r.passed]
+        assert len(failed) == 1
+        assert "Cannot read SSH key file" in failed[0].message
+
     def test_warn_github_ssh_fails(self, tmp_path):
         key = tmp_path / "id_ed25519"
         key.write_text("-----BEGIN OPENSSH PRIVATE KEY-----\nfakedata\n")
@@ -622,6 +634,18 @@ class TestCheckIdentityGithubTokens:
         assert not results[0].passed
         assert "timed out" in results[0].message
 
+    def test_fail_gh_not_found_includes_role(self, tmp_path):
+        config = _make_config(tmp_path, identities=IdentitiesConfig(
+            coder=CoderIdentity(github_token="ghp_tok"),
+        ))
+        with patch("botfarm.preflight.subprocess.run",
+                    side_effect=FileNotFoundError("gh")):
+            results = check_identity_github_tokens(config)
+        assert len(results) == 1
+        assert not results[0].passed
+        assert "coder" in results[0].message
+        assert "gh command not found" in results[0].message
+
     def test_passes_token_as_env(self, tmp_path):
         config = _make_config(tmp_path, identities=IdentitiesConfig(
             coder=CoderIdentity(github_token="ghp_mytoken"),
@@ -671,6 +695,36 @@ class TestCheckIdentityLinearApiKey:
         assert len(results) == 1
         assert not results[0].passed
         assert results[0].critical
+
+    def test_pass_reviewer_key(self, tmp_path):
+        config = _make_config(tmp_path, identities=IdentitiesConfig(
+            reviewer=ReviewerIdentity(linear_api_key="lin_api_rev"),
+        ))
+        with patch.object(
+            __import__("botfarm.linear", fromlist=["LinearClient"]).LinearClient,
+            "get_viewer_id",
+            return_value="user-456",
+        ):
+            results = check_identity_linear_api_key(config)
+        assert len(results) == 1
+        assert results[0].passed
+        assert "reviewer" in results[0].name
+
+    def test_pass_both_keys(self, tmp_path):
+        config = _make_config(tmp_path, identities=IdentitiesConfig(
+            coder=CoderIdentity(linear_api_key="lin_api_coder"),
+            reviewer=ReviewerIdentity(linear_api_key="lin_api_rev"),
+        ))
+        with patch.object(
+            __import__("botfarm.linear", fromlist=["LinearClient"]).LinearClient,
+            "get_viewer_id",
+            return_value="user-123",
+        ):
+            results = check_identity_linear_api_key(config)
+        assert len(results) == 2
+        assert all(r.passed for r in results)
+        roles = {r.name.split(":")[-1] for r in results}
+        assert roles == {"coder", "reviewer"}
 
 
 # ---------------------------------------------------------------------------

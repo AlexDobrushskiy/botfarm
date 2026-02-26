@@ -402,7 +402,7 @@ def check_identity_ssh_key(config: BotfarmConfig) -> list[CheckResult]:
                 message=f"SSH key file does not look like a private key: {key_path}",
             ))
             return results
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         results.append(CheckResult(
             name="identity_ssh_key",
             passed=False,
@@ -496,33 +496,39 @@ def check_identity_github_tokens(config: BotfarmConfig) -> list[CheckResult]:
             results.append(CheckResult(
                 name=f"identity_github_token:{role}",
                 passed=False,
-                message="gh command not found",
+                message=f"gh command not found — cannot check {role} GitHub token",
             ))
 
     return results
 
 
 def check_identity_linear_api_key(config: BotfarmConfig) -> list[CheckResult]:
-    """Validate coder Linear API key if configured."""
+    """Validate coder and reviewer Linear API keys if configured."""
     results: list[CheckResult] = []
-    api_key = config.identities.coder.linear_api_key
-    if not api_key:
-        return results  # Not configured — skip
 
-    client = LinearClient(api_key=api_key)
-    try:
-        client.get_viewer_id()
-        results.append(CheckResult(
-            name="identity_linear_key:coder",
-            passed=True,
-            message="OK — coder Linear API key verified",
-        ))
-    except LinearAPIError as exc:
-        results.append(CheckResult(
-            name="identity_linear_key:coder",
-            passed=False,
-            message=f"Coder Linear API key failed: {exc}",
-        ))
+    keys = [
+        ("coder", config.identities.coder.linear_api_key),
+        ("reviewer", config.identities.reviewer.linear_api_key),
+    ]
+
+    for role, api_key in keys:
+        if not api_key:
+            continue  # Not configured — skip
+
+        client = LinearClient(api_key=api_key)
+        try:
+            client.get_viewer_id()
+            results.append(CheckResult(
+                name=f"identity_linear_key:{role}",
+                passed=True,
+                message=f"OK — {role} Linear API key verified",
+            ))
+        except LinearAPIError as exc:
+            results.append(CheckResult(
+                name=f"identity_linear_key:{role}",
+                passed=False,
+                message=f"{role.capitalize()} Linear API key failed: {exc}",
+            ))
 
     return results
 
