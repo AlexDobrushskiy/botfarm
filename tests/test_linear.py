@@ -645,6 +645,95 @@ class TestAddComment:
 
 
 # ---------------------------------------------------------------------------
+# LinearClient.get_viewer_id
+# ---------------------------------------------------------------------------
+
+
+class TestGetViewerId:
+    def test_returns_viewer_id(self):
+        client = LinearClient(api_key="key")
+        data = {"viewer": {"id": "user-123", "name": "Bot User"}}
+        with patch.object(httpx, "post", return_value=_graphql_response(data)):
+            viewer_id = client.get_viewer_id()
+        assert viewer_id == "user-123"
+
+    def test_missing_viewer_raises(self):
+        client = LinearClient(api_key="key")
+        data = {"viewer": None}
+        with patch.object(httpx, "post", return_value=_graphql_response(data)):
+            with pytest.raises(LinearAPIError, match="Failed to retrieve viewer ID"):
+                client.get_viewer_id()
+
+    def test_missing_id_raises(self):
+        client = LinearClient(api_key="key")
+        data = {"viewer": {"id": None, "name": "Bot"}}
+        with patch.object(httpx, "post", return_value=_graphql_response(data)):
+            with pytest.raises(LinearAPIError, match="Failed to retrieve viewer ID"):
+                client.get_viewer_id()
+
+    def test_empty_response_raises(self):
+        client = LinearClient(api_key="key")
+        data = {"unexpected": "response"}
+        with patch.object(httpx, "post", return_value=_graphql_response(data)):
+            with pytest.raises(LinearAPIError, match="Failed to retrieve viewer ID"):
+                client.get_viewer_id()
+
+
+# ---------------------------------------------------------------------------
+# LinearClient.assign_issue
+# ---------------------------------------------------------------------------
+
+
+class TestAssignIssue:
+    def test_success(self):
+        client = LinearClient(api_key="key")
+        data = {
+            "issueUpdate": {
+                "success": True,
+                "issue": {
+                    "id": "i1",
+                    "identifier": "SMA-1",
+                    "assignee": {"id": "u1", "name": "Bot"},
+                },
+            }
+        }
+        with patch.object(httpx, "post", return_value=_graphql_response(data)):
+            client.assign_issue("i1", "u1")  # should not raise
+
+    def test_failure_raises(self):
+        client = LinearClient(api_key="key")
+        data = {"issueUpdate": {"success": False, "issue": None}}
+        with patch.object(httpx, "post", return_value=_graphql_response(data)):
+            with pytest.raises(LinearAPIError, match="Failed to assign issue"):
+                client.assign_issue("i1", "u1")
+
+    def test_missing_top_level_key_raises(self):
+        client = LinearClient(api_key="key")
+        data = {"unexpected": "response"}
+        with patch.object(httpx, "post", return_value=_graphql_response(data)):
+            with pytest.raises(LinearAPIError, match="Failed to assign issue"):
+                client.assign_issue("i1", "u1")
+
+    def test_sends_correct_variables(self):
+        client = LinearClient(api_key="key")
+        data = {
+            "issueUpdate": {
+                "success": True,
+                "issue": {
+                    "id": "issue-abc",
+                    "identifier": "SMA-42",
+                    "assignee": {"id": "user-xyz", "name": "Bot"},
+                },
+            }
+        }
+        with patch.object(httpx, "post", return_value=_graphql_response(data)) as mock_post:
+            client.assign_issue("issue-abc", "user-xyz")
+
+        body = mock_post.call_args.kwargs["json"]
+        assert body["variables"] == {"issueId": "issue-abc", "assigneeId": "user-xyz"}
+
+
+# ---------------------------------------------------------------------------
 # LinearPoller.poll
 # ---------------------------------------------------------------------------
 
@@ -926,6 +1015,11 @@ class TestLinearPollerStateManagement:
         poller = self._make_poller()
         poller.add_comment("i1", "Hello world")
         poller._client.add_comment.assert_called_once_with("i1", "Hello world")
+
+    def test_assign_issue(self):
+        poller = self._make_poller()
+        poller.assign_issue("SMA-1", "user-123")
+        poller._client.assign_issue.assert_called_once_with("SMA-1", "user-123")
 
 
 # ---------------------------------------------------------------------------

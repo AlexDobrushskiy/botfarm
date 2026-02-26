@@ -139,6 +139,31 @@ mutation AddComment($issueId: String!, $body: String!) {
 }
 """
 
+VIEWER_QUERY = """
+query Viewer {
+  viewer {
+    id
+    name
+  }
+}
+"""
+
+ASSIGN_ISSUE_MUTATION = """
+mutation AssignIssue($issueId: String!, $assigneeId: String!) {
+  issueUpdate(id: $issueId, input: { assigneeId: $assigneeId }) {
+    success
+    issue {
+      id
+      identifier
+      assignee {
+        id
+        name
+      }
+    }
+  }
+}
+"""
+
 
 @dataclass
 class LinearIssue:
@@ -344,6 +369,26 @@ class LinearClient:
         if not result.get("success"):
             raise LinearAPIError(f"Failed to add comment to issue {issue_id}")
 
+    def get_viewer_id(self) -> str:
+        """Return the Linear user ID of the authenticated API key owner."""
+        data = self._execute(VIEWER_QUERY)
+        viewer = data.get("viewer")
+        if not viewer or not viewer.get("id"):
+            raise LinearAPIError("Failed to retrieve viewer ID")
+        return viewer["id"]
+
+    def assign_issue(self, issue_id: str, assignee_id: str) -> None:
+        """Assign an issue to a user by their Linear user ID."""
+        data = self._execute(
+            ASSIGN_ISSUE_MUTATION,
+            {"issueId": issue_id, "assigneeId": assignee_id},
+        )
+        result = data.get("issueUpdate", {})
+        if not result.get("success"):
+            raise LinearAPIError(
+                f"Failed to assign issue {issue_id} to user {assignee_id}"
+            )
+
 
 class LinearPoller:
     """Polls Linear for Todo tickets in a project's team and returns prioritized candidates.
@@ -491,6 +536,11 @@ class LinearPoller:
         state_id = self.get_state_id(state_name)
         self._client.update_issue_state(issue_id, state_id)
         logger.info("Moved issue %s to '%s'", issue_id, state_name)
+
+    def assign_issue(self, issue_id: str, assignee_id: str) -> None:
+        """Assign an issue to a user by their Linear user ID."""
+        self._client.assign_issue(issue_id, assignee_id)
+        logger.info("Assigned issue %s to user %s", issue_id, assignee_id)
 
     def add_comment(self, issue_id: str, body: str) -> None:
         """Add a comment to an issue."""
