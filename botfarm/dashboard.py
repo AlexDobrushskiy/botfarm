@@ -10,8 +10,6 @@ import asyncio
 import html
 import json
 import logging
-import os
-import re
 import sqlite3
 import threading
 from datetime import datetime, timezone
@@ -34,7 +32,7 @@ from botfarm.config import (
     validate_structural_config_updates,
     write_config_updates,
     write_structural_config_updates,
-    _write_yaml_atomic,
+    write_yaml_atomic,
 )
 from botfarm.db import (
     count_tasks,
@@ -1538,20 +1536,6 @@ def create_app(
             return Path(cfg.source_path).parent / ".env"
         return Path.home() / ".botfarm" / ".env"
 
-    def _read_env_file(env_path: Path) -> dict[str, str]:
-        """Read a .env file and return key-value pairs."""
-        result: dict[str, str] = {}
-        if not env_path.exists():
-            return result
-        for line in env_path.read_text().splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            if "=" in line:
-                key, _, value = line.partition("=")
-                result[key.strip()] = value.strip()
-        return result
-
     def _write_env_file(env_path: Path, data: dict[str, str]) -> None:
         """Write key-value pairs to a .env file, preserving comments."""
         lines: list[str] = []
@@ -1624,6 +1608,9 @@ def create_app(
                 if not isinstance(value, str):
                     errors.append(f"'{role}.{field}' must be a string")
                     continue
+                if "\n" in value or "\r" in value:
+                    errors.append(f"'{role}.{field}' must not contain newlines")
+                    continue
                 is_secret = (role, field) in _IDENTITY_SECRET_FIELDS
                 is_plain = field in _IDENTITY_PLAIN_FIELDS.get(role, set())
                 if not is_secret and not is_plain:
@@ -1687,7 +1674,7 @@ def create_app(
                     data["identities"][role].update(plain)
                     data["identities"][role].update(refs)
 
-                _write_yaml_atomic(config_path, data)
+                write_yaml_atomic(config_path, data)
             except Exception:
                 logger.exception("Failed to write identity config to YAML")
                 if env_updates:

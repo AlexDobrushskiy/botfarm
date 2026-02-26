@@ -690,10 +690,10 @@ def write_config_updates(config_path: Path, updates: dict) -> None:
             else:
                 section_data[key] = value
 
-    _write_yaml_atomic(config_path, data)
+    write_yaml_atomic(config_path, data)
 
 
-def _write_yaml_atomic(config_path: Path, data: dict) -> None:
+def write_yaml_atomic(config_path: Path, data: dict) -> None:
     """Write a dict to a YAML file atomically via temp file + rename."""
     fd, tmp_path = tempfile.mkstemp(
         dir=str(config_path.parent), suffix=".yaml.tmp",
@@ -868,4 +868,4 @@ def write_structural_config_updates(config_path: Path, updates: dict) -> None:
                 if "linear_project" in proj_update:
                     target["linear_project"] = proj_update["linear_project"]
 
-    _write_yaml_atomic(config_path, data)
+    write_yaml_atomic(config_path, data)
