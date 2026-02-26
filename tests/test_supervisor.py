@@ -25,6 +25,7 @@ from botfarm.linear import LinearIssue, PollResult
 from botfarm.supervisor import (
     DEFAULT_LOG_DIR,
     Supervisor,
+    _StallInfo,
     _WorkerResult,
     _check_limit_hit,
     _setup_worker_logging,
@@ -3858,3 +3859,191 @@ class TestLogTickSummary:
         with patch.object(supervisor, "_log_tick_summary") as mock_summary:
             supervisor._tick()
             mock_summary.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Usage stall detection
+# ---------------------------------------------------------------------------
+
+
+class TestUsageStallDetection:
+    def test_no_warning_before_threshold(self, supervisor, caplog):
+        """No stall warning if less than _STALL_WARN_MINUTES have elapsed."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+
+        supervisor._stall_tracking[("test-project", 1)] = _StallInfo(
+            dispatch_usage_5h=0.52,
+            dispatch_time=time.time() - 10 * 60,  # 10 minutes ago
+        )
+        supervisor._usage_poller.state.utilization_5h = 0.52
+
+        with caplog.at_level(logging.WARNING, logger="botfarm.supervisor"):
+            supervisor._check_usage_stalls()
+
+        assert not any("usage stalled" in r.message for r in caplog.records)
+        assert not supervisor._stall_tracking[("test-project", 1)].warned
+
+    def test_warning_after_threshold_with_flat_usage(self, supervisor, caplog):
+        """Stall warning when usage unchanged for > _STALL_WARN_MINUTES."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+
+        supervisor._stall_tracking[("test-project", 1)] = _StallInfo(
+            dispatch_usage_5h=0.52,
+            dispatch_time=time.time() - 35 * 60,  # 35 minutes ago
+        )
+        supervisor._usage_poller.state.utilization_5h = 0.52
+
+        with caplog.at_level(logging.WARNING, logger="botfarm.supervisor"):
+            supervisor._check_usage_stalls()
+
+        warnings = [r for r in caplog.records if "usage stalled" in r.message]
+        assert len(warnings) == 1
+        assert "TST-1" in warnings[0].message
+        assert "52.0%" in warnings[0].message
+        assert supervisor._stall_tracking[("test-project", 1)].warned
+
+    def test_no_warning_when_usage_moved(self, supervisor, caplog):
+        """No warning if usage has moved beyond epsilon since dispatch."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+
+        supervisor._stall_tracking[("test-project", 1)] = _StallInfo(
+            dispatch_usage_5h=0.50,
+            dispatch_time=time.time() - 35 * 60,
+        )
+        supervisor._usage_poller.state.utilization_5h = 0.56  # moved 6%
+
+        with caplog.at_level(logging.WARNING, logger="botfarm.supervisor"):
+            supervisor._check_usage_stalls()
+
+        assert not any("usage stalled" in r.message for r in caplog.records)
+
+    def test_warning_emitted_only_once(self, supervisor, caplog):
+        """Once stall warning is emitted, it's not repeated on subsequent checks."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+
+        supervisor._stall_tracking[("test-project", 1)] = _StallInfo(
+            dispatch_usage_5h=0.52,
+            dispatch_time=time.time() - 35 * 60,
+        )
+        supervisor._usage_poller.state.utilization_5h = 0.52
+
+        with caplog.at_level(logging.WARNING, logger="botfarm.supervisor"):
+            supervisor._check_usage_stalls()
+            caplog.clear()
+            supervisor._check_usage_stalls()
+
+        assert not any("usage stalled" in r.message for r in caplog.records)
+
+    def test_tracking_cleared_when_slot_freed(self, supervisor):
+        """Stall tracking is cleaned up when a slot is no longer busy."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+
+        supervisor._stall_tracking[("test-project", 1)] = _StallInfo(
+            dispatch_usage_5h=0.52,
+            dispatch_time=time.time() - 35 * 60,
+        )
+        supervisor._usage_poller.state.utilization_5h = 0.52
+
+        # Free the slot
+        sm.free_slot("test-project", 1)
+
+        supervisor._check_usage_stalls()
+
+        assert ("test-project", 1) not in supervisor._stall_tracking
+
+    def test_no_crash_when_utilization_is_none(self, supervisor):
+        """No crash when usage data is not available yet."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+
+        supervisor._stall_tracking[("test-project", 1)] = _StallInfo(
+            dispatch_usage_5h=0.52,
+            dispatch_time=time.time() - 35 * 60,
+        )
+        supervisor._usage_poller.state.utilization_5h = None
+
+        # Should not raise
+        supervisor._check_usage_stalls()
+
+    def test_no_crash_when_dispatch_usage_is_none(self, supervisor, caplog):
+        """No warning when dispatch-time usage was unavailable."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+
+        supervisor._stall_tracking[("test-project", 1)] = _StallInfo(
+            dispatch_usage_5h=None,
+            dispatch_time=time.time() - 35 * 60,
+        )
+        supervisor._usage_poller.state.utilization_5h = 0.52
+
+        with caplog.at_level(logging.WARNING, logger="botfarm.supervisor"):
+            supervisor._check_usage_stalls()
+
+        assert not any("usage stalled" in r.message for r in caplog.records)
+
+    def test_dispatch_worker_records_stall_tracking(self, supervisor, tmp_path):
+        """_dispatch_worker records stall tracking data."""
+        sm = supervisor.slot_manager
+        slot = sm.get_slot("test-project", 1)
+        issue = _make_issue()
+        poller = supervisor._pollers["test-project"]
+
+        supervisor._usage_poller.state.utilization_5h = 0.42
+
+        with patch("botfarm.supervisor.multiprocessing.Process") as MockProc:
+            mock_proc = MagicMock()
+            mock_proc.pid = 12345
+            MockProc.return_value = mock_proc
+            supervisor._dispatch_worker("test-project", slot, issue, poller)
+
+        key = ("test-project", 1)
+        assert key in supervisor._stall_tracking
+        info = supervisor._stall_tracking[key]
+        assert info.dispatch_usage_5h == 0.42
+        assert not info.warned
+
+    def test_epsilon_boundary(self, supervisor, caplog):
+        """Usage change exactly at epsilon boundary does not trigger warning."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+
+        supervisor._stall_tracking[("test-project", 1)] = _StallInfo(
+            dispatch_usage_5h=0.500,
+            dispatch_time=time.time() - 35 * 60,
+        )
+        # Delta is exactly 0.005 = epsilon, so should NOT trigger (< epsilon)
+        supervisor._usage_poller.state.utilization_5h = 0.505
+
+        with caplog.at_level(logging.WARNING, logger="botfarm.supervisor"):
+            supervisor._check_usage_stalls()
+
+        assert not any("usage stalled" in r.message for r in caplog.records)
