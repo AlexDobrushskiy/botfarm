@@ -221,11 +221,12 @@ def _compute_turn_context_fill(
     return round(total / context_window * 100, 2)
 
 
-def _parse_stream_result(result_data: dict) -> ClaudeResult:
+def parse_stream_json_result(result_data: dict) -> ClaudeResult:
     """Parse a stream-json ``result`` message into a ``ClaudeResult``.
 
     The ``result`` message in stream-json contains the same fields as the
-    single JSON blob from ``--output-format json``.
+    single JSON blob from ``--output-format json``.  Finds and parses the
+    ``result`` line from NDJSON stream output.
     """
     duration_ms = result_data.get("duration_ms", 0)
 
@@ -398,7 +399,7 @@ def run_claude_streaming(
                             )
 
             elif msg_type == "result":
-                claude_result = _parse_stream_result(event)
+                claude_result = parse_stream_json_result(event)
     finally:
         # Cancel watchdog
         cancel_watchdog.set()
@@ -1126,6 +1127,7 @@ class _PipelineContext:
                 task_id=self.task_id,
                 stage=stage,
                 iteration=iteration,
+                log_file_path=str(log_file) if log_file else None,
             )
             self.conn.commit()
 
@@ -1160,6 +1162,7 @@ class _PipelineContext:
         return self._finish_stage(
             stage, result, wall_start, iteration,
             stage_run_id=stage_run_id,
+            log_file=log_file,
         )
 
     def run_and_record_result(
@@ -1170,6 +1173,7 @@ class _PipelineContext:
         wall_start: float,
         iteration: int = 1,
         stage_run_id: int | None = None,
+        log_file: Path | None = None,
     ) -> StageResult | None:
         """Record a pre-computed StageResult, accumulate metrics.
 
@@ -1181,6 +1185,7 @@ class _PipelineContext:
         return self._finish_stage(
             stage, result, wall_start, iteration,
             stage_run_id=stage_run_id,
+            log_file=log_file,
         )
 
     def _finish_stage(
@@ -1191,6 +1196,7 @@ class _PipelineContext:
         iteration: int,
         *,
         stage_run_id: int | None = None,
+        log_file: Path | None = None,
     ) -> StageResult | None:
         """Shared logic for recording a stage result and updating metrics.
 
@@ -1208,6 +1214,7 @@ class _PipelineContext:
             wall_elapsed=wall_elapsed,
             iteration=iteration,
             stage_run_id=stage_run_id,
+            log_file_path=str(log_file) if log_file else None,
         )
 
         if result.claude_result:
@@ -1349,6 +1356,7 @@ def _run_ci_retry_loop(
             task_id=ctx.task_id,
             stage="fix",
             iteration=retry,
+            log_file_path=str(log_file) if log_file else None,
         )
         ctx.conn.commit()
 
@@ -1375,6 +1383,7 @@ def _run_ci_retry_loop(
         fix_result = ctx.run_and_record_result(
             "fix", fix_result, wall_start=wall_start, iteration=retry,
             stage_run_id=ci_fix_stage_run_id,
+            log_file=log_file,
         )
         if fix_result is None:
             return False  # failure recorded by run_and_record_result
@@ -1479,6 +1488,7 @@ def _record_stage_run(
     wall_elapsed: float,
     iteration: int = 1,
     stage_run_id: int | None = None,
+    log_file_path: str | None = None,
 ) -> None:
     """Insert or update a stage_run row from the result.
 
@@ -1532,6 +1542,7 @@ def _record_stage_run(
             total_cost_usd=cr.total_cost_usd if cr else 0.0,
             context_fill_pct=cr.context_fill_pct if cr else None,
             model_usage_json=cr.model_usage_json if cr else None,
+            log_file_path=log_file_path,
         )
     conn.commit()
 

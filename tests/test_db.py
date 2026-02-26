@@ -1167,6 +1167,31 @@ class TestStageRuns:
         assert row["total_cost_usd"] == pytest.approx(0.0)
         assert row["context_fill_pct"] is None
         assert row["model_usage_json"] is None
+        assert row["log_file_path"] is None
+
+    def test_log_file_path_stored(self, conn):
+        """log_file_path is persisted when provided."""
+        tid = insert_task(
+            conn, ticket_id="SR-LOG", title="Log path test", project="p", slot=1
+        )
+        insert_stage_run(
+            conn,
+            task_id=tid,
+            stage="implement",
+            log_file_path="/home/user/.botfarm/logs/SMA-1/implement-20260226.log",
+        )
+        runs = get_stage_runs(conn, tid)
+        assert len(runs) == 1
+        assert runs[0]["log_file_path"] == "/home/user/.botfarm/logs/SMA-1/implement-20260226.log"
+
+    def test_log_file_path_defaults_to_none(self, conn):
+        """Omitting log_file_path defaults to None for backward compatibility."""
+        tid = insert_task(
+            conn, ticket_id="SR-LOGNONE", title="No log", project="p", slot=1
+        )
+        insert_stage_run(conn, task_id=tid, stage="review")
+        runs = get_stage_runs(conn, tid)
+        assert runs[0]["log_file_path"] is None
 
 
 class TestUpdateStageRunContextFill:
