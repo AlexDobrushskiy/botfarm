@@ -89,6 +89,14 @@ context_fill_pct = (
 )
 ```
 
+**Note on formula difference from `_compute_context_fill()`:** The existing
+`_compute_context_fill()` in `worker.py` deliberately **excludes**
+`cache_read_input_tokens` because it operates on **cumulative** usage data
+(where including cache reads would double-count cached input). This per-turn
+formula **includes** `cache_read_input_tokens` because per-API-call data
+reports the full cached input read at each turn — it's not double-counted.
+Both formulas are correct for their respective data contexts.
+
 The `contextWindow` value (e.g. 200,000) is only available in the final
 `result` message. For real-time monitoring, we should use a configured
 default (200,000 for current Claude models) and update it from the result
@@ -104,8 +112,10 @@ Multi-turn test (3 turns with tool use) confirmed:
 - **Turn 2:** 35,216 input tokens (1 + 109 + 35,106) — grew by ~108 tokens
 - **Turn 3:** 35,295 input tokens (1 + 79 + 35,215) — grew by ~79 tokens
 
-Context fill grows monotonically as expected. Each turn adds the previous
-assistant response + tool results to the conversation.
+Context fill grows monotonically as expected (though context compaction
+during long sessions could cause a drop — not observed in short tests).
+Each turn adds the previous assistant response + tool results to the
+conversation.
 
 ---
 
@@ -133,6 +143,14 @@ proc = subprocess.Popen(
 proc.stdin.write(prompt)
 proc.stdin.close()
 
+# WARNING: stderr deadlock risk — reading stdout line-by-line while
+# stderr=subprocess.PIPE can deadlock if the child fills the OS pipe
+# buffer (~64KB on Linux). Claude Code can be verbose on stderr, so
+# the implementation must either:
+#   1. Drain stderr on a separate thread
+#   2. Redirect stderr to a file (stderr=open(log_file, "w"))
+#   3. Use asyncio subprocess with concurrent stream reads
+
 lines = []
 for line in proc.stdout:
     lines.append(line)
@@ -149,7 +167,7 @@ for line in proc.stdout:
 | Area | Impact | Notes |
 |------|--------|-------|
 | Output parsing | **Medium** | `parse_claude_output()` currently expects a single JSON blob. With stream-json, stdout is NDJSON (multiple lines). Need a new parser or adapter that extracts the `result` line. |
-| Error handling | **Low** | `proc.returncode` still available after `proc.wait()`. stderr can be read after stdout is consumed. |
+| Error handling | **Medium** | `proc.returncode` still available after `proc.wait()`. However, reading stdout synchronously while `stderr=PIPE` risks deadlock if stderr fills the OS pipe buffer (~64KB). Must drain stderr concurrently (separate thread, file redirect, or asyncio). |
 | Log file writing | **Low** | Can still collect all lines and write them at the end, or stream to log file in real-time. |
 | Timeout handling | **Medium** | Currently inherited from subprocess.run. With Popen, need explicit timeout via `proc.wait(timeout=...)` or a watchdog thread. |
 | Return value | **None** | `ClaudeResult` dataclass unchanged — populated from the `result` line. |
