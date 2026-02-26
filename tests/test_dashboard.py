@@ -109,6 +109,10 @@ def db_file(tmp_path):
         session_id="sess-abc123def456",
         turns=30,
         duration_seconds=3600.0,
+        input_tokens=50000,
+        output_tokens=15000,
+        total_cost_usd=0.1234,
+        context_fill_pct=72.5,
     )
     insert_stage_run(
         conn,
@@ -118,6 +122,10 @@ def db_file(tmp_path):
         turns=12,
         duration_seconds=1800.0,
         exit_subtype="approved",
+        input_tokens=20000,
+        output_tokens=5000,
+        total_cost_usd=0.0456,
+        context_fill_pct=45.3,
     )
     insert_event(conn, task_id=task_id, event_type="stage_started", detail="implement")
     insert_event(conn, task_id=task_id, event_type="stage_completed", detail="implement")
@@ -229,6 +237,18 @@ class TestPartialSlots:
         resp = client.get("/partials/slots")
         assert "TST-1" in resp.text
         assert "implement" in resp.text
+
+    def test_context_fill_column_present(self, client):
+        resp = client.get("/partials/slots")
+        assert "Context Fill" in resp.text
+
+    def test_busy_slot_shows_context_fill(self, client):
+        """Busy slot with stage run data should show context fill %."""
+        resp = client.get("/partials/slots")
+        body = resp.text
+        # TST-1 is busy, and has stage runs with context_fill_pct
+        # The most recent is review with 45.3%
+        assert "45.3%" in body or "72.5%" in body
 
     def test_dispatch_paused_banner(self, tmp_path):
         db_path = tmp_path / "paused.db"
@@ -748,6 +768,17 @@ class TestHistoryPage:
         assert "Wall Time" in body
         assert "Reviews" in body
         assert "Limit Hits" in body
+        assert "Cost" in body
+        assert "Max Ctx Fill" in body
+
+    def test_history_shows_cost_and_context_fill(self, client):
+        """History rows should display aggregated cost and max context fill."""
+        resp = client.get("/history")
+        body = resp.text
+        # TST-1: total cost = 0.1234 + 0.0456 = 0.1690
+        assert "$0.1690" in body
+        # TST-1: max context fill = 72.5%
+        assert "72.5%" in body
 
     def test_project_dropdown_populated(self, client):
         resp = client.get("/history")
@@ -1004,6 +1035,44 @@ class TestTaskDetailPage:
         assert "TST-2" in body
         assert "Add feature" in body
 
+    def test_contains_token_usage_columns(self, client):
+        """Stage runs table should show token usage and cost columns."""
+        resp = client.get("/task/1")
+        body = resp.text
+        assert "Context Fill" in body
+        assert "Cost" in body
+        assert "Input Tokens" in body
+        assert "Output Tokens" in body
+
+    def test_stage_run_token_values(self, client):
+        """Stage runs should display actual token/cost values from DB."""
+        resp = client.get("/task/1")
+        body = resp.text
+        assert "50,000" in body  # input_tokens formatted
+        assert "15,000" in body  # output_tokens formatted
+        assert "$0.1234" in body  # cost
+        assert "72.5%" in body  # context_fill_pct
+
+    def test_context_fill_color_coding(self, client):
+        """Context fill should be color-coded based on percentage."""
+        resp = client.get("/task/1")
+        body = resp.text
+        # 72.5% should be yellow (50-75%)
+        assert "ctx-fill-yellow" in body
+        # 45.3% should be green (<50%)
+        assert "ctx-fill-green" in body
+
+    def test_task_totals_summary(self, client):
+        """Task detail should show total cost and max context fill."""
+        resp = client.get("/task/1")
+        body = resp.text
+        assert "Total Cost" in body
+        assert "Max Context Fill" in body
+        # Total cost = 0.1234 + 0.0456 = 0.1690
+        assert "$0.1690" in body
+        # Max context fill = 72.5%
+        assert "72.5%" in body
+
 
 # --- Usage Trends ---
 
@@ -1128,6 +1197,27 @@ class TestMetricsPage:
         body = resp.text
         # TST-1 has 1.5h wall time => 1h30m
         assert "1h30m" in body
+
+    def test_contains_token_usage_section(self, client):
+        """Metrics page should show token usage & cost aggregates."""
+        resp = client.get("/metrics")
+        body = resp.text
+        assert "Token Usage" in body
+        assert "Total Input Tokens" in body
+        assert "Total Output Tokens" in body
+        assert "Total Cost" in body
+        assert "Avg Context Fill" in body
+
+    def test_token_aggregate_values(self, client):
+        """Token totals should aggregate from all stage runs."""
+        resp = client.get("/metrics")
+        body = resp.text
+        # 50000 + 20000 = 70000 total input tokens
+        assert "70,000" in body
+        # 15000 + 5000 = 20000 total output tokens
+        assert "20,000" in body
+        # 0.1234 + 0.0456 = 0.17 total cost
+        assert "$0.17" in body
 
 
 # --- start_dashboard ---

@@ -70,6 +70,30 @@
     </article>
 </div>
 
+<h2>Token Usage &amp; Cost</h2>
+<div class="grid">
+    <article class="metric-card">
+        <h2>{{ "{:,}".format(metrics.total_input_tokens) }}</h2>
+        <p>Total Input Tokens</p>
+    </article>
+    <article class="metric-card">
+        <h2>{{ "{:,}".format(metrics.total_output_tokens) }}</h2>
+        <p>Total Output Tokens</p>
+    </article>
+    <article class="metric-card">
+        <h2>${{ "%.2f"|format(metrics.total_cost_usd) }}</h2>
+        <p>Total Cost</p>
+    </article>
+    <article class="metric-card">
+        <h2>{% if metrics.avg_context_fill_pct is not none %}{{ "%.1f"|format(metrics.avg_context_fill_pct) }}%{% else %}-{% endif %}</h2>
+        <p>Avg Context Fill</p>
+    </article>
+    <article class="metric-card">
+        <h2>{{ metrics.tasks_over_80_pct_fill }}</h2>
+        <p>Tasks &gt; 80% Fill</p>
+    </article>
+</div>
+
 {% if metrics.failure_reasons %}
 <h2>Common Failure Reasons</h2>
 <figure>
