@@ -13,7 +13,9 @@ from botfarm.db import (
     count_tasks,
     get_distinct_projects,
     get_events,
+    get_latest_context_fill_by_ticket,
     get_schema_version,
+    get_stage_run_aggregates,
     get_stage_runs,
     get_task,
     get_task_by_ticket,
@@ -1164,6 +1166,75 @@ class TestStageRuns:
         assert row["total_cost_usd"] == pytest.approx(0.0)
         assert row["context_fill_pct"] is None
         assert row["model_usage_json"] is None
+
+
+class TestStageRunAggregates:
+    def test_aggregates_single_task(self, conn):
+        tid = insert_task(conn, ticket_id="AGG-1", title="Agg", project="p", slot=1)
+        insert_stage_run(conn, task_id=tid, stage="implement",
+                         input_tokens=100, output_tokens=50,
+                         total_cost_usd=0.01, context_fill_pct=30.0)
+        insert_stage_run(conn, task_id=tid, stage="review",
+                         input_tokens=200, output_tokens=80,
+                         total_cost_usd=0.02, context_fill_pct=55.0)
+        result = get_stage_run_aggregates(conn, [tid])
+        assert tid in result
+        assert result[tid]["total_input_tokens"] == 300
+        assert result[tid]["total_output_tokens"] == 130
+        assert result[tid]["total_cost_usd"] == pytest.approx(0.03)
+        assert result[tid]["max_context_fill_pct"] == pytest.approx(55.0)
+
+    def test_aggregates_multiple_tasks(self, conn):
+        t1 = insert_task(conn, ticket_id="AGG-2", title="T1", project="p", slot=1)
+        t2 = insert_task(conn, ticket_id="AGG-3", title="T2", project="p", slot=2)
+        insert_stage_run(conn, task_id=t1, stage="implement",
+                         input_tokens=100, output_tokens=50, total_cost_usd=0.01)
+        insert_stage_run(conn, task_id=t2, stage="implement",
+                         input_tokens=200, output_tokens=80, total_cost_usd=0.02)
+        result = get_stage_run_aggregates(conn, [t1, t2])
+        assert t1 in result
+        assert t2 in result
+        assert result[t1]["total_input_tokens"] == 100
+        assert result[t2]["total_input_tokens"] == 200
+
+    def test_empty_task_ids(self, conn):
+        result = get_stage_run_aggregates(conn, [])
+        assert result == {}
+
+    def test_no_matching_tasks(self, conn):
+        result = get_stage_run_aggregates(conn, [9999])
+        assert result == {}
+
+    def test_null_context_fill(self, conn):
+        tid = insert_task(conn, ticket_id="AGG-4", title="NullFill", project="p", slot=1)
+        insert_stage_run(conn, task_id=tid, stage="implement",
+                         input_tokens=100, output_tokens=50)
+        result = get_stage_run_aggregates(conn, [tid])
+        assert result[tid]["max_context_fill_pct"] is None
+
+
+class TestLatestContextFillByTicket:
+    def test_returns_latest_fill(self, conn):
+        tid = insert_task(conn, ticket_id="CTX-1", title="Ctx", project="p", slot=1)
+        insert_stage_run(conn, task_id=tid, stage="implement", context_fill_pct=40.0)
+        insert_stage_run(conn, task_id=tid, stage="review", context_fill_pct=65.0)
+        result = get_latest_context_fill_by_ticket(conn, ["CTX-1"])
+        assert "CTX-1" in result
+        assert result["CTX-1"] == pytest.approx(65.0)
+
+    def test_empty_ticket_ids(self, conn):
+        result = get_latest_context_fill_by_ticket(conn, [])
+        assert result == {}
+
+    def test_no_matching_tickets(self, conn):
+        result = get_latest_context_fill_by_ticket(conn, ["NOPE-1"])
+        assert result == {}
+
+    def test_null_fills_excluded(self, conn):
+        tid = insert_task(conn, ticket_id="CTX-2", title="NullCtx", project="p", slot=1)
+        insert_stage_run(conn, task_id=tid, stage="implement")  # no context_fill_pct
+        result = get_latest_context_fill_by_ticket(conn, ["CTX-2"])
+        assert "CTX-2" not in result
 
 
 # ---------------------------------------------------------------------------

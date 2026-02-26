@@ -43,6 +43,18 @@
         <h2>{{ task.limit_interruptions if task.limit_interruptions is not none else 0 }}</h2>
         <p>Limit Interruptions</p>
     </article>
+    <article class="metric-card">
+        <h2>${{ "%.4f"|format(task_totals.total_cost) }}</h2>
+        <p>Total Cost</p>
+    </article>
+    <article class="metric-card">
+        <h2>
+            {% if task_totals.max_context_fill is not none %}
+            <span class="{{ context_fill_class(task_totals.max_context_fill) }}">{{ "%.1f"|format(task_totals.max_context_fill) }}%</span>
+            {% else %}-{% endif %}
+        </h2>
+        <p>Max Context Fill</p>
+    </article>
 </div>
 
 <!-- Pipeline stepper -->
@@ -103,6 +115,10 @@
                 <th>Iteration</th>
                 <th>Duration</th>
                 <th>Turns</th>
+                <th>Context Fill</th>
+                <th>Cost</th>
+                <th>Input Tokens</th>
+                <th>Output Tokens</th>
                 <th>Session ID</th>
                 <th>Exit Subtype</th>
                 <th>Limit Restart</th>
@@ -115,6 +131,14 @@
                 <td>{{ stage.iteration }}</td>
                 <td>{{ format_duration(stage.duration_seconds | int) if stage.duration_seconds is not none else "-" }}</td>
                 <td>{{ stage.turns if stage.turns is not none else "-" }}</td>
+                <td>
+                    {% if stage.context_fill_pct is not none %}
+                    <span class="{{ context_fill_class(stage.context_fill_pct) }}">{{ "%.1f"|format(stage.context_fill_pct) }}%</span>
+                    {% else %}-{% endif %}
+                </td>
+                <td>${{ "%.4f"|format(stage.total_cost_usd) if stage.total_cost_usd else "0.0000" }}</td>
+                <td>{{ "{:,}".format(stage.input_tokens) if stage.input_tokens else "-" }}</td>
+                <td>{{ "{:,}".format(stage.output_tokens) if stage.output_tokens else "-" }}</td>
                 <td style="font-family: monospace; font-size: 0.8rem;">{{ stage.session_id[:12] if stage.session_id else "-" }}{% if stage.session_id and stage.session_id|length > 12 %}&hellip;{% endif %}</td>
                 <td>{{ stage.exit_subtype if stage.exit_subtype else "-" }}</td>
                 <td>{{ "Yes" if stage.was_limit_restart else "No" }}</td>

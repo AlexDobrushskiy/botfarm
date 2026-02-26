@@ -35,6 +35,8 @@ from botfarm.db import (
     count_tasks,
     get_distinct_projects,
     get_events,
+    get_latest_context_fill_by_ticket,
+    get_stage_run_aggregates,
     get_stage_runs,
     get_task,
     get_task_by_ticket,
@@ -303,6 +305,18 @@ def create_app(
         except (ValueError, TypeError):
             return "-"
 
+    def _context_fill_class(pct: float | None) -> str:
+        """Return CSS class for context fill percentage color coding."""
+        if pct is None:
+            return ""
+        if pct < 50:
+            return "ctx-fill-green"
+        if pct < 75:
+            return "ctx-fill-yellow"
+        if pct < 90:
+            return "ctx-fill-orange"
+        return "ctx-fill-red"
+
     def _linear_url(ticket_id: str) -> str:
         """Build a Linear issue URL from a ticket identifier."""
         ws = app.state.linear_workspace
@@ -350,7 +364,7 @@ def create_app(
     @app.get("/", response_class=HTMLResponse)
     def index(request: Request):
         state = _read_state()
-        slots = state.get("slots", [])
+        slots = _enrich_slots_with_context_fill(state.get("slots", []))
         dispatch_paused = state.get("dispatch_paused", False)
         dispatch_pause_reason = state.get("dispatch_pause_reason")
         usage = state.get("usage", {})
@@ -368,15 +382,39 @@ def create_app(
             "usage_stale": _usage_is_stale(last_usage_check),
             "elapsed": _elapsed,
             "linear_url": _linear_url,
+            "context_fill_class": _context_fill_class,
             "supervisor": _supervisor_status(state),
             "pause_state": _manual_pause_state(state),
             "has_callbacks": app.state.on_pause is not None,
         })
 
+    def _enrich_slots_with_context_fill(slots: list[dict]) -> list[dict]:
+        """Attach latest context_fill_pct to busy slots from the DB."""
+        busy_tickets = [
+            s["ticket_id"] for s in slots
+            if s.get("status") == "busy" and s.get("ticket_id")
+        ]
+        if not busy_tickets:
+            return slots
+        conn = _get_db()
+        if not conn:
+            return slots
+        try:
+            fills = get_latest_context_fill_by_ticket(conn, busy_tickets)
+            for slot in slots:
+                tid = slot.get("ticket_id")
+                if tid and tid in fills:
+                    slot["context_fill_pct"] = fills[tid]
+        except sqlite3.OperationalError:
+            pass
+        finally:
+            conn.close()
+        return slots
+
     @app.get("/partials/slots", response_class=HTMLResponse)
     def partial_slots(request: Request):
         state = _read_state()
-        slots = state.get("slots", [])
+        slots = _enrich_slots_with_context_fill(state.get("slots", []))
         dispatch_paused = state.get("dispatch_paused", False)
         dispatch_pause_reason = state.get("dispatch_pause_reason")
         return templates.TemplateResponse("partials/slots.html", {
@@ -386,6 +424,7 @@ def create_app(
             "dispatch_pause_reason": dispatch_pause_reason,
             "elapsed": _elapsed,
             "linear_url": _linear_url,
+            "context_fill_class": _context_fill_class,
             "supervisor": _supervisor_status(state),
         })
 
@@ -485,8 +524,30 @@ def create_app(
             "elapsed": _elapsed,
         })
 
-    def _enrich_tasks(tasks: list[dict]) -> list[dict]:
-        """Add computed 'duration' field to task dicts."""
+    _EMPTY_TASK_AGGREGATES: dict = {
+        "total_input_tokens": 0,
+        "total_output_tokens": 0,
+        "total_cost_usd": 0.0,
+        "max_context_fill_pct": None,
+    }
+
+    def _enrich_tasks(
+        tasks: list[dict], conn: sqlite3.Connection | None = None,
+    ) -> list[dict]:
+        """Add computed fields to task dicts.
+
+        When *conn* is provided, also attaches aggregated token usage from
+        stage_runs (total_cost_usd, max_context_fill_pct, etc.).
+        """
+        # Aggregate token data in a single query when possible
+        aggregates: dict[int, dict] = {}
+        if conn is not None:
+            task_ids = [t["id"] for t in tasks if t.get("id") is not None]
+            if task_ids:
+                try:
+                    aggregates = get_stage_run_aggregates(conn, task_ids)
+                except sqlite3.OperationalError:
+                    pass
         for task in tasks:
             task["duration"] = "-"
             if task.get("started_at") and task.get("completed_at"):
@@ -502,6 +563,9 @@ def create_app(
                     )
                 except (ValueError, TypeError):
                     pass
+            agg = aggregates.get(task.get("id"), _EMPTY_TASK_AGGREGATES)
+            task["total_cost_usd"] = agg["total_cost_usd"]
+            task["max_context_fill_pct"] = agg["max_context_fill_pct"]
         return tasks
 
     PAGE_SIZE = 25
@@ -535,7 +599,7 @@ def create_app(
                 sort_by=sort_by,
                 sort_dir=sort_dir,
             )
-            return _enrich_tasks([dict(r) for r in rows]), total, total_pages
+            return _enrich_tasks([dict(r) for r in rows], conn), total, total_pages
         except sqlite3.OperationalError:
             return [], 0, 1
 
@@ -600,6 +664,7 @@ def create_app(
             "sort_by": hp["sort_by"],
             "sort_dir": hp["sort_dir"],
             "linear_url": _linear_url,
+            "context_fill_class": _context_fill_class,
             "supervisor": _supervisor_status(_read_state()),
         }
 
@@ -614,6 +679,19 @@ def create_app(
         return templates.TemplateResponse("partials/history.html", ctx)
 
     EVENT_LOG_LIMIT = 500
+
+    def _compute_task_totals(stages: list[dict]) -> dict:
+        """Aggregate token usage and cost from stage runs."""
+        total_input = sum(s.get("input_tokens") or 0 for s in stages)
+        total_output = sum(s.get("output_tokens") or 0 for s in stages)
+        total_cost = sum(s.get("total_cost_usd") or 0.0 for s in stages)
+        fills = [s["context_fill_pct"] for s in stages if s.get("context_fill_pct") is not None]
+        return {
+            "total_input_tokens": total_input,
+            "total_output_tokens": total_output,
+            "total_cost": total_cost,
+            "max_context_fill": max(fills) if fills else None,
+        }
 
     @app.get("/task/{task_id}", response_class=HTMLResponse)
     def task_detail_page(request: Request, task_id: str):
@@ -647,14 +725,17 @@ def create_app(
                     )
             finally:
                 conn.close()
+        task_totals = _compute_task_totals(stages)
         return templates.TemplateResponse("task_detail.html", {
             "request": request,
             "task": task,
             "stages": stages,
             "events": events,
             "pipeline": pipeline,
+            "task_totals": task_totals,
             "linear_url": _linear_url,
             "format_duration": _format_duration,
+            "context_fill_class": _context_fill_class,
             "supervisor": _supervisor_status(_read_state()),
         })
 
@@ -759,6 +840,27 @@ def create_app(
             if bucket_row:
                 metrics[f"completed_{label}"] = bucket_row["cnt"] or 0
 
+        # Token usage & cost aggregates from stage_runs
+        try:
+            token_row = conn.execute(
+                "SELECT SUM(sr.input_tokens) as total_in, "
+                "SUM(sr.output_tokens) as total_out, "
+                "SUM(sr.total_cost_usd) as total_cost, "
+                "AVG(sr.context_fill_pct) as avg_fill, "
+                "COUNT(DISTINCT CASE WHEN sr.context_fill_pct > 80 THEN sr.task_id END) as tasks_over_80 "
+                "FROM stage_runs sr "
+                "JOIN tasks t ON sr.task_id = t.id" + where,
+                params,
+            ).fetchone()
+            if token_row:
+                metrics["total_input_tokens"] = token_row["total_in"] or 0
+                metrics["total_output_tokens"] = token_row["total_out"] or 0
+                metrics["total_cost_usd"] = token_row["total_cost"] or 0.0
+                metrics["avg_context_fill_pct"] = token_row["avg_fill"]
+                metrics["tasks_over_80_pct_fill"] = token_row["tasks_over_80"] or 0
+        except sqlite3.OperationalError:
+            pass
+
         # Most common failure reasons
         reason_rows = conn.execute(
             "SELECT failure_reason, COUNT(*) as cnt "
@@ -780,6 +882,9 @@ def create_app(
         "avg_wall_time_seconds": 0, "success_rate": 0.0,
         "completed_today": 0, "completed_week": 0,
         "completed_month": 0, "failure_reasons": [],
+        "total_input_tokens": 0, "total_output_tokens": 0,
+        "total_cost_usd": 0.0, "avg_context_fill_pct": None,
+        "tasks_over_80_pct_fill": 0,
     }
 
     @app.get("/metrics", response_class=HTMLResponse)

@@ -373,6 +373,66 @@ def get_stage_runs(conn: sqlite3.Connection, task_id: int) -> list[sqlite3.Row]:
     ).fetchall()
 
 
+def get_latest_context_fill_by_ticket(
+    conn: sqlite3.Connection, ticket_ids: list[str],
+) -> dict[str, float | None]:
+    """Return the most recent context_fill_pct for each ticket.
+
+    Used to display context fill on the live status page for busy slots.
+    """
+    if not ticket_ids:
+        return {}
+    placeholders = ",".join("?" for _ in ticket_ids)
+    rows = conn.execute(
+        "SELECT t.ticket_id, sr.context_fill_pct "
+        "FROM stage_runs sr "
+        "JOIN tasks t ON sr.task_id = t.id "
+        f"WHERE t.ticket_id IN ({placeholders}) "
+        "AND sr.context_fill_pct IS NOT NULL "
+        "ORDER BY sr.created_at DESC",
+        ticket_ids,
+    ).fetchall()
+    # Take the first (most recent) per ticket
+    result: dict[str, float | None] = {}
+    for r in rows:
+        tid = r["ticket_id"]
+        if tid not in result:
+            result[tid] = r["context_fill_pct"]
+    return result
+
+
+def get_stage_run_aggregates(
+    conn: sqlite3.Connection, task_ids: list[int],
+) -> dict[int, dict]:
+    """Return aggregated token usage per task for a batch of task IDs.
+
+    Returns a dict mapping task_id -> {total_input_tokens, total_output_tokens,
+    total_cost_usd, max_context_fill_pct}.
+    """
+    if not task_ids:
+        return {}
+    placeholders = ",".join("?" for _ in task_ids)
+    rows = conn.execute(
+        "SELECT task_id, "
+        "SUM(input_tokens) as total_input_tokens, "
+        "SUM(output_tokens) as total_output_tokens, "
+        "SUM(total_cost_usd) as total_cost_usd, "
+        "MAX(context_fill_pct) as max_context_fill_pct "
+        f"FROM stage_runs WHERE task_id IN ({placeholders}) "
+        "GROUP BY task_id",
+        task_ids,
+    ).fetchall()
+    return {
+        r["task_id"]: {
+            "total_input_tokens": r["total_input_tokens"] or 0,
+            "total_output_tokens": r["total_output_tokens"] or 0,
+            "total_cost_usd": r["total_cost_usd"] or 0.0,
+            "max_context_fill_pct": r["max_context_fill_pct"],
+        }
+        for r in rows
+    }
+
+
 # ---------------------------------------------------------------------------
 # Usage snapshot helpers
 # ---------------------------------------------------------------------------

@@ -14,6 +14,7 @@
             <th>Status</th>
             <th>Ticket</th>
             <th>Stage</th>
+            <th>Context Fill</th>
             <th>Elapsed</th>
             <th>PID</th>
         </tr>
@@ -41,6 +42,11 @@
                 {% if slot.stage_iteration is defined and slot.stage_iteration > 1 %}
                     (iter {{ slot.stage_iteration }})
                 {% endif %}
+            </td>
+            <td>
+                {% if slot.context_fill_pct is defined and slot.context_fill_pct is not none %}
+                <span class="{{ context_fill_class(slot.context_fill_pct) }}">{{ "%.1f"|format(slot.context_fill_pct) }}%</span>
+                {% else %}-{% endif %}
             </td>
             <td>{{ elapsed(slot.started_at) }}</td>
             <td>{{ slot.pid or "-" }}</td>
