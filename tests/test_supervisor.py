@@ -2922,7 +2922,7 @@ class TestCheckPrStatus:
 
         assert result == "merged"
         # Verify it used the DB URL, not the slot URL
-        mock_state.assert_called_once_with(db_pr_url)
+        mock_state.assert_called_once_with(db_pr_url, env=supervisor._git_env)
 
     def test_falls_back_to_slot_pr_url_when_db_has_none(self, supervisor):
         """When DB has no pr_url, falls back to slot.pr_url."""
@@ -2948,7 +2948,7 @@ class TestCheckPrStatus:
             result = supervisor._check_pr_status(slot)
 
         assert result == "open"
-        mock_state.assert_called_once_with(slot_url)
+        mock_state.assert_called_once_with(slot_url, env=supervisor._git_env)
 
     def test_db_pr_url_used_for_merged_detection(self, supervisor):
         """_handle_completed_slot uses DB pr_url to detect merged PR and move to Done."""
@@ -3476,7 +3476,7 @@ class TestSlotWorktreeCwd:
             supervisor._check_pr_status(slot)
 
             expected_cwd = str(tmp_path / "test-project-slot-1")
-            mock_branch_lookup.assert_called_once_with("b1", expected_cwd)
+            mock_branch_lookup.assert_called_once_with("b1", expected_cwd, env=supervisor._git_env)
 
     def test_dispatch_worker_seeds_slot_db(self, supervisor, tmp_path):
         """_dispatch_worker creates a sandboxed slot DB and passes it to worker."""

@@ -47,6 +47,34 @@ _CODER_STAGES = frozenset({"implement", "fix", "pr_checks", "merge"})
 _REVIEWER_STAGES = frozenset({"review"})
 
 
+def _build_ssh_command(key_path_str: str) -> str:
+    """Return a ``GIT_SSH_COMMAND`` value for the given SSH key path."""
+    key_path = Path(key_path_str).expanduser()
+    return (
+        f"ssh -i {key_path} "
+        "-o IdentitiesOnly=yes "
+        "-o StrictHostKeyChecking=accept-new "
+        "-o ControlMaster=no "
+        "-o ControlPath=none"
+    )
+
+
+def build_git_env(identities: IdentitiesConfig) -> dict[str, str] | None:
+    """Build env dict with coder SSH key and GH_TOKEN for supervisor-level git operations.
+
+    Returns ``None`` if neither SSH key nor GitHub token is configured.
+    This is for supervisor operations (git fetch, git ls-remote, gh pr view)
+    — not for worker Claude subprocesses (use :func:`build_coder_env` for those).
+    """
+    coder = identities.coder
+    env: dict[str, str] = {}
+    if coder.ssh_key_path:
+        env["GIT_SSH_COMMAND"] = _build_ssh_command(coder.ssh_key_path)
+    if coder.github_token:
+        env["GH_TOKEN"] = coder.github_token
+    return env if env else None
+
+
 def build_coder_env(
     identities: IdentitiesConfig,
     slot_db_path: str | Path | None = None,
@@ -58,14 +86,7 @@ def build_coder_env(
 
     identity = identities.coder
     if identity.ssh_key_path:
-        key_path = Path(identity.ssh_key_path).expanduser()
-        env["GIT_SSH_COMMAND"] = (
-            f"ssh -i {key_path} "
-            "-o IdentitiesOnly=yes "
-            "-o StrictHostKeyChecking=accept-new "
-            "-o ControlMaster=no "
-            "-o ControlPath=none"
-        )
+        env["GIT_SSH_COMMAND"] = _build_ssh_command(identity.ssh_key_path)
     if identity.github_token:
         env["GH_TOKEN"] = identity.github_token
     if identity.git_author_name:
@@ -921,6 +942,13 @@ def run_pipeline(
 
     pr_url: str | None = None
 
+    # Build per-role env overrides for Claude subprocesses.
+    # When identities are configured, coder stages get SSH/git/GH_TOKEN
+    # and reviewer stages get their own GH_TOKEN.
+    ident = identities or IdentitiesConfig()
+    coder_env = build_coder_env(ident, slot_db_path) or None
+    reviewer_env = build_reviewer_env(ident, slot_db_path) or None
+
     # Validate resume_from_stage upfront
     if resume_from_stage and resume_from_stage not in STAGES:
         pipeline.failure_stage = resume_from_stage
@@ -930,19 +958,12 @@ def run_pipeline(
 
     # When resuming, recover PR URL from existing stage_runs
     if resume_from_stage:
-        pr_url = _recover_pr_url(conn, task_id, cwd)
+        pr_url = _recover_pr_url(conn, task_id, cwd, env=coder_env)
         if pr_url:
             pipeline.pr_url = pr_url
 
     # Determine which stages to skip when resuming
     skipping = resume_from_stage is not None
-
-    # Build per-role env overrides for Claude subprocesses.
-    # When identities are configured, coder stages get SSH/git/GH_TOKEN
-    # and reviewer stages get their own GH_TOKEN.
-    ident = identities or IdentitiesConfig()
-    coder_env = build_coder_env(ident, slot_db_path) or None
-    reviewer_env = build_reviewer_env(ident, slot_db_path) or None
 
     # Shared context for _run_and_record helper
     ctx = _PipelineContext(
@@ -1782,12 +1803,16 @@ def _check_pr_merged(pr_url: str, cwd: str | Path, *, env: dict[str, str] | None
     return False
 
 
-def _recover_pr_url(conn, task_id: int, cwd: str | Path) -> str | None:
+def _recover_pr_url(
+    conn, task_id: int, cwd: str | Path,
+    *, env: dict[str, str] | None = None,
+) -> str | None:
     """Recover the PR URL for a resumed pipeline.
 
     First checks ``gh pr view`` in the working directory, then falls back
     to scanning previous stage_run records in the database.
     """
+    subprocess_env = {**os.environ, **env} if env else None
     # Try gh pr view to get current branch's PR URL
     try:
         proc = subprocess.run(
@@ -1795,6 +1820,7 @@ def _recover_pr_url(conn, task_id: int, cwd: str | Path) -> str | None:
             capture_output=True,
             text=True,
             cwd=str(cwd),
+            env=subprocess_env,
         )
         if proc.returncode == 0 and proc.stdout.strip():
             url = proc.stdout.strip()

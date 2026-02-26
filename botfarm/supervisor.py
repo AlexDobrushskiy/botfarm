@@ -36,7 +36,7 @@ from botfarm.notifications import Notifier
 from botfarm.preflight import log_preflight_summary, run_preflight_checks
 from botfarm.slots import SlotManager, SlotState, _is_pid_alive
 from botfarm.usage import DEFAULT_PAUSE_5H_THRESHOLD, DEFAULT_PAUSE_7D_THRESHOLD, UsagePoller
-from botfarm.worker import STAGES, PipelineResult, run_pipeline
+from botfarm.worker import STAGES, PipelineResult, build_git_env, run_pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -319,6 +319,10 @@ class Supervisor:
 
         # Usage stall detection: (project, slot_id) -> _StallInfo
         self._stall_tracking: dict[tuple[str, int], _StallInfo] = {}
+
+        # Environment overrides for supervisor-level git/gh commands
+        # (GIT_SSH_COMMAND, GH_TOKEN from coder identity).
+        self._git_env = build_git_env(config.identities)
 
     @property
     def slot_manager(self) -> SlotManager:
@@ -747,7 +751,7 @@ class Supervisor:
             project_cfg = self._projects.get(slot.project)
             if project_cfg:
                 cwd = self._slot_worktree_cwd(project_cfg, slot.slot_id)
-                pr_ref = self._gh_pr_url_for_branch(slot.branch, cwd)
+                pr_ref = self._gh_pr_url_for_branch(slot.branch, cwd, env=self._git_env)
                 if pr_ref:
                     source = "gh_branch_lookup"
 
@@ -758,7 +762,7 @@ class Supervisor:
             )
             return None
 
-        state = self._gh_pr_state(pr_ref)
+        state = self._gh_pr_state(pr_ref, env=self._git_env)
         logger.info(
             "PR status for %s/%d: url=%s, source=%s, state=%s",
             slot.project, slot.slot_id, pr_ref, source, state,
@@ -766,14 +770,19 @@ class Supervisor:
         return state
 
     @staticmethod
-    def _gh_pr_url_for_branch(branch: str | None, cwd: str) -> str | None:
+    def _gh_pr_url_for_branch(
+        branch: str | None, cwd: str,
+        *, env: dict[str, str] | None = None,
+    ) -> str | None:
         """Get the PR URL for a branch via ``gh pr view``."""
         if not branch:
             return None
+        subprocess_env = {**os.environ, **env} if env else None
         try:
             proc = subprocess.run(
                 ["gh", "pr", "view", branch, "--json", "url", "--jq", ".url"],
                 capture_output=True, text=True, cwd=cwd, timeout=15,
+                env=subprocess_env,
             )
             if proc.returncode == 0 and proc.stdout.strip():
                 url = proc.stdout.strip()
@@ -784,12 +793,17 @@ class Supervisor:
         return None
 
     @staticmethod
-    def _gh_pr_state(pr_ref: str) -> str | None:
+    def _gh_pr_state(
+        pr_ref: str,
+        *, env: dict[str, str] | None = None,
+    ) -> str | None:
         """Query a PR's state (``OPEN``, ``MERGED``, ``CLOSED``)."""
+        subprocess_env = {**os.environ, **env} if env else None
         try:
             proc = subprocess.run(
                 ["gh", "pr", "view", pr_ref, "--json", "state", "--jq", ".state"],
                 capture_output=True, text=True, timeout=15,
+                env=subprocess_env,
             )
             if proc.returncode == 0:
                 state = proc.stdout.strip().upper()
@@ -860,7 +874,7 @@ class Supervisor:
         self._conn.commit()
 
         # Run pre-flight health checks before entering main loop
-        preflight_results = run_preflight_checks(self._config)
+        preflight_results = run_preflight_checks(self._config, env=self._git_env)
         if not log_preflight_summary(preflight_results):
             insert_event(
                 self._conn,
@@ -891,6 +905,7 @@ class Supervisor:
                 on_resume=self.request_resume,
                 on_update=self.request_update,
                 update_failed_event=self._update_failed_event,
+                git_env=self._git_env,
             )
 
         # Initial usage poll so we have data before the first dispatch
@@ -1873,7 +1888,7 @@ class Supervisor:
         )
         self._conn.commit()
 
-        if not pull_and_install():
+        if not pull_and_install(env=self._git_env):
             logger.error("Update failed — aborting restart")
             insert_event(
                 self._conn,

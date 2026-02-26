@@ -7,6 +7,7 @@ Provides functions to check how many commits the local HEAD is behind
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -17,17 +18,26 @@ logger = logging.getLogger(__name__)
 UPDATE_EXIT_CODE = 42
 
 
-def commits_behind(repo_dir: str | Path | None = None) -> int:
+def commits_behind(
+    repo_dir: str | Path | None = None,
+    *,
+    env: dict[str, str] | None = None,
+) -> int:
     """Return the number of commits HEAD is behind ``origin/main``.
 
     Runs ``git fetch origin`` followed by
     ``git rev-list HEAD..origin/main --count``.
+
+    When *env* is provided (e.g. ``GIT_SSH_COMMAND``), it is merged into
+    the current environment for the subprocess calls.
 
     Returns 0 when already up-to-date or on any git error.
     """
     kwargs: dict = {"capture_output": True, "text": True, "timeout": 30}
     if repo_dir is not None:
         kwargs["cwd"] = str(repo_dir)
+    if env:
+        kwargs["env"] = {**os.environ, **env}
 
     try:
         subprocess.run(
@@ -52,16 +62,25 @@ def commits_behind(repo_dir: str | Path | None = None) -> int:
         return 0
 
 
-def pull_and_install(repo_dir: str | Path | None = None) -> bool:
+def pull_and_install(
+    repo_dir: str | Path | None = None,
+    *,
+    env: dict[str, str] | None = None,
+) -> bool:
     """Pull latest ``origin/main`` and reinstall the package.
 
     Runs ``git pull origin main`` then ``sys.executable -m pip install -e .``.
+
+    When *env* is provided (e.g. ``GIT_SSH_COMMAND``), it is merged into
+    the current environment for the subprocess calls.
 
     Returns ``True`` on success, ``False`` on any error.
     """
     kwargs: dict = {"capture_output": True, "text": True, "timeout": 120}
     if repo_dir is not None:
         kwargs["cwd"] = str(repo_dir)
+    if env:
+        kwargs["env"] = {**os.environ, **env}
 
     try:
         subprocess.run(
