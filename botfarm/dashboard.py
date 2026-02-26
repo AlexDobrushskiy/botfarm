@@ -1301,6 +1301,21 @@ def create_app(
 
     # --- Log viewer ---
 
+    MAX_LOG_DISPLAY = 2 * 1024 * 1024  # 2 MB
+
+    def _read_log_file(path: Path) -> str:
+        """Read a log file with size guard — tail-truncate if over MAX_LOG_DISPLAY."""
+        try:
+            stat = path.stat()
+            if stat.st_size > MAX_LOG_DISPLAY:
+                with open(path, errors="replace") as f:
+                    f.seek(stat.st_size - MAX_LOG_DISPLAY)
+                    f.readline()  # skip partial line
+                    return "... (truncated, showing last 2 MB) ...\n" + f.read()
+            return path.read_text(errors="replace")
+        except OSError:
+            return ""
+
     def _find_log_files(ticket_id: str, stage: str | None = None) -> list[Path]:
         """Find log files for a ticket, optionally filtered by stage.
 
@@ -1337,29 +1352,24 @@ def create_app(
         files = _find_log_files(ticket_id, stage)
         return files[0] if files else None
 
+    _ALL_LOG_STAGES = list(STAGES) + ["ci_fix"]
+
     def _available_stages_with_logs(ticket_id: str) -> list[str]:
         """Return stage names that have log files, in canonical order."""
         files = _find_log_files(ticket_id)
         if not files:
             return []
-        # Extract stage name from filename (part before first '-' or '.')
         found = set()
         for f in files:
             name = f.name
-            for s in STAGES:
+            for s in _ALL_LOG_STAGES:
                 if name.startswith(s) and (
                     len(name) == len(s)
                     or name[len(s)] in ("-", ".")
                 ):
                     found.add(s)
                     break
-            # Also match ci_fix logs
-            if name.startswith("ci_fix") and (
-                len(name) == len("ci_fix")
-                or name[len("ci_fix")] in ("-", ".")
-            ):
-                found.add("ci_fix")
-        return [s for s in list(STAGES) + ["ci_fix"] if s in found]
+        return [s for s in _ALL_LOG_STAGES if s in found]
 
     def _is_stage_active(ticket_id: str, stage: str) -> bool:
         """Check if a stage is currently running for this ticket."""
@@ -1434,10 +1444,7 @@ def create_app(
         if not is_live:
             log_file = _find_latest_log(ticket_id, default_stage)
             if log_file:
-                try:
-                    log_content = log_file.read_text(errors="replace")
-                except OSError:
-                    log_content = None
+                log_content = _read_log_file(log_file) or None
 
         return templates.TemplateResponse("log_viewer.html", {
             "request": request,
@@ -1464,10 +1471,7 @@ def create_app(
         if not is_live:
             log_file = _find_latest_log(ticket_id, stage)
             if log_file:
-                try:
-                    log_content = log_file.read_text(errors="replace")
-                except OSError:
-                    log_content = None
+                log_content = _read_log_file(log_file) or None
 
         return templates.TemplateResponse("log_viewer.html", {
             "request": request,
@@ -1492,12 +1496,14 @@ def create_app(
             try:
                 with open(log_file, errors="replace") as f:
                     while True:
-                        line = f.readline()
+                        line = await asyncio.to_thread(f.readline)
                         if line:
                             yield {"event": "log", "data": line.rstrip("\n")}
                         else:
                             # Check if the stage is still active
-                            if not _is_stage_active(ticket_id, stage):
+                            if not await asyncio.to_thread(
+                                _is_stage_active, ticket_id, stage
+                            ):
                                 yield {"event": "done", "data": ""}
                                 break
                             await asyncio.sleep(0.5)
@@ -1512,11 +1518,10 @@ def create_app(
         log_file = _find_latest_log(ticket_id, stage)
         if log_file is None:
             return PlainTextResponse("No log file found", status_code=404)
-        try:
-            content = log_file.read_text(errors="replace")
-            return PlainTextResponse(content)
-        except OSError:
+        content = _read_log_file(log_file)
+        if not content:
             return PlainTextResponse("Failed to read log file", status_code=500)
+        return PlainTextResponse(content)
 
     return app
 
