@@ -323,7 +323,6 @@ def run_claude_streaming(
     # Read stdout line-by-line (NDJSON)
     stdout_lines: list[str] = []
     turn_number = 0
-    context_window = _DEFAULT_CONTEXT_WINDOW
     claude_result: ClaudeResult | None = None
 
     for line in proc.stdout:
@@ -344,7 +343,7 @@ def run_claude_streaming(
             turn_number += 1
             usage = (event.get("message") or {}).get("usage")
             if usage and on_context_fill is not None:
-                fill_pct = _compute_turn_context_fill(usage, context_window)
+                fill_pct = _compute_turn_context_fill(usage, _DEFAULT_CONTEXT_WINDOW)
                 if fill_pct is not None:
                     try:
                         on_context_fill(turn_number, fill_pct)
@@ -354,14 +353,6 @@ def run_claude_streaming(
                         )
 
         elif msg_type == "result":
-            # Update context_window from modelUsage if available
-            model_usage = event.get("modelUsage")
-            if model_usage:
-                for _model, info in model_usage.items():
-                    cw = info.get("contextWindow")
-                    if cw and cw > 0:
-                        context_window = cw
-                        break
             claude_result = _parse_stream_result(event)
 
     proc.wait()
@@ -1296,8 +1287,10 @@ def _run_ci_retry_loop(
         )
         ctx.conn.commit()
 
+        _sr_id = ci_fix_stage_run_id
+
         def _ci_fix_on_fill(turn: int, fill_pct: float) -> None:
-            update_stage_run_context_fill(ctx.conn, ci_fix_stage_run_id, fill_pct)
+            update_stage_run_context_fill(ctx.conn, _sr_id, fill_pct)
 
         try:
             fix_result = _run_ci_fix(
