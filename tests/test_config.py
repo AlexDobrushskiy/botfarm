@@ -9,11 +9,14 @@ import yaml
 from botfarm.config import (
     AgentsConfig,
     BotfarmConfig,
+    CoderIdentity,
     ConfigError,
+    IdentitiesConfig,
     LinearConfig,
     LoggingConfig,
     NotificationsConfig,
     ProjectConfig,
+    ReviewerIdentity,
     UsageLimitsConfig,
     apply_config_updates,
     create_default_config,
@@ -1344,3 +1347,80 @@ class TestWriteStructuralConfigUpdates:
         })
         data = yaml.safe_load(config_path.read_text())
         assert data["linear"]["api_key"] == "${LINEAR_API_KEY}"
+
+
+# --- Identities config ---
+
+
+def test_load_config_identities_with_values(tmp_path):
+    data = {
+        **MINIMAL_CONFIG,
+        "identities": {
+            "coder": {
+                "github_token": "ghp_coder123",
+                "ssh_key_path": "~/.botfarm/coder_id_ed25519",
+                "git_author_name": "Coder Bot",
+                "git_author_email": "coder@example.com",
+                "linear_api_key": "lin_api_coder",
+            },
+            "reviewer": {
+                "github_token": "ghp_reviewer456",
+                "linear_api_key": "lin_api_reviewer",
+            },
+        },
+    }
+    config_path = _write_config(tmp_path, data)
+    config = load_config(config_path)
+
+    assert isinstance(config.identities, IdentitiesConfig)
+    assert isinstance(config.identities.coder, CoderIdentity)
+    assert isinstance(config.identities.reviewer, ReviewerIdentity)
+    assert config.identities.coder.github_token == "ghp_coder123"
+    assert config.identities.coder.ssh_key_path == "~/.botfarm/coder_id_ed25519"
+    assert config.identities.coder.git_author_name == "Coder Bot"
+    assert config.identities.coder.git_author_email == "coder@example.com"
+    assert config.identities.coder.linear_api_key == "lin_api_coder"
+    assert config.identities.reviewer.github_token == "ghp_reviewer456"
+    assert config.identities.reviewer.linear_api_key == "lin_api_reviewer"
+
+
+def test_load_config_identities_absent(tmp_path):
+    config_path = _write_config(tmp_path, MINIMAL_CONFIG)
+    config = load_config(config_path)
+
+    assert isinstance(config.identities, IdentitiesConfig)
+    assert config.identities.coder.github_token == ""
+    assert config.identities.coder.ssh_key_path == ""
+    assert config.identities.coder.git_author_name == ""
+    assert config.identities.coder.git_author_email == ""
+    assert config.identities.coder.linear_api_key == ""
+    assert config.identities.reviewer.github_token == ""
+    assert config.identities.reviewer.linear_api_key == ""
+
+
+def test_load_config_identities_non_dict_raises(tmp_path):
+    data = {**MINIMAL_CONFIG, "identities": "bad"}
+    config_path = _write_config(tmp_path, data)
+    with pytest.raises(ConfigError, match="'identities' must be a mapping"):
+        load_config(config_path)
+
+
+def test_load_config_identities_env_var_expansion(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODER_GH_TOKEN", "ghp_expanded")
+    monkeypatch.setenv("REVIEWER_GH_TOKEN", "ghp_rev_expanded")
+    data = {
+        **MINIMAL_CONFIG,
+        "identities": {
+            "coder": {
+                "github_token": "${CODER_GH_TOKEN}",
+            },
+            "reviewer": {
+                "github_token": "${REVIEWER_GH_TOKEN}",
+            },
+        },
+    }
+    config_path = _write_config(tmp_path, data)
+    config = load_config(config_path)
+
+    assert config.identities.coder.github_token == "ghp_expanded"
+    assert config.identities.reviewer.github_token == "ghp_rev_expanded"
