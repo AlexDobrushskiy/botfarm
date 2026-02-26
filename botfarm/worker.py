@@ -14,15 +14,14 @@ import os
 import re
 import sqlite3
 import subprocess
+import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-import threading
-from collections.abc import Callable
-
-from botfarm.db import insert_event, insert_stage_run, update_stage_run_context_fill, update_task
+from botfarm.db import delete_stage_run, insert_event, insert_stage_run, update_stage_run_context_fill, update_task
 from botfarm.slots import update_slot_stage
 
 logger = logging.getLogger(__name__)
@@ -411,6 +410,29 @@ class StageResult:
 
 
 # ---------------------------------------------------------------------------
+# Claude invocation helper
+# ---------------------------------------------------------------------------
+
+
+def _invoke_claude(
+    prompt: str,
+    *,
+    cwd: str | Path,
+    max_turns: int,
+    log_file: Path | None = None,
+    env: dict[str, str] | None = None,
+    on_context_fill: ContextFillCallback | None = None,
+) -> ClaudeResult:
+    """Run Claude via streaming or non-streaming path depending on callback."""
+    if on_context_fill is not None:
+        return run_claude_streaming(
+            prompt, cwd=cwd, max_turns=max_turns,
+            log_file=log_file, env=env, on_context_fill=on_context_fill,
+        )
+    return run_claude(prompt, cwd=cwd, max_turns=max_turns, log_file=log_file, env=env)
+
+
+# ---------------------------------------------------------------------------
 # Individual stage implementations
 # ---------------------------------------------------------------------------
 
@@ -430,13 +452,10 @@ def _run_implement(
         "Follow the Linear Tickets workflow in CLAUDE.md. "
         "Complete all steps through PR creation. Do not stop until the PR is created."
     )
-    if on_context_fill is not None:
-        result = run_claude_streaming(
-            prompt, cwd=cwd, max_turns=max_turns, log_file=log_file,
-            env=env, on_context_fill=on_context_fill,
-        )
-    else:
-        result = run_claude(prompt, cwd=cwd, max_turns=max_turns, log_file=log_file, env=env)
+    result = _invoke_claude(
+        prompt, cwd=cwd, max_turns=max_turns, log_file=log_file,
+        env=env, on_context_fill=on_context_fill,
+    )
 
     if result.is_error:
         return StageResult(
@@ -490,13 +509,10 @@ def _run_review(
         "  VERDICT: APPROVED\n"
         "  VERDICT: CHANGES_REQUESTED"
     )
-    if on_context_fill is not None:
-        result = run_claude_streaming(
-            prompt, cwd=cwd, max_turns=max_turns, log_file=log_file,
-            env=env, on_context_fill=on_context_fill,
-        )
-    else:
-        result = run_claude(prompt, cwd=cwd, max_turns=max_turns, log_file=log_file, env=env)
+    result = _invoke_claude(
+        prompt, cwd=cwd, max_turns=max_turns, log_file=log_file,
+        env=env, on_context_fill=on_context_fill,
+    )
 
     if result.is_error:
         return StageResult(
@@ -542,13 +558,10 @@ def _run_fix(
         "- If fixed but clarification helps: reply \"Fixed — [what changed]\"\n"
         "- If intentionally not fixed: reply with a brief explanation why"
     )
-    if on_context_fill is not None:
-        result = run_claude_streaming(
-            prompt, cwd=cwd, max_turns=max_turns, log_file=log_file,
-            env=env, on_context_fill=on_context_fill,
-        )
-    else:
-        result = run_claude(prompt, cwd=cwd, max_turns=max_turns, log_file=log_file, env=env)
+    result = _invoke_claude(
+        prompt, cwd=cwd, max_turns=max_turns, log_file=log_file,
+        env=env, on_context_fill=on_context_fill,
+    )
 
     if result.is_error:
         return StageResult(
@@ -618,13 +631,10 @@ def _run_ci_fix(
         "then run tests locally, commit and push the fixes.\n\n"
         f"CI failure output:\n{ci_failure_output[:2000]}"
     )
-    if on_context_fill is not None:
-        result = run_claude_streaming(
-            prompt, cwd=cwd, max_turns=max_turns, log_file=log_file,
-            env=env, on_context_fill=on_context_fill,
-        )
-    else:
-        result = run_claude(prompt, cwd=cwd, max_turns=max_turns, log_file=log_file, env=env)
+    result = _invoke_claude(
+        prompt, cwd=cwd, max_turns=max_turns, log_file=log_file,
+        env=env, on_context_fill=on_context_fill,
+    )
 
     if result.is_error:
         return StageResult(
@@ -1084,6 +1094,8 @@ class _PipelineContext:
             )
         except Exception as exc:
             logger.error("Stage '%s' raised: %s", stage, exc)
+            if stage_run_id is not None:
+                delete_stage_run(self.conn, stage_run_id)
             self.pipeline.failure_stage = stage
             self.pipeline.failure_reason = str(exc)[:500]
             _record_failure(self.conn, self.task_id, self.pipeline)
@@ -1296,6 +1308,7 @@ def _run_ci_retry_loop(
             )
         except Exception as exc:
             logger.error("CI fix stage raised: %s", exc)
+            delete_stage_run(ctx.conn, ci_fix_stage_run_id)
             ctx.pipeline.failure_stage = "fix"
             ctx.pipeline.failure_reason = str(exc)[:500]
             _record_failure(ctx.conn, ctx.task_id, ctx.pipeline)

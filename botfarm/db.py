@@ -390,6 +390,16 @@ def update_stage_run_context_fill(
     conn.commit()
 
 
+def delete_stage_run(conn: sqlite3.Connection, stage_run_id: int) -> None:
+    """Delete a stage_run row by id.
+
+    Used to clean up placeholder rows when a stage fails before
+    producing final metrics, preventing orphaned rows with NULL data.
+    """
+    conn.execute("DELETE FROM stage_runs WHERE id = ?", (stage_run_id,))
+    conn.commit()
+
+
 def get_latest_context_fill_by_ticket(
     conn: sqlite3.Connection, ticket_ids: list[str],
 ) -> dict[str, float | None]:
