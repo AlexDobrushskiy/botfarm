@@ -442,9 +442,13 @@ class TestPartialQueue:
 
 
 class TestSlotPanelEnhancements:
-    def test_pid_displayed(self, client):
+    def test_links_header_present(self, client):
         resp = client.get("/partials/slots")
-        assert "1234" in resp.text
+        assert "<th>Links</th>" in resp.text
+
+    def test_progress_header_present(self, client):
+        resp = client.get("/partials/slots")
+        assert "<th>Progress</th>" in resp.text
 
     def test_ticket_link(self, client):
         resp = client.get("/partials/slots")
@@ -475,9 +479,252 @@ class TestSlotPanelEnhancements:
         assert "resume-countdown" in resp.text
         assert "2099-12-31T23:59:00" in resp.text
 
-    def test_pid_header_present(self, client):
+    def test_task_detail_link(self, client):
+        """Busy slot with ticket_id shows task detail link."""
         resp = client.get("/partials/slots")
-        assert "<th>PID</th>" in resp.text
+        assert '/task/TST-1' in resp.text
+        assert ">detail</a>" in resp.text
+
+    def test_pr_link_shown(self, tmp_path):
+        """Slot with pr_url shows PR link."""
+        db_path = tmp_path / "pr_link.db"
+        conn = init_db(db_path)
+        _seed_slot(
+            conn, "proj", 1, status="busy",
+            ticket_id="T-1", ticket_title="Test",
+            stage="pr_checks", pr_url="https://github.com/org/repo/pull/42",
+        )
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=db_path)
+        client = TestClient(app)
+        resp = client.get("/partials/slots")
+        assert "https://github.com/org/repo/pull/42" in resp.text
+        assert ">PR</a>" in resp.text
+
+    def test_no_pr_link_when_absent(self, client):
+        """Slot without pr_url does not show PR link."""
+        resp = client.get("/partials/slots")
+        assert ">PR</a>" not in resp.text
+
+
+class TestSlotPipeline:
+    """Tests for the visual stage pipeline progress in the slots table."""
+
+    def test_busy_slot_shows_pipeline(self, tmp_path):
+        """Busy slot displays pipeline dots."""
+        db_path = tmp_path / "pipeline.db"
+        conn = init_db(db_path)
+        _seed_slot(
+            conn, "proj", 1, status="busy",
+            ticket_id="T-1", ticket_title="Test",
+            stage="review", stages_completed=["implement"],
+        )
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=db_path)
+        client = TestClient(app)
+        resp = client.get("/partials/slots")
+        body = resp.text
+        assert "slot-pipeline" in body
+        assert "slot-pipe-dot-completed" in body
+        assert "slot-pipe-dot-active" in body
+        assert "slot-pipe-dot-pending" in body
+
+    def test_pipeline_completed_stages(self, tmp_path):
+        """Completed stages get checkmark class, active gets active class."""
+        db_path = tmp_path / "pipeline2.db"
+        conn = init_db(db_path)
+        _seed_slot(
+            conn, "proj", 1, status="busy",
+            ticket_id="T-1", ticket_title="Test",
+            stage="fix",
+            stages_completed=["implement", "review"],
+        )
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=db_path)
+        client = TestClient(app)
+        resp = client.get("/partials/slots")
+        body = resp.text
+        # 2 completed dots, 1 active, 2 pending
+        assert body.count("slot-pipe-dot-completed") == 2
+        assert body.count("slot-pipe-dot-active") == 1
+        assert body.count("slot-pipe-dot-pending") == 2
+
+    def test_pipeline_connectors(self, tmp_path):
+        """Connectors between stages are colored based on completion."""
+        db_path = tmp_path / "connectors.db"
+        conn = init_db(db_path)
+        _seed_slot(
+            conn, "proj", 1, status="busy",
+            ticket_id="T-1", ticket_title="Test",
+            stage="fix",
+            stages_completed=["implement", "review"],
+        )
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=db_path)
+        client = TestClient(app)
+        resp = client.get("/partials/slots")
+        body = resp.text
+        # After implement(completed) and review(completed): 2 completed connectors
+        # After fix(active) and pr_checks(pending): 2 pending connectors
+        assert body.count("slot-pipe-line-completed") == 2
+        assert body.count("slot-pipe-line-pending") == 2
+
+    def test_free_slot_no_pipeline(self, tmp_path):
+        """Free slot shows dash instead of pipeline."""
+        db_path = tmp_path / "free.db"
+        conn = init_db(db_path)
+        _seed_slot(conn, "proj", 1, status="free")
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=db_path)
+        client = TestClient(app)
+        resp = client.get("/partials/slots")
+        assert "slot-pipeline" not in resp.text
+
+    def test_failed_slot_shows_failed_dot(self, tmp_path):
+        """Failed slot shows failed state on current stage."""
+        db_path = tmp_path / "failed.db"
+        conn = init_db(db_path)
+        _seed_slot(
+            conn, "proj", 1, status="failed",
+            ticket_id="T-1", ticket_title="Test",
+            stage="review",
+            stages_completed=["implement"],
+        )
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=db_path)
+        client = TestClient(app)
+        resp = client.get("/partials/slots")
+        assert "slot-pipe-dot-failed" in resp.text
+
+
+class TestStageElapsed:
+    """Tests for per-stage elapsed time display."""
+
+    def test_stage_elapsed_shown(self, tmp_path):
+        """Busy slot with stage_started_at shows stage elapsed time."""
+        db_path = tmp_path / "stage_elapsed.db"
+        conn = init_db(db_path)
+        _seed_slot(
+            conn, "proj", 1, status="busy",
+            ticket_id="T-1", ticket_title="Test",
+            stage="implement", stage_started_at="2026-02-26T10:00:00+00:00",
+            started_at="2026-02-26T09:00:00+00:00",
+        )
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=db_path)
+        client = TestClient(app)
+        resp = client.get("/partials/slots")
+        assert "stage-elapsed" in resp.text
+        assert "stage:" in resp.text
+
+    def test_no_stage_elapsed_for_free_slot(self, tmp_path):
+        """Free slot does not show stage elapsed."""
+        db_path = tmp_path / "free_elapsed.db"
+        conn = init_db(db_path)
+        _seed_slot(conn, "proj", 1, status="free")
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=db_path)
+        client = TestClient(app)
+        resp = client.get("/partials/slots")
+        assert "stage-elapsed" not in resp.text
+
+
+class TestIterationContext:
+    """Tests for iteration context display."""
+
+    def test_fix_loop_label(self, tmp_path):
+        """Fix stage with iteration > 1 shows 'loop N' badge."""
+        db_path = tmp_path / "fix_loop.db"
+        conn = init_db(db_path)
+        _seed_slot(
+            conn, "proj", 1, status="busy",
+            ticket_id="T-1", ticket_title="Test",
+            stage="fix", stage_iteration=2,
+            stages_completed=["implement", "review"],
+        )
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=db_path)
+        client = TestClient(app)
+        resp = client.get("/partials/slots")
+        assert "loop 2" in resp.text
+        assert "slot-iter-badge" in resp.text
+
+    def test_pr_checks_retry_label(self, tmp_path):
+        """PR checks stage with iteration > 1 shows 'retry N' badge."""
+        db_path = tmp_path / "retry.db"
+        conn = init_db(db_path)
+        _seed_slot(
+            conn, "proj", 1, status="busy",
+            ticket_id="T-1", ticket_title="Test",
+            stage="pr_checks", stage_iteration=3,
+            stages_completed=["implement", "review", "fix"],
+        )
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=db_path)
+        client = TestClient(app)
+        resp = client.get("/partials/slots")
+        assert "retry 3" in resp.text
+
+    def test_generic_iter_label(self, tmp_path):
+        """Non-fix/pr_checks stage with iteration > 1 shows 'iter N'."""
+        db_path = tmp_path / "iter.db"
+        conn = init_db(db_path)
+        _seed_slot(
+            conn, "proj", 1, status="busy",
+            ticket_id="T-1", ticket_title="Test",
+            stage="implement", stage_iteration=2,
+        )
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=db_path)
+        client = TestClient(app)
+        resp = client.get("/partials/slots")
+        assert "iter 2" in resp.text
+
+    def test_no_iter_badge_for_first_iteration(self, tmp_path):
+        """First iteration does not show iteration badge."""
+        db_path = tmp_path / "no_iter.db"
+        conn = init_db(db_path)
+        _seed_slot(
+            conn, "proj", 1, status="busy",
+            ticket_id="T-1", ticket_title="Test",
+            stage="implement", stage_iteration=1,
+        )
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=db_path)
+        client = TestClient(app)
+        resp = client.get("/partials/slots")
+        assert "slot-iter-badge" not in resp.text
+
+    def test_paused_limit_shows_interrupted_label(self, tmp_path):
+        """Paused-limit slot with interrupted_by_limit shows label."""
+        db_path = tmp_path / "interrupted.db"
+        conn = init_db(db_path)
+        _seed_slot(
+            conn, "proj", 1, status="paused_limit",
+            ticket_id="T-1", ticket_title="Test",
+            stage="implement",
+            interrupted_by_limit=True,
+            resume_after="2099-12-31T23:59:00+00:00",
+        )
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=db_path)
+        client = TestClient(app)
+        resp = client.get("/partials/slots")
+        assert "limit interrupted" in resp.text
+        assert "slot-limit-label" in resp.text
 
 
 # --- Usage Panel enhancements ---

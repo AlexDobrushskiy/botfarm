@@ -195,6 +195,69 @@
             .pipeline-label { font-size: 0.65rem; }
         }
 
+        /* Compact slot pipeline */
+        .slot-pipeline {
+            display: flex;
+            align-items: center;
+        }
+        .slot-pipe-dot {
+            width: 1.1rem;
+            height: 1.1rem;
+            border-radius: 50%;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.55rem;
+            font-weight: bold;
+            flex-shrink: 0;
+        }
+        .slot-pipe-dot-completed {
+            background: var(--pico-ins-color);
+            color: #fff;
+        }
+        .slot-pipe-dot-active {
+            border: 2px solid var(--pico-color-yellow-500, #eab308);
+            color: var(--pico-color-yellow-500, #eab308);
+            animation: pulse-border 1.5s ease-in-out infinite;
+        }
+        .slot-pipe-dot-pending {
+            border: 2px solid var(--pico-muted-color);
+            color: var(--pico-muted-color);
+        }
+        .slot-pipe-dot-failed {
+            background: var(--pico-del-color);
+            color: #fff;
+        }
+        .slot-pipe-line {
+            width: 0.5rem;
+            height: 2px;
+            flex-shrink: 0;
+        }
+        .slot-pipe-line-completed { background: var(--pico-ins-color); }
+        .slot-pipe-line-pending { background: var(--pico-muted-color); }
+        .slot-pipeline-info {
+            font-size: 0.75rem;
+            color: var(--pico-muted-color);
+            margin-top: 0.15rem;
+            white-space: nowrap;
+        }
+        .slot-iter-badge {
+            display: inline-block;
+            font-size: 0.65rem;
+            background: var(--pico-color-yellow-500, #eab308);
+            color: #000;
+            padding: 0 0.3rem;
+            border-radius: 0.5rem;
+            margin-left: 0.25rem;
+        }
+        .slot-limit-label {
+            color: var(--pico-color-purple-400, #c084fc);
+            font-size: 0.75rem;
+        }
+        .stage-elapsed { color: var(--pico-muted-color); }
+        .slot-links { white-space: nowrap; font-size: 0.8rem; }
+        .slot-links a { margin-right: 0.5rem; }
+
         /* Failure reason truncation */
         .failure-reason { max-width: 600px; }
         .failure-reason details summary {
