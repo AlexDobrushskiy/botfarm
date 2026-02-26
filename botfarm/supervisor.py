@@ -2316,3 +2316,7 @@ def setup_logging(
         ch.setLevel(level)
         ch.setFormatter(fmt)
         root.addHandler(ch)
+
+    # Suppress noisy HTTP client logs
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)

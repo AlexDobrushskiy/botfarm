@@ -1011,6 +1011,18 @@ class TestSetupLogging:
         finally:
             root.handlers = original_handlers
 
+    def test_suppresses_httpx_httpcore_logging(self, tmp_path):
+        log_dir = tmp_path / "logs"
+        root = logging.getLogger()
+        original_handlers = root.handlers[:]
+        try:
+            root.handlers = []
+            setup_logging(log_dir, console=False)
+            assert logging.getLogger("httpx").level == logging.WARNING
+            assert logging.getLogger("httpcore").level == logging.WARNING
+        finally:
+            root.handlers = original_handlers
+
 
 # ---------------------------------------------------------------------------
 # _setup_worker_logging
