@@ -195,6 +195,7 @@ identities:
     linear_api_key: ${CODER_LINEAR_API_KEY}       # Coder's own Linear API key
   reviewer:
     github_token: ${REVIEWER_GITHUB_TOKEN}        # PAT for gh CLI (review commands)
+    linear_api_key: ${REVIEWER_LINEAR_API_KEY}    # Reviewer's own Linear API key
 ```
 
 All fields default to empty string. Environment variable expansion (`${VAR}`) works in all string fields.

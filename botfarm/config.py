@@ -79,6 +79,7 @@ agents:
 #     linear_api_key: ${CODER_LINEAR_API_KEY}
 #   reviewer:
 #     github_token: ${REVIEWER_GITHUB_TOKEN}
+#     linear_api_key: ${REVIEWER_LINEAR_API_KEY}
 
 # notifications:
 #   webhook_url: https://hooks.slack.com/services/...
@@ -173,6 +174,7 @@ class CoderIdentity:
 @dataclass
 class ReviewerIdentity:
     github_token: str = ""
+    linear_api_key: str = ""
 
 
 @dataclass
@@ -494,6 +496,8 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
     )
 
     ident_data = data.get("identities", {})
+    if ident_data and not isinstance(ident_data, dict):
+        raise ConfigError("'identities' must be a mapping")
     coder_data = ident_data.get("coder", {}) if isinstance(ident_data, dict) else {}
     reviewer_data = ident_data.get("reviewer", {}) if isinstance(ident_data, dict) else {}
     identities = IdentitiesConfig(
@@ -506,6 +510,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         ),
         reviewer=ReviewerIdentity(
             github_token=str(reviewer_data.get("github_token", "")),
+            linear_api_key=str(reviewer_data.get("linear_api_key", "")),
         ),
     )
 

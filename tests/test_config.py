@@ -1365,6 +1365,7 @@ def test_load_config_identities_with_values(tmp_path):
             },
             "reviewer": {
                 "github_token": "ghp_reviewer456",
+                "linear_api_key": "lin_api_reviewer",
             },
         },
     }
@@ -1380,6 +1381,7 @@ def test_load_config_identities_with_values(tmp_path):
     assert config.identities.coder.git_author_email == "coder@example.com"
     assert config.identities.coder.linear_api_key == "lin_api_coder"
     assert config.identities.reviewer.github_token == "ghp_reviewer456"
+    assert config.identities.reviewer.linear_api_key == "lin_api_reviewer"
 
 
 def test_load_config_identities_absent(tmp_path):
@@ -1393,6 +1395,14 @@ def test_load_config_identities_absent(tmp_path):
     assert config.identities.coder.git_author_email == ""
     assert config.identities.coder.linear_api_key == ""
     assert config.identities.reviewer.github_token == ""
+    assert config.identities.reviewer.linear_api_key == ""
+
+
+def test_load_config_identities_non_dict_raises(tmp_path):
+    data = {**MINIMAL_CONFIG, "identities": "bad"}
+    config_path = _write_config(tmp_path, data)
+    with pytest.raises(ConfigError, match="'identities' must be a mapping"):
+        load_config(config_path)
 
 
 def test_load_config_identities_env_var_expansion(tmp_path, monkeypatch):
