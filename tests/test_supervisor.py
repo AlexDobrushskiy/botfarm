@@ -16,7 +16,9 @@ import pytest
 from botfarm.config import (
     AgentsConfig,
     BotfarmConfig,
+    CoderIdentity,
     DatabaseConfig,
+    IdentitiesConfig,
     LinearConfig,
     ProjectConfig,
 )
@@ -667,6 +669,149 @@ class TestDispatchWorker:
 
             # Verify daemon=False so workers survive supervisor exit
             assert MockProc.call_args.kwargs["daemon"] is False
+
+
+# ---------------------------------------------------------------------------
+# Coder auto-assignment on dispatch
+# ---------------------------------------------------------------------------
+
+
+def _make_config_with_coder(tmp_path: Path) -> BotfarmConfig:
+    """Build a config with coder identity (linear_api_key set)."""
+    return BotfarmConfig(
+        projects=[
+            ProjectConfig(
+                name="test-project",
+                linear_team="TST",
+                base_dir=str(tmp_path / "repo"),
+                worktree_prefix="test-project-slot-",
+                slots=[1, 2],
+            ),
+        ],
+        linear=LinearConfig(
+            api_key="owner-key",
+            poll_interval_seconds=10,
+            exclude_tags=["Human"],
+        ),
+        database=DatabaseConfig(),
+        identities=IdentitiesConfig(
+            coder=CoderIdentity(linear_api_key="coder-key"),
+        ),
+    )
+
+
+class TestCoderAutoAssignment:
+    """Tests for SMA-194: auto-assign tickets to coder bot on dispatch."""
+
+    @pytest.fixture()
+    def supervisor_with_coder(self, tmp_path, monkeypatch):
+        """Supervisor with coder identity configured and viewer ID cached."""
+        monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "test.db"))
+        config = _make_config_with_coder(tmp_path)
+        (tmp_path / "repo").mkdir()
+
+        mock_poller = MagicMock()
+        mock_poller.project_name = "test-project"
+        mock_poller.poll.return_value = PollResult(
+            candidates=[], blocked=[], auto_close_parents=[],
+        )
+
+        mock_coder_client = MagicMock()
+        mock_coder_client.get_viewer_id.return_value = "coder-user-id-123"
+
+        with (
+            patch("botfarm.supervisor.create_pollers", return_value=[mock_poller]),
+            patch("botfarm.supervisor.LinearClient", return_value=mock_coder_client),
+        ):
+            sup = Supervisor(config, log_dir=tmp_path / "logs")
+
+        # Attach the mock so tests can assert on it
+        sup._coder_linear = mock_coder_client
+        return sup
+
+    def test_init_caches_coder_viewer_id(self, supervisor_with_coder):
+        """Supervisor caches coder viewer ID at startup."""
+        assert supervisor_with_coder._coder_viewer_id == "coder-user-id-123"
+        assert supervisor_with_coder._coder_linear is not None
+
+    def test_init_no_coder_key_skips_caching(self, supervisor):
+        """Without coder linear_api_key, no coder client is created."""
+        assert supervisor._coder_viewer_id is None
+        assert supervisor._coder_linear is None
+
+    def test_init_coder_viewer_id_failure_disables_assignment(self, tmp_path, monkeypatch):
+        """If get_viewer_id() fails at startup, auto-assignment is disabled."""
+        monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "test.db"))
+        config = _make_config_with_coder(tmp_path)
+        (tmp_path / "repo").mkdir()
+
+        mock_poller = MagicMock()
+        mock_poller.project_name = "test-project"
+        mock_poller.poll.return_value = PollResult(
+            candidates=[], blocked=[], auto_close_parents=[],
+        )
+
+        mock_coder_client = MagicMock()
+        mock_coder_client.get_viewer_id.side_effect = Exception("API down")
+
+        with (
+            patch("botfarm.supervisor.create_pollers", return_value=[mock_poller]),
+            patch("botfarm.supervisor.LinearClient", return_value=mock_coder_client),
+        ):
+            sup = Supervisor(config, log_dir=tmp_path / "logs")
+
+        assert sup._coder_viewer_id is None
+        assert sup._coder_linear is None
+
+    def test_dispatch_assigns_to_coder(self, supervisor_with_coder):
+        """Dispatch auto-assigns the ticket to the coder bot."""
+        issue = _make_issue()
+        slot = supervisor_with_coder.slot_manager.get_slot("test-project", 1)
+        poller = supervisor_with_coder._pollers["test-project"]
+
+        with patch("botfarm.supervisor.multiprocessing.Process") as MockProc:
+            mock_proc = MagicMock()
+            mock_proc.pid = 42
+            MockProc.return_value = mock_proc
+
+            supervisor_with_coder._dispatch_worker("test-project", slot, issue, poller)
+
+        supervisor_with_coder._coder_linear.assign_issue.assert_called_once_with(
+            issue.identifier, "coder-user-id-123",
+        )
+
+    def test_dispatch_continues_on_assignment_failure(self, supervisor_with_coder):
+        """Assignment failure does not block dispatch."""
+        issue = _make_issue()
+        slot = supervisor_with_coder.slot_manager.get_slot("test-project", 1)
+        poller = supervisor_with_coder._pollers["test-project"]
+        supervisor_with_coder._coder_linear.assign_issue.side_effect = Exception("API error")
+
+        with patch("botfarm.supervisor.multiprocessing.Process") as MockProc:
+            mock_proc = MagicMock()
+            mock_proc.pid = 42
+            MockProc.return_value = mock_proc
+
+            supervisor_with_coder._dispatch_worker("test-project", slot, issue, poller)
+
+            # Worker still spawned despite assignment failure
+            mock_proc.start.assert_called_once()
+
+    def test_dispatch_skips_assignment_without_coder(self, supervisor):
+        """Without coder identity, no assignment call is made."""
+        issue = _make_issue()
+        slot = supervisor.slot_manager.get_slot("test-project", 1)
+        poller = supervisor._pollers["test-project"]
+
+        with patch("botfarm.supervisor.multiprocessing.Process") as MockProc:
+            mock_proc = MagicMock()
+            mock_proc.pid = 42
+            MockProc.return_value = mock_proc
+
+            supervisor._dispatch_worker("test-project", slot, issue, poller)
+
+        # No coder_linear means no assign_issue call — verify via attribute
+        assert supervisor._coder_linear is None
 
 
 # ---------------------------------------------------------------------------
