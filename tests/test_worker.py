@@ -665,6 +665,139 @@ class TestRunClaudeStreaming:
         call_kwargs = mock_popen.call_args.kwargs
         assert call_kwargs["env"]["BOTFARM_DB_PATH"] == "/tmp/slot.db"
 
+    @patch("botfarm.worker.subprocess.Popen")
+    def test_timeout_kills_process(self, mock_popen, tmp_path):
+        """When the process exceeds the timeout, it is killed and TimeoutError is raised."""
+        import threading
+
+        # Simulate a process that blocks forever on stdout
+        block = threading.Event()
+        ndjson = _make_stream_ndjson()
+        lines = ndjson.splitlines(keepends=True)
+
+        def slow_iter():
+            yield lines[0]  # emit the init line
+            block.wait(timeout=10)  # block until killed
+
+        mock_proc = MagicMock()
+        mock_proc.stdin = MagicMock()
+        mock_proc.stdout = slow_iter()
+        mock_proc.stderr = iter([])
+        mock_proc.returncode = -9  # killed by signal
+        mock_proc.wait.return_value = -9
+        # When kill() is called, unblock the iterator
+        mock_proc.kill.side_effect = lambda: block.set()
+        mock_popen.return_value = mock_proc
+
+        with pytest.raises(TimeoutError, match="timed out after 0.1s"):
+            run_claude_streaming(
+                "do stuff", cwd=tmp_path, max_turns=10, timeout=0.1,
+            )
+        mock_proc.kill.assert_called_once()
+
+    @patch("botfarm.worker.subprocess.Popen")
+    def test_no_timeout_when_process_completes(self, mock_popen, tmp_path):
+        """Normal completion with a timeout set should not raise."""
+        ndjson = _make_stream_ndjson()
+        mock_proc = MagicMock()
+        mock_proc.stdin = MagicMock()
+        mock_proc.stdout = iter(ndjson.splitlines(keepends=True))
+        mock_proc.stderr = iter([])
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = 0
+        mock_popen.return_value = mock_proc
+
+        result = run_claude_streaming(
+            "do stuff", cwd=tmp_path, max_turns=10, timeout=30,
+        )
+        assert result.session_id == "sess-stream"
+        mock_proc.kill.assert_not_called()
+
+    @patch("botfarm.worker.subprocess.Popen")
+    def test_realtime_log_writing(self, mock_popen, tmp_path):
+        """Log file is written line-by-line during streaming, not post-hoc."""
+        ndjson = _make_stream_ndjson()
+        lines_written = []
+
+        # Track lines as they arrive by intercepting stdout iteration
+        real_lines = ndjson.splitlines(keepends=True)
+
+        mock_proc = MagicMock()
+        mock_proc.stdin = MagicMock()
+        mock_proc.stdout = iter(real_lines)
+        mock_proc.stderr = iter(["some warning\n"])
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = 0
+        mock_popen.return_value = mock_proc
+
+        log_file = tmp_path / "logs" / "stream.log"
+        run_claude_streaming(
+            "do stuff", cwd=tmp_path, max_turns=10, log_file=log_file,
+        )
+
+        assert log_file.exists()
+        content = log_file.read_text()
+        # All NDJSON lines should be present
+        assert "sess-stream" in content
+        # Stderr should be appended
+        assert "--- STDERR ---" in content
+        assert "some warning" in content
+
+    @patch("botfarm.worker.subprocess.Popen")
+    def test_realtime_log_no_stderr_section_when_empty(self, mock_popen, tmp_path):
+        """No STDERR section in log when stderr is empty."""
+        ndjson = _make_stream_ndjson()
+        mock_proc = MagicMock()
+        mock_proc.stdin = MagicMock()
+        mock_proc.stdout = iter(ndjson.splitlines(keepends=True))
+        mock_proc.stderr = iter([])
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = 0
+        mock_popen.return_value = mock_proc
+
+        log_file = tmp_path / "stream.log"
+        run_claude_streaming(
+            "do stuff", cwd=tmp_path, max_turns=10, log_file=log_file,
+        )
+
+        content = log_file.read_text()
+        assert "sess-stream" in content
+        assert "STDERR" not in content
+
+    @patch("botfarm.worker.subprocess.Popen")
+    def test_timeout_with_log_file(self, mock_popen, tmp_path):
+        """Timeout still writes partial log and closes the file handle."""
+        import threading
+
+        block = threading.Event()
+        ndjson = _make_stream_ndjson()
+        lines = ndjson.splitlines(keepends=True)
+
+        def slow_iter():
+            yield lines[0]  # emit init line
+            block.wait(timeout=10)
+
+        mock_proc = MagicMock()
+        mock_proc.stdin = MagicMock()
+        mock_proc.stdout = slow_iter()
+        mock_proc.stderr = iter([])
+        mock_proc.returncode = -9
+        mock_proc.wait.return_value = -9
+        mock_proc.kill.side_effect = lambda: block.set()
+        mock_popen.return_value = mock_proc
+
+        log_file = tmp_path / "timeout.log"
+        with pytest.raises(TimeoutError):
+            run_claude_streaming(
+                "do stuff", cwd=tmp_path, max_turns=10,
+                log_file=log_file, timeout=0.1,
+            )
+
+        # Partial log should exist with at least the init line
+        assert log_file.exists()
+        content = log_file.read_text()
+        assert "system" in content or "init" in content
+
 
 # ---------------------------------------------------------------------------
 # _write_subprocess_log / _make_stage_log_path

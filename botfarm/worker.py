@@ -269,6 +269,7 @@ def run_claude_streaming(
     log_file: Path | None = None,
     env: dict[str, str] | None = None,
     on_context_fill: ContextFillCallback | None = None,
+    timeout: float | None = None,
 ) -> ClaudeResult:
     """Run ``claude`` with streaming output and per-turn context fill callbacks.
 
@@ -281,6 +282,11 @@ def run_claude_streaming(
     identical to what ``run_claude()`` returns.
 
     Stderr is drained on a separate thread to prevent pipe deadlocks.
+
+    If *timeout* is given (in seconds), a watchdog thread kills the
+    process when the deadline is exceeded and ``TimeoutError`` is raised.
+    If *log_file* is given, each NDJSON line is flushed to disk in
+    real-time so that external tools can tail the log during execution.
     """
     cmd = [
         "claude",
@@ -320,40 +326,84 @@ def run_claude_streaming(
     stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
     stderr_thread.start()
 
+    # Watchdog: kill the process if it exceeds the timeout.
+    # Uses two events: ``cancel_watchdog`` to stop the timer early (normal
+    # completion) and ``timed_out`` so the main thread can detect a timeout.
+    cancel_watchdog = threading.Event()
+    timed_out = threading.Event()
+
+    def _watchdog():
+        if not cancel_watchdog.wait(timeout):
+            # Timeout elapsed before cancellation — kill the process
+            timed_out.set()
+            try:
+                proc.kill()
+            except OSError:
+                pass
+
+    watchdog_thread: threading.Thread | None = None
+    if timeout is not None and timeout > 0:
+        watchdog_thread = threading.Thread(target=_watchdog, daemon=True)
+        watchdog_thread.start()
+
+    # Open log file for real-time writing (if configured)
+    log_fh = None
+    if log_file is not None:
+        try:
+            log_file.parent.mkdir(parents=True, exist_ok=True)
+            log_fh = log_file.open("w")
+        except OSError:
+            logger.warning("Failed to open log file %s for streaming", log_file, exc_info=True)
+
     # Read stdout line-by-line (NDJSON)
     stdout_lines: list[str] = []
     turn_number = 0
     claude_result: ClaudeResult | None = None
 
-    for line in proc.stdout:
-        stdout_lines.append(line)
-        stripped = line.strip()
-        if not stripped:
-            continue
+    try:
+        for line in proc.stdout:
+            stdout_lines.append(line)
 
-        try:
-            event = json.loads(stripped)
-        except json.JSONDecodeError:
-            logger.debug("Skipping non-JSON stream line: %s", stripped[:100])
-            continue
+            # Write to log file in real-time
+            if log_fh is not None:
+                try:
+                    log_fh.write(line)
+                    log_fh.flush()
+                except OSError:
+                    pass
 
-        msg_type = event.get("type")
+            stripped = line.strip()
+            if not stripped:
+                continue
 
-        if msg_type == "assistant":
-            turn_number += 1
-            usage = (event.get("message") or {}).get("usage")
-            if usage and on_context_fill is not None:
-                fill_pct = _compute_turn_context_fill(usage, _DEFAULT_CONTEXT_WINDOW)
-                if fill_pct is not None:
-                    try:
-                        on_context_fill(turn_number, fill_pct)
-                    except Exception:
-                        logger.debug(
-                            "on_context_fill callback failed", exc_info=True,
-                        )
+            try:
+                event = json.loads(stripped)
+            except json.JSONDecodeError:
+                logger.debug("Skipping non-JSON stream line: %s", stripped[:100])
+                continue
 
-        elif msg_type == "result":
-            claude_result = _parse_stream_result(event)
+            msg_type = event.get("type")
+
+            if msg_type == "assistant":
+                turn_number += 1
+                usage = (event.get("message") or {}).get("usage")
+                if usage and on_context_fill is not None:
+                    fill_pct = _compute_turn_context_fill(usage, _DEFAULT_CONTEXT_WINDOW)
+                    if fill_pct is not None:
+                        try:
+                            on_context_fill(turn_number, fill_pct)
+                        except Exception:
+                            logger.debug(
+                                "on_context_fill callback failed", exc_info=True,
+                            )
+
+            elif msg_type == "result":
+                claude_result = _parse_stream_result(event)
+    finally:
+        # Cancel watchdog
+        cancel_watchdog.set()
+        if watchdog_thread is not None:
+            watchdog_thread.join(timeout=2)
 
     proc.wait()
     stderr_thread.join(timeout=5)
@@ -361,8 +411,21 @@ def run_claude_streaming(
     stdout_text = "".join(stdout_lines)
     stderr_text = "".join(stderr_lines)
 
-    if log_file is not None:
-        _write_subprocess_log(log_file, stdout_text, stderr_text)
+    # Append stderr to log file and close
+    if log_fh is not None:
+        try:
+            if stderr_text:
+                log_fh.write("\n--- STDERR ---\n")
+                log_fh.write(stderr_text)
+        except OSError:
+            pass
+        finally:
+            log_fh.close()
+
+    if timed_out.is_set() and proc.returncode in (-9, 137, None):
+        raise TimeoutError(
+            f"claude streaming process timed out after {timeout}s"
+        )
 
     if proc.returncode != 0:
         logger.error(
@@ -413,12 +476,14 @@ def _invoke_claude(
     log_file: Path | None = None,
     env: dict[str, str] | None = None,
     on_context_fill: ContextFillCallback | None = None,
+    timeout: float | None = None,
 ) -> ClaudeResult:
     """Run Claude via streaming or non-streaming path depending on callback."""
     if on_context_fill is not None:
         return run_claude_streaming(
             prompt, cwd=cwd, max_turns=max_turns,
             log_file=log_file, env=env, on_context_fill=on_context_fill,
+            timeout=timeout,
         )
     return run_claude(prompt, cwd=cwd, max_turns=max_turns, log_file=log_file, env=env)
 
