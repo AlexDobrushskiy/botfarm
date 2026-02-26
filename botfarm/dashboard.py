@@ -1283,6 +1283,10 @@ def create_app(
                 "max_review_iterations": cfg.agents.max_review_iterations,
                 "max_ci_retries": cfg.agents.max_ci_retries,
                 "timeout_minutes": dict(cfg.agents.timeout_minutes),
+                "timeout_overrides": {
+                    label: dict(stages)
+                    for label, stages in cfg.agents.timeout_overrides.items()
+                },
                 "timeout_grace_seconds": cfg.agents.timeout_grace_seconds,
             },
             "usage_limits": {
@@ -1328,6 +1332,10 @@ def create_app(
                 "max_review_iterations": cfg.agents.max_review_iterations,
                 "max_ci_retries": cfg.agents.max_ci_retries,
                 "timeout_minutes": dict(cfg.agents.timeout_minutes),
+                "timeout_overrides": {
+                    label: dict(stages)
+                    for label, stages in cfg.agents.timeout_overrides.items()
+                },
                 "timeout_grace_seconds": cfg.agents.timeout_grace_seconds,
             },
             "notifications": {

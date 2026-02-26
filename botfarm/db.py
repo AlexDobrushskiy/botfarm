@@ -586,6 +586,7 @@ def upsert_slot(conn: sqlite3.Connection, slot_data: dict) -> None:
     Accepts a dict matching SlotState.to_dict() format.
     """
     stages = json.dumps(slot_data.get("stages_completed") or [])
+    labels = json.dumps(slot_data.get("ticket_labels") or [])
     now = _now_iso()
     conn.execute(
         """
@@ -593,8 +594,8 @@ def upsert_slot(conn: sqlite3.Connection, slot_data: dict) -> None:
             project, slot_id, status, ticket_id, ticket_title, branch,
             pr_url, stage, stage_iteration, current_session_id, started_at,
             stage_started_at, sigterm_sent_at, pid, interrupted_by_limit,
-            resume_after, stages_completed, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            resume_after, stages_completed, ticket_labels, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(project, slot_id) DO UPDATE SET
             status=excluded.status,
             ticket_id=excluded.ticket_id,
@@ -611,6 +612,7 @@ def upsert_slot(conn: sqlite3.Connection, slot_data: dict) -> None:
             interrupted_by_limit=excluded.interrupted_by_limit,
             resume_after=excluded.resume_after,
             stages_completed=excluded.stages_completed,
+            ticket_labels=excluded.ticket_labels,
             updated_at=excluded.updated_at
         """,
         (
@@ -631,6 +633,7 @@ def upsert_slot(conn: sqlite3.Connection, slot_data: dict) -> None:
             int(slot_data.get("interrupted_by_limit", False)),
             slot_data.get("resume_after"),
             stages,
+            labels,
             now,
         ),
     )

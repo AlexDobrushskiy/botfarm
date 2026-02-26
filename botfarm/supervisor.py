@@ -29,7 +29,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import FrameType
 
-from botfarm.config import BotfarmConfig, ProjectConfig
+from botfarm.config import BotfarmConfig, ProjectConfig, resolve_stage_timeout
 from botfarm.db import get_task, init_db, insert_event, insert_task, resolve_db_path, save_queue_entries, update_task
 from botfarm.linear import LinearPoller, create_pollers
 from botfarm.notifications import Notifier
@@ -75,6 +75,7 @@ def _worker_entry(
     *,
     ticket_id: str,
     ticket_title: str,
+    ticket_labels: list[str] | None = None,
     task_id: int,
     project_name: str,
     slot_id: int,
@@ -122,6 +123,7 @@ def _worker_entry(
     try:
         result: PipelineResult = run_pipeline(
             ticket_id=ticket_id,
+            ticket_labels=ticket_labels or [],
             task_id=task_id,
             cwd=cwd,
             conn=conn,
@@ -638,6 +640,7 @@ class Supervisor:
             kwargs={
                 "ticket_id": slot.ticket_id,
                 "ticket_title": slot.ticket_title or "",
+                "ticket_labels": slot.ticket_labels or [],
                 "task_id": task_id or 0,
                 "project_name": project_name,
                 "slot_id": slot.slot_id,
@@ -1032,8 +1035,8 @@ class Supervisor:
         if the grace period has elapsed and the process is still alive,
         escalates to SIGKILL.  This avoids blocking the supervisor loop.
         """
-        timeout_cfg = self._config.agents.timeout_minutes
-        grace = self._config.agents.timeout_grace_seconds
+        agents_cfg = self._config.agents
+        grace = agents_cfg.timeout_grace_seconds
         now = datetime.now(timezone.utc)
 
         for slot in self._slot_manager.busy_slots():
@@ -1049,7 +1052,9 @@ class Supervisor:
             if not slot.stage_started_at:
                 continue
 
-            limit_minutes = timeout_cfg.get(slot.stage)
+            limit_minutes = resolve_stage_timeout(
+                agents_cfg, slot.stage, slot.ticket_labels,
+            )
             if limit_minutes is None:
                 continue
 
@@ -1608,6 +1613,7 @@ class Supervisor:
             kwargs={
                 "ticket_id": slot.ticket_id,
                 "ticket_title": slot.ticket_title or "",
+                "ticket_labels": slot.ticket_labels or [],
                 "task_id": task_id or 0,
                 "project_name": project_name,
                 "slot_id": slot.slot_id,
@@ -1772,6 +1778,7 @@ class Supervisor:
             kwargs={
                 "ticket_id": slot.ticket_id,
                 "ticket_title": slot.ticket_title or "",
+                "ticket_labels": slot.ticket_labels or [],
                 "task_id": task_id or 0,
                 "project_name": project_name,
                 "slot_id": slot.slot_id,
@@ -2071,13 +2078,14 @@ class Supervisor:
             )
             return
 
-        # Assign ticket to slot
+        # Assign ticket to slot (with labels for timeout overrides)
         self._slot_manager.assign_ticket(
             project_name,
             slot.slot_id,
             ticket_id=issue.identifier,
             ticket_title=issue.title,
             branch=branch,
+            ticket_labels=issue.labels or [],
         )
 
         # Create task record in DB
@@ -2126,6 +2134,7 @@ class Supervisor:
             kwargs={
                 "ticket_id": issue.identifier,
                 "ticket_title": issue.title,
+                "ticket_labels": issue.labels or [],
                 "task_id": task_id,
                 "project_name": project_name,
                 "slot_id": slot.slot_id,

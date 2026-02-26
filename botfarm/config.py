@@ -65,6 +65,9 @@ agents:
     implement: 120
     review: 30
     fix: 60
+  # timeout_overrides (first matching label wins; order matters):
+  #   Investigation:
+  #     implement: 30
   timeout_grace_seconds: 10
 
 # notifications:
@@ -130,6 +133,7 @@ class AgentsConfig:
         "review": 30,
         "fix": 60,
     })
+    timeout_overrides: dict[str, dict[str, int]] = field(default_factory=dict)
     timeout_grace_seconds: int = 10
 
 
@@ -233,6 +237,25 @@ def _parse_project(data: dict) -> ProjectConfig:
 _KNOWN_TIMEOUT_STAGES = {"implement", "review", "fix", "pr_checks", "merge"}
 
 
+def resolve_stage_timeout(
+    agents_cfg: AgentsConfig,
+    stage: str,
+    ticket_labels: list[str] | None = None,
+) -> int | None:
+    """Return the effective timeout in minutes for a stage.
+
+    Checks ``timeout_overrides`` for any matching label (case-insensitive,
+    first match wins), falling back to ``timeout_minutes``.  Returns
+    ``None`` if the stage has no configured timeout.
+    """
+    if ticket_labels:
+        labels_lower = {lbl.lower() for lbl in ticket_labels}
+        for label, overrides in agents_cfg.timeout_overrides.items():
+            if label.lower() in labels_lower and stage in overrides:
+                return overrides[stage]
+    return agents_cfg.timeout_minutes.get(stage)
+
+
 def _validate_config(config: BotfarmConfig) -> None:
     """Validate cross-field constraints."""
     if not config.linear.api_key:
@@ -269,6 +292,30 @@ def _validate_config(config: BotfarmConfig) -> None:
             raise ConfigError(
                 f"agents.timeout_minutes.{stage} must be at least 1"
             )
+
+    for label, overrides in config.agents.timeout_overrides.items():
+        if not isinstance(label, str) or not label:
+            raise ConfigError(
+                "agents.timeout_overrides: keys must be non-empty strings"
+            )
+        if not isinstance(overrides, dict):
+            raise ConfigError(
+                f"agents.timeout_overrides.{label}: must be a mapping of stage → minutes"
+            )
+        for stage, minutes in overrides.items():
+            if stage not in _KNOWN_TIMEOUT_STAGES:
+                raise ConfigError(
+                    f"agents.timeout_overrides.{label}: unknown stage '{stage}'. "
+                    f"Valid stages: {sorted(_KNOWN_TIMEOUT_STAGES)}"
+                )
+            if not isinstance(minutes, int) or isinstance(minutes, bool):
+                raise ConfigError(
+                    f"agents.timeout_overrides.{label}.{stage} must be an integer"
+                )
+            if minutes < 1:
+                raise ConfigError(
+                    f"agents.timeout_overrides.{label}.{stage} must be at least 1"
+                )
 
     if config.agents.timeout_grace_seconds < 0:
         raise ConfigError("agents.timeout_grace_seconds must be at least 0")
@@ -369,10 +416,32 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
     timeout_defaults = {"implement": 120, "review": 30, "fix": 60}
     raw_timeouts = agents_data.get("timeout_minutes", {})
     timeout_minutes = {**timeout_defaults, **{k: int(v) for k, v in raw_timeouts.items()}}
+    raw_overrides = agents_data.get("timeout_overrides", {})
+    timeout_overrides: dict[str, dict[str, int]] = {}
+    if isinstance(raw_overrides, dict):
+        for label, stages in raw_overrides.items():
+            if not isinstance(stages, dict):
+                raise ConfigError(
+                    f"agents.timeout_overrides.{label}: value must be a mapping "
+                    f"of stage names to minutes, got {type(stages).__name__}"
+                )
+            try:
+                timeout_overrides[str(label)] = {
+                    k: int(v) for k, v in stages.items()
+                }
+            except (ValueError, TypeError) as exc:
+                raise ConfigError(f"agents.timeout_overrides.{label}: {exc}")
+    elif raw_overrides:
+        raise ConfigError(
+            "agents.timeout_overrides must be a mapping of label names to "
+            f"stage overrides, got {type(raw_overrides).__name__}"
+        )
+
     agents = AgentsConfig(
         max_review_iterations=int(agents_data.get("max_review_iterations", 3)),
         max_ci_retries=int(agents_data.get("max_ci_retries", 2)),
         timeout_minutes=timeout_minutes,
+        timeout_overrides=timeout_overrides,
         timeout_grace_seconds=int(agents_data.get("timeout_grace_seconds", 10)),
     )
 

@@ -439,9 +439,36 @@ def _invoke_claude(
 # ---------------------------------------------------------------------------
 
 
+_INVESTIGATION_LABEL = "investigation"
+
+
+def _is_investigation(labels: list[str] | None) -> bool:
+    """Return True if the ticket has an Investigation label (case-insensitive)."""
+    if not labels:
+        return False
+    return any(lbl.lower() == _INVESTIGATION_LABEL for lbl in labels)
+
+
+def _build_implement_prompt(ticket_id: str, labels: list[str] | None) -> str:
+    """Build the implement-stage prompt, varying by ticket labels."""
+    if _is_investigation(labels):
+        return (
+            f"Work on Linear ticket {ticket_id}. "
+            "This is an investigation ticket. Produce a summary of findings "
+            "as a Linear comment on the ticket. If you identify implementation "
+            "work, create follow-up Linear tickets. Do not create a PR."
+        )
+    return (
+        f"Work on Linear ticket {ticket_id}. "
+        "Follow the Linear Tickets workflow in CLAUDE.md. "
+        "Complete all steps through PR creation. Do not stop until the PR is created."
+    )
+
+
 def _run_implement(
     ticket_id: str,
     *,
+    ticket_labels: list[str] | None = None,
     cwd: str | Path,
     max_turns: int,
     log_file: Path | None = None,
@@ -449,11 +476,7 @@ def _run_implement(
     on_context_fill: ContextFillCallback | None = None,
 ) -> StageResult:
     """IMPLEMENT stage — Claude Code implements the ticket and creates a PR."""
-    prompt = (
-        f"Work on Linear ticket {ticket_id}. "
-        "Follow the Linear Tickets workflow in CLAUDE.md. "
-        "Complete all steps through PR creation. Do not stop until the PR is created."
-    )
+    prompt = _build_implement_prompt(ticket_id, ticket_labels)
     result = _invoke_claude(
         prompt, cwd=cwd, max_turns=max_turns, log_file=log_file,
         env=env, on_context_fill=on_context_fill,
@@ -775,6 +798,7 @@ class PipelineResult:
 def run_pipeline(
     *,
     ticket_id: str,
+    ticket_labels: list[str] | None = None,
     task_id: int,
     cwd: str | Path,
     conn,
@@ -857,6 +881,7 @@ def run_pipeline(
     # Shared context for _run_and_record helper
     ctx = _PipelineContext(
         ticket_id=ticket_id,
+        ticket_labels=ticket_labels or [],
         task_id=task_id,
         cwd=cwd,
         conn=conn,
@@ -979,6 +1004,19 @@ def run_pipeline(
             if slot_manager and project and slot_id is not None:
                 slot_manager.set_pr_url(project, slot_id, pr_url)
 
+        # Investigation tickets short-circuit after implement — no PR expected
+        if stage == "implement" and _is_investigation(ticket_labels):
+            pipeline.success = True
+            update_task(
+                conn,
+                task_id,
+                status="completed",
+                turns=pipeline.total_turns,
+                completed_at=datetime.now(timezone.utc).isoformat(),
+            )
+            conn.commit()
+            return pipeline
+
         # If implement didn't produce a PR URL, we can't continue
         if stage == "implement" and not pr_url:
             pipeline.failure_stage = "implement"
@@ -1010,6 +1048,7 @@ class _PipelineContext:
     """Shared state passed to pipeline helpers to avoid long argument lists."""
 
     ticket_id: str
+    ticket_labels: list[str]
     task_id: int
     cwd: str | Path
     conn: sqlite3.Connection
@@ -1089,6 +1128,7 @@ class _PipelineContext:
             result = _execute_stage(
                 stage,
                 ticket_id=self.ticket_id,
+                ticket_labels=self.ticket_labels,
                 pr_url=pr_url,
                 cwd=self.cwd,
                 max_turns=self.turns_cfg.get(stage, 100),
@@ -1389,6 +1429,7 @@ def _execute_stage(
     stage: str,
     *,
     ticket_id: str,
+    ticket_labels: list[str] | None = None,
     pr_url: str | None,
     cwd: str | Path,
     max_turns: int,
@@ -1401,7 +1442,8 @@ def _execute_stage(
     """Dispatch to the appropriate stage runner."""
     if stage == "implement":
         return _run_implement(
-            ticket_id, cwd=cwd, max_turns=max_turns, log_file=log_file,
+            ticket_id, ticket_labels=ticket_labels,
+            cwd=cwd, max_turns=max_turns, log_file=log_file,
             env=env, on_context_fill=on_context_fill,
         )
     elif stage == "review":
