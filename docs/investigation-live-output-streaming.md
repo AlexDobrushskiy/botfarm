@@ -92,7 +92,7 @@ proc = subprocess.Popen(
     cmd,
     stdin=subprocess.PIPE,
     stdout=subprocess.PIPE,
-    stderr=log_file.open("w"),  # Redirect stderr to file (avoids deadlock)
+    stderr=open(stderr_path, "w"),  # Separate file avoids deadlock
     text=True,
     cwd=str(cwd),
     env=subprocess_env,
@@ -266,8 +266,9 @@ sequential-read pattern:
   `flush()` after each line
 - **Reader** (dashboard SSE): Opens file in read mode, reads to EOF,
   sleeps, reads again
-- No file locking needed — POSIX guarantees atomic writes up to
-  `PIPE_BUF` (4KB on Linux), and our lines are well under that limit
+- No file locking needed — there is only a single writer, so there is
+  no concurrent `write()` contention. The reader only sees data already
+  flushed by the writer
 - Reader may see partial lines at EOF — mitigated by only emitting
   complete lines (check for trailing newline)
 
