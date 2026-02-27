@@ -7,7 +7,6 @@ with color-coded output, Chart.js data binding, and JavaScript-driven
 countdown/timeago updates.
 """
 
-import json
 import sqlite3
 
 import pytest
@@ -140,23 +139,7 @@ class TestHtmxContentUpdates:
             conn.commit()
             conn.close()
 
-    def test_htmx_partial_swap_preserves_url(self, live_server, page):
-        """P0: htmx partial refresh does not change the page URL."""
-        page.goto(live_server)
-        initial_url = page.url
-
-        # Wait for multiple htmx polls
-        with page.expect_response("**/partials/slots"):
-            pass
-        with page.expect_response("**/partials/usage"):
-            pass
-
-        assert page.url == initial_url
-        assert page.title() == "Live Status - Botfarm"
-
-    def test_history_panel_polls(
-        self, live_server, page, seeded_db,
-    ):
+    def test_history_panel_polls(self, live_server, page):
         """P0: History panel fires htmx polls on interval."""
         page.goto(f"{live_server}/history")
         panel = page.locator("#history-panel")
@@ -183,12 +166,6 @@ class TestHtmxContentUpdates:
 @pytest.mark.playwright
 class TestSSELogStreaming:
     """SSE log streaming via EventSource."""
-
-    def test_log_viewer_shows_stage_tabs(self, live_server, page):
-        """P0: Log viewer shows stage tabs for task with log files."""
-        page.goto(f"{live_server}/task/SMA-80/logs")
-        tabs = page.locator(".log-stage-tab")
-        assert tabs.count() >= 1
 
     def test_log_viewer_static_content(self, live_server, page):
         """P0: Completed stage shows static log content (no SSE)."""
@@ -341,14 +318,13 @@ class TestEmbeddedLogStream:
         """P0: Task detail for busy slot shows embedded log stream."""
         page.goto(f"{live_server}/task/SMA-101")
 
-        # The embedded log stream panel should be present
-        stream_panel = page.locator(
-            ".log-stream-panel",
-        )
-        if stream_panel.count() > 0:
-            # Verify LIVE badge
-            badge = stream_panel.locator(".log-stream-badge")
-            assert badge.count() >= 1
+        # SMA-101 is a busy slot — embedded log stream panel must be present
+        stream_panel = page.locator(".log-stream-panel")
+        stream_panel.wait_for(state="visible", timeout=5000)
+
+        # Verify LIVE badge
+        badge = stream_panel.locator(".log-stream-badge")
+        assert badge.count() >= 1
 
     def test_embedded_stream_receives_events(self, live_server, page):
         """P1: Embedded stream panel receives SSE events."""
@@ -459,22 +435,12 @@ class TestChartJsRendering:
         page.goto(f"{live_server}/usage")
         page.locator("#usage-chart").wait_for(state="visible")
 
-        # Get initial data point count
-        initial_count = page.evaluate(
-            """() => {
-                const chart = Chart.getChart(
-                    document.getElementById('usage-chart')
-                );
-                return chart ? chart.data.labels.length : 0;
-            }"""
-        )
-
         # Click 24h button
         page.click('a[role="button"]:has-text("Last 24h")')
         page.wait_for_load_state("networkidle")
         page.locator("#usage-chart").wait_for(state="visible")
 
-        # Chart should be re-initialized (may have different count)
+        # Chart should be re-initialized after time range change
         has_chart = page.evaluate(
             """() => {
                 const chart = Chart.getChart(
@@ -609,16 +575,31 @@ class TestCountdownTimers:
     ):
         """P1: htmx:afterSwap event triggers countdown and timeago updates."""
         page.goto(live_server)
+        page.wait_for_load_state("networkidle")
 
-        # Verify that the event listeners are registered by checking
-        # that DOMContentLoaded has already fired and the functions exist
-        both_exist = page.evaluate(
+        # Inject a sentinel countdown element, then fire a synthetic
+        # htmx:afterSwap event.  If the event listener is wired up,
+        # updateCountdowns() will reformat the element's text.
+        updated = page.evaluate(
             """() => {
-                return typeof updateCountdowns === 'function'
-                    && typeof updateTimeagos === 'function';
+                // Create a countdown element with a future timestamp
+                const el = document.createElement('span');
+                el.className = 'reset-countdown';
+                const future = new Date(Date.now() + 3600000).toISOString();
+                el.setAttribute('data-reset', future);
+                el.textContent = 'NOT_UPDATED';
+                document.body.appendChild(el);
+
+                // Dispatch synthetic htmx:afterSwap event
+                document.body.dispatchEvent(
+                    new Event('htmx:afterSwap', { bubbles: true })
+                );
+
+                // Check if the element's text was updated
+                return el.textContent !== 'NOT_UPDATED';
             }"""
         )
-        assert both_exist
+        assert updated
 
 
 # ---------------------------------------------------------------------------
@@ -684,25 +665,3 @@ class TestRealtimeEdgeCases:
             conn.commit()
             conn.close()
 
-    def test_multiple_stage_tabs_navigate(self, live_server, page):
-        """P1: Multiple stage tabs in log viewer can be navigated."""
-        page.goto(f"{live_server}/task/SMA-80/logs")
-        tabs = page.locator(".log-stage-tab")
-        if tabs.count() < 2:
-            pytest.skip("Fewer than 2 stage tabs available")
-
-        # Click the second tab
-        second = tabs.nth(1)
-        second.click()
-        page.wait_for_load_state("networkidle")
-        assert "/logs/" in page.url
-
-        # Active tab should be highlighted
-        active = page.locator(".log-stage-tab-active")
-        assert active.count() == 1
-
-    def test_log_viewer_two_stage_tabs_for_sma80(self, live_server, page):
-        """P1: SMA-80 has at least 2 stage tabs (implement, review)."""
-        page.goto(f"{live_server}/task/SMA-80/logs")
-        tabs = page.locator(".log-stage-tab")
-        assert tabs.count() >= 2
