@@ -81,11 +81,16 @@ def _upsert_slot(conn, project, slot_id, status="free", **overrides):
 # ---------------------------------------------------------------------------
 
 
-def seed_comprehensive_db(db_path: Path) -> None:
+def seed_comprehensive_db(db_path: Path, *, paused: bool = False) -> None:
     """Seed a SQLite database with comprehensive test data.
 
     Uses ``init_db`` to create the schema, then populates every table
     with deterministic data covering all dashboard UI states.
+
+    Args:
+        db_path: Path to the SQLite database file.
+        paused: If True, seed dispatch state as paused (for testing the
+            paused banner UI). Defaults to False.
     """
     conn = init_db(db_path, allow_migration=True)
 
@@ -100,7 +105,7 @@ def seed_comprehensive_db(db_path: Path) -> None:
     _seed_tasks_and_stages(conn)
     _seed_usage_snapshots(conn)
     _seed_queue_entries(conn)
-    _seed_dispatch_state(conn)
+    _seed_dispatch_state(conn, paused=paused)
 
     conn.commit()
     conn.close()
@@ -857,10 +862,11 @@ def _seed_queue_entries(conn):
 # ---------------------------------------------------------------------------
 
 
-def _seed_dispatch_state(conn):
+def _seed_dispatch_state(conn, *, paused: bool = False):
     save_dispatch_state(
         conn,
-        paused=False,
+        paused=paused,
+        reason="manual_pause" if paused else None,
         supervisor_heartbeat="2026-02-27T09:30:00Z",
     )
     conn.commit()
