@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import threading
 import time
-from pathlib import Path
 
+import httpx
 import pytest
 import uvicorn
 
@@ -53,8 +53,6 @@ def live_server(seeded_db):
     thread.start()
 
     # Wait for the server to be ready
-    import httpx
-
     base_url = f"http://{TEST_HOST}:{TEST_PORT}"
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
@@ -62,7 +60,7 @@ def live_server(seeded_db):
             resp = httpx.get(base_url, timeout=1)
             if resp.status_code == 200:
                 break
-        except httpx.ConnectError:
+        except (httpx.ConnectError, httpx.TimeoutException):
             time.sleep(0.1)
     else:
         raise RuntimeError(f"Dashboard did not start within 10s on {base_url}")
