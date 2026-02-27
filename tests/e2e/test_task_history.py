@@ -159,10 +159,15 @@ class TestHistoryInteractiveFilters:
         page.select_option("select[name='status']", "completed")
         page.click("#history-filters button[type='submit']")
         page.wait_for_load_state("networkidle")
-        rows = page.locator("#history-panel table tbody tr")
+        panel = page.locator("#history-panel")
+        rows = panel.locator("table tbody tr")
+        assert rows.count() > 0, "Combined filter should return results"
         for i in range(rows.count()):
             text = rows.nth(i).inner_text()
             assert "bot-farm" in text
+        # Verify status filter: only completed (status-free), no failed
+        assert panel.locator(".status-free").count() > 0
+        assert panel.locator(".status-failed").count() == 0
 
     def test_combined_project_status_and_search(self, live_server, page):
         """P1: All three filters (project + status + search) work together."""

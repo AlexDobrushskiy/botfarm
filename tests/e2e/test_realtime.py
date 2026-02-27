@@ -82,7 +82,11 @@ class TestSupervisorControls:
         conn.close()
 
     def _restore_db_state(self, db_path):
-        """Restore original seed DB state."""
+        """Restore original seed DB state.
+
+        NOTE: Ticket IDs below are coupled to seed_comprehensive_db in
+        conftest.py.  If seed data changes, update these accordingly.
+        """
         conn = sqlite3.connect(db_path)
         conn.execute(
             "UPDATE dispatch_state SET paused = 0, pause_reason = NULL"
