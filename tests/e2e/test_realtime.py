@@ -1,4 +1,6 @@
-"""E2E tests for real-time updates (htmx polling)."""
+"""E2E tests for real-time updates (htmx polling) and supervisor controls."""
+
+import sqlite3
 
 import pytest
 
@@ -53,12 +55,135 @@ class TestHtmxPolling:
 
 @pytest.mark.playwright
 class TestSupervisorControls:
-    """Supervisor pause/resume controls (dashboard-only mode = no callbacks)."""
+    """Supervisor pause/resume controls with callbacks."""
 
-    def test_pause_resume_hidden_without_callbacks(self, page):
-        """P0: In test mode (no callbacks), pause/resume buttons are not shown."""
+    def _set_db_state(self, db_path, *, paused, busy_to_free=False):
+        """Helper to set dispatch and slot state in the test DB."""
+        conn = sqlite3.connect(db_path)
+        if paused:
+            conn.execute(
+                "UPDATE dispatch_state "
+                "SET paused = 1, pause_reason = 'manual_pause'"
+            )
+        else:
+            conn.execute(
+                "UPDATE dispatch_state "
+                "SET paused = 0, pause_reason = NULL"
+            )
+        if busy_to_free:
+            conn.execute(
+                "UPDATE slots SET status = 'free' WHERE status = 'busy'"
+            )
+            conn.execute(
+                "UPDATE slots SET status = 'free' "
+                "WHERE status = 'paused_manual'"
+            )
+        conn.commit()
+        conn.close()
+
+    def _restore_db_state(self, db_path):
+        """Restore original seed DB state."""
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "UPDATE dispatch_state SET paused = 0, pause_reason = NULL"
+        )
+        conn.execute(
+            "UPDATE slots SET status = 'paused_manual' "
+            "WHERE ticket_id = 'WEB-48'"
+        )
+        conn.execute(
+            "UPDATE slots SET status = 'busy' "
+            "WHERE ticket_id IN ('SMA-101', 'WEB-50')"
+        )
+        conn.commit()
+        conn.close()
+
+    def test_controls_container_exists(self, page):
+        """P0: Supervisor controls container is present."""
         controls = page.locator("#supervisor-controls")
-        assert controls.count() == 1, "Supervisor controls container should exist"
-        # Without callbacks, no pause/resume buttons should be rendered
+        assert controls.count() == 1
+
+    def test_controls_have_buttons_with_callbacks(self, page):
+        """P0: With callbacks, supervisor controls show action buttons."""
+        controls = page.locator("#supervisor-controls")
         buttons = controls.locator("button")
-        assert buttons.count() == 0, "Pause/resume buttons should not be shown without callbacks"
+        assert buttons.count() >= 1
+
+    def test_pause_button_visible_when_running(self, live_server, page, seeded_db):
+        """P0: When running (no paused/busy), Pause button is visible."""
+        self._set_db_state(seeded_db, paused=False, busy_to_free=True)
+        try:
+            page.goto(live_server)
+            controls = page.locator("#supervisor-controls")
+            pause_btn = controls.locator("button", has_text="Pause")
+            pause_btn.wait_for(state="visible", timeout=5000)
+            assert pause_btn.is_visible()
+        finally:
+            self._restore_db_state(seeded_db)
+
+    def test_resume_button_visible_when_paused(self, live_server, page, seeded_db):
+        """P0: When fully paused (no busy workers), Resume button is visible."""
+        # Set paused with no busy slots → true "paused" state
+        self._set_db_state(seeded_db, paused=True, busy_to_free=True)
+        try:
+            page.goto(live_server)
+            controls = page.locator("#supervisor-controls")
+            resume_btn = controls.locator("button", has_text="Resume")
+            resume_btn.wait_for(state="visible", timeout=5000)
+            assert resume_btn.is_visible()
+        finally:
+            self._restore_db_state(seeded_db)
+
+    def test_pausing_state_shows_cancel_and_count(
+        self, live_server, page, seeded_db,
+    ):
+        """P1: Pausing state (paused + busy workers) shows Pausing and Cancel."""
+        # Set dispatch paused but keep busy slots → "pausing:N" state
+        self._set_db_state(seeded_db, paused=True, busy_to_free=False)
+        try:
+            page.goto(live_server)
+            controls = page.locator("#supervisor-controls")
+            # Should show "Pausing..." with worker count
+            pausing_btn = controls.locator("button", has_text="Pausing")
+            pausing_btn.wait_for(state="visible", timeout=5000)
+            text = pausing_btn.inner_text()
+            assert "worker" in text.lower()
+            # Should also show Cancel button
+            cancel_btn = controls.locator("button", has_text="Cancel")
+            assert cancel_btn.is_visible()
+        finally:
+            self._restore_db_state(seeded_db)
+
+    def test_pause_button_triggers_callback(
+        self, live_server, page, seeded_db, pause_resume_state,
+    ):
+        """P0: Clicking Pause triggers the on_pause callback."""
+        self._set_db_state(seeded_db, paused=False, busy_to_free=True)
+        pause_resume_state["paused"] = False
+        try:
+            page.goto(live_server)
+            controls = page.locator("#supervisor-controls")
+            pause_btn = controls.locator("button", has_text="Pause")
+            pause_btn.wait_for(state="visible", timeout=5000)
+            pause_btn.click()
+            page.wait_for_timeout(1000)
+            assert pause_resume_state["paused"] is True
+        finally:
+            self._restore_db_state(seeded_db)
+
+    def test_resume_button_triggers_callback(
+        self, live_server, page, seeded_db, pause_resume_state,
+    ):
+        """P0: Clicking Resume triggers the on_resume callback."""
+        self._set_db_state(seeded_db, paused=True, busy_to_free=True)
+        pause_resume_state["resumed"] = False
+        try:
+            page.goto(live_server)
+            controls = page.locator("#supervisor-controls")
+            resume_btn = controls.locator("button", has_text="Resume")
+            resume_btn.wait_for(state="visible", timeout=5000)
+            resume_btn.click()
+            page.wait_for_timeout(1000)
+            assert pause_resume_state["resumed"] is True
+        finally:
+            self._restore_db_state(seeded_db)
