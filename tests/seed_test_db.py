@@ -141,7 +141,7 @@ def _seed_slots(conn):
         ticket_id="WEB-50", ticket_title="Dark mode toggle",
         branch="web-50-dark-mode-toggle",
         stage="fix", stage_iteration=1,
-        current_session_id="sess-wa-50",
+        current_session_id="sess-wa-50-fix",
         started_at="2026-02-27T07:30:00Z",
         stage_started_at="2026-02-27T09:15:00Z",
         pid=10002,
@@ -156,8 +156,8 @@ def _seed_slots(conn):
         started_at="2026-02-27T05:00:00Z",
         stage_started_at="2026-02-27T08:45:00Z",
         stages_completed=["implement", "review"],
-        interrupted_by_limit=True,
-        resume_after="limit_reset",
+        interrupted_by_limit=False,
+        resume_after="manual",
         ticket_labels=["migration"],
     )
 
@@ -474,7 +474,7 @@ def _seed_tasks_and_stages(conn):
 
     # ---- Task 5: In-progress in web-app (paused_manual mid-fix) ----
     # Matches web-app/2 slot: paused_manual in fix stage after completing
-    # implement and review.  Paused by usage limit during fix.
+    # implement and review.  Manually paused during fix.
     t5 = insert_task(
         conn, ticket_id="WEB-48", title="Migrate to React 19",
         project="web-app", slot=2, status="pending",
@@ -513,7 +513,7 @@ def _seed_tasks_and_stages(conn):
         ("stage_started", "review"),
         ("stage_completed", "review — needs_changes"),
         ("stage_started", "fix"),
-        ("limit_interruption", "5h utilization at 100%"),
+        ("slot_paused", "Manually paused during fix"),
     ]:
         insert_event(conn, task_id=t5, event_type=ev_type, detail=detail)
 
