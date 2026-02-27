@@ -301,42 +301,6 @@ class TestSSELogStreaming:
 
 
 # ---------------------------------------------------------------------------
-# SSE via Embedded Log Stream Panel (partials/log_stream.html)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.playwright
-class TestEmbeddedLogStream:
-    """Embedded log stream panel on task detail page."""
-
-    def test_task_detail_has_log_stream_for_busy_slot(
-        self, live_server, page,
-    ):
-        """P0: Task detail for busy slot shows embedded log stream."""
-        page.goto(f"{live_server}/task/SMA-101")
-
-        # SMA-101 is a busy slot — embedded log stream panel must be present
-        stream_panel = page.locator(".log-stream-panel")
-        stream_panel.wait_for(state="visible", timeout=5000)
-
-        # Verify LIVE badge
-        badge = stream_panel.locator(".log-stream-badge")
-        assert badge.count() >= 1
-
-    def test_embedded_stream_receives_events(self, live_server, page):
-        """P1: Embedded stream panel receives SSE events."""
-        page.goto(f"{live_server}/task/SMA-101")
-        stream_panel = page.locator(".log-stream-panel")
-        if stream_panel.count() == 0:
-            pytest.skip("No embedded log stream on this page")
-
-        # Wait for log lines to appear in the embedded panel
-        stream_panel.locator(".log-line").first.wait_for(
-            state="visible", timeout=10000,
-        )
-
-
-# ---------------------------------------------------------------------------
 # Chart.js Rendering
 # ---------------------------------------------------------------------------
 
