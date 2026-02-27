@@ -26,3 +26,6 @@ botfarm = "botfarm.cli:main"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+markers = [
+    "playwright: Playwright E2E tests (require browser)",
+]
