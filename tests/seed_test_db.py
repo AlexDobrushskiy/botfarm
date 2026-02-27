@@ -36,7 +36,10 @@ from botfarm.db import (
 
 PROJECTS = ["bot-farm", "web-app", "data-pipeline"]
 
-SLOT_STATUSES = ["free", "busy", "failed", "paused_manual"]
+SLOT_STATUSES = [
+    "free", "busy", "failed", "paused_manual", "paused_limit",
+    "completed_pending_cleanup",
+]
 
 TASK_STATUSES = ["completed", "failed", "pending"]
 
@@ -158,8 +161,30 @@ def _seed_slots(conn):
         ticket_labels=["migration"],
     )
 
-    # data-pipeline: 1 slot — free
-    _upsert_slot(conn, "data-pipeline", 1, status="free")
+    # data-pipeline: 3 slots — paused_limit, completed_pending_cleanup, free
+    _upsert_slot(
+        conn, "data-pipeline", 1, status="paused_limit",
+        ticket_id="DP-10", ticket_title="Add data validation step",
+        branch="dp-10-add-data-validation-step",
+        stage="implement", stage_iteration=1,
+        started_at="2026-02-27T07:00:00Z",
+        stage_started_at="2026-02-27T07:00:00Z",
+        stages_completed=[],
+        interrupted_by_limit=True,
+        resume_after="2026-02-27T12:00:00Z",
+        ticket_labels=["enhancement"],
+    )
+    _upsert_slot(
+        conn, "data-pipeline", 2, status="completed_pending_cleanup",
+        ticket_id="DP-11", ticket_title="Fix CSV parser edge case",
+        branch="dp-11-fix-csv-parser-edge-case",
+        pr_url="https://github.com/org/data-pipeline/pull/11",
+        stage="merge", stage_iteration=1,
+        started_at="2026-02-27T02:00:00Z",
+        stages_completed=["implement", "review", "pr_checks", "merge"],
+        ticket_labels=["bug"],
+    )
+    _upsert_slot(conn, "data-pipeline", 3, status="free")
 
     conn.commit()
 
@@ -447,38 +472,76 @@ def _seed_tasks_and_stages(conn):
     ]:
         insert_event(conn, task_id=t4, event_type=ev_type, detail=detail)
 
-    # ---- Task 5: Failed during implementation ----
+    # ---- Task 5: In-progress in web-app (paused_manual mid-fix) ----
+    # Matches web-app/2 slot: paused_manual in fix stage after completing
+    # implement and review.  Paused by usage limit during fix.
     t5 = insert_task(
         conn, ticket_id="WEB-48", title="Migrate to React 19",
-        project="web-app", slot=2, status="failed",
+        project="web-app", slot=2, status="pending",
     )
     update_task(
         conn, t5,
         started_at="2026-02-27T05:00:00Z",
-        completed_at="2026-02-27T06:45:00Z",
-        turns=50, review_iterations=0,
-        failure_reason="Implementation timed out — context window full",
-        pipeline_stage="implement",
+        turns=38, review_iterations=1,
+        pipeline_stage="fix", review_state="needs_changes",
     )
     insert_stage_run(
         conn, task_id=t5, stage="implement", iteration=1,
-        session_id="sess-t5-impl", turns=50,
-        duration_seconds=6300.0, exit_subtype="context_full",
-        input_tokens=300000, output_tokens=100000,
-        total_cost_usd=0.72, context_fill_pct=99.8,
+        session_id="sess-t5-impl", turns=25,
+        duration_seconds=5400.0, exit_subtype="completed",
+        input_tokens=100000, output_tokens=35000,
+        total_cost_usd=0.24, context_fill_pct=72.0,
+    )
+    insert_stage_run(
+        conn, task_id=t5, stage="review", iteration=1,
+        session_id="sess-t5-rev1", turns=6,
+        duration_seconds=700.0, exit_subtype="needs_changes",
+        input_tokens=20000, output_tokens=5000,
+        total_cost_usd=0.04, context_fill_pct=35.0,
+    )
+    insert_stage_run(
+        conn, task_id=t5, stage="fix", iteration=1,
+        session_id="sess-t5-fix", turns=7,
+        duration_seconds=900.0,
+        input_tokens=30000, output_tokens=10000,
+        total_cost_usd=0.07, context_fill_pct=48.0,
     )
     for ev_type, detail in [
         ("task_dispatched", "Dispatched to slot 2"),
         ("stage_started", "implement"),
-        ("task_failed", "Implementation timed out — context window full"),
+        ("stage_completed", "implement"),
+        ("stage_started", "review"),
+        ("stage_completed", "review — needs_changes"),
+        ("stage_started", "fix"),
+        ("limit_interruption", "5h utilization at 100%"),
     ]:
         insert_event(conn, task_id=t5, event_type=ev_type, detail=detail)
 
-    # ---- Task 6: Pending (queued, not yet started) ----
-    insert_task(
+    # ---- Task 6: In-progress, paused by usage limit ----
+    # Matches data-pipeline/1 slot: paused_limit during implement.
+    t6 = insert_task(
         conn, ticket_id="DP-10", title="Add data validation step",
         project="data-pipeline", slot=1, status="pending",
     )
+    update_task(
+        conn, t6,
+        started_at="2026-02-27T07:00:00Z",
+        turns=18, limit_interruptions=1,
+        pipeline_stage="implement",
+    )
+    insert_stage_run(
+        conn, task_id=t6, stage="implement", iteration=1,
+        session_id="sess-t6-impl", turns=18,
+        duration_seconds=2700.0, exit_subtype="limit_reached",
+        input_tokens=65000, output_tokens=20000,
+        total_cost_usd=0.15, context_fill_pct=52.0,
+    )
+    for ev_type, detail in [
+        ("task_dispatched", "Dispatched to slot 1"),
+        ("stage_started", "implement"),
+        ("limit_interruption", "5h utilization at 100%"),
+    ]:
+        insert_event(conn, task_id=t6, event_type=ev_type, detail=detail)
 
     # ---- Task 7: Completed — data-pipeline project ----
     t7 = insert_task(
@@ -601,6 +664,63 @@ def _seed_tasks_and_stages(conn):
         ("stage_started", "fix"),
     ]:
         insert_event(conn, task_id=t9, event_type=ev_type, detail=detail)
+
+    # ---- Task 10: Completed, pending slot cleanup ----
+    # Matches data-pipeline/2 slot: completed_pending_cleanup.
+    t10 = insert_task(
+        conn, ticket_id="DP-11", title="Fix CSV parser edge case",
+        project="data-pipeline", slot=2, status="completed",
+    )
+    update_task(
+        conn, t10,
+        started_at="2026-02-27T02:00:00Z",
+        completed_at="2026-02-27T03:30:00Z",
+        turns=28, review_iterations=1,
+        pr_url="https://github.com/org/data-pipeline/pull/11",
+        pipeline_stage="merge", review_state="approved",
+    )
+    insert_stage_run(
+        conn, task_id=t10, stage="implement", iteration=1,
+        session_id="sess-t10-impl", turns=18,
+        duration_seconds=2400.0, exit_subtype="completed",
+        input_tokens=70000, output_tokens=22000,
+        total_cost_usd=0.16, context_fill_pct=55.0,
+    )
+    insert_stage_run(
+        conn, task_id=t10, stage="review", iteration=1,
+        session_id="sess-t10-rev", turns=5,
+        duration_seconds=500.0, exit_subtype="approved",
+        input_tokens=15000, output_tokens=3500,
+        total_cost_usd=0.03, context_fill_pct=25.0,
+    )
+    insert_stage_run(
+        conn, task_id=t10, stage="pr_checks", iteration=1,
+        session_id="sess-t10-pr", turns=2,
+        duration_seconds=200.0, exit_subtype="passed",
+        input_tokens=4000, output_tokens=800,
+        total_cost_usd=0.008, context_fill_pct=12.0,
+    )
+    insert_stage_run(
+        conn, task_id=t10, stage="merge", iteration=1,
+        session_id="sess-t10-merge", turns=1,
+        duration_seconds=30.0, exit_subtype="merged",
+        input_tokens=1500, output_tokens=400,
+        total_cost_usd=0.003, context_fill_pct=8.0,
+    )
+    for ev_type, detail in [
+        ("task_dispatched", "Dispatched to slot 2"),
+        ("stage_started", "implement"),
+        ("stage_completed", "implement"),
+        ("stage_started", "review"),
+        ("stage_completed", "review — approved"),
+        ("stage_started", "pr_checks"),
+        ("stage_completed", "pr_checks — passed"),
+        ("pr_created", "https://github.com/org/data-pipeline/pull/11"),
+        ("stage_started", "merge"),
+        ("stage_completed", "merge — merged"),
+        ("task_completed", "All stages passed"),
+    ]:
+        insert_event(conn, task_id=t10, event_type=ev_type, detail=detail)
 
     conn.commit()
 

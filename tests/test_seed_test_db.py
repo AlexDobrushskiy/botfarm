@@ -62,13 +62,16 @@ class TestSlots:
     def test_slot_count(self, seeded_db):
         _, conn = seeded_db
         count = conn.execute("SELECT COUNT(*) FROM slots").fetchone()[0]
-        assert count == 6
+        assert count == 8
 
     def test_all_statuses_present(self, seeded_db):
         _, conn = seeded_db
         rows = conn.execute("SELECT DISTINCT status FROM slots ORDER BY status").fetchall()
         statuses = {r[0] for r in rows}
-        assert statuses == {"free", "busy", "failed", "paused_manual"}
+        assert statuses == {
+            "free", "busy", "failed", "paused_manual",
+            "paused_limit", "completed_pending_cleanup",
+        }
 
     def test_multiple_projects(self, seeded_db):
         _, conn = seeded_db
@@ -85,12 +88,29 @@ class TestSlots:
         assert busy["stage"] is not None
         assert busy["pid"] is not None
 
-    def test_paused_slot_has_resume_after(self, seeded_db):
+    def test_paused_manual_slot_has_resume_after(self, seeded_db):
         _, conn = seeded_db
         paused = conn.execute(
             "SELECT * FROM slots WHERE status = 'paused_manual' LIMIT 1"
         ).fetchone()
         assert paused["resume_after"] is not None
+
+    def test_paused_limit_slot_has_interrupted_by_limit(self, seeded_db):
+        _, conn = seeded_db
+        paused = conn.execute(
+            "SELECT * FROM slots WHERE status = 'paused_limit' LIMIT 1"
+        ).fetchone()
+        assert paused is not None
+        assert paused["interrupted_by_limit"]
+
+    def test_completed_pending_cleanup_slot(self, seeded_db):
+        _, conn = seeded_db
+        slot = conn.execute(
+            "SELECT * FROM slots WHERE status = 'completed_pending_cleanup' LIMIT 1"
+        ).fetchone()
+        assert slot is not None
+        assert slot["ticket_id"] is not None
+        assert slot["pr_url"] is not None
 
     def test_slot_has_ticket_labels(self, seeded_db):
         _, conn = seeded_db
@@ -111,7 +131,7 @@ class TestTasks:
     def test_task_count(self, seeded_db):
         _, conn = seeded_db
         count = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
-        assert count == 9
+        assert count == 10
 
     def test_all_statuses_present(self, seeded_db):
         _, conn = seeded_db
@@ -177,7 +197,7 @@ class TestStageRuns:
     def test_stage_run_count(self, seeded_db):
         _, conn = seeded_db
         count = conn.execute("SELECT COUNT(*) FROM stage_runs").fetchone()[0]
-        assert count == 30
+        assert count == 37
 
     def test_all_five_stages_present(self, seeded_db):
         _, conn = seeded_db
