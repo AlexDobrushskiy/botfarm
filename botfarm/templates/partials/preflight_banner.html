@@ -1,0 +1,18 @@
+{% if degraded %}
+<div id="preflight-banner-inner" style="background: var(--pico-del-color); color: #fff; padding: 0.5rem 1rem; border-radius: var(--pico-border-radius); margin-bottom: 1rem; display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;">
+    <span>
+        <strong>Degraded Mode</strong> &mdash;
+        {{ failed_critical }} preflight check{{ "s" if failed_critical != 1 else "" }} failed. Dispatch is paused.
+        <a href="/health" style="color: #fff; text-decoration: underline; margin-left: 0.5rem;">View details</a>
+    </span>
+    <button class="pause-btn"
+            style="background: #fff; color: var(--pico-del-color); white-space: nowrap;"
+            hx-post="/api/rerun-preflight"
+            hx-swap="none"
+            hx-indicator="#preflight-spinner"
+            hx-on::after-request="this.closest('[hx-get]') && htmx.trigger(this.closest('[hx-get]'), 'htmx:load')">
+        <span id="preflight-spinner" class="htmx-indicator" style="margin-right: 0.3rem;">&#8987;</span>
+        Re-run Checks
+    </button>
+</div>
+{% endif %}

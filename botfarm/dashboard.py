@@ -281,6 +281,8 @@ def create_app(
     on_resume: Callable[[], None] | None = None,
     on_update: Callable[[], None] | None = None,
     on_rerun_preflight: Callable[[], None] | None = None,
+    get_preflight_results: Callable[[], list] | None = None,
+    get_degraded: Callable[[], bool] | None = None,
     update_failed_event: threading.Event | None = None,
     git_env: dict[str, str] | None = None,
 ) -> FastAPI:
@@ -313,6 +315,11 @@ def create_app(
     on_rerun_preflight:
         Callback invoked when the user triggers a manual preflight re-run
         from the dashboard (e.g. ``supervisor.request_rerun_preflight``).
+    get_preflight_results:
+        Callable that returns the latest list of preflight ``CheckResult``
+        objects (e.g. ``supervisor.get_preflight_results``).
+    get_degraded:
+        Callable that returns whether the supervisor is in degraded mode.
     update_failed_event:
         Threading event set by the supervisor when an update fails.
         The banner endpoint checks this to reset the \"Updating...\" state.
@@ -329,6 +336,8 @@ def create_app(
     app.state.on_resume = on_resume
     app.state.on_update = on_update
     app.state.on_rerun_preflight = on_rerun_preflight
+    app.state.get_preflight_results = get_preflight_results
+    app.state.get_degraded = get_degraded
     app.state.update_in_progress = False
     app.state.update_failed_event = update_failed_event
     app.state.logs_dir = Path(logs_dir).expanduser() if logs_dir else None
@@ -1297,6 +1306,93 @@ def create_app(
         cb()
         return JSONResponse({"status": "ok"})
 
+    # --- Preflight / System Health ---
+
+    # Actionable guidance for common preflight check failures
+    _PREFLIGHT_GUIDANCE: dict[str, str] = {
+        "git_repo": "Verify base_dir path in config and that git remote 'origin' is accessible",
+        "linear_api": "Check linear.api_key in config and verify team/status names match your Linear workspace",
+        "linear_status": "Check linear.api_key in config and verify team/status names match your Linear workspace",
+        "identity_github_token": "Verify GitHub token is valid and the associated user has collaborator access to the repository",
+        "identity_ssh_key": "Check SSH key path in config, verify file exists and has correct permissions (0600)",
+        "identity_linear_key": "Verify the identity's Linear API key is valid",
+        "database": "Check DB path permissions or schema version",
+        "config_consistency": "Review config for duplicate slot IDs or invalid project settings",
+        "credentials": "Verify Claude OAuth credentials are loaded correctly",
+        "notifications_webhook": "Check the webhook URL in config is valid and reachable",
+        "worktree_dirs": "Verify worktree parent directories exist and are writable",
+        "identity_cross_validation": "Review identity config for inconsistent or partial credential sets",
+    }
+
+    def _get_preflight_data() -> dict:
+        """Build preflight template context from supervisor callbacks."""
+        getter = app.state.get_preflight_results
+        degraded_getter = app.state.get_degraded
+        results = getter() if getter else []
+        degraded = degraded_getter() if degraded_getter else False
+        checks = []
+        for r in results:
+            # Match guidance by prefix (e.g. "git_repo:myproject" -> "git_repo")
+            name_prefix = r.name.split(":")[0] if ":" in r.name else r.name
+            guidance = _PREFLIGHT_GUIDANCE.get(name_prefix, "")
+            checks.append({
+                "name": r.name,
+                "passed": r.passed,
+                "message": r.message,
+                "critical": r.critical,
+                "guidance": guidance,
+            })
+        failed_critical = sum(1 for c in checks if not c["passed"] and c["critical"])
+        return {
+            "degraded": degraded,
+            "checks": checks,
+            "failed_critical": failed_critical,
+        }
+
+    @app.get("/partials/preflight-banner", response_class=HTMLResponse)
+    def partial_preflight_banner(request: Request):
+        data = _get_preflight_data()
+        return templates.TemplateResponse("partials/preflight_banner.html", {
+            "request": request,
+            **data,
+        })
+
+    @app.get("/health", response_class=HTMLResponse)
+    def health_page(request: Request):
+        data = _get_preflight_data()
+        return templates.TemplateResponse("health.html", {
+            "request": request,
+            "active_page": "health",
+            **data,
+        })
+
+    @app.get("/partials/health-checks", response_class=HTMLResponse)
+    def partial_health_checks(request: Request):
+        data = _get_preflight_data()
+        return templates.TemplateResponse("partials/health_checks.html", {
+            "request": request,
+            **data,
+        })
+
+    @app.get("/partials/health-badge", response_class=HTMLResponse)
+    def partial_health_badge(request: Request):
+        data = _get_preflight_data()
+        return templates.TemplateResponse("partials/health_badge.html", {
+            "request": request,
+            **data,
+        })
+
+    @app.post("/api/rerun-preflight")
+    def api_rerun_preflight():
+        cb = app.state.on_rerun_preflight
+        if cb is None:
+            return JSONResponse(
+                {"error": "Preflight re-run not available (supervisor not connected)"},
+                status_code=503,
+            )
+        cb()
+        return JSONResponse({"status": "ok"})
+
     # --- Read-only config view ---
 
     def _mask_secret(value: str) -> str:
@@ -2019,6 +2115,8 @@ def start_dashboard(
     on_resume: Callable[[], None] | None = None,
     on_update: Callable[[], None] | None = None,
     on_rerun_preflight: Callable[[], None] | None = None,
+    get_preflight_results: Callable[[], list] | None = None,
+    get_degraded: Callable[[], bool] | None = None,
     update_failed_event: threading.Event | None = None,
     git_env: dict[str, str] | None = None,
 ) -> threading.Thread | None:
@@ -2038,6 +2136,8 @@ def start_dashboard(
         on_resume=on_resume,
         on_update=on_update,
         on_rerun_preflight=on_rerun_preflight,
+        get_preflight_results=get_preflight_results,
+        get_degraded=get_degraded,
         update_failed_event=update_failed_event,
         git_env=git_env,
     )

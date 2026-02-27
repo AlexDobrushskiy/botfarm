@@ -1,0 +1,9 @@
+{% if degraded %}
+<span style="background: rgba(239, 68, 68, 0.15); color: #ef4444; padding: 0.15rem 0.5rem; border-radius: 1rem; font-size: 0.75rem; font-weight: 600;">
+    Degraded Mode
+</span>
+{% elif checks %}
+<span style="background: rgba(34, 197, 94, 0.15); color: #22c55e; padding: 0.15rem 0.5rem; border-radius: 1rem; font-size: 0.75rem; font-weight: 600;">
+    All Checks Passed
+</span>
+{% endif %}
