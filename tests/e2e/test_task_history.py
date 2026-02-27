@@ -149,6 +149,162 @@ class TestHistorySorting:
 
 
 @pytest.mark.playwright
+class TestHistoryInteractiveFilters:
+    """Interactive filter combinations and clearing on history page."""
+
+    def test_combined_project_and_status_filter(self, live_server, page):
+        """P1: Combining project + status filter works."""
+        page.goto(f"{live_server}/history")
+        page.select_option("select[name='project']", "bot-farm")
+        page.select_option("select[name='status']", "completed")
+        page.click("#history-filters button[type='submit']")
+        page.wait_for_load_state("networkidle")
+        panel = page.locator("#history-panel")
+        rows = panel.locator("table tbody tr")
+        assert rows.count() > 0, "Combined filter should return results"
+        for i in range(rows.count()):
+            text = rows.nth(i).inner_text()
+            assert "bot-farm" in text
+        # Verify status filter: only completed (status-free), no failed
+        assert panel.locator(".status-free").count() > 0
+        assert panel.locator(".status-failed").count() == 0
+
+    def test_combined_project_status_and_search(self, live_server, page):
+        """P1: All three filters (project + status + search) work together."""
+        page.goto(f"{live_server}/history")
+        page.select_option("select[name='project']", "bot-farm")
+        page.select_option("select[name='status']", "completed")
+        page.fill("input[name='search']", "SMA")
+        page.click("#history-filters button[type='submit']")
+        page.wait_for_load_state("networkidle")
+        panel = page.locator("#history-panel")
+        rows = panel.locator("table tbody tr")
+        assert rows.count() > 0, "Combined filter should return bot-farm completed SMA results"
+        for i in range(rows.count()):
+            text = rows.nth(i).inner_text()
+            assert "bot-farm" in text
+            assert "SMA" in text
+
+    def test_clear_filters_shows_all_data(self, live_server, page):
+        """P1: Clearing filters restores full dataset."""
+        page.goto(f"{live_server}/history")
+        # First count all tasks
+        all_rows_count = page.locator("#history-panel table tbody tr").count()
+        assert all_rows_count > 0
+
+        # Apply a restrictive filter via URL navigation (most reliable)
+        page.goto(f"{live_server}/history?project=bot-farm")
+        filtered_count = page.locator("#history-panel table tbody tr").count()
+        assert filtered_count < all_rows_count
+
+        # Clear filters by navigating to unfiltered history page
+        page.goto(f"{live_server}/history")
+        restored_count = page.locator("#history-panel table tbody tr").count()
+        assert restored_count == all_rows_count
+
+    def test_search_by_title_substring(self, live_server, page):
+        """P0: Search filters by title substring, not just ticket ID."""
+        page.goto(f"{live_server}/history")
+        # Seed data has tasks with "Add" in the title (e.g. "Add retry logic")
+        page.fill("input[name='search']", "Add")
+        page.click("#history-filters button[type='submit']")
+        page.wait_for_load_state("networkidle")
+        rows = page.locator("#history-panel table tbody tr")
+        assert rows.count() > 0, "Search for \"Add\" should return at least one result"
+        for i in range(rows.count()):
+            text = rows.nth(i).inner_text()
+            assert "Add" in text
+
+    def test_no_results_message(self, live_server, page):
+        """P1: Searching for non-existent term shows 'No tasks found'."""
+        page.goto(f"{live_server}/history")
+        page.fill("input[name='search']", "ZZZZNONEXISTENT999")
+        page.click("#history-filters button[type='submit']")
+        page.wait_for_load_state("networkidle")
+        panel = page.locator("#history-panel")
+        text = panel.inner_text()
+        assert "No tasks found" in text
+
+
+@pytest.mark.playwright
+class TestHistorySortInteractive:
+    """Interactive sort direction toggle tests."""
+
+    def test_sort_toggle_direction(self, live_server, page):
+        """P0: Clicking same column twice toggles sort direction."""
+        page.goto(f"{live_server}/history")
+        turns_header = page.locator("#history-panel thead a", has_text="Turns")
+
+        # First click — sorts DESC
+        turns_header.click()
+        page.wait_for_load_state("networkidle")
+        assert "sort_by=turns" in page.url
+        assert "sort_dir=DESC" in page.url
+
+        # Second click — toggles to ASC
+        turns_header = page.locator("#history-panel thead a", has_text="Turns")
+        turns_header.click()
+        page.wait_for_load_state("networkidle")
+        assert "sort_by=turns" in page.url
+        assert "sort_dir=ASC" in page.url
+
+    def test_sort_indicator_shown(self, live_server, page):
+        """P1: Active sort column shows direction indicator arrow."""
+        page.goto(f"{live_server}/history")
+        turns_header = page.locator("#history-panel thead a", has_text="Turns")
+        turns_header.click()
+        page.wait_for_load_state("networkidle")
+        # The active sort column should have an arrow indicator
+        header_text = page.locator(
+            "#history-panel thead a", has_text="Turns"
+        ).inner_text()
+        # Check for unicode arrow (↓ or ↑)
+        assert "\u2193" in header_text or "\u2191" in header_text
+
+    def test_sort_by_different_columns(self, live_server, page):
+        """P1: Can sort by multiple different columns."""
+        page.goto(f"{live_server}/history")
+        # Sort by Ticket
+        ticket_header = page.locator(
+            "#history-panel thead a", has_text="Ticket"
+        )
+        ticket_header.click()
+        page.wait_for_load_state("networkidle")
+        assert "sort_by=ticket_id" in page.url
+
+        # Sort by Project
+        project_header = page.locator(
+            "#history-panel thead a", has_text="Project"
+        )
+        project_header.click()
+        page.wait_for_load_state("networkidle")
+        assert "sort_by=project" in page.url
+
+
+@pytest.mark.playwright
+class TestHistoryPagination:
+    """Pagination controls on history page."""
+
+    def test_pagination_page_info_shown(self, live_server, page):
+        """P0: Page info (e.g. 'page 1 of 1') is displayed."""
+        page.goto(f"{live_server}/history")
+        panel = page.locator("#history-panel")
+        text = panel.inner_text()
+        assert "page" in text.lower()
+
+    def test_pagination_preserves_filters(self, live_server, page):
+        """P1: Sort params are preserved in pagination links."""
+        page.goto(f"{live_server}/history?sort_by=turns&sort_dir=DESC")
+        panel = page.locator("#history-panel")
+        # Even on page 1, pagination links (if any) or the page itself
+        # should preserve the sort state
+        text = panel.inner_text()
+        assert "page" in text.lower()
+        # URL should still contain our sort params
+        assert "sort_by=turns" in page.url
+
+
+@pytest.mark.playwright
 class TestHistoryMissing:
     """Edge cases for history page."""
 

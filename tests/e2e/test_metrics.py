@@ -117,6 +117,14 @@ class TestMetricsProjectFilter:
         options = select.locator("option").all_text_contents()
         assert "All Projects" in options
 
+    def test_project_filter_has_seeded_projects(self, live_server, page):
+        """P0: Project filter contains projects from seed data."""
+        page.goto(f"{live_server}/metrics")
+        select = page.locator('select[name="project"]')
+        options = select.locator("option").all_text_contents()
+        assert "bot-farm" in options
+        assert "web-app" in options
+
     def test_project_filter_works(self, live_server, page):
         """P0: Filtering by project updates metrics."""
         page.goto(f"{live_server}/metrics")
@@ -124,6 +132,40 @@ class TestMetricsProjectFilter:
         page.click("button[type='submit']")
         page.wait_for_load_state("networkidle")
         assert "project=bot-farm" in page.url
+
+    def test_project_filter_changes_total_tasks(self, live_server, page):
+        """P0: Filtering by project changes the Total Tasks count."""
+        # Get all-projects total
+        page.goto(f"{live_server}/metrics")
+        all_card = page.locator(".metric-card", has_text="Total Tasks")
+        all_total = int(all_card.first.locator("h2").inner_text())
+
+        # Filter to one project
+        page.select_option('select[name="project"]', "bot-farm")
+        page.click("button[type='submit']")
+        page.wait_for_load_state("networkidle")
+        filtered_card = page.locator(".metric-card", has_text="Total Tasks")
+        filtered_total = int(filtered_card.first.locator("h2").inner_text())
+
+        # Filtered count should be less than or equal to all
+        assert filtered_total <= all_total
+        assert filtered_total > 0
+
+    def test_clear_project_filter_restores_all(self, live_server, page):
+        """P0: Clearing filter restores all-project metrics."""
+        # Start filtered
+        page.goto(f"{live_server}/metrics?project=bot-farm")
+        filtered_card = page.locator(".metric-card", has_text="Total Tasks")
+        filtered_total = int(filtered_card.first.locator("h2").inner_text())
+
+        # Clear filter
+        page.select_option('select[name="project"]', "")
+        page.click("button[type='submit']")
+        page.wait_for_load_state("networkidle")
+        all_card = page.locator(".metric-card", has_text="Total Tasks")
+        all_total = int(all_card.first.locator("h2").inner_text())
+
+        assert all_total >= filtered_total
 
 
 @pytest.mark.playwright
