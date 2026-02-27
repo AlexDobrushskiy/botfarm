@@ -280,6 +280,7 @@ def create_app(
     on_pause: Callable[[], None] | None = None,
     on_resume: Callable[[], None] | None = None,
     on_update: Callable[[], None] | None = None,
+    on_rerun_preflight: Callable[[], None] | None = None,
     update_failed_event: threading.Event | None = None,
     git_env: dict[str, str] | None = None,
 ) -> FastAPI:
@@ -309,6 +310,9 @@ def create_app(
     on_update:
         Callback invoked when the user clicks Update & Restart. Should be
         a callable with no arguments (e.g. ``supervisor.request_update``).
+    on_rerun_preflight:
+        Callback invoked when the user triggers a manual preflight re-run
+        from the dashboard (e.g. ``supervisor.request_rerun_preflight``).
     update_failed_event:
         Threading event set by the supervisor when an update fails.
         The banner endpoint checks this to reset the \"Updating...\" state.
@@ -324,6 +328,7 @@ def create_app(
     app.state.on_pause = on_pause
     app.state.on_resume = on_resume
     app.state.on_update = on_update
+    app.state.on_rerun_preflight = on_rerun_preflight
     app.state.update_in_progress = False
     app.state.update_failed_event = update_failed_event
     app.state.logs_dir = Path(logs_dir).expanduser() if logs_dir else None
@@ -2013,6 +2018,7 @@ def start_dashboard(
     on_pause: Callable[[], None] | None = None,
     on_resume: Callable[[], None] | None = None,
     on_update: Callable[[], None] | None = None,
+    on_rerun_preflight: Callable[[], None] | None = None,
     update_failed_event: threading.Event | None = None,
     git_env: dict[str, str] | None = None,
 ) -> threading.Thread | None:
@@ -2031,6 +2037,7 @@ def start_dashboard(
         on_pause=on_pause,
         on_resume=on_resume,
         on_update=on_update,
+        on_rerun_preflight=on_rerun_preflight,
         update_failed_event=update_failed_event,
         git_env=git_env,
     )

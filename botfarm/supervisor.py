@@ -33,7 +33,7 @@ from botfarm.config import BotfarmConfig, IdentitiesConfig, ProjectConfig, resol
 from botfarm.db import get_task, init_db, insert_event, insert_task, resolve_db_path, save_queue_entries, update_task
 from botfarm.linear import LinearClient, LinearPoller, create_pollers
 from botfarm.notifications import Notifier
-from botfarm.preflight import log_preflight_summary, run_preflight_checks
+from botfarm.preflight import CheckResult, log_preflight_summary, run_preflight_checks
 from botfarm.slots import SlotManager, SlotState, _is_pid_alive
 from botfarm.usage import DEFAULT_PAUSE_5H_THRESHOLD, DEFAULT_PAUSE_7D_THRESHOLD, UsagePoller
 from botfarm.worker import STAGES, PipelineResult, build_git_env, run_pipeline
@@ -319,6 +319,14 @@ class Supervisor:
 
         # Usage stall detection: (project, slot_id) -> _StallInfo
         self._stall_tracking: dict[tuple[str, int], _StallInfo] = {}
+
+        # Degraded mode: preflight checks failed, dashboard running but
+        # dispatch paused.  Re-checks run periodically until all pass.
+        self._degraded = False
+        self._preflight_results: list[CheckResult] = []
+        self._preflight_lock = threading.Lock()
+        self._rerun_preflight_event = threading.Event()
+        self._last_preflight_rerun: float = 0.0
 
         # Environment overrides for supervisor-level git/gh commands
         # (GIT_SSH_COMMAND, GH_TOKEN from coder identity).
@@ -924,6 +932,15 @@ class Supervisor:
         """Run the supervisor main loop until shutdown is requested.
 
         Returns an exit code. ``42`` means "restart after update".
+
+        Startup order:
+        1. Install signal handlers, log startup banner.
+        2. Start dashboard (if enabled) — so it's accessible even if
+           preflight checks fail.
+        3. Run preflight checks.
+        4. If dispatch-blocking checks fail → enter degraded mode
+           (dashboard running, dispatch paused, periodic re-checks).
+        5. On success → recover from previous state, enter main loop.
         """
         self._log_dir.mkdir(parents=True, exist_ok=True)
         self.install_signal_handlers()
@@ -941,25 +958,8 @@ class Supervisor:
         )
         self._conn.commit()
 
-        # Run pre-flight health checks before entering main loop
-        preflight_results = run_preflight_checks(self._config, env=self._git_env)
-        if not log_preflight_summary(preflight_results):
-            insert_event(
-                self._conn,
-                event_type="preflight_failed",
-                detail="; ".join(
-                    f"{r.name}: {r.message}"
-                    for r in preflight_results
-                    if not r.passed and r.critical
-                ),
-            )
-            self._conn.commit()
-            raise SystemExit(1)
-
-        # Recover from previous state before entering main loop
-        self._recover_on_startup()
-
-        # Start dashboard if enabled
+        # Start dashboard BEFORE preflight so it's accessible for
+        # diagnostics even when checks fail.
         self._dashboard_thread = None
         if self._config.dashboard.enabled:
             from botfarm.dashboard import start_dashboard
@@ -972,25 +972,113 @@ class Supervisor:
                 on_pause=self.request_pause,
                 on_resume=self.request_resume,
                 on_update=self.request_update,
+                on_rerun_preflight=self.request_rerun_preflight,
                 update_failed_event=self._update_failed_event,
                 git_env=self._git_env,
             )
 
+        # Run pre-flight health checks
+        preflight_results = run_preflight_checks(self._config, env=self._git_env)
+        preflight_ok = log_preflight_summary(preflight_results)
+
+        with self._preflight_lock:
+            self._preflight_results = preflight_results
+
+        if not preflight_ok:
+            insert_event(
+                self._conn,
+                event_type="preflight_failed",
+                detail="; ".join(
+                    f"{r.name}: {r.message}"
+                    for r in preflight_results
+                    if not r.passed and r.critical
+                ),
+            )
+            self._conn.commit()
+            self._degraded = True
+            self._last_preflight_rerun = time.monotonic()
+            logger.warning(
+                "Entering degraded mode — dashboard is running, "
+                "dispatch paused until preflight checks pass"
+            )
+        else:
+            # Recover from previous state before entering main loop
+            self._recover_on_startup()
+
         # Initial usage poll so we have data before the first dispatch
-        try:
-            self._usage_poller.force_poll(self._conn)
-        except Exception:
-            logger.exception("Initial usage poll failed — continuing without usage data")
+        if not self._degraded:
+            try:
+                self._usage_poller.force_poll(self._conn)
+            except Exception:
+                logger.exception("Initial usage poll failed — continuing without usage data")
 
         try:
             while not self._shutdown_requested:
-                self._tick()
+                if self._degraded:
+                    self._tick_degraded()
+                else:
+                    self._tick()
                 if not self._shutdown_requested:
                     self._sleep(self._config.linear.poll_interval_seconds)
         finally:
             self._shutdown()
 
         return self._exit_code
+
+    # Interval between automatic preflight re-runs in degraded mode (seconds)
+    _PREFLIGHT_RERUN_INTERVAL = 30
+
+    def _tick_degraded(self) -> None:
+        """Tick while in degraded mode — no dispatch, just re-run preflight."""
+        manual_rerun = self._rerun_preflight_event.is_set()
+        if manual_rerun:
+            self._rerun_preflight_event.clear()
+
+        now = time.monotonic()
+        elapsed = now - self._last_preflight_rerun
+        if manual_rerun or elapsed >= self._PREFLIGHT_RERUN_INTERVAL:
+            self._rerun_preflight()
+
+    def _rerun_preflight(self) -> None:
+        """Re-run preflight checks and transition out of degraded mode on success."""
+        logger.info("Re-running preflight checks…")
+        results = run_preflight_checks(self._config, env=self._git_env)
+        ok = log_preflight_summary(results)
+        self._last_preflight_rerun = time.monotonic()
+
+        with self._preflight_lock:
+            self._preflight_results = results
+
+        if ok:
+            logger.info(
+                "All preflight checks passed — transitioning from degraded to normal mode"
+            )
+            insert_event(
+                self._conn,
+                event_type="preflight_recovered",
+                detail="all critical checks now pass",
+            )
+            self._conn.commit()
+            self._degraded = False
+            self._recover_on_startup()
+            try:
+                self._usage_poller.force_poll(self._conn)
+            except Exception:
+                logger.exception("Usage poll after recovery failed — continuing without usage data")
+        else:
+            logger.warning(
+                "Preflight checks still failing — remaining in degraded mode"
+            )
+
+    def get_preflight_results(self) -> list[CheckResult]:
+        """Return the latest preflight results (thread-safe, for dashboard)."""
+        with self._preflight_lock:
+            return list(self._preflight_results)
+
+    @property
+    def degraded(self) -> bool:
+        """Whether the supervisor is in degraded mode."""
+        return self._degraded
 
     def _tick(self) -> None:
         """One iteration of the supervisor loop."""
@@ -1926,6 +2014,11 @@ class Supervisor:
     def request_resume(self) -> None:
         """Request a manual resume (thread-safe, called from dashboard)."""
         self._manual_resume_event.set()
+        self._wake_event.set()
+
+    def request_rerun_preflight(self) -> None:
+        """Request an immediate preflight re-run (thread-safe, called from dashboard)."""
+        self._rerun_preflight_event.set()
         self._wake_event.set()
 
     def request_update(self) -> None:
