@@ -43,6 +43,34 @@
             background: var(--pico-ins-color);
             color: #fff;
         }
+        .pause-controls {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            gap: 0.3rem;
+        }
+        .pause-controls-buttons {
+            display: flex;
+            gap: 0.4rem;
+        }
+        .pause-hint {
+            font-size: 0.72rem;
+            color: var(--pico-muted-color);
+            max-width: 22rem;
+            text-align: right;
+            line-height: 1.3;
+        }
+        .pause-worker-list {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            gap: 0.15rem;
+        }
+        .pause-worker-item {
+            font-size: 0.7rem;
+            color: var(--pico-color-yellow-500, #eab308);
+            font-family: var(--pico-font-family-monospace, monospace);
+        }
         .banner-paused {
             background: var(--pico-del-color);
             color: #fff;

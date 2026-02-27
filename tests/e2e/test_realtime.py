@@ -147,11 +147,11 @@ class TestSupervisorControls:
         try:
             page.goto(live_server)
             controls = page.locator("#supervisor-controls")
-            # Should show "Pausing..." with worker count
+            # Should show "Pausing..." button and worker count in hint
             pausing_btn = controls.locator("button", has_text="Pausing")
             pausing_btn.wait_for(state="visible", timeout=5000)
-            text = pausing_btn.inner_text()
-            assert "worker" in text.lower()
+            controls_text = controls.inner_text()
+            assert "worker" in controls_text.lower()
             # Should also show Cancel button
             cancel_btn = controls.locator("button", has_text="Cancel")
             assert cancel_btn.is_visible()
