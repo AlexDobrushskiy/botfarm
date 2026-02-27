@@ -227,21 +227,6 @@ def live_server(seeded_db, test_config, pause_resume_state):
     patcher.stop()
 
 
-@pytest.fixture(scope="session")
-def app_instance(live_server, seeded_db, test_config, pause_resume_state):
-    """Provide access to the FastAPI app for direct state manipulation.
-
-    This re-imports from the live_server's already-running app. Since
-    create_app stores state on the app instance, we reconstruct an accessor.
-    """
-    # The app is already running; we return the state container for
-    # tests that need to manipulate app state (e.g. update_in_progress).
-    return {
-        "pause_resume_state": pause_resume_state,
-        "base_url": live_server,
-    }
-
-
 @pytest.fixture()
 def page(live_server, page):
     """Playwright page navigated to the test dashboard."""

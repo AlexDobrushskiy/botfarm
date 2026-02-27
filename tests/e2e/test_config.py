@@ -246,8 +246,12 @@ class TestConfigSave:
         banner.wait_for(state="visible", timeout=5000)
         assert "restart required" in banner.inner_text().lower()
 
-        # Restore original value
+        # Restore original value and submit the form
         rate_input.fill(original)
+        page.locator(
+            "#tab-edit form", has=page.locator("#notifications-webhook_url")
+        ).locator("button[type='submit']").click()
+        page.wait_for_timeout(500)
 
     def test_multiple_field_changes_in_one_save(self, live_server, page):
         """P1: Changing multiple fields and saving works."""

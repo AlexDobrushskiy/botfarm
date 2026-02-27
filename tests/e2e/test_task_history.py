@@ -200,15 +200,15 @@ class TestHistoryInteractiveFilters:
     def test_search_by_title_substring(self, live_server, page):
         """P0: Search filters by title substring, not just ticket ID."""
         page.goto(f"{live_server}/history")
-        # Seed data tasks have descriptive titles; search a common word
-        page.fill("input[name='search']", "Implement")
+        # Seed data has tasks with "Add" in the title (e.g. "Add retry logic")
+        page.fill("input[name='search']", "Add")
         page.click("#history-filters button[type='submit']")
         page.wait_for_load_state("networkidle")
         rows = page.locator("#history-panel table tbody tr")
-        # Should find at least one task with "Implement" in the title
-        if rows.count() > 0:
-            text = page.locator("#history-panel").inner_text()
-            assert "task" in text.lower()
+        assert rows.count() > 0, "Search for \"Add\" should return at least one result"
+        for i in range(rows.count()):
+            text = rows.nth(i).inner_text()
+            assert "Add" in text
 
     def test_no_results_message(self, live_server, page):
         """P1: Searching for non-existent term shows 'No tasks found'."""
