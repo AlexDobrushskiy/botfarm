@@ -8,6 +8,7 @@ countdown/timeago updates.
 """
 
 import sqlite3
+from datetime import datetime, timezone
 
 import pytest
 
@@ -113,7 +114,6 @@ class TestHtmxContentUpdates:
         dispatch pause state.  A fresh heartbeat means "running".
         """
         # Set a fresh heartbeat so the badge shows "running"
-        from datetime import datetime, timezone
         now_iso = datetime.now(timezone.utc).isoformat()
         conn = sqlite3.connect(seeded_db)
         conn.execute(
@@ -241,13 +241,10 @@ class TestSSELogStreaming:
         # Check for tool_result lines (gray)
         tool_result_lines = page.locator("#log-output .log-line-tool_result")
 
-        # At least one type should be present from our test data
-        total = (
-            assistant_lines.count()
-            + tool_use_lines.count()
-            + tool_result_lines.count()
-        )
-        assert total >= 1
+        # Test data has all three types — assert each individually
+        assert assistant_lines.count() >= 1, "Expected assistant (blue) lines"
+        assert tool_use_lines.count() >= 1, "Expected tool_use (purple) lines"
+        assert tool_result_lines.count() >= 1, "Expected tool_result (gray) lines"
 
     def test_sse_stream_completes_when_stage_inactive(
         self, live_server, page, seeded_db,
@@ -535,7 +532,8 @@ class TestCountdownTimers:
         # The JS should have converted ISO timestamps to "Xh ago" format
         first_text = timestamps.first.inner_text()
         # After DOMContentLoaded, timeago() should have run
-        assert len(first_text) > 0
+        assert "ago" in first_text.lower() or "just now" in first_text.lower(), \
+            f"Expected timeago format, got: {first_text!r}"
 
     def test_countdown_updates_via_javascript(self, live_server, page):
         """P1: updateCountdowns() function is callable and updates elements."""
