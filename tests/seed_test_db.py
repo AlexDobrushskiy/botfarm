@@ -86,6 +86,13 @@ def seed_comprehensive_db(db_path: Path) -> None:
     """
     conn = init_db(db_path, allow_migration=True)
 
+    # Clean tables that use plain INSERTs (no ON CONFLICT) so re-seeding
+    # the same database is idempotent.  Tables with upsert semantics
+    # (slots, tasks, dispatch_state, queue_entries) are safe already.
+    conn.execute("DELETE FROM stage_runs")
+    conn.execute("DELETE FROM task_events")
+    conn.execute("DELETE FROM usage_snapshots")
+
     _seed_slots(conn)
     _seed_tasks_and_stages(conn)
     _seed_usage_snapshots(conn)
@@ -125,12 +132,12 @@ def _seed_slots(conn):
         ticket_labels=["bug"],
     )
 
-    # web-app: 2 slots — busy (mid-review), paused_manual
+    # web-app: 2 slots — busy (mid-fix after first review), paused_manual
     _upsert_slot(
         conn, "web-app", 1, status="busy",
         ticket_id="WEB-50", ticket_title="Dark mode toggle",
         branch="web-50-dark-mode-toggle",
-        stage="review", stage_iteration=2,
+        stage="fix", stage_iteration=1,
         current_session_id="sess-wa-50",
         started_at="2026-02-27T07:30:00Z",
         stage_started_at="2026-02-27T09:15:00Z",
@@ -553,7 +560,7 @@ def _seed_tasks_and_stages(conn):
     ]:
         insert_event(conn, task_id=t8, event_type=ev_type, detail=detail)
 
-    # ---- Task 9: In-progress in web-app (mid-review) ----
+    # ---- Task 9: In-progress in web-app (mid-fix after first review) ----
     t9 = insert_task(
         conn, ticket_id="WEB-50", title="Dark mode toggle",
         project="web-app", slot=1, status="pending",
@@ -562,7 +569,7 @@ def _seed_tasks_and_stages(conn):
         conn, t9,
         started_at="2026-02-27T07:30:00Z",
         turns=28, review_iterations=1,
-        pipeline_stage="review", review_state="needs_changes",
+        pipeline_stage="fix", review_state="needs_changes",
     )
     insert_stage_run(
         conn, task_id=t9, stage="implement", iteration=1,

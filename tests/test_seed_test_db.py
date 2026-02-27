@@ -35,14 +35,21 @@ class TestSeedBasics:
         assert version == SCHEMA_VERSION
 
     def test_idempotent_rerun(self, tmp_path):
-        """Seeding twice on the same path should not raise."""
+        """Seeding twice on the same path produces identical row counts."""
         path = tmp_path / "test.db"
         seed_comprehensive_db(path)
+        conn = sqlite3.connect(str(path))
+        counts_before = {
+            t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]  # noqa: S608
+            for t in ["slots", "tasks", "stage_runs", "task_events", "usage_snapshots", "queue_entries"]
+        }
+        conn.close()
+
         seed_comprehensive_db(path)
         conn = sqlite3.connect(str(path))
-        # Tasks use ON CONFLICT so counts should stay the same
-        count = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
-        assert count == 9
+        for table, expected in counts_before.items():
+            actual = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]  # noqa: S608
+            assert actual == expected, f"{table}: expected {expected}, got {actual}"
         conn.close()
 
 
