@@ -74,7 +74,13 @@ class TestLogViewerNoLogs:
     def test_no_logs_message(self, live_server, page):
         """P1: Task with no log files shows appropriate message."""
         page.goto(f"{live_server}/task/SMA-80/logs")
-        text = page.locator("main").inner_text()
-        # Either shows log content or "No log files available"
-        # Both are valid — depends on whether log files exist on disk
-        assert "Logs" in text or "No log" in text
+        # Check for log content below the heading (exclude heading which always has "Logs")
+        tabs = page.locator(".log-stage-tab")
+        log_content = page.locator("pre")
+        if tabs.count() == 0 and log_content.count() == 0:
+            # No tabs and no log content — should show a "no logs" message
+            body_text = page.locator("main").inner_text()
+            assert "no log" in body_text.lower(), "Expected 'no log' message when no log files exist"
+        else:
+            # Logs are present — verify content is rendered
+            assert tabs.count() > 0 or log_content.count() > 0

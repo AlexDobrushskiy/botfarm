@@ -99,10 +99,10 @@ class TestMetricsTokenUsage:
         """P1: Extra usage cost card has yellow highlight."""
         page.goto(f"{live_server}/metrics")
         extra_cost = page.locator(".metric-card .status-busy")
-        # Seed data has extra usage costs > 0
-        if extra_cost.count() > 0:
-            text = page.locator("main").inner_text()
-            assert "Extra Usage Cost" in text
+        if extra_cost.count() == 0:
+            pytest.skip("No extra usage cost highlight present in seed data")
+        text = page.locator("main").inner_text()
+        assert "Extra Usage Cost" in text
 
 
 @pytest.mark.playwright

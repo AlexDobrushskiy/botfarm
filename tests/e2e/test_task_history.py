@@ -100,6 +100,7 @@ class TestHistoryFilters:
         page.wait_for_load_state("networkidle")
         # All visible rows should be bot-farm
         rows = page.locator("#history-panel table tbody tr")
+        assert rows.count() > 0, "Filter should return at least one bot-farm task"
         for i in range(rows.count()):
             text = rows.nth(i).inner_text()
             assert "bot-farm" in text
@@ -111,7 +112,8 @@ class TestHistoryFilters:
         page.click("#history-filters button[type='submit']")
         page.wait_for_load_state("networkidle")
         panel = page.locator("#history-panel")
-        # Should only have completed status
+        # Should have at least one completed row and no failed rows
+        assert panel.locator(".status-free").count() > 0, "Should have at least one completed task"
         assert panel.locator(".status-failed").count() == 0
 
     def test_search_filter_works(self, live_server, page):

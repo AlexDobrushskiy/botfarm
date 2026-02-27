@@ -56,12 +56,9 @@ class TestSupervisorControls:
     """Supervisor pause/resume controls (dashboard-only mode = no callbacks)."""
 
     def test_pause_resume_hidden_without_callbacks(self, page):
-        """P0: In test mode (no callbacks), pause/resume are not shown
-        or return 503 if clicked."""
+        """P0: In test mode (no callbacks), pause/resume buttons are not shown."""
         controls = page.locator("#supervisor-controls")
-        # In dashboard-only mode, controls should either be empty
-        # or buttons should not be present
-        text = controls.inner_text()
-        # Controls might be empty or show disabled state
-        # This is valid — no callbacks means no pause/resume
-        assert controls.count() == 1  # Element exists but may be empty
+        assert controls.count() == 1, "Supervisor controls container should exist"
+        # Without callbacks, no pause/resume buttons should be rendered
+        buttons = controls.locator("button")
+        assert buttons.count() == 0, "Pause/resume buttons should not be shown without callbacks"
