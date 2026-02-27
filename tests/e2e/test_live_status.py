@@ -187,3 +187,22 @@ class TestPageStructure:
         """P0: Dark theme is active (data-theme='dark')."""
         html_el = page.locator("html")
         assert html_el.get_attribute("data-theme") == "dark"
+
+
+@pytest.mark.playwright
+class TestDispatchPausedBanner:
+    """Dispatch paused banner tests."""
+
+    def test_paused_banner_not_shown_when_running(self, page):
+        """P0: No paused banner when dispatch is running."""
+        banner = page.locator(".banner-paused")
+        assert banner.count() == 0
+
+    def test_paused_banner_shown_when_paused(
+        self, set_dispatch_paused, live_server, page
+    ):
+        """P0: Paused banner appears when dispatch is paused."""
+        page.goto(live_server)
+        banner = page.locator(".banner-paused")
+        banner.wait_for(state="visible")
+        assert "DISPATCH PAUSED" in banner.inner_text()
