@@ -1,19 +1,19 @@
 # Investigation: Test Instance Architecture & Isolation
 
 **Ticket:** SMA-187
-**Date:** 2026-02-26
+**Date:** 2026-02-27 (updated)
 
 ## Summary
 
-The botfarm dashboard is already well-architected for test isolation. The `create_app()` factory accepts all dependencies as parameters, callbacks default to `None` (disabling supervisor actions), and SQLite with `tmp_path` provides trivial database isolation. No significant architectural changes are needed — just a seed script and CI plumbing.
+The test instance infrastructure is already fully built and operational. All five investigation areas have existing, well-designed implementations. This report documents the current architecture and identifies minor gaps.
 
 ## Findings
 
 ### 1. Dashboard-Only Mode
 
-**Can we run `create_app()` with a test DB and no callbacks?** Yes — this already works and is how the existing `test_dashboard.py` tests operate.
+**Status: Fully supported**
 
-`create_app()` signature (`botfarm/dashboard.py:271`):
+`create_app()` (`botfarm/dashboard.py:271`) accepts all dependencies as keyword-only parameters with sensible defaults:
 
 ```python
 def create_app(
@@ -31,145 +31,126 @@ def create_app(
 ) -> FastAPI:
 ```
 
+**Can we run `create_app()` with a test DB and no callbacks?** Yes — this is exactly what the E2E tests already do (`tests/e2e/conftest.py:42`):
+```python
+app = create_app(db_path=seeded_db)
+```
+
 **What happens when callbacks are `None`?** The UI handles this gracefully:
 
-- The supervisor controls template (`partials/supervisor_controls.html`) is guarded by `{% if has_callbacks %}` — when callbacks are `None`, Pause/Resume/Update buttons are simply not rendered.
-- API endpoints (`/api/pause`, `/api/resume`, `/api/update`) return `503` with a clear error message: `"Pause not available (supervisor not connected)"`.
-- Config editing (POST `/config`) similarly returns `503` when `botfarm_config` is `None`.
+- The supervisor controls template is guarded by `{% if has_callbacks %}` — buttons are not rendered when callbacks are `None`.
+- API endpoints (`/api/pause`, `/api/resume`, `/api/update`) return `503` with a clear message: `"Pause not available (supervisor not connected)"`.
+- Config editing (POST `/config`) returns `503` when `botfarm_config` is `None`.
 - All read-only pages (index, history, usage, metrics, task detail) work normally.
+- Tests confirm this behavior (`test_dashboard.py:2639-2651`).
 
 **Conclusion:** Dashboard-only mode is production-ready. No changes needed.
 
 ### 2. Database Seeding Strategy
 
-**Current schema:** 13 migrations, 8 core tables:
-- `slots` — runtime slot state (status: free/busy/failed/paused_manual)
-- `tasks` — ticket processing history (status: pending/completed/failed)
-- `stage_runs` — per-stage execution metrics (stages: implement/review/fix/pr_checks/merge)
-- `usage_snapshots` — API usage polling data (utilization_5h, utilization_7d, extra usage)
-- `task_events` — audit trail
-- `dispatch_state` — single-row pause state + supervisor heartbeat
-- `queue_entries` — Linear Todo queue snapshots
-- `schema_version` — migration tracking
+**Status: Comprehensive seed script exists (Option B implemented)**
 
-**Existing test fixtures** (`tests/test_dashboard.py`):
-- `db_file` fixture creates a DB with 2 slots, 2 tasks, 2 stage_runs, 1 usage snapshot, and 3 task events.
-- Helper functions `_seed_slot()` and `_seed_queue_entry()` exist for ergonomic seeding.
-- Uses `init_db()` + the `botfarm.db` helper functions — handles all migrations automatically.
+`tests/seed_test_db.py` provides `seed_comprehensive_db()` — a deterministic, portable seed function covering:
 
-**Minimum dataset to exercise all dashboard pages:**
+| Data | Coverage |
+|------|----------|
+| **Slots** | 8 slots across 3 projects (`bot-farm`, `web-app`, `data-pipeline`), all 6 statuses: free, busy, failed, paused_manual, paused_limit, completed_pending_cleanup |
+| **Tasks** | 10 tasks: completed (with full pipeline), failed (max iterations), in-progress (mid-implement), in-progress (mid-fix), paused (manual), paused (limit) |
+| **Stage Runs** | ~30 stage runs across implement/review/fix/pr_checks/merge with varying iteration counts, context fills, costs, and token usage |
+| **Usage** | 8 snapshots covering: low -> medium -> high -> at-limit -> extra-usage-active -> post-reset |
+| **Queue** | 5 entries across 2 projects with priorities and blocker dependencies |
+| **Dispatch State** | Running (not paused) |
 
-| Page | Required Data |
-|------|--------------|
-| Index (/) | slots (all statuses), dispatch_state, usage_snapshot, queue_entries |
-| History (/history) | tasks (completed, failed, pending), multiple projects |
-| Usage (/usage) | Multiple usage_snapshots over time |
-| Metrics (/metrics) | stage_runs with varied stages/durations/costs |
-| Task Detail (/task/N) | task + stage_runs + task_events |
-| Config (/config) | BotfarmConfig object (optional) |
-| Log Viewer (/logs) | logs_dir with sample files (optional) |
+**Minor gaps identified:**
+- No `paused_manual` dispatch state (only running state is seeded)
+- No tasks with `pr_url` populated (PR links column not exercised)
 
-**Recommendation:** Option B — purpose-built seed script. Reasons:
-- Deterministic and portable (no dependency on production data)
-- Can be checked into the repo and reused across CI/local/Playwright
-- The existing fixture pattern is a proven template to extend
-- Seed script should live at `tests/seed_test_db.py` as a reusable module importable by both pytest fixtures and a standalone CLI
+These are minor and can be added to the existing seed script without architectural changes (tracked in SMA-205).
 
 ### 3. Port & Process Isolation
 
-**Production port:** 8420 (configured in `DashboardConfig`).
+**Status: Fully isolated**
 
-**For Playwright tests:** No port binding needed. FastAPI's `TestClient` uses HTTPX transport internally — it calls the ASGI app directly without opening a network socket. All existing dashboard tests already use this approach.
+| Aspect | Production | Test |
+|--------|-----------|------|
+| **Port** | 8420 (configurable via `config.yaml`) | 8421 (hardcoded in `tests/e2e/conftest.py:24`) |
+| **Host** | `0.0.0.0` (configurable) | `127.0.0.1` (test only) |
+| **DB Path** | Configured path (e.g., `~/.botfarm/botfarm.db`) | Temp directory (`tmp_path_factory.mktemp("e2e")`) |
+| **Process** | Daemon thread in supervisor process | Daemon thread in pytest process |
+| **Callbacks** | Connected to supervisor | None (inert) |
 
-However, Playwright requires a real browser connecting to a real HTTP endpoint. Two options:
+**Can they run on the same machine?** Yes — different ports, different databases, different processes. Test instance binds to `127.0.0.1` only.
 
-- **Option A: Uvicorn on an ephemeral port.** Start `uvicorn.run(app, port=0)` in a thread (port=0 lets the OS pick a free port). Playwright connects to that port.
-- **Option B: Use `pytest-playwright` with a pytest fixture** that starts the app on a fixed test port (e.g., 8421) and tears it down after. Simpler, and port conflicts are unlikely in CI.
-
-**Preventing accidental production DB access:** The seed script creates a fresh DB in `tmp_path`. The `create_app()` call explicitly receives this path. There is no global DB path that could accidentally resolve to production.
-
-**Recommendation:** Option B (fixed test port 8421) for simplicity. The test fixture pattern:
-
-```python
-@pytest.fixture(scope="session")
-def dashboard_server(tmp_path_factory):
-    db_path = tmp_path_factory.mktemp("data") / "test.db"
-    seed_comprehensive_db(db_path)  # From seed script
-    app = create_app(db_path=db_path)
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=8421))
-    thread = threading.Thread(target=server.run, daemon=True)
-    thread.start()
-    yield "http://127.0.0.1:8421"
-    server.should_exit = True
-```
+**Accidental production DB connection?** Not possible — test fixture creates a fresh DB in a unique temp directory with no path overlap.
 
 ### 4. Configuration
 
-**Do we need a separate `config.test.yaml`?** No. The test instance is fully configured programmatically through `create_app()` parameters. There is no need to load a config file at all.
+**Status: No separate config file needed**
 
-For Playwright tests specifically:
-- `create_app(db_path=..., linear_workspace="test-workspace")` — all that's needed
-- `botfarm_config=None` — disables config editing (safe)
-- `logs_dir=None` — disables log viewer (unless we want to test it)
-- No callbacks — disables supervisor controls
+The test runner manages everything programmatically via `create_app()` arguments. For Playwright tests, the app is started in a pytest session fixture (`tests/e2e/conftest.py:36-72`) which handles startup, readiness polling (10s timeout), and graceful shutdown.
 
-If we later want to test config editing or log viewing, we can pass a test `BotfarmConfig` or a temp `logs_dir` to specific test fixtures.
+A `config.test.yaml` would only be needed to test the config editor with realistic values — can be added later as needed.
 
 ### 5. CI Considerations
 
-**Current CI** (`.github/workflows/tests.yml`):
-- Python 3.12, pip install, `pytest tests/ -v`
-- No browser installation, no Playwright
+**Status: Fully configured**
 
-**What's needed for Playwright tests:**
+`.github/workflows/tests.yml` defines two CI jobs:
 
-1. **Browser installation:** `playwright install chromium --with-deps` (~150MB download, cached by GH Actions)
-2. **Python package:** `pytest-playwright` added to `requirements.txt`
-3. **Separate test job or marker:** Playwright tests are slower (~5-10s per test vs <0.1s for unit tests). Recommended approach:
-   - Mark Playwright tests with `@pytest.mark.playwright`
-   - Run unit tests and Playwright tests in separate CI jobs (can run in parallel)
-   - Or use `-m "not playwright"` for fast feedback, full suite on PR
-4. **Headless mode:** Default for `pytest-playwright` in CI — no config needed
-5. **Artifacts on failure:** `pytest-playwright` supports `--screenshot=only-on-failure` and `--tracing=retain-on-failure` for debugging
-6. **Server startup in CI:** The pytest fixture handles this — no separate process management needed
+| Job | Command | Browser |
+|-----|---------|---------|
+| **Unit tests** | `python -m pytest tests/ -v -m "not playwright"` | None |
+| **E2E tests** | `python -m pytest tests/e2e/ -v -m playwright --screenshot=only-on-failure --tracing=retain-on-failure` | Chromium (`playwright install chromium --with-deps`) |
 
-**Estimated CI impact:** +30-60s for browser install (cached after first run), +10-30s per Playwright test file.
+- Test artifacts uploaded on failure (7-day retention)
+- Marker `pytest.mark.playwright` configured in `pyproject.toml`
+- Headless mode by default in CI
 
-### 6. Recommended Architecture
+## Current Architecture
 
 ```
 tests/
-├── conftest.py                     # Shared fixtures (if any)
-├── seed_test_db.py                 # Comprehensive DB seed module
-├── test_dashboard.py               # Existing unit tests (unchanged)
-├── test_dashboard_playwright.py    # NEW: Playwright E2E tests
-└── ...
-
-# Playwright test structure:
-@pytest.fixture(scope="session")
-def seeded_db(tmp_path_factory) -> Path:
-    """Create and seed a comprehensive test database."""
-    ...
-
-@pytest.fixture(scope="session")
-def live_server(seeded_db) -> str:
-    """Start dashboard on port 8421, return base URL."""
-    ...
-
-@pytest.fixture()
-def page(live_server, browser):
-    """Playwright page pointed at the test dashboard."""
-    ...
+├── conftest.py                 # Shared unit test fixtures
+├── seed_test_db.py             # Comprehensive DB seed module (reusable)
+├── test_dashboard.py           # 44 unit/integration test classes
+├── e2e/
+│   ├── conftest.py             # E2E fixtures: seeded_db, live_server, page
+│   ├── test_smoke.py           # Basic page load
+│   ├── test_navigation.py      # Page navigation
+│   ├── test_live_status.py     # Live status page
+│   ├── test_task_history.py    # History page
+│   ├── test_task_detail.py     # Task detail page
+│   ├── test_usage_trends.py    # Usage trends
+│   ├── test_metrics.py         # Metrics page
+│   ├── test_log_viewer.py      # Log viewer
+│   ├── test_realtime.py        # Real-time polling/SSE
+│   ├── test_config.py          # Config editor
+│   ├── test_identities.py      # Identities editor
+│   └── scenarios/              # Scenario-based test data
 ```
 
-**Key design decisions:**
+Key design decisions already in place:
 - `scope="session"` for DB and server — seed once, share across all Playwright tests
 - Separate DB per Playwright session (no interference with unit tests)
 - No production data, no production callbacks, no production config
 - Fixed port 8421 (vs production 8420) for clarity
 
-## Follow-up Tickets Needed
+## Recommendation
 
-1. **Comprehensive DB seed script** — Create `tests/seed_test_db.py` covering all UI states
-2. **Playwright test infrastructure** — Add `pytest-playwright`, conftest fixtures, CI workflow changes
-3. **Initial Playwright test suite** — E2E tests for all dashboard pages and interactions
+**No new architecture is needed.** The existing implementation follows best practices:
+
+1. **Isolation**: Complete separation via temp databases, different ports, no callbacks
+2. **Determinism**: Seed script produces repeatable, comprehensive test data
+3. **CI-ready**: Both unit and E2E test jobs configured with proper artifact collection
+4. **Safety**: Dashboard-only mode is inert — no supervisor interaction possible
+
+### Follow-up
+
+Minor seed data gaps tracked in SMA-205:
+1. Add paused dispatch state to seed data
+2. Add tasks with `pr_url` populated
+3. Consider random port allocation for concurrent test runs
+
+### Impact on SMA-189
+
+SMA-189 ("Set up Playwright infrastructure and test fixtures") appears to be already implemented. All five of its implementation tasks are complete. Recommend re-scoping to address only the minor gaps above, or closing as done.
