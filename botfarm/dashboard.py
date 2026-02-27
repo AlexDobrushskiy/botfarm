@@ -1175,9 +1175,13 @@ def create_app(
     def partial_supervisor_controls(request: Request):
         state = _read_state()
         pause_state = _manual_pause_state(state)
+        busy_slots = [
+            s for s in state.get("slots", []) if s["status"] == "busy"
+        ] if pause_state.startswith("pausing") else []
         return templates.TemplateResponse("partials/supervisor_controls.html", {
             "request": request,
             "pause_state": pause_state,
+            "busy_slots": busy_slots,
             "supervisor": _supervisor_status(state),
             "has_callbacks": app.state.on_pause is not None,
         })

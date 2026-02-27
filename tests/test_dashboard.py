@@ -2607,6 +2607,59 @@ class TestManualPauseState:
         assert "Cancel" in resp.text
 
 
+class TestPauseHints:
+    """Verify informational hints shown in each pause state."""
+
+    def test_running_hint(self, db_file):
+        """Running state shows hint about graceful pause behavior."""
+        app = create_app(db_path=db_file, on_pause=lambda: None, on_resume=lambda: None)
+        client = TestClient(app)
+        resp = client.get("/partials/supervisor-controls")
+        assert "Stops new dispatches" in resp.text
+        assert "running stages finish gracefully" in resp.text
+
+    def test_pausing_hint_and_worker_details(self, tmp_path):
+        """Pausing state shows dispatch-stopped message and busy worker stages."""
+        path = tmp_path / "test.db"
+        conn = init_db(path)
+        _seed_slot(
+            conn, "proj", 1, status="busy", ticket_id="SMA-42",
+            stage="implement", pid=12345,
+        )
+        _seed_slot(
+            conn, "proj", 2, status="busy", ticket_id="SMA-43",
+            stage="review", pid=12346,
+        )
+        save_dispatch_state(conn, paused=True, reason="manual_pause")
+        conn.commit()
+        conn.close()
+
+        app = create_app(db_path=path, on_pause=lambda: None, on_resume=lambda: None)
+        client = TestClient(app)
+        resp = client.get("/partials/supervisor-controls")
+        body = resp.text
+        assert "New dispatches stopped" in body
+        assert "2 workers" in body
+        assert "Slot 1: implement SMA-42" in body
+        assert "Slot 2: review SMA-43" in body
+
+    def test_paused_hint(self, tmp_path):
+        """Paused state shows resume hint about partially-completed tickets."""
+        path = tmp_path / "test.db"
+        conn = init_db(path)
+        _seed_slot(conn, "proj", 1, status="paused_manual", ticket_id="T-1")
+        save_dispatch_state(conn, paused=True, reason="manual_pause")
+        conn.commit()
+        conn.close()
+
+        app = create_app(db_path=path, on_pause=lambda: None, on_resume=lambda: None)
+        client = TestClient(app)
+        resp = client.get("/partials/supervisor-controls")
+        body = resp.text
+        assert "All work paused" in body
+        assert "resume from where they left off" in body
+
+
 class TestPauseResumeAPI:
     def test_pause_calls_callback(self, db_file):
         """POST /api/pause calls the on_pause callback."""

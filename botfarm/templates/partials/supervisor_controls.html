@@ -1,28 +1,46 @@
 {% if has_callbacks %}
 {% if pause_state == "running" %}
-<button class="pause-btn pause-btn-pause"
-        hx-post="/api/pause"
-        hx-swap="none"
-        hx-on::after-request="this.closest('[hx-get]') && htmx.trigger(this.closest('[hx-get]'), 'htmx:load')">
-    Pause
-</button>
+<div class="pause-controls">
+    <button class="pause-btn pause-btn-pause"
+            hx-post="/api/pause"
+            hx-swap="none"
+            hx-on::after-request="this.closest('[hx-get]') && htmx.trigger(this.closest('[hx-get]'), 'htmx:load')">
+        Pause
+    </button>
+    <span class="pause-hint">Stops new dispatches; running stages finish gracefully</span>
+</div>
 {% elif pause_state.startswith("pausing") %}
 {% set busy_count = pause_state.split(":")[1] if ":" in pause_state else "?" %}
-<button class="pause-btn pause-btn-pausing" disabled>
-    Pausing&hellip; ({{ busy_count }} worker{{ "s" if busy_count != "1" else "" }})
-</button>
-<button class="pause-btn pause-btn-resume"
-        hx-post="/api/resume"
-        hx-swap="none"
-        hx-on::after-request="this.closest('[hx-get]') && htmx.trigger(this.closest('[hx-get]'), 'htmx:load')">
-    Cancel
-</button>
+<div class="pause-controls">
+    <div class="pause-controls-buttons">
+        <button class="pause-btn pause-btn-pausing" disabled>
+            Pausing&hellip;
+        </button>
+        <button class="pause-btn pause-btn-resume"
+                hx-post="/api/resume"
+                hx-swap="none"
+                hx-on::after-request="this.closest('[hx-get]') && htmx.trigger(this.closest('[hx-get]'), 'htmx:load')">
+            Cancel
+        </button>
+    </div>
+    <span class="pause-hint">New dispatches stopped. Waiting for {{ busy_count }} worker{{ "s" if busy_count != "1" else "" }} to finish current stage&hellip;</span>
+    {% if busy_slots %}
+    <div class="pause-worker-list">
+        {% for s in busy_slots %}
+        <span class="pause-worker-item">Slot {{ s.slot_id }}: {{ s.stage or "starting" }} {{ s.ticket_id or "" }}</span>
+        {% endfor %}
+    </div>
+    {% endif %}
+</div>
 {% elif pause_state == "paused" %}
-<button class="pause-btn pause-btn-resume"
-        hx-post="/api/resume"
-        hx-swap="none"
-        hx-on::after-request="this.closest('[hx-get]') && htmx.trigger(this.closest('[hx-get]'), 'htmx:load')">
-    Resume
-</button>
+<div class="pause-controls">
+    <button class="pause-btn pause-btn-resume"
+            hx-post="/api/resume"
+            hx-swap="none"
+            hx-on::after-request="this.closest('[hx-get]') && htmx.trigger(this.closest('[hx-get]'), 'htmx:load')">
+        Resume
+    </button>
+    <span class="pause-hint">All work paused. In-progress tickets resume from where they left off.</span>
+</div>
 {% endif %}
 {% endif %}
