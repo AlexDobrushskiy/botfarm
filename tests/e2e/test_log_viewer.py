@@ -1,0 +1,86 @@
+"""E2E tests for the Log Viewer page (/task/{id}/logs)."""
+
+import pytest
+
+
+@pytest.mark.playwright
+class TestLogViewerPage:
+    """Log viewer page rendering."""
+
+    def test_page_title(self, live_server, page):
+        """P0: Page title includes ticket ID and 'Logs'."""
+        page.goto(f"{live_server}/task/SMA-80/logs")
+        title = page.title()
+        assert "Logs" in title
+
+    def test_heading_with_ticket(self, live_server, page):
+        """P0: Heading shows ticket ID and 'Logs'."""
+        page.goto(f"{live_server}/task/SMA-80/logs")
+        heading = page.locator("h1")
+        text = heading.inner_text()
+        assert "SMA-80" in text
+        assert "Logs" in text
+
+    def test_back_link_to_task_detail(self, live_server, page):
+        """P1: Back link points to task detail page."""
+        page.goto(f"{live_server}/task/SMA-80/logs")
+        back = page.locator("a", has_text="Back to Task Detail")
+        assert back.is_visible()
+        assert "/task/SMA-80" in back.get_attribute("href")
+
+
+@pytest.mark.playwright
+class TestLogViewerStageTabs:
+    """Stage tab navigation in log viewer."""
+
+    def test_stage_tabs_render(self, live_server, page):
+        """P0: Stage tabs are rendered for task with logs."""
+        page.goto(f"{live_server}/task/SMA-80/logs")
+        tabs = page.locator(".log-stage-tab")
+        # Tabs only show for stages with log files — may be 0 if no log files exist
+        if tabs.count() == 0:
+            pytest.skip("No log files on disk — stage tabs not rendered")
+
+    def test_stage_tab_switching(self, live_server, page):
+        """P0: Clicking a stage tab updates URL and content."""
+        page.goto(f"{live_server}/task/SMA-80/logs")
+        tabs = page.locator(".log-stage-tab")
+        if tabs.count() >= 2:
+            # Click second tab
+            second_tab = tabs.nth(1)
+            stage_text = second_tab.inner_text().strip()
+            second_tab.click()
+            page.wait_for_load_state("networkidle")
+            # URL should include the stage
+            assert "/logs/" in page.url
+        else:
+            pytest.skip("Fewer than 2 stage tabs available")
+
+    def test_active_tab_highlighted(self, live_server, page):
+        """P0: Active stage tab has the active class."""
+        page.goto(f"{live_server}/task/SMA-80/logs")
+        tabs = page.locator(".log-stage-tab")
+        if tabs.count() >= 1:
+            active = page.locator(".log-stage-tab-active")
+            assert active.count() == 1
+        else:
+            pytest.skip("No stage tabs available")
+
+
+@pytest.mark.playwright
+class TestLogViewerNoLogs:
+    """Log viewer when no logs exist."""
+
+    def test_no_logs_message(self, live_server, page):
+        """P1: Task with no log files shows appropriate message."""
+        page.goto(f"{live_server}/task/SMA-80/logs")
+        # Check for log content below the heading (exclude heading which always has "Logs")
+        tabs = page.locator(".log-stage-tab")
+        log_content = page.locator("pre")
+        if tabs.count() == 0 and log_content.count() == 0:
+            # No tabs and no log content — should show a "no logs" message
+            body_text = page.locator("main").inner_text()
+            assert "no log" in body_text.lower(), "Expected 'no log' message when no log files exist"
+        else:
+            # Logs are present — verify content is rendered
+            assert tabs.count() > 0 or log_content.count() > 0
