@@ -27,10 +27,12 @@ from botfarm.db import (
     insert_task,
     insert_usage_snapshot,
     is_extra_usage_active,
+    load_all_project_pause_states,
     load_all_slots,
     load_dispatch_state,
     resolve_db_path,
     save_dispatch_state,
+    save_project_pause_state,
     save_queue_entries,
     update_stage_run_context_fill,
     update_task,
@@ -1715,3 +1717,49 @@ class TestQueueEntries:
         save_queue_entries(conn, "proj", candidates, "2026-02-25T00:00:00Z")
         rows = conn.execute("SELECT * FROM queue_entries WHERE project = ?", ("proj",)).fetchall()
         assert rows[0]["blocked_by"] is None
+
+
+# ---------------------------------------------------------------------------
+# Per-project pause state
+# ---------------------------------------------------------------------------
+
+
+class TestProjectPauseState:
+    def test_load_empty(self, conn):
+        """No project pause states initially."""
+        result = load_all_project_pause_states(conn)
+        assert result == {}
+
+    def test_save_and_load(self, conn):
+        """Save a paused project and load it back."""
+        save_project_pause_state(conn, project="proj-a", paused=True, reason="manual")
+        conn.commit()
+        result = load_all_project_pause_states(conn)
+        assert result == {"proj-a": (True, "manual")}
+
+    def test_save_multiple_projects(self, conn):
+        """Multiple projects can have independent pause states."""
+        save_project_pause_state(conn, project="proj-a", paused=True, reason="testing")
+        save_project_pause_state(conn, project="proj-b", paused=False)
+        conn.commit()
+        result = load_all_project_pause_states(conn)
+        assert result["proj-a"] == (True, "testing")
+        assert result["proj-b"] == (False, None)
+
+    def test_upsert_updates_existing(self, conn):
+        """Saving again for the same project updates the row."""
+        save_project_pause_state(conn, project="proj-a", paused=True, reason="first")
+        conn.commit()
+        save_project_pause_state(conn, project="proj-a", paused=False)
+        conn.commit()
+        result = load_all_project_pause_states(conn)
+        assert result["proj-a"] == (False, None)
+
+    def test_reason_cleared_on_unpause(self, conn):
+        """Reason is cleared when project is unpaused."""
+        save_project_pause_state(conn, project="proj-a", paused=True, reason="manual")
+        conn.commit()
+        save_project_pause_state(conn, project="proj-a", paused=False)
+        conn.commit()
+        result = load_all_project_pause_states(conn)
+        assert result["proj-a"][1] is None

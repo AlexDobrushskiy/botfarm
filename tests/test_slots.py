@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
-from botfarm.db import init_db, load_all_slots, load_dispatch_state
+from botfarm.db import init_db, load_all_project_pause_states, load_all_slots, load_dispatch_state
 from botfarm.slots import (
     SLOT_STATUSES,
     SlotError,
@@ -1136,3 +1136,87 @@ class TestRefreshStagesFromDisk:
         # Refresh — free slot should NOT pick up the bogus stage
         mgr.refresh_stages_from_disk()
         assert mgr.get_slot("proj", 1).stage is None
+
+
+# ---------------------------------------------------------------------------
+# Per-project pause
+# ---------------------------------------------------------------------------
+
+
+class TestProjectPause:
+    def test_defaults_not_paused(self, mgr: SlotManager):
+        mgr.register_slot("proj", 1)
+        assert mgr.is_project_paused("proj") is False
+        assert mgr.get_project_pause_reason("proj") is None
+
+    def test_unknown_project_not_paused(self, mgr: SlotManager):
+        assert mgr.is_project_paused("nonexistent") is False
+
+    def test_pause_project(self, mgr: SlotManager):
+        mgr.register_slot("proj", 1)
+        mgr.set_project_paused("proj", True, "manual testing")
+        assert mgr.is_project_paused("proj") is True
+        assert mgr.get_project_pause_reason("proj") == "manual testing"
+
+    def test_unpause_project(self, mgr: SlotManager):
+        mgr.register_slot("proj", 1)
+        mgr.set_project_paused("proj", True, "reason")
+        mgr.set_project_paused("proj", False)
+        assert mgr.is_project_paused("proj") is False
+        assert mgr.get_project_pause_reason("proj") is None
+
+    def test_get_all_project_pauses(self, mgr: SlotManager):
+        mgr.register_slot("proj-a", 1)
+        mgr.register_slot("proj-b", 1)
+        mgr.set_project_paused("proj-a", True, "reason-a")
+        mgr.set_project_paused("proj-b", False)
+        pauses = mgr.get_all_project_pauses()
+        assert pauses["proj-a"] == (True, "reason-a")
+        assert pauses["proj-b"] == (False, None)
+
+    def test_persisted_in_db(self, mgr: SlotManager):
+        mgr.register_slot("proj", 1)
+        mgr.set_project_paused("proj", True, "db test")
+        states = load_all_project_pause_states(mgr._conn)
+        assert states["proj"] == (True, "db test")
+
+    def test_loaded_from_db(self, tmp_path: Path):
+        db_path = tmp_path / "test.db"
+
+        mgr1 = SlotManager(db_path=db_path)
+        mgr1.register_slot("proj", 1)
+        mgr1.set_project_paused("proj", True, "persist test")
+
+        mgr2 = SlotManager(db_path=db_path)
+        mgr2.register_slot("proj", 1)
+        mgr2.load()
+        assert mgr2.is_project_paused("proj") is True
+        assert mgr2.get_project_pause_reason("proj") == "persist test"
+
+    def test_refresh_project_pauses(self, tmp_path: Path):
+        """refresh_project_pauses picks up external DB changes."""
+        db_path = tmp_path / "test.db"
+        mgr = SlotManager(db_path=db_path)
+        mgr.register_slot("proj", 1)
+        assert mgr.is_project_paused("proj") is False
+
+        # Write directly to DB (simulating CLI)
+        from botfarm.db import save_project_pause_state
+        save_project_pause_state(mgr._conn, project="proj", paused=True, reason="cli")
+        mgr._conn.commit()
+
+        # Before refresh — still reads old in-memory state
+        assert mgr.is_project_paused("proj") is False
+
+        # After refresh — picks up the DB change
+        mgr.refresh_project_pauses()
+        assert mgr.is_project_paused("proj") is True
+        assert mgr.get_project_pause_reason("proj") == "cli"
+
+    def test_multiple_projects_independent(self, mgr: SlotManager):
+        """Pausing one project doesn't affect another."""
+        mgr.register_slot("proj-a", 1)
+        mgr.register_slot("proj-b", 1)
+        mgr.set_project_paused("proj-a", True, "reason")
+        assert mgr.is_project_paused("proj-a") is True
+        assert mgr.is_project_paused("proj-b") is False

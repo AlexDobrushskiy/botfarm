@@ -1,11 +1,37 @@
 {% if queue and queue.projects %}
 {% set priority_labels = {0: "None", 1: "Urgent", 2: "High", 3: "Normal", 4: "Low"} %}
 {% for proj in queue.projects %}
+{% set proj_pause = project_pauses.get(proj.name, (false, none)) if project_pauses is defined else (false, none) %}
+{% set proj_is_paused = proj_pause[0] %}
 <figure>
-    <figcaption>
-        <strong>{{ proj.name }}</strong>
-        {% if proj.snapshot_at %}
-        <small style="color: var(--pico-muted-color);"> — Last polled: <span class="timeago" data-ts="{{ proj.snapshot_at }}">{{ elapsed(proj.snapshot_at) }}</span> ago</small>
+    <figcaption style="display: flex; align-items: center; justify-content: space-between;">
+        <span>
+            <strong>{{ proj.name }}</strong>
+            {% if proj_is_paused %}
+            <span style="color: var(--pico-del-color, #c62828); font-weight: 600; margin-left: 0.5rem;">PAUSED{% if proj_pause[1] %}: {{ proj_pause[1] }}{% endif %}</span>
+            {% endif %}
+            {% if proj.snapshot_at %}
+            <small style="color: var(--pico-muted-color);"> — Last polled: <span class="timeago" data-ts="{{ proj.snapshot_at }}">{{ elapsed(proj.snapshot_at) }}</span> ago</small>
+            {% endif %}
+        </span>
+        {% if has_callbacks is defined and has_callbacks %}
+        <span>
+            {% if proj_is_paused %}
+            <button class="outline secondary" style="padding: 0.25rem 0.75rem; font-size: 0.85rem; margin: 0;"
+                    hx-post="/api/project/resume?project={{ proj.name }}"
+                    hx-swap="none"
+                    hx-on::after-request="htmx.trigger('#queue-panel', 'htmx:load'); htmx.trigger('#slots-panel', 'htmx:load');">
+                Resume
+            </button>
+            {% else %}
+            <button class="outline" style="padding: 0.25rem 0.75rem; font-size: 0.85rem; margin: 0;"
+                    hx-post="/api/project/pause?project={{ proj.name }}"
+                    hx-swap="none"
+                    hx-on::after-request="htmx.trigger('#queue-panel', 'htmx:load'); htmx.trigger('#slots-panel', 'htmx:load');">
+                Pause
+            </button>
+            {% endif %}
+        </span>
         {% endif %}
     </figcaption>
     {% if proj.entries %}

@@ -696,3 +696,44 @@ def save_dispatch_state(
         """,
         (int(paused), reason, supervisor_heartbeat, _now_iso()),
     )
+
+
+# ---------------------------------------------------------------------------
+# Per-project pause state helpers
+# ---------------------------------------------------------------------------
+
+def load_all_project_pause_states(
+    conn: sqlite3.Connection,
+) -> dict[str, tuple[bool, str | None]]:
+    """Load all per-project pause states.
+
+    Returns a dict mapping project name -> (paused, reason).
+    """
+    rows = conn.execute(
+        "SELECT project, paused, pause_reason FROM project_pause_state"
+    ).fetchall()
+    return {
+        row["project"]: (bool(row["paused"]), row["pause_reason"])
+        for row in rows
+    }
+
+
+def save_project_pause_state(
+    conn: sqlite3.Connection,
+    *,
+    project: str,
+    paused: bool,
+    reason: str | None = None,
+) -> None:
+    """Save per-project pause state (upsert)."""
+    conn.execute(
+        """
+        INSERT INTO project_pause_state (project, paused, pause_reason, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(project) DO UPDATE SET
+            paused=excluded.paused,
+            pause_reason=excluded.pause_reason,
+            updated_at=excluded.updated_at
+        """,
+        (project, int(paused), reason if paused else None, _now_iso()),
+    )

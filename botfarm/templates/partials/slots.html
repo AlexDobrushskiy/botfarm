@@ -4,6 +4,16 @@
 </div>
 {% endif %}
 
+{% if project_pauses %}
+{% for proj_name, pause_info in project_pauses.items() %}
+{% if pause_info[0] %}
+<div class="banner-paused" style="background-color: var(--pico-del-color, #c62828); color: white; padding: 0.5rem 1rem; margin-bottom: 0.5rem; border-radius: 4px;">
+    PROJECT PAUSED: {{ proj_name }}{% if pause_info[1] %} — {{ pause_info[1] }}{% endif %}
+</div>
+{% endif %}
+{% endfor %}
+{% endif %}
+
 {% if slots %}
 <figure>
 <table>

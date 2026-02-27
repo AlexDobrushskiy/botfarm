@@ -46,8 +46,10 @@ from botfarm.db import (
     get_task_by_ticket,
     get_task_history,
     init_db,
+    load_all_project_pause_states,
     load_all_slots,
     load_dispatch_state,
+    save_project_pause_state,
 )
 from botfarm.git_update import commits_behind
 from botfarm.worker import STAGES
@@ -423,6 +425,8 @@ def create_app(
                 # Sort so configured projects appear in stable order
                 projects_queue.sort(key=lambda p: p["name"])
 
+            project_pauses = load_all_project_pause_states(conn)
+
             return {
                 "slots": slots,
                 "dispatch_paused": paused,
@@ -431,6 +435,7 @@ def create_app(
                 "usage": usage,
                 "last_usage_check": last_usage_check,
                 "queue": {"projects": projects_queue} if projects_queue else None,
+                "project_pauses": project_pauses,
             }
         except sqlite3.OperationalError:
             return {}
@@ -621,11 +626,13 @@ def create_app(
         slots = _enrich_slots_with_pipeline(slots)
         dispatch_paused = state.get("dispatch_paused", False)
         dispatch_pause_reason = state.get("dispatch_pause_reason")
+        project_pauses = state.get("project_pauses", {})
         return templates.TemplateResponse("partials/slots.html", {
             "request": request,
             "slots": slots,
             "dispatch_paused": dispatch_paused,
             "dispatch_pause_reason": dispatch_pause_reason,
+            "project_pauses": project_pauses,
             "elapsed": _elapsed,
             "linear_url": _linear_url,
             "context_fill_class": _context_fill_class,
@@ -721,11 +728,14 @@ def create_app(
     def partial_queue(request: Request):
         state = _read_state()
         queue = state.get("queue")
+        project_pauses = state.get("project_pauses", {})
         return templates.TemplateResponse("partials/queue.html", {
             "request": request,
             "queue": queue,
+            "project_pauses": project_pauses,
             "linear_url": _linear_url,
             "elapsed": _elapsed,
+            "has_callbacks": app.state.on_pause is not None,
         })
 
     _EMPTY_TASK_AGGREGATES: dict = {
@@ -1170,6 +1180,42 @@ def create_app(
             )
         cb()
         return JSONResponse({"status": "ok"})
+
+    @app.post("/api/project/pause")
+    def api_project_pause(request: Request, project: str = "", reason: str = ""):
+        """Pause dispatch for a specific project."""
+        if not project:
+            return JSONResponse({"error": "project is required"}, status_code=400)
+        conn = None
+        try:
+            conn = init_db(app.state.db_path)
+            save_project_pause_state(conn, project=project, paused=True, reason=reason or None)
+            conn.commit()
+            return JSONResponse({"status": "ok", "project": project, "paused": True})
+        except Exception as exc:
+            logger.warning("Failed to pause project %s: %s", project, exc)
+            return JSONResponse({"error": str(exc)}, status_code=500)
+        finally:
+            if conn is not None:
+                conn.close()
+
+    @app.post("/api/project/resume")
+    def api_project_resume(request: Request, project: str = ""):
+        """Resume dispatch for a specific project."""
+        if not project:
+            return JSONResponse({"error": "project is required"}, status_code=400)
+        conn = None
+        try:
+            conn = init_db(app.state.db_path)
+            save_project_pause_state(conn, project=project, paused=False)
+            conn.commit()
+            return JSONResponse({"status": "ok", "project": project, "paused": False})
+        except Exception as exc:
+            logger.warning("Failed to resume project %s: %s", project, exc)
+            return JSONResponse({"error": str(exc)}, status_code=500)
+        finally:
+            if conn is not None:
+                conn.close()
 
     @app.get("/partials/supervisor-controls", response_class=HTMLResponse)
     def partial_supervisor_controls(request: Request):
