@@ -4539,3 +4539,184 @@ class TestUsageStallDetection:
             supervisor._check_usage_stalls()
 
         assert not any("usage stalled" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Degraded mode
+# ---------------------------------------------------------------------------
+
+
+class TestDegradedMode:
+    """Tests for graceful degraded mode when preflight checks fail."""
+
+    def test_run_enters_degraded_mode_on_preflight_failure(self, supervisor, tmp_path):
+        """run() enters degraded mode and does NOT call _recover_on_startup."""
+        tick_count = 0
+
+        def fake_tick_degraded():
+            nonlocal tick_count
+            tick_count += 1
+            supervisor._shutdown_requested = True
+
+        failed_result = MagicMock()
+        failed_result.passed = False
+        failed_result.critical = True
+        failed_result.name = "git_repo:test"
+        failed_result.message = "base_dir missing"
+
+        with (
+            patch.object(supervisor, "_tick_degraded", side_effect=fake_tick_degraded),
+            patch.object(supervisor, "_sleep"),
+            patch.object(supervisor, "install_signal_handlers"),
+            patch.object(supervisor, "_recover_on_startup") as mock_recover,
+            patch("botfarm.supervisor.run_preflight_checks", return_value=[failed_result]),
+            patch("botfarm.supervisor.log_preflight_summary", return_value=False),
+        ):
+            supervisor.run()
+
+        assert tick_count == 1
+        mock_recover.assert_not_called()
+        assert supervisor._degraded is True
+
+    def test_run_records_preflight_failed_event_in_degraded_mode(self, supervisor, tmp_path):
+        """Entering degraded mode logs a preflight_failed event."""
+        failed_result = MagicMock()
+        failed_result.passed = False
+        failed_result.critical = True
+        failed_result.name = "git_repo:test"
+        failed_result.message = "base_dir missing"
+
+        supervisor._shutdown_requested = True
+
+        with (
+            patch.object(supervisor, "install_signal_handlers"),
+            patch("botfarm.supervisor.run_preflight_checks", return_value=[failed_result]),
+            patch("botfarm.supervisor.log_preflight_summary", return_value=False),
+        ):
+            supervisor.run()
+
+        conn = init_db(supervisor._db_path)
+        events = get_events(conn, event_type="preflight_failed")
+        assert len(events) >= 1
+        assert "git_repo:test" in events[0]["detail"]
+        conn.close()
+
+    def test_rerun_preflight_transitions_to_normal_on_success(self, supervisor):
+        """_rerun_preflight clears degraded flag when all checks pass."""
+        supervisor._degraded = True
+
+        with (
+            patch("botfarm.supervisor.run_preflight_checks", return_value=[]),
+            patch("botfarm.supervisor.log_preflight_summary", return_value=True),
+            patch.object(supervisor, "_recover_on_startup") as mock_recover,
+        ):
+            supervisor._rerun_preflight()
+
+        assert supervisor._degraded is False
+        mock_recover.assert_called_once()
+
+    def test_rerun_preflight_logs_recovered_event(self, supervisor):
+        """_rerun_preflight logs a preflight_recovered event on success."""
+        supervisor._degraded = True
+
+        with (
+            patch("botfarm.supervisor.run_preflight_checks", return_value=[]),
+            patch("botfarm.supervisor.log_preflight_summary", return_value=True),
+            patch.object(supervisor, "_recover_on_startup"),
+        ):
+            supervisor._rerun_preflight()
+
+        events = get_events(supervisor._conn, event_type="preflight_recovered")
+        assert len(events) >= 1
+
+    def test_rerun_preflight_stays_degraded_on_failure(self, supervisor):
+        """_rerun_preflight keeps degraded=True when checks still fail."""
+        supervisor._degraded = True
+
+        failed_result = MagicMock()
+        failed_result.passed = False
+        failed_result.critical = True
+        failed_result.name = "linear_api"
+        failed_result.message = "key invalid"
+
+        with (
+            patch("botfarm.supervisor.run_preflight_checks", return_value=[failed_result]),
+            patch("botfarm.supervisor.log_preflight_summary", return_value=False),
+        ):
+            supervisor._rerun_preflight()
+
+        assert supervisor._degraded is True
+
+    def test_tick_degraded_reruns_after_interval(self, supervisor):
+        """_tick_degraded triggers rerun when interval has elapsed."""
+        supervisor._degraded = True
+        supervisor._last_preflight_rerun = 0.0  # Long ago
+
+        with patch.object(supervisor, "_rerun_preflight") as mock_rerun:
+            supervisor._tick_degraded()
+
+        mock_rerun.assert_called_once()
+
+    def test_tick_degraded_skips_when_interval_not_elapsed(self, supervisor):
+        """_tick_degraded does NOT rerun before interval elapses."""
+        import time
+        supervisor._degraded = True
+        supervisor._last_preflight_rerun = time.monotonic()  # Just now
+
+        with patch.object(supervisor, "_rerun_preflight") as mock_rerun:
+            supervisor._tick_degraded()
+
+        mock_rerun.assert_not_called()
+
+    def test_tick_degraded_manual_rerun_triggers_immediately(self, supervisor):
+        """_tick_degraded triggers rerun when manual event is set."""
+        import time
+        supervisor._degraded = True
+        supervisor._last_preflight_rerun = time.monotonic()  # Just now
+        supervisor._rerun_preflight_event.set()
+
+        with patch.object(supervisor, "_rerun_preflight") as mock_rerun:
+            supervisor._tick_degraded()
+
+        mock_rerun.assert_called_once()
+
+    def test_request_rerun_preflight_sets_events(self, supervisor):
+        """request_rerun_preflight sets both the rerun and wake events."""
+        supervisor.request_rerun_preflight()
+        assert supervisor._rerun_preflight_event.is_set()
+        assert supervisor._wake_event.is_set()
+
+    def test_get_preflight_results_returns_copy(self, supervisor):
+        """get_preflight_results returns a copy of results."""
+        result = MagicMock()
+        supervisor._preflight_results = [result]
+        got = supervisor.get_preflight_results()
+        assert got == [result]
+        assert got is not supervisor._preflight_results
+
+    def test_degraded_property(self, supervisor):
+        """degraded property reflects _degraded state."""
+        assert supervisor.degraded is False
+        supervisor._degraded = True
+        assert supervisor.degraded is True
+
+    def test_preflight_results_stored_on_run(self, supervisor, tmp_path):
+        """run() stores preflight results accessible via get_preflight_results."""
+        passed_result = MagicMock()
+        passed_result.passed = True
+        passed_result.critical = True
+        passed_result.name = "database"
+        passed_result.message = "OK"
+
+        supervisor._shutdown_requested = True
+
+        with (
+            patch.object(supervisor, "install_signal_handlers"),
+            patch("botfarm.supervisor.run_preflight_checks", return_value=[passed_result]),
+            patch("botfarm.supervisor.log_preflight_summary", return_value=True),
+        ):
+            supervisor.run()
+
+        # After shutdown, supervisor._conn is closed, but we can check
+        # the preflight results were stored
+        assert len(supervisor._preflight_results) == 1
