@@ -179,7 +179,7 @@ class TestHistoryInteractiveFilters:
         page.wait_for_load_state("networkidle")
         panel = page.locator("#history-panel")
         rows = panel.locator("table tbody tr")
-        # All matching rows should be bot-farm project with SMA ticket prefix
+        assert rows.count() > 0, "Combined filter should return bot-farm completed SMA results"
         for i in range(rows.count()):
             text = rows.nth(i).inner_text()
             assert "bot-farm" in text

@@ -187,17 +187,18 @@ class TestConfigSave:
             "button[type='submit']"
         ).click()
 
-        # Wait for the AJAX response
-        feedback = page.locator("#feedback-linear .config-feedback.success")
-        feedback.wait_for(state="visible", timeout=5000)
-        assert feedback.is_visible()
-
-        # Restore original value
-        poll.fill("30")
-        page.locator("#tab-edit form").first.locator(
-            "button[type='submit']"
-        ).click()
-        page.wait_for_timeout(500)
+        try:
+            # Wait for the AJAX response
+            feedback = page.locator("#feedback-linear .config-feedback.success")
+            feedback.wait_for(state="visible", timeout=5000)
+            assert feedback.is_visible()
+        finally:
+            # Restore original value
+            poll.fill("30")
+            page.locator("#tab-edit form").first.locator(
+                "button[type='submit']"
+            ).click()
+            page.wait_for_timeout(500)
 
     def test_save_validation_error_shown(self, live_server, page):
         """P0: Invalid value shows validation error feedback."""
@@ -241,17 +242,18 @@ class TestConfigSave:
             "#tab-edit form", has=page.locator("#notifications-webhook_url")
         ).locator("button[type='submit']").click()
 
-        # Wait for response and check for restart banner
-        banner = page.locator("#restart-banner")
-        banner.wait_for(state="visible", timeout=5000)
-        assert "restart required" in banner.inner_text().lower()
-
-        # Restore original value and submit the form
-        rate_input.fill(original)
-        page.locator(
-            "#tab-edit form", has=page.locator("#notifications-webhook_url")
-        ).locator("button[type='submit']").click()
-        page.wait_for_timeout(500)
+        try:
+            # Wait for response and check for restart banner
+            banner = page.locator("#restart-banner")
+            banner.wait_for(state="visible", timeout=5000)
+            assert "restart required" in banner.inner_text().lower()
+        finally:
+            # Restore original value and submit the form
+            rate_input.fill(original)
+            page.locator(
+                "#tab-edit form", has=page.locator("#notifications-webhook_url")
+            ).locator("button[type='submit']").click()
+            page.wait_for_timeout(500)
 
     def test_multiple_field_changes_in_one_save(self, live_server, page):
         """P1: Changing multiple fields and saving works."""
@@ -271,17 +273,18 @@ class TestConfigSave:
             "#tab-edit form", has=page.locator("#agents-max_review_iterations")
         ).locator("button[type='submit']").click()
 
-        feedback = page.locator("#feedback-agents .config-feedback.success")
-        feedback.wait_for(state="visible", timeout=5000)
-        assert feedback.is_visible()
-
-        # Restore
-        max_review.fill(orig_review)
-        max_ci.fill(orig_ci)
-        page.locator(
-            "#tab-edit form", has=page.locator("#agents-max_review_iterations")
-        ).locator("button[type='submit']").click()
-        page.wait_for_timeout(500)
+        try:
+            feedback = page.locator("#feedback-agents .config-feedback.success")
+            feedback.wait_for(state="visible", timeout=5000)
+            assert feedback.is_visible()
+        finally:
+            # Restore
+            max_review.fill(orig_review)
+            max_ci.fill(orig_ci)
+            page.locator(
+                "#tab-edit form", has=page.locator("#agents-max_review_iterations")
+            ).locator("button[type='submit']").click()
+            page.wait_for_timeout(500)
 
 
 @pytest.mark.playwright
