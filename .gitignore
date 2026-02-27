@@ -9,6 +9,7 @@ build/
 *.db
 *.sqlite3
 .pytest_cache/
+test-results/
 .mypy_cache/
 .ruff_cache/
 *.log

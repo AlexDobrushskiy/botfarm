@@ -5,7 +5,7 @@ on:
     branches: [main]
 
 jobs:
-  tests:
+  unit-tests:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,5 +21,39 @@ jobs:
       - name: Install package
         run: pip install -e .
 
-      - name: Run tests
-        run: python -m pytest tests/ -v
+      - name: Run unit tests
+        run: python -m pytest tests/ -v -m "not playwright"
+
+  playwright-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install package
+        run: pip install -e .
+
+      - name: Install Playwright browsers
+        run: playwright install chromium --with-deps
+
+      - name: Run Playwright tests
+        run: >
+          python -m pytest tests/e2e/ -v
+          -m playwright
+          --screenshot=only-on-failure
+          --tracing=retain-on-failure
+
+      - name: Upload test artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-test-results
+          path: test-results/
+          retention-days: 7

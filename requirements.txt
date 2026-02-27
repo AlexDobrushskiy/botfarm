@@ -10,3 +10,4 @@ jinja2
 sse-starlette
 pytest
 pytest-asyncio
+pytest-playwright
