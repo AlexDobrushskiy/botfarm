@@ -3653,3 +3653,198 @@ class TestIdentitiesUpdate:
         })
         assert resp.status_code == 422
         assert "not an editable" in resp.text
+
+
+# --- Preflight / System Health ---
+
+
+class _FakeCheckResult:
+    """Lightweight stand-in for preflight.CheckResult (avoids importing the module)."""
+    def __init__(self, name, passed, message, critical=True):
+        self.name = name
+        self.passed = passed
+        self.message = message
+        self.critical = critical
+
+
+class TestPreflightBanner:
+    def test_banner_hidden_when_not_degraded(self, db_file):
+        """Banner partial should be empty when supervisor is not degraded."""
+        app = create_app(
+            db_path=db_file,
+            get_preflight_results=lambda: [],
+            get_degraded=lambda: False,
+        )
+        client = TestClient(app)
+        resp = client.get("/partials/preflight-banner")
+        assert resp.status_code == 200
+        assert "Degraded Mode" not in resp.text
+
+    def test_banner_visible_when_degraded(self, db_file):
+        """Banner partial should show degraded-mode alert when checks fail."""
+        results = [
+            _FakeCheckResult("git_repo:proj", False, "Remote unreachable"),
+            _FakeCheckResult("database", True, "OK"),
+        ]
+        app = create_app(
+            db_path=db_file,
+            get_preflight_results=lambda: results,
+            get_degraded=lambda: True,
+        )
+        client = TestClient(app)
+        resp = client.get("/partials/preflight-banner")
+        assert resp.status_code == 200
+        body = resp.text
+        assert "Degraded Mode" in body
+        assert "1 preflight check failed" in body
+        assert "Re-run Checks" in body
+
+    def test_banner_shows_plural_failures(self, db_file):
+        """Banner should pluralise correctly for multiple failures."""
+        results = [
+            _FakeCheckResult("git_repo:a", False, "fail", critical=True),
+            _FakeCheckResult("linear_api", False, "fail", critical=True),
+        ]
+        app = create_app(
+            db_path=db_file,
+            get_preflight_results=lambda: results,
+            get_degraded=lambda: True,
+        )
+        client = TestClient(app)
+        resp = client.get("/partials/preflight-banner")
+        assert "2 preflight checks failed" in resp.text
+
+    def test_banner_without_callbacks(self, db_file):
+        """Banner should render gracefully when no supervisor is connected."""
+        app = create_app(db_path=db_file)
+        client = TestClient(app)
+        resp = client.get("/partials/preflight-banner")
+        assert resp.status_code == 200
+        assert "Degraded Mode" not in resp.text
+
+    def test_base_template_includes_banner_div(self, db_file):
+        """Every page should include the preflight-banner htmx container."""
+        app = create_app(db_path=db_file)
+        client = TestClient(app)
+        resp = client.get("/")
+        assert 'id="preflight-banner"' in resp.text
+        assert 'hx-get="/partials/preflight-banner"' in resp.text
+
+
+class TestHealthPage:
+    def _make_client(self, db_file, results=None, degraded=False):
+        app = create_app(
+            db_path=db_file,
+            get_preflight_results=lambda: (results or []),
+            get_degraded=lambda: degraded,
+        )
+        return TestClient(app)
+
+    def test_health_page_returns_200(self, db_file):
+        client = self._make_client(db_file)
+        resp = client.get("/health")
+        assert resp.status_code == 200
+        assert "System Health" in resp.text
+
+    def test_health_page_shows_all_green(self, db_file):
+        results = [
+            _FakeCheckResult("git_repo", True, "OK"),
+            _FakeCheckResult("database", True, "Schema v5 OK"),
+        ]
+        client = self._make_client(db_file, results=results)
+        resp = client.get("/health")
+        body = resp.text
+        assert "All Checks Passed" in body
+        assert "git_repo" in body
+        assert "database" in body
+
+    def test_health_page_shows_degraded(self, db_file):
+        results = [
+            _FakeCheckResult("linear_api", False, "401 Unauthorized", critical=True),
+            _FakeCheckResult("database", True, "OK"),
+        ]
+        client = self._make_client(db_file, results=results, degraded=True)
+        resp = client.get("/health")
+        body = resp.text
+        assert "Degraded Mode" in body
+        assert "linear_api" in body
+        assert "401 Unauthorized" in body
+
+    def test_health_page_shows_guidance_for_failures(self, db_file):
+        results = [
+            _FakeCheckResult("git_repo:myproject", False, "Remote unreachable"),
+        ]
+        client = self._make_client(db_file, results=results, degraded=True)
+        resp = client.get("/health")
+        body = resp.text
+        assert "Verify base_dir path" in body
+
+    def test_health_page_shows_warning_checks(self, db_file):
+        results = [
+            _FakeCheckResult("notifications_webhook", False, "Unreachable", critical=False),
+        ]
+        client = self._make_client(db_file, results=results)
+        resp = client.get("/health")
+        body = resp.text
+        assert "Warning" in body
+        assert "notifications_webhook" in body
+
+    def test_health_page_navigation_link(self, db_file):
+        """Health page should be accessible from navigation."""
+        app = create_app(db_path=db_file)
+        client = TestClient(app)
+        resp = client.get("/")
+        assert 'href="/health"' in resp.text
+
+    def test_health_checks_partial(self, db_file):
+        results = [
+            _FakeCheckResult("database", True, "OK"),
+            _FakeCheckResult("git_repo", False, "Not found", critical=True),
+        ]
+        client = self._make_client(db_file, results=results, degraded=True)
+        resp = client.get("/partials/health-checks")
+        assert resp.status_code == 200
+        body = resp.text
+        assert "database" in body
+        assert "git_repo" in body
+        assert "Blocking" in body
+
+    def test_health_badge_partial_degraded(self, db_file):
+        client = self._make_client(db_file, degraded=True)
+        resp = client.get("/partials/health-badge")
+        assert resp.status_code == 200
+        assert "Degraded Mode" in resp.text
+
+    def test_health_badge_partial_healthy(self, db_file):
+        results = [_FakeCheckResult("database", True, "OK")]
+        client = self._make_client(db_file, results=results, degraded=False)
+        resp = client.get("/partials/health-badge")
+        assert resp.status_code == 200
+        assert "All Checks Passed" in resp.text
+
+    def test_no_results_shows_empty_message(self, db_file):
+        client = self._make_client(db_file)
+        resp = client.get("/partials/health-checks")
+        assert "No preflight results available" in resp.text
+
+
+class TestRerunPreflightAPI:
+    def test_rerun_calls_callback(self, db_file):
+        """POST /api/rerun-preflight calls the on_rerun_preflight callback."""
+        called = []
+        app = create_app(
+            db_path=db_file,
+            on_rerun_preflight=lambda: called.append("rerun"),
+        )
+        client = TestClient(app)
+        resp = client.post("/api/rerun-preflight")
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "ok"}
+        assert called == ["rerun"]
+
+    def test_rerun_without_callback_returns_503(self, db_file):
+        """POST /api/rerun-preflight returns 503 when no callback is registered."""
+        app = create_app(db_path=db_file)
+        client = TestClient(app)
+        resp = client.post("/api/rerun-preflight")
+        assert resp.status_code == 503

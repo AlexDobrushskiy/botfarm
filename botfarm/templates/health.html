@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% set active_page = "health" %}
+{% block title %}System Health - Botfarm{% endblock %}
+{% block content %}
+<div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem;">
+    <h1 style="margin-bottom: 0;">System Health</h1>
+    <div style="display: flex; align-items: center; gap: 0.75rem;">
+        <span id="health-badge" hx-get="/partials/health-badge" hx-trigger="every 5s" hx-swap="innerHTML">
+            {% include "partials/health_badge.html" %}
+        </span>
+        <button class="pause-btn"
+                style="{% if degraded %}background: var(--pico-del-color); color: #fff;{% else %}background: var(--pico-ins-color); color: #fff;{% endif %}"
+                hx-post="/api/rerun-preflight"
+                hx-swap="none"
+                hx-on::after-request="htmx.trigger(document.getElementById('health-checks-panel'), 'htmx:load'); htmx.trigger(document.getElementById('health-badge'), 'htmx:load')">
+            Re-run Checks
+        </button>
+    </div>
+</div>
+
+<div id="health-checks-panel" hx-get="/partials/health-checks" hx-trigger="every 5s" hx-swap="innerHTML">
+    {% include "partials/health_checks.html" %}
+</div>
+{% endblock %}

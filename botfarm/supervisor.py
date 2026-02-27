@@ -973,6 +973,8 @@ class Supervisor:
                 on_resume=self.request_resume,
                 on_update=self.request_update,
                 on_rerun_preflight=self.request_rerun_preflight,
+                get_preflight_results=self.get_preflight_results,
+                get_degraded=lambda: self.degraded,
                 update_failed_event=self._update_failed_event,
                 git_env=self._git_env,
             )

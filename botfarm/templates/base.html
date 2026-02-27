@@ -471,9 +471,12 @@
             <li><a href="/metrics"{% if active_page == "metrics" %} aria-current="page"{% endif %}>Metrics</a></li>
             <li><a href="/config"{% if active_page == "config" %} aria-current="page"{% endif %}>Configuration</a></li>
             <li><a href="/identities"{% if active_page == "identities" %} aria-current="page"{% endif %}>Identities</a></li>
+            <li><a href="/health"{% if active_page == "health" %} aria-current="page"{% endif %}>Health</a></li>
         </ul>
     </nav>
     <main class="container">
+        <div id="preflight-banner" hx-get="/partials/preflight-banner" hx-trigger="load, every 5s" hx-swap="innerHTML">
+        </div>
         {% block content %}{% endblock %}
     </main>
 </body>

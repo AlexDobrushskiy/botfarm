@@ -1,0 +1,49 @@
+<table>
+    <thead>
+        <tr>
+            <th style="width: 2.5rem;">Status</th>
+            <th>Check</th>
+            <th>Message</th>
+            <th style="width: 5rem;">Severity</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for check in checks %}
+        <tr>
+            <td style="text-align: center; font-size: 1.1rem;">
+                {% if check.passed %}
+                    <span style="color: #22c55e;" title="Passed">&#10003;</span>
+                {% elif check.critical %}
+                    <span style="color: #ef4444;" title="Failed (critical)">&#10007;</span>
+                {% else %}
+                    <span style="color: #eab308;" title="Warning">&#9888;</span>
+                {% endif %}
+            </td>
+            <td style="font-family: var(--pico-font-family-monospace, monospace); font-size: 0.85rem;">
+                {{ check.name }}
+            </td>
+            <td>
+                <span style="font-size: 0.85rem;">{{ check.message }}</span>
+                {% if not check.passed and check.guidance %}
+                <br>
+                <small style="color: var(--pico-muted-color);">{{ check.guidance }}</small>
+                {% endif %}
+            </td>
+            <td>
+                {% if check.critical %}
+                    <span style="color: #ef4444; font-size: 0.8rem; font-weight: 600;">Blocking</span>
+                {% else %}
+                    <span style="color: #eab308; font-size: 0.8rem;">Warning</span>
+                {% endif %}
+            </td>
+        </tr>
+    {% endfor %}
+    {% if not checks %}
+        <tr>
+            <td colspan="4" style="text-align: center; color: var(--pico-muted-color);">
+                No preflight results available yet.
+            </td>
+        </tr>
+    {% endif %}
+    </tbody>
+</table>
