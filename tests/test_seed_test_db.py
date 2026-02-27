@@ -397,6 +397,22 @@ class TestDispatchState:
         row = conn.execute("SELECT supervisor_heartbeat FROM dispatch_state WHERE id = 1").fetchone()
         assert row["supervisor_heartbeat"] is not None
 
+    def test_default_dispatch_state_is_unpaused(self, seeded_db):
+        _, conn = seeded_db
+        row = conn.execute("SELECT paused, pause_reason FROM dispatch_state WHERE id = 1").fetchone()
+        assert row["paused"] == 0
+        assert row["pause_reason"] is None
+
+    def test_seed_paused_dispatch_state(self, tmp_path):
+        path = tmp_path / "paused.db"
+        seed_comprehensive_db(path, paused=True)
+        conn = sqlite3.connect(str(path))
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT paused, pause_reason FROM dispatch_state WHERE id = 1").fetchone()
+        assert row["paused"] == 1
+        assert row["pause_reason"] == "manual_pause"
+        conn.close()
+
 
 # ---------------------------------------------------------------------------
 # Data determinism
