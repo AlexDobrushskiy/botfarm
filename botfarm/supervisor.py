@@ -391,6 +391,13 @@ class Supervisor:
         recovered_count = 0
         for slot in self._slot_manager.all_slots():
             if slot.status == "busy" and slot.pid is not None:
+                # Before any recovery, check if the ticket was moved to a
+                # terminal state (Done/Cancelled) externally while we were
+                # down. If so, skip recovery and just mark completed.
+                if self._is_ticket_externally_done(slot):
+                    recovered_count += 1
+                    continue
+
                 if slot.sigterm_sent_at:
                     # Timeout system owned this slot — PID is likely dead
                     self._recover_timed_out_slot(slot)
@@ -401,6 +408,12 @@ class Supervisor:
                 else:
                     self._recover_dead_worker(slot)
                     recovered_count += 1
+            elif slot.status in ("paused_limit", "paused_manual"):
+                # Also check paused slots — the ticket may have been
+                # resolved externally while paused.
+                if self._is_ticket_externally_done(slot):
+                    recovered_count += 1
+                    continue
             elif slot.status == "failed":
                 # Slot was marked failed but cleanup didn't complete
                 # (supervisor crashed between mark_failed and
@@ -456,6 +469,44 @@ class Supervisor:
         # Exception: _resume_recovered_worker commits early to record
         # the recovery_resumed event before spawning.
         self._conn.commit()
+
+    def _is_ticket_externally_done(self, slot: SlotState) -> bool:
+        """Check if a ticket was moved to Done/Cancelled in Linear externally.
+
+        If the ticket is in a terminal state, marks the slot as completed,
+        kills the worker process if still alive, and returns ``True``.
+        Returns ``False`` when the ticket is still active or when the
+        status cannot be determined (API error).
+        """
+        if not slot.ticket_id:
+            return False
+
+        poller = self._pollers.get(slot.project)
+        if not poller:
+            return False
+
+        if not poller.is_issue_terminal(slot.ticket_id):
+            return False
+
+        logger.info(
+            "Ticket %s in slot %s/%d was moved to a terminal state "
+            "externally — clearing slot instead of recovering",
+            slot.ticket_id, slot.project, slot.slot_id,
+        )
+
+        # Kill the worker process if still alive
+        if slot.pid and _is_pid_alive(slot.pid):
+            logger.info(
+                "Sending SIGTERM to worker PID %d for externally-done ticket %s",
+                slot.pid, slot.ticket_id,
+            )
+            try:
+                os.kill(slot.pid, signal.SIGTERM)
+            except OSError:
+                pass
+
+        self._mark_recovery_completed(slot, reason="ticket_externally_done")
+        return True
 
     def _reattach_worker(self, slot: SlotState) -> None:
         """Re-attach monitoring for a still-alive worker process.
@@ -1229,23 +1280,32 @@ class Supervisor:
         linear_cfg = self._config.linear
         poller = self._pollers.get(project)
         if poller and slot.ticket_id:
-            # Determine target status based on PR state
-            pr_status = self._check_pr_status(slot)
-            if pr_status == "merged":
-                target_status = linear_cfg.done_status
-            else:
-                target_status = linear_cfg.in_review_status
-
-            try:
-                poller.move_issue(slot.ticket_id, target_status)
+            # If the ticket was already moved to a terminal state externally,
+            # skip the Linear status update to avoid overwriting it.
+            if poller.is_issue_terminal(slot.ticket_id):
                 logger.info(
-                    "Moved %s to '%s' after successful pipeline",
-                    slot.ticket_id, target_status,
+                    "Completed slot %s/%d: ticket %s already in terminal "
+                    "state — skipping status move",
+                    slot.project, slot.slot_id, slot.ticket_id,
                 )
-            except Exception:
-                logger.exception(
-                    "Failed to move %s to '%s'", slot.ticket_id, target_status,
-                )
+            else:
+                # Determine target status based on PR state
+                pr_status = self._check_pr_status(slot)
+                if pr_status == "merged":
+                    target_status = linear_cfg.done_status
+                else:
+                    target_status = linear_cfg.in_review_status
+
+                try:
+                    poller.move_issue(slot.ticket_id, target_status)
+                    logger.info(
+                        "Moved %s to '%s' after successful pipeline",
+                        slot.ticket_id, target_status,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to move %s to '%s'", slot.ticket_id, target_status,
+                    )
 
             # Post completion comment if enabled
             if linear_cfg.comment_on_completion:
@@ -1270,9 +1330,7 @@ class Supervisor:
         """Update Linear for a failed slot and free it.
 
         Before moving the ticket to failed status, checks if the PR was
-        actually merged. If so, treats it as a successful completion
-        instead of a failure (prevents infinite retry loops for
-        already-merged PRs).
+        actually merged or the ticket was already resolved externally.
         """
         # Check if the PR was actually merged despite the reported failure.
         # This prevents infinite retry loops when merge reports failure
@@ -1295,21 +1353,30 @@ class Supervisor:
         linear_cfg = self._config.linear
         poller = self._pollers.get(project)
         if poller and slot.ticket_id:
-            target_status = linear_cfg.failed_status
-            try:
-                poller.move_issue(slot.ticket_id, target_status)
+            # If the ticket was already moved to Done/Cancelled externally,
+            # don't move it to the failed status (which may re-queue it).
+            if poller.is_issue_terminal(slot.ticket_id):
                 logger.info(
-                    "Moved %s to '%s' after failure",
-                    slot.ticket_id, target_status,
+                    "Failed slot %s/%d: ticket %s already in terminal state "
+                    "— skipping status move",
+                    slot.project, slot.slot_id, slot.ticket_id,
                 )
-            except Exception:
-                logger.exception(
-                    "Failed to move %s to '%s'",
-                    slot.ticket_id, target_status,
-                )
+            else:
+                target_status = linear_cfg.failed_status
+                try:
+                    poller.move_issue(slot.ticket_id, target_status)
+                    logger.info(
+                        "Moved %s to '%s' after failure",
+                        slot.ticket_id, target_status,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to move %s to '%s'",
+                        slot.ticket_id, target_status,
+                    )
 
-            if linear_cfg.comment_on_failure:
-                self._post_failure_comment(poller, slot)
+                if linear_cfg.comment_on_failure:
+                    self._post_failure_comment(poller, slot)
 
         # Webhook notification
         self._notify_task_failed(slot)
@@ -1563,6 +1630,11 @@ class Supervisor:
 
         polled = False
         for slot in paused:
+            # Check if the ticket was resolved externally while paused
+            if self._is_ticket_externally_done(slot):
+                self._conn.commit()
+                continue
+
             # If limits are disabled entirely, resume immediately
             if not thresholds.enabled:
                 self._resume_paused_worker(slot)
