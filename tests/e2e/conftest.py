@@ -7,10 +7,12 @@ Provides session-scoped fixtures that:
 - Provide helpers for modifying test state (e.g. dispatch pause)
 - Provide a BotfarmConfig so the config page is fully functional
 - Provide pause/resume/update callbacks for supervisor control tests
+- Create test log files for SSE streaming tests
 """
 
 from __future__ import annotations
 
+import json
 import socket
 import sqlite3
 import threading
@@ -166,7 +168,92 @@ def pause_resume_state():
 
 
 @pytest.fixture(scope="session")
-def live_server(seeded_db, test_config, pause_resume_state):
+def test_logs_dir(tmp_path_factory):
+    """Create test log files for SSE streaming tests.
+
+    Produces NDJSON log files matching the expected directory layout:
+    ``logs_dir/TICKET_ID/STAGE-TIMESTAMP.log``
+    """
+    logs_dir = tmp_path_factory.mktemp("e2e_logs")
+
+    # SMA-101 is the "busy" slot in implement stage — create a log file for it.
+    sma101_dir = logs_dir / "SMA-101"
+    sma101_dir.mkdir()
+    log_lines = [
+        json.dumps({
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {"type": "text", "text": "Let me implement the retry logic."},
+                ],
+            },
+        }),
+        json.dumps({
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {"type": "tool_use", "name": "Read",
+                     "input": {"file_path": "/src/worker.py"}},
+                ],
+            },
+        }),
+        json.dumps({
+            "type": "user",
+            "message": {
+                "content": [
+                    {"type": "tool_result", "is_error": False,
+                     "content": "def retry(): pass"},
+                ],
+            },
+        }),
+        json.dumps({
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {"type": "text", "text": "I see the current implementation."},
+                    {"type": "tool_use", "name": "Edit",
+                     "input": {"file_path": "/src/worker.py",
+                               "old_string": "pass", "new_string": "retry()"}},
+                ],
+            },
+        }),
+    ]
+    impl_log = sma101_dir / "implement-20260227-080000.log"
+    impl_log.write_text("\n".join(log_lines) + "\n")
+
+    # SMA-80 is a completed task — create a log file for static display.
+    sma80_dir = logs_dir / "SMA-80"
+    sma80_dir.mkdir()
+    completed_lines = [
+        json.dumps({
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {"type": "text", "text": "Adding config validation."},
+                ],
+            },
+        }),
+        json.dumps({
+            "type": "result",
+            "num_turns": 35, "duration_ms": 3600000,
+            "subtype": "completed", "is_error": False,
+        }),
+    ]
+    (sma80_dir / "implement-20260226-100000.log").write_text(
+        "\n".join(completed_lines) + "\n"
+    )
+    (sma80_dir / "review-20260226-110000.log").write_text(
+        json.dumps({
+            "type": "assistant",
+            "message": {"content": [{"type": "text", "text": "Reviewing changes."}]},
+        }) + "\n"
+    )
+
+    return logs_dir
+
+
+@pytest.fixture(scope="session")
+def live_server(seeded_db, test_config, pause_resume_state, test_logs_dir):
     """Start the dashboard on a random free port in a daemon thread.
 
     Yields the base URL. The server shuts down after the test session.
@@ -186,6 +273,7 @@ def live_server(seeded_db, test_config, pause_resume_state):
     app = create_app(
         db_path=seeded_db,
         botfarm_config=test_config,
+        logs_dir=test_logs_dir,
         on_pause=on_pause,
         on_resume=on_resume,
         on_update=on_update,
