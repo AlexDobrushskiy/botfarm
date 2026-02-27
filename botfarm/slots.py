@@ -20,9 +20,11 @@ from pathlib import Path
 
 from botfarm.db import (
     init_db,
+    load_all_project_pause_states,
     load_all_slots,
     load_dispatch_state,
     save_dispatch_state,
+    save_project_pause_state,
     upsert_slot,
 )
 
@@ -138,6 +140,8 @@ class SlotManager:
         self._usage: dict | None = None
         self._dispatch_paused: bool = False
         self._dispatch_pause_reason: str | None = None
+        # Per-project pause state: {project_name: (paused, reason)}
+        self._project_pauses: dict[str, tuple[bool, str | None]] = {}
 
     @property
     def db_path(self) -> Path:
@@ -384,6 +388,9 @@ class SlotManager:
 
     def load(self) -> None:
         """Load state from DB if it exists. Falls back to state.json migration."""
+        # Always load per-project pause state (may exist even without slots)
+        self._project_pauses = load_all_project_pause_states(self._conn)
+
         # Try loading from database first
         rows = load_all_slots(self._conn)
         if rows:
@@ -410,6 +417,8 @@ class SlotManager:
         paused, reason, _heartbeat = load_dispatch_state(self._conn)
         self._dispatch_paused = paused
         self._dispatch_pause_reason = reason
+
+        self._project_pauses = load_all_project_pause_states(self._conn)
 
     def _migrate_from_state_json(self) -> None:
         """One-time migration: read state.json, populate DB, then proceed."""
@@ -502,6 +511,42 @@ class SlotManager:
         self._dispatch_paused = paused
         self._dispatch_pause_reason = reason if paused else None
         self._save()
+
+    # ------------------------------------------------------------------
+    # Per-project pause state
+    # ------------------------------------------------------------------
+
+    def is_project_paused(self, project: str) -> bool:
+        """Return True if the given project is paused."""
+        entry = self._project_pauses.get(project)
+        return entry[0] if entry else False
+
+    def get_project_pause_reason(self, project: str) -> str | None:
+        """Return the pause reason for a project, or None."""
+        entry = self._project_pauses.get(project)
+        return entry[1] if entry and entry[0] else None
+
+    def set_project_paused(
+        self, project: str, paused: bool, reason: str | None = None,
+    ) -> None:
+        """Pause or unpause a specific project."""
+        self._project_pauses[project] = (paused, reason if paused else None)
+        save_project_pause_state(
+            self._conn, project=project, paused=paused, reason=reason,
+        )
+        self._conn.commit()
+
+    def get_all_project_pauses(self) -> dict[str, tuple[bool, str | None]]:
+        """Return a copy of the per-project pause state dict."""
+        return dict(self._project_pauses)
+
+    def refresh_project_pauses(self) -> None:
+        """Reload per-project pause state from the database.
+
+        Called by the supervisor at the start of each tick so that
+        changes made by CLI or dashboard are picked up promptly.
+        """
+        self._project_pauses = load_all_project_pause_states(self._conn)
 
     # ------------------------------------------------------------------
     # Dispatch helpers

@@ -945,6 +945,8 @@ class Supervisor:
         """One iteration of the supervisor loop."""
         # Merge worker-written stage updates from disk before any state writes
         self._slot_manager.refresh_stages_from_disk()
+        # Reload per-project pause state (may be changed by CLI or dashboard)
+        self._slot_manager.refresh_project_pauses()
 
         for phase in (
             self._reconcile_workers,
@@ -2031,6 +2033,10 @@ class Supervisor:
         active_ids = self._slot_manager.active_ticket_ids()
 
         for project_name, poller in self._pollers.items():
+            if self._slot_manager.is_project_paused(project_name):
+                logger.debug("Skipping paused project %s", project_name)
+                continue
+
             try:
                 poll_result = poller.poll(active_ticket_ids=active_ids)
             except Exception:

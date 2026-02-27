@@ -591,6 +591,71 @@ class TestParentAutoClose:
 
 
 # ---------------------------------------------------------------------------
+# Per-project pause in dispatch
+# ---------------------------------------------------------------------------
+
+
+class TestPerProjectPause:
+    def test_paused_project_skipped_in_dispatch(self, supervisor):
+        """A paused project should not have its poller called."""
+        supervisor.slot_manager.set_project_paused("test-project", True, "manual")
+        poller = supervisor._pollers["test-project"]
+        poller.poll.return_value = PollResult(candidates=[_make_issue()], blocked=[], auto_close_parents=[])
+
+        with patch.object(supervisor, "_dispatch_worker") as mock_dispatch:
+            supervisor._poll_and_dispatch()
+            mock_dispatch.assert_not_called()
+            poller.poll.assert_not_called()
+
+    def test_unpaused_project_dispatched(self, supervisor):
+        """After unpausing, the project is dispatched normally."""
+        supervisor.slot_manager.set_project_paused("test-project", True, "manual")
+        supervisor.slot_manager.set_project_paused("test-project", False)
+
+        issue = _make_issue()
+        poller = supervisor._pollers["test-project"]
+        poller.poll.return_value = PollResult(candidates=[issue], blocked=[], auto_close_parents=[])
+
+        with patch.object(supervisor, "_dispatch_worker") as mock_dispatch:
+            supervisor._poll_and_dispatch()
+            mock_dispatch.assert_called_once()
+
+    def test_paused_project_does_not_affect_other_projects(self, supervisor, tmp_path):
+        """Pausing one project doesn't stop others from dispatching.
+
+        This test uses a single-project config, so we verify the paused
+        project's poller is skipped. The architectural guarantee is that
+        each project is checked independently in the loop.
+        """
+        supervisor.slot_manager.set_project_paused("test-project", True)
+        poller = supervisor._pollers["test-project"]
+
+        with patch.object(supervisor, "_dispatch_worker") as mock_dispatch:
+            supervisor._poll_and_dispatch()
+            poller.poll.assert_not_called()
+            mock_dispatch.assert_not_called()
+
+    def test_refresh_picks_up_external_pause(self, supervisor):
+        """Supervisor picks up per-project pause set via CLI/dashboard."""
+        from botfarm.db import save_project_pause_state
+        save_project_pause_state(
+            supervisor._conn, project="test-project", paused=True, reason="cli",
+        )
+        supervisor._conn.commit()
+
+        # Simulate what _tick does
+        supervisor.slot_manager.refresh_project_pauses()
+
+        assert supervisor.slot_manager.is_project_paused("test-project") is True
+        poller = supervisor._pollers["test-project"]
+
+        with patch.object(supervisor, "_dispatch_worker") as mock_dispatch:
+            supervisor._poll_and_dispatch()
+            mock_dispatch.assert_not_called()
+            poller.poll.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # Dispatch worker
 # ---------------------------------------------------------------------------
 

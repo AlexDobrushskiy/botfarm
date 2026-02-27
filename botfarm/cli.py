@@ -21,10 +21,12 @@ from botfarm.db import (
     SchemaVersionError,
     get_task_history,
     init_db,
+    load_all_project_pause_states,
     load_all_slots,
     load_dispatch_state,
     resolve_db_path,
     save_dispatch_state,
+    save_project_pause_state,
     upsert_slot,
 )
 from botfarm.slots import SlotState, _is_pid_alive
@@ -125,6 +127,7 @@ def status(config_path):
     try:
         rows = load_all_slots(conn)
         paused, reason, _heartbeat = load_dispatch_state(conn)
+        project_pauses = load_all_project_pause_states(conn)
     except sqlite3.OperationalError as exc:
         raise click.ClickException(f"Database query failed: {exc}") from exc
     finally:
@@ -139,6 +142,18 @@ def status(config_path):
     # Show dispatch pause banner if active
     if paused:
         console.print(f"[bold red]DISPATCH PAUSED:[/bold red] {reason or 'unknown'}\n")
+
+    # Show per-project pause state
+    paused_projects = {
+        p: r for p, (is_paused, r) in project_pauses.items() if is_paused
+    }
+    if paused_projects:
+        for proj, proj_reason in sorted(paused_projects.items()):
+            label = f"PROJECT PAUSED: {proj}"
+            if proj_reason:
+                label += f" ({proj_reason})"
+            console.print(f"[bold magenta]{label}[/bold magenta]")
+        console.print()
 
     table = Table(title="Slot Status")
     table.add_column("Project", style="bold")
@@ -368,6 +383,101 @@ def limits(config_path):
         table.add_row("Last updated", recorded_at[:19])
 
     console.print(table)
+
+
+@main.command(name="pause")
+@click.argument("project")
+@click.option("--reason", default=None, help="Reason for pausing.")
+@click.option(
+    "--config",
+    "config_path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help="Path to config file.",
+)
+def pause_project(project, reason, config_path):
+    """Pause dispatching new work for a specific project.
+
+    Running workers are NOT interrupted — they finish their current task
+    (all stages through merge/completion). Only new dispatches are skipped.
+    """
+    db_path, _ = _resolve_paths(config_path)
+
+    if not db_path.exists():
+        click.echo("No database found. Is the supervisor running?")
+        return
+
+    try:
+        conn = init_db(db_path)
+    except SchemaVersionError as exc:
+        raise click.ClickException(str(exc)) from exc
+    except sqlite3.Error as exc:
+        raise click.ClickException(f"Failed to open database: {exc}") from exc
+
+    try:
+        # Verify the project exists in slot data
+        rows = load_all_slots(conn)
+        known_projects = {r["project"] for r in rows}
+        if project not in known_projects:
+            click.echo(
+                f"Project '{project}' not found in database. "
+                f"Known projects: {', '.join(sorted(known_projects)) or '(none)'}"
+            )
+            return
+
+        save_project_pause_state(conn, project=project, paused=True, reason=reason)
+        conn.commit()
+        click.echo(f"Project '{project}' paused. Running workers will finish their current task.")
+        if reason:
+            click.echo(f"Reason: {reason}")
+    except sqlite3.Error as exc:
+        raise click.ClickException(f"Database error: {exc}") from exc
+    finally:
+        conn.close()
+
+
+@main.command(name="resume")
+@click.argument("project")
+@click.option(
+    "--config",
+    "config_path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help="Path to config file.",
+)
+def resume_project(project, config_path):
+    """Resume dispatching new work for a paused project."""
+    db_path, _ = _resolve_paths(config_path)
+
+    if not db_path.exists():
+        click.echo("No database found. Is the supervisor running?")
+        return
+
+    try:
+        conn = init_db(db_path)
+    except SchemaVersionError as exc:
+        raise click.ClickException(str(exc)) from exc
+    except sqlite3.Error as exc:
+        raise click.ClickException(f"Failed to open database: {exc}") from exc
+
+    try:
+        # Verify the project exists in slot data
+        rows = load_all_slots(conn)
+        known_projects = {r["project"] for r in rows}
+        if project not in known_projects:
+            click.echo(
+                f"Project '{project}' not found in database. "
+                f"Known projects: {', '.join(sorted(known_projects)) or '(none)'}"
+            )
+            return
+
+        save_project_pause_state(conn, project=project, paused=False)
+        conn.commit()
+        click.echo(f"Project '{project}' resumed. New tickets will be dispatched on the next poll.")
+    except sqlite3.Error as exc:
+        raise click.ClickException(f"Database error: {exc}") from exc
+    finally:
+        conn.close()
 
 
 @main.command()
