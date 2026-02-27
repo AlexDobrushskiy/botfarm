@@ -29,6 +29,7 @@ Docs under `docs/`:
 - `philosophy.md` — Project design principles and trade-offs
 - `improvements.md` — Planned improvements and ideas
 - `competitors.md` — Competitor analysis
+- `codex-cli.md` — Codex CLI automation, approval, and non-interactive behavior
 
 Key patterns:
 - Workers run as subprocesses; communicate results via `multiprocessing.Queue`
@@ -85,6 +86,16 @@ Review/fix loop happens via Linear comments (not GitHub).
 - Install editable: `pip install -e .`
 - Validate with: `botfarm --help`
 - Branch protection: NEVER delete `main` or `slot-1-placeholder`
+
+## Codex CLI Quick Reference
+- `codex exec` is the Codex equivalent of Claude's non-interactive `claude -p`
+- Codex `-p` means `--profile`, not prompt mode
+- For unattended sandboxed runs: `codex -a never -s workspace-write exec "<prompt>"`
+- For unattended stdin-driven runs: `printf '%s\n' "<prompt>" | codex -a never -s workspace-write exec -`
+- `--full-auto` is not fully autonomous; it maps to `-a on-request --sandbox workspace-write`
+- For unsandboxed zero-confirmation execution: `codex --dangerously-bypass-approvals-and-sandbox exec "<prompt>"`
+- For machine-readable output: `codex -a never -s workspace-write exec --json "<prompt>"`
+- See `docs/codex-cli.md` for details and examples
 
 ## PR Process
 - Clear, concise description
