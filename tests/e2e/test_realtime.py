@@ -35,8 +35,9 @@ class TestHtmxPolling:
         """P0: htmx refresh does not cause full page reload."""
         # Record initial page URL
         initial_url = page.url
-        # Wait for at least one htmx cycle
-        page.wait_for_timeout(6000)
+        # Wait for at least one htmx polling response
+        with page.expect_response("**/partials/slots"):
+            pass
         # URL should not have changed
         assert page.url == initial_url
         # Page title should still be correct

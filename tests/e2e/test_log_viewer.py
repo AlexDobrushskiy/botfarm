@@ -37,10 +37,9 @@ class TestLogViewerStageTabs:
         """P0: Stage tabs are rendered for task with logs."""
         page.goto(f"{live_server}/task/SMA-80/logs")
         tabs = page.locator(".log-stage-tab")
-        # SMA-80 has stages: implement, review, fix, pr_checks, merge
         # Tabs only show for stages with log files — may be 0 if no log files exist
-        # This test verifies the page loads without error
-        assert page.title() != ""
+        if tabs.count() == 0:
+            pytest.skip("No log files on disk — stage tabs not rendered")
 
     def test_stage_tab_switching(self, live_server, page):
         """P0: Clicking a stage tab updates URL and content."""
@@ -54,6 +53,8 @@ class TestLogViewerStageTabs:
             page.wait_for_load_state("networkidle")
             # URL should include the stage
             assert "/logs/" in page.url
+        else:
+            pytest.skip("Fewer than 2 stage tabs available")
 
     def test_active_tab_highlighted(self, live_server, page):
         """P0: Active stage tab has the active class."""
@@ -62,6 +63,8 @@ class TestLogViewerStageTabs:
         if tabs.count() >= 1:
             active = page.locator(".log-stage-tab-active")
             assert active.count() == 1
+        else:
+            pytest.skip("No stage tabs available")
 
 
 @pytest.mark.playwright

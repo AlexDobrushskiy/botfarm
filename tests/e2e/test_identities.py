@@ -37,6 +37,8 @@ class TestIdentitiesTabSwitching:
             tab_texts = tabs.all_text_contents()
             assert "View" in tab_texts
             assert "Edit" in tab_texts
+        else:
+            pytest.skip("Config tabs not available in test mode")
 
     def test_view_tab_active_by_default(self, live_server, page):
         """P0: View tab is active by default."""
@@ -45,6 +47,8 @@ class TestIdentitiesTabSwitching:
         if tabs.count() >= 2:
             view_content = page.locator("#tab-view")
             assert view_content.is_visible()
+        else:
+            pytest.skip("Config tabs not available in test mode")
 
     def test_switch_to_edit(self, live_server, page):
         """P0: Clicking Edit shows edit forms."""
@@ -54,6 +58,8 @@ class TestIdentitiesTabSwitching:
             tabs.nth(1).click()
             edit_content = page.locator("#tab-edit")
             assert edit_content.is_visible()
+        else:
+            pytest.skip("Config tabs not available in test mode")
 
     def test_edit_tab_restart_banner(self, live_server, page):
         """P0: Edit tab shows restart banner."""
@@ -64,3 +70,5 @@ class TestIdentitiesTabSwitching:
             banner = page.locator(".restart-banner")
             assert banner.is_visible()
             assert "restart" in banner.inner_text().lower()
+        else:
+            pytest.skip("Config tabs not available in test mode")

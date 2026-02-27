@@ -38,6 +38,8 @@ class TestConfigTabSwitching:
             tab_texts = tabs.all_text_contents()
             assert "View" in tab_texts
             assert "Edit" in tab_texts
+        else:
+            pytest.skip("Config tabs not available in test mode")
 
     def test_view_tab_active_by_default(self, live_server, page):
         """P0: View tab is active by default."""
@@ -48,6 +50,8 @@ class TestConfigTabSwitching:
             assert "active" in view_tab.get_attribute("class")
             view_content = page.locator("#tab-view")
             assert view_content.is_visible()
+        else:
+            pytest.skip("Config tabs not available in test mode")
 
     def test_switch_to_edit_tab(self, live_server, page):
         """P0: Clicking Edit tab shows edit content."""
@@ -60,6 +64,8 @@ class TestConfigTabSwitching:
             assert edit_content.is_visible()
             view_content = page.locator("#tab-view")
             assert not view_content.is_visible()
+        else:
+            pytest.skip("Config tabs not available in test mode")
 
     def test_switch_back_to_view(self, live_server, page):
         """P0: Switching back to View tab works."""
@@ -71,3 +77,5 @@ class TestConfigTabSwitching:
             tabs.first.click()
             view_content = page.locator("#tab-view")
             assert view_content.is_visible()
+        else:
+            pytest.skip("Config tabs not available in test mode")

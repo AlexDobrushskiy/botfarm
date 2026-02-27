@@ -29,25 +29,18 @@ class TestMetricsOverview:
     def test_total_tasks_count(self, live_server, page):
         """P0: Total tasks count is > 0."""
         page.goto(f"{live_server}/metrics")
-        # Find the card with "Total Tasks" label
-        cards = page.locator(".metric-card")
-        for i in range(cards.count()):
-            card = cards.nth(i)
-            if "Total Tasks" in card.inner_text():
-                value = card.locator("h2").inner_text()
-                assert int(value) > 0
-                break
+        card = page.locator(".metric-card", has_text="Total Tasks")
+        assert card.count() >= 1
+        value = card.first.locator("h2").inner_text()
+        assert int(value) > 0
 
     def test_success_rate_percentage(self, live_server, page):
         """P0: Success rate displays as percentage."""
         page.goto(f"{live_server}/metrics")
-        cards = page.locator(".metric-card")
-        for i in range(cards.count()):
-            card = cards.nth(i)
-            if "Success Rate" in card.inner_text():
-                value = card.locator("h2").inner_text()
-                assert "%" in value
-                break
+        card = page.locator(".metric-card", has_text="Success Rate")
+        assert card.count() >= 1
+        value = card.first.locator("h2").inner_text()
+        assert "%" in value
 
 
 @pytest.mark.playwright
@@ -97,13 +90,10 @@ class TestMetricsTokenUsage:
     def test_total_cost_with_dollar(self, live_server, page):
         """P0: Total cost shows dollar amount."""
         page.goto(f"{live_server}/metrics")
-        cards = page.locator(".metric-card")
-        for i in range(cards.count()):
-            card = cards.nth(i)
-            if "Total Cost" in card.inner_text():
-                value = card.locator("h2").inner_text()
-                assert "$" in value
-                break
+        card = page.locator(".metric-card", has_text="Total Cost")
+        assert card.count() >= 1
+        value = card.first.locator("h2").inner_text()
+        assert "$" in value
 
     def test_extra_usage_cost_highlighted(self, live_server, page):
         """P1: Extra usage cost card has yellow highlight."""
