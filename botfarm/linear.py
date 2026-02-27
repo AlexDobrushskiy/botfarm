@@ -164,6 +164,19 @@ mutation AssignIssue($issueId: String!, $assigneeId: String!) {
 }
 """
 
+ISSUE_STATE_QUERY = """
+query IssueState($identifier: String!) {
+  issue(id: $identifier) {
+    id
+    identifier
+    state {
+      name
+      type
+    }
+  }
+}
+"""
+
 
 @dataclass
 class LinearIssue:
@@ -389,6 +402,23 @@ class LinearClient:
                 f"Failed to assign issue {issue_id} to user {assignee_id}"
             )
 
+    def fetch_issue_state_type(self, identifier: str) -> str | None:
+        """Fetch the workflow state type of a single issue by identifier.
+
+        Returns the state type string (e.g. "completed", "canceled",
+        "started", "unstarted") or ``None`` if the issue is not found.
+        """
+        try:
+            data = self._execute(ISSUE_STATE_QUERY, {"identifier": identifier})
+        except LinearAPIError:
+            logger.warning("Failed to fetch state for issue %s", identifier)
+            return None
+        issue = data.get("issue")
+        if not issue:
+            return None
+        state = issue.get("state") or {}
+        return state.get("type")
+
 
 class LinearPoller:
     """Polls Linear for Todo tickets in a project's team and returns prioritized candidates.
@@ -532,6 +562,17 @@ class LinearPoller:
                 f"'{self._project.linear_team}'"
             )
         return state_id
+
+    def is_issue_terminal(self, identifier: str) -> bool:
+        """Check whether an issue is in a terminal state (completed/canceled).
+
+        Returns ``False`` on API errors so that callers don't skip
+        recovery when the status is simply unknown.
+        """
+        state_type = self._client.fetch_issue_state_type(identifier)
+        if state_type is None:
+            return False
+        return state_type in ("completed", "canceled")
 
     def move_issue(self, issue_id: str, state_name: str) -> None:
         """Move an issue to the named workflow state (uses coder client)."""

@@ -1362,3 +1362,81 @@ class TestCreatePollersCoderClient:
         assert pollers[0]._coder_client is pollers[1]._coder_client
         assert pollers[0]._client is pollers[1]._client
         assert pollers[0]._coder_client is not pollers[0]._client
+
+
+class TestFetchIssueStateType:
+    """Tests for LinearClient.fetch_issue_state_type."""
+
+    def test_returns_state_type(self):
+        client = LinearClient(api_key="test-key")
+        resp = _graphql_response({
+            "issue": {
+                "id": "issue-id",
+                "identifier": "TST-1",
+                "state": {"name": "Done", "type": "completed"},
+            }
+        })
+        with patch.object(httpx, "post", return_value=resp):
+            result = client.fetch_issue_state_type("TST-1")
+        assert result == "completed"
+
+    def test_returns_none_for_missing_issue(self):
+        client = LinearClient(api_key="test-key")
+        resp = _graphql_response({"issue": None})
+        with patch.object(httpx, "post", return_value=resp):
+            result = client.fetch_issue_state_type("TST-999")
+        assert result is None
+
+    def test_returns_none_on_api_error(self):
+        client = LinearClient(api_key="test-key")
+        with patch.object(httpx, "post", side_effect=httpx.HTTPError("fail")):
+            result = client.fetch_issue_state_type("TST-1")
+        assert result is None
+
+    def test_returns_started_type(self):
+        client = LinearClient(api_key="test-key")
+        resp = _graphql_response({
+            "issue": {
+                "id": "issue-id",
+                "identifier": "TST-1",
+                "state": {"name": "In Progress", "type": "started"},
+            }
+        })
+        with patch.object(httpx, "post", return_value=resp):
+            result = client.fetch_issue_state_type("TST-1")
+        assert result == "started"
+
+
+class TestIsIssueTerminal:
+    """Tests for LinearPoller.is_issue_terminal."""
+
+    def test_true_for_completed(self):
+        client = MagicMock()
+        client.fetch_issue_state_type.return_value = "completed"
+        poller = LinearPoller(client, _make_project(), [])
+        assert poller.is_issue_terminal("TST-1") is True
+
+    def test_true_for_canceled(self):
+        client = MagicMock()
+        client.fetch_issue_state_type.return_value = "canceled"
+        poller = LinearPoller(client, _make_project(), [])
+        assert poller.is_issue_terminal("TST-1") is True
+
+    def test_false_for_started(self):
+        client = MagicMock()
+        client.fetch_issue_state_type.return_value = "started"
+        poller = LinearPoller(client, _make_project(), [])
+        assert poller.is_issue_terminal("TST-1") is False
+
+    def test_false_for_unstarted(self):
+        client = MagicMock()
+        client.fetch_issue_state_type.return_value = "unstarted"
+        poller = LinearPoller(client, _make_project(), [])
+        assert poller.is_issue_terminal("TST-1") is False
+
+    def test_false_on_api_error(self):
+        """API errors should not prevent recovery — return False."""
+        client = MagicMock()
+        client.fetch_issue_state_type.return_value = None
+        poller = LinearPoller(client, _make_project(), [])
+        assert poller.is_issue_terminal("TST-1") is False

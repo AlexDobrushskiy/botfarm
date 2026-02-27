@@ -93,6 +93,7 @@ def supervisor(tmp_config, tmp_path, monkeypatch):
     mock_poller = MagicMock()
     mock_poller.project_name = "test-project"
     mock_poller.poll.return_value = PollResult(candidates=[], blocked=[], auto_close_parents=[])
+    mock_poller.is_issue_terminal.return_value = False
 
     with patch("botfarm.supervisor.create_pollers", return_value=[mock_poller]):
         sup = Supervisor(tmp_config, log_dir=tmp_path / "logs")
@@ -780,6 +781,7 @@ class TestCoderAutoAssignment:
         mock_poller.poll.return_value = PollResult(
             candidates=[], blocked=[], auto_close_parents=[],
         )
+        mock_poller.is_issue_terminal.return_value = False
 
         mock_coder_client = MagicMock()
         mock_coder_client.get_viewer_id.return_value = "coder-user-id-123"
@@ -815,6 +817,7 @@ class TestCoderAutoAssignment:
         mock_poller.poll.return_value = PollResult(
             candidates=[], blocked=[], auto_close_parents=[],
         )
+        mock_poller.is_issue_terminal.return_value = False
 
         mock_coder_client = MagicMock()
         mock_coder_client.get_viewer_id.side_effect = Exception("API down")
@@ -2239,6 +2242,7 @@ class TestCheckTimeouts:
         mock_poller = MagicMock()
         mock_poller.project_name = "test-project"
         mock_poller.poll.return_value = PollResult(candidates=[], blocked=[], auto_close_parents=[])
+        mock_poller.is_issue_terminal.return_value = False
 
         with patch("botfarm.supervisor.create_pollers", return_value=[mock_poller]):
             sup = Supervisor(config, log_dir=tmp_path / "logs")
@@ -2304,6 +2308,7 @@ class TestCheckTimeouts:
         mock_poller = MagicMock()
         mock_poller.project_name = "test-project"
         mock_poller.poll.return_value = PollResult(candidates=[], blocked=[], auto_close_parents=[])
+        mock_poller.is_issue_terminal.return_value = False
 
         with patch("botfarm.supervisor.create_pollers", return_value=[mock_poller]):
             sup = Supervisor(config, log_dir=tmp_path / "logs")
@@ -2345,6 +2350,7 @@ class TestCheckTimeouts:
         mock_poller = MagicMock()
         mock_poller.project_name = "test-project"
         mock_poller.poll.return_value = PollResult(candidates=[], blocked=[], auto_close_parents=[])
+        mock_poller.is_issue_terminal.return_value = False
 
         with patch("botfarm.supervisor.create_pollers", return_value=[mock_poller]):
             sup = Supervisor(config, log_dir=tmp_path / "logs")
@@ -2942,6 +2948,205 @@ class TestRecoverOnStartup:
         assert "slots_processed=2" in events[0]["detail"]
 
 
+class TestExternallyDoneTicket:
+    """Tests for detecting tickets moved to Done/Cancelled externally."""
+
+    def test_busy_slot_with_externally_done_ticket_marked_completed(self, supervisor):
+        """A busy slot whose ticket was moved to Done externally is marked completed."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        slot = sm.get_slot("test-project", 1)
+        slot.pid = 99999
+
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        poller = supervisor._pollers["test-project"]
+        poller.is_issue_terminal.return_value = True
+
+        with patch("botfarm.supervisor._is_pid_alive", return_value=False):
+            supervisor._recover_on_startup()
+
+        assert sm.get_slot("test-project", 1).status == "completed_pending_cleanup"
+        events = get_events(supervisor._conn, event_type="recovery_completed")
+        assert len(events) == 1
+        assert "ticket_externally_done" in events[0]["detail"]
+
+    def test_busy_slot_alive_pid_killed_when_ticket_done(self, supervisor):
+        """An alive worker is killed when the ticket is externally done."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        slot = sm.get_slot("test-project", 1)
+        slot.pid = 99999
+
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        poller = supervisor._pollers["test-project"]
+        poller.is_issue_terminal.return_value = True
+
+        with (
+            patch("botfarm.supervisor._is_pid_alive", return_value=True),
+            patch("os.kill") as mock_kill,
+        ):
+            supervisor._recover_on_startup()
+
+        mock_kill.assert_called_once_with(99999, signal.SIGTERM)
+        assert sm.get_slot("test-project", 1).status == "completed_pending_cleanup"
+
+    def test_paused_slot_with_externally_done_ticket_marked_completed(self, supervisor):
+        """A paused slot whose ticket was moved to Done externally is marked completed."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.mark_paused_limit("test-project", 1, resume_after="2099-01-01T00:00:00Z")
+
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        poller = supervisor._pollers["test-project"]
+        poller.is_issue_terminal.return_value = True
+
+        supervisor._recover_on_startup()
+
+        assert sm.get_slot("test-project", 1).status == "completed_pending_cleanup"
+        events = get_events(supervisor._conn, event_type="recovery_completed")
+        assert len(events) == 1
+        assert "ticket_externally_done" in events[0]["detail"]
+
+    def test_non_terminal_ticket_proceeds_with_normal_recovery(self, supervisor):
+        """When ticket is not terminal, normal recovery path is used."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        slot = sm.get_slot("test-project", 1)
+        slot.pid = 99999
+
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        poller = supervisor._pollers["test-project"]
+        poller.is_issue_terminal.return_value = False
+
+        with (
+            patch("botfarm.supervisor._is_pid_alive", return_value=False),
+            patch.object(supervisor, "_check_pr_status", return_value=None),
+        ):
+            supervisor._recover_on_startup()
+
+        # Normal recovery: no PR found → failed
+        assert sm.get_slot("test-project", 1).status == "failed"
+
+    def test_failed_slot_skips_move_when_ticket_terminal(self, supervisor):
+        """_handle_failed_slot doesn't move a ticket that's already Done."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.mark_failed("test-project", 1, reason="crash")
+
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="failed",
+        )
+        supervisor._conn.commit()
+
+        poller = supervisor._pollers["test-project"]
+        poller.is_issue_terminal.return_value = True
+
+        slot = sm.get_slot("test-project", 1)
+        with patch.object(supervisor, "_check_pr_status", return_value=None):
+            supervisor._handle_failed_slot(slot)
+
+        # move_issue should NOT have been called
+        poller.move_issue.assert_not_called()
+        # Slot should still be freed
+        assert sm.get_slot("test-project", 1).status == "free"
+
+    def test_completed_slot_skips_move_when_ticket_terminal(self, supervisor):
+        """_handle_completed_slot doesn't move a ticket that's already Done."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.mark_completed("test-project", 1)
+
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="completed",
+        )
+        supervisor._conn.commit()
+
+        poller = supervisor._pollers["test-project"]
+        poller.is_issue_terminal.return_value = True
+
+        slot = sm.get_slot("test-project", 1)
+        supervisor._handle_completed_slot(slot)
+
+        # move_issue should NOT have been called
+        poller.move_issue.assert_not_called()
+        # Slot should still be freed
+        assert sm.get_slot("test-project", 1).status == "free"
+
+    def test_paused_slot_not_resumed_when_ticket_done_in_tick_loop(self, supervisor):
+        """_handle_paused_slots frees the slot instead of resuming when ticket is Done."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.mark_paused_limit(
+            "test-project", 1,
+            resume_after="2020-01-01T00:00:00Z",  # past time
+        )
+
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        poller = supervisor._pollers["test-project"]
+        poller.is_issue_terminal.return_value = True
+
+        with patch.object(supervisor, "_resume_paused_worker") as mock_resume:
+            supervisor._handle_paused_slots()
+
+        mock_resume.assert_not_called()
+        assert sm.get_slot("test-project", 1).status == "completed_pending_cleanup"
+
+
 class TestNextStageAfter:
     """Tests for _next_stage_after — the stage ordering helper."""
 
@@ -3303,6 +3508,7 @@ def supervisor_custom_statuses(tmp_path, monkeypatch):
     mock_poller = MagicMock()
     mock_poller.project_name = "test-project"
     mock_poller.poll.return_value = PollResult(candidates=[], blocked=[], auto_close_parents=[])
+    mock_poller.is_issue_terminal.return_value = False
 
     with patch("botfarm.supervisor.create_pollers", return_value=[mock_poller]):
         sup = Supervisor(config, log_dir=tmp_path / "logs")
@@ -3453,6 +3659,7 @@ class TestCommentPosting:
 
         mock_poller = MagicMock()
         mock_poller.project_name = "test-project"
+        mock_poller.is_issue_terminal.return_value = False
 
         with patch("botfarm.supervisor.create_pollers", return_value=[mock_poller]):
             sup = Supervisor(config, log_dir=tmp_path / "logs")
