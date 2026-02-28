@@ -851,6 +851,8 @@ def _run_review(
     owner, repo, number = _parse_pr_url(pr_url)
 
     # --- DB-driven template path (unchanged) ---
+    # NOTE: multi-review (codex) is not yet supported with DB-driven
+    # templates; codex_enabled is ignored when stage_tpl is set.
     if stage_tpl is not None:
         return _run_claude_stage(
             stage_tpl, cwd=cwd, max_turns=max_turns,
@@ -925,7 +927,9 @@ def _run_review(
     claude_verdict_str = "approved" if claude_approved else "changes_requested"
     merged_approved = _merge_review_verdicts(claude_approved, codex_approved)
 
-    # Submit ONE aggregate gh pr review
+    # Submit ONE aggregate gh pr review (failure is logged internally;
+    # pipeline proceeds regardless since the merged verdict drives the
+    # review-fix loop).
     _submit_aggregate_review(
         pr_url,
         cwd=cwd,
