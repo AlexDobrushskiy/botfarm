@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from botfarm.codex import CodexResult, run_codex_streaming
 from botfarm.config import IdentitiesConfig
 from botfarm.db import delete_stage_run, insert_event, insert_stage_run, is_extra_usage_active, update_stage_run_context_fill, update_task
 from botfarm.process import terminate_process_group as _terminate_process_group
@@ -514,6 +515,7 @@ class StageResult:
     stage: str
     success: bool
     claude_result: ClaudeResult | None = None
+    codex_result: CodexResult | None = None
     pr_url: str | None = None
     error: str | None = None
     review_approved: bool | None = None
@@ -669,6 +671,161 @@ def _run_implement(
     )
 
 
+def _review_inline_comment_instructions(
+    owner: str,
+    repo: str,
+    number: str,
+    *,
+    body_example: str = "comment",
+) -> str:
+    """Return the shared inline-comment API instructions used by both reviewers."""
+    return (
+        "For file-specific feedback, post inline review comments on the exact "
+        "lines where changes are needed. First get the head SHA with:\n"
+        f"  gh pr view {number} --json headRefOid --jq .headRefOid\n"
+        "Then post each inline comment using:\n"
+        f"  gh api repos/{owner}/{repo}/pulls/{number}/comments "
+        f"-f body='{body_example}' -f commit_id='HEAD_SHA' -f path='file.py' "
+        "-F line=42 -f side='RIGHT'\n\n"
+    )
+
+
+def _review_verdict_instructions(*, submit_review: bool) -> str:
+    """Return the shared verdict marker instructions used by both reviewers."""
+    return (
+        "IMPORTANT: If you posted ANY inline comments with suggestions, issues, "
+        "or actionable feedback, you MUST "
+        + ("output " if not submit_review else "use --request-changes and output ")
+        + "VERDICT: CHANGES_REQUESTED. Only "
+        + ("output " if not submit_review else "use --approve and output ")
+        + "VERDICT: APPROVED "
+        "when there are ZERO actionable inline comments.\n\n"
+        "At the very end of your response, output exactly one of these verdict "
+        "markers on its own line:\n"
+        "  VERDICT: APPROVED\n"
+        "  VERDICT: CHANGES_REQUESTED"
+    )
+
+
+def _build_claude_review_prompt(
+    pr_url: str,
+    owner: str,
+    repo: str,
+    number: str,
+    *,
+    codex_enabled: bool = False,
+) -> str:
+    """Build the Claude review prompt, adjusting for multi-review mode."""
+    prompt = (
+        f"Review the pull request at {pr_url}. "
+        "Read the PR diff carefully. Be thorough but constructive.\n\n"
+    )
+    prompt += _review_inline_comment_instructions(owner, repo, number)
+    if codex_enabled:
+        # Multi-review mode: Claude must NOT submit gh pr review
+        prompt += (
+            "Do NOT submit a final review via 'gh pr review'. Only post inline "
+            "comments and output your verdict marker.\n\n"
+        )
+    else:
+        # Single-reviewer mode: Claude submits gh pr review directly
+        prompt += (
+            "After posting all inline comments, submit your overall assessment "
+            "using 'gh pr review' with either --approve or --request-changes "
+            "and a summary body.\n\n"
+        )
+    prompt += _review_verdict_instructions(submit_review=not codex_enabled)
+    return prompt
+
+
+def _build_codex_review_prompt(
+    pr_url: str,
+    owner: str,
+    repo: str,
+    number: str,
+) -> str:
+    """Build the Codex review prompt."""
+    prompt = (
+        f"Review the pull request at {pr_url}. "
+        "Read the PR diff carefully. Be thorough but constructive.\n\n"
+        "IMPORTANT: First fetch existing review comments to avoid posting duplicate feedback:\n"
+        f"  gh api repos/{owner}/{repo}/pulls/{number}/comments\n\n"
+    )
+    prompt += _review_inline_comment_instructions(
+        owner, repo, number, body_example="CODEX: <your comment>",
+    )
+    prompt += (
+        "ALL your inline comments MUST start with the prefix 'CODEX: ' in the body.\n\n"
+        "Do NOT submit a final review via 'gh pr review'. Only post inline comments "
+        "and output your verdict marker.\n\n"
+    )
+    prompt += _review_verdict_instructions(submit_review=False)
+    return prompt
+
+
+def _merge_review_verdicts(
+    claude_approved: bool,
+    codex_approved: bool | None,
+) -> bool:
+    """Merge Claude and Codex verdicts.
+
+    Either reviewer blocking results in CHANGES_REQUESTED.
+    If Codex is ``None`` (error/timeout/disabled), Claude's verdict stands.
+    """
+    if codex_approved is None:
+        return claude_approved
+    return claude_approved and codex_approved
+
+
+def _submit_aggregate_review(
+    pr_url: str,
+    *,
+    cwd: str | Path,
+    claude_verdict: str,
+    codex_verdict: str,
+    approved: bool,
+    iteration: int = 1,
+    env: dict[str, str] | None = None,
+) -> bool:
+    """Submit a single ``gh pr review`` with the aggregate verdict.
+
+    This is used in multi-review mode where neither Claude nor Codex
+    submits their own ``gh pr review``.
+
+    Returns ``True`` if the review was posted successfully, ``False``
+    otherwise (the error is logged as a warning).
+    """
+    owner, repo, number = _parse_pr_url(pr_url)
+    action = "--approve" if approved else "--request-changes"
+    overall = "approved" if approved else "changes_requested"
+    body = (
+        f"Review iteration {iteration}\n"
+        f"Claude: {claude_verdict}\n"
+        f"Codex: {codex_verdict}\n"
+        f"Overall: {overall}"
+    )
+
+    subprocess_env = None
+    if env:
+        subprocess_env = {**os.environ, **env}
+
+    try:
+        subprocess.run(
+            ["gh", "pr", "review", number, action, "--body", body,
+             "--repo", f"{owner}/{repo}"],
+            cwd=str(cwd),
+            env=subprocess_env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=True,
+        )
+        return True
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        logger.warning("Failed to submit aggregate review: %s", exc)
+        return False
+
+
 def _run_review(
     pr_url: str,
     *,
@@ -678,9 +835,24 @@ def _run_review(
     env: dict[str, str] | None = None,
     on_context_fill: ContextFillCallback | None = None,
     stage_tpl: StageTemplate | None = None,
+    codex_enabled: bool = False,
+    codex_log_file: Path | None = None,
+    codex_timeout: float | None = None,
+    codex_model: str | None = None,
+    review_iteration: int = 1,
 ) -> StageResult:
-    """REVIEW stage — Fresh Claude Code reviews the PR and posts comments."""
+    """REVIEW stage — Claude Code reviews the PR and posts comments.
+
+    When *codex_enabled* is ``True``, runs a sequential dual-reviewer
+    flow: Claude first, then Codex.  Neither reviewer submits
+    ``gh pr review`` — Botfarm aggregates verdicts and submits one
+    final review.
+    """
     owner, repo, number = _parse_pr_url(pr_url)
+
+    # --- DB-driven template path (unchanged) ---
+    # NOTE: multi-review (codex) is not yet supported with DB-driven
+    # templates; codex_enabled is ignored when stage_tpl is set.
     if stage_tpl is not None:
         return _run_claude_stage(
             stage_tpl, cwd=cwd, max_turns=max_turns,
@@ -692,48 +864,133 @@ def _run_review(
             },
             log_file=log_file, env=env, on_context_fill=on_context_fill,
         )
-    # Legacy fallback
-    prompt = (
-        f"Review the pull request at {pr_url}. "
-        "Read the PR diff carefully. Be thorough but constructive.\n\n"
-        "For file-specific feedback, post inline review comments on the exact "
-        "lines where changes are needed. First get the head SHA with:\n"
-        f"  gh pr view {number} --json headRefOid --jq .headRefOid\n"
-        "Then post each inline comment using:\n"
-        f"  gh api repos/{owner}/{repo}/pulls/{number}/comments "
-        "-f body='comment' -f commit_id='HEAD_SHA' -f path='file.py' "
-        "-F line=42 -f side='RIGHT'\n\n"
-        "After posting all inline comments, submit your overall assessment "
-        "using 'gh pr review' with either --approve or --request-changes "
-        "and a summary body.\n\n"
-        "IMPORTANT: If you posted ANY inline comments with suggestions, issues, "
-        "or actionable feedback, you MUST use --request-changes and output "
-        "VERDICT: CHANGES_REQUESTED. Only use --approve and VERDICT: APPROVED "
-        "when there are ZERO actionable inline comments.\n\n"
-        "At the very end of your response, output exactly one of these verdict "
-        "markers on its own line:\n"
-        "  VERDICT: APPROVED\n"
-        "  VERDICT: CHANGES_REQUESTED"
+
+    # --- Legacy fallback ---
+    prompt = _build_claude_review_prompt(
+        pr_url, owner, repo, number, codex_enabled=codex_enabled,
     )
-    result = _invoke_claude(
+    claude_result = _invoke_claude(
         prompt, cwd=cwd, max_turns=max_turns, log_file=log_file,
         env=env, on_context_fill=on_context_fill,
     )
 
-    if result.is_error:
+    if claude_result.is_error:
         return StageResult(
             stage="review",
             success=False,
-            claude_result=result,
-            error=f"Claude reported error: {result.result_text[:200]}",
+            claude_result=claude_result,
+            error=f"Claude reported error: {claude_result.result_text[:200]}",
+        )
+
+    claude_approved = _parse_review_approved(claude_result.result_text)
+
+    # --- Single-reviewer mode: return immediately ---
+    if not codex_enabled:
+        return StageResult(
+            stage="review",
+            success=True,
+            claude_result=claude_result,
+            review_approved=claude_approved,
+        )
+
+    # --- Multi-review mode: run Codex sequentially ---
+    codex_result_obj: CodexResult | None = None
+    codex_approved: bool | None = None
+    codex_verdict_str = "skipped"
+
+    try:
+        codex_stage_result = _run_codex_review(
+            pr_url,
+            cwd=cwd,
+            log_file=codex_log_file,
+            env=env,
+            timeout=codex_timeout,
+            codex_model=codex_model,
+        )
+        codex_result_obj = codex_stage_result.codex_result
+
+        if codex_stage_result.success:
+            codex_approved = codex_stage_result.review_approved
+            codex_verdict_str = "approved" if codex_approved else "changes_requested"
+        else:
+            # Codex errored — fail-open, use Claude-only verdict
+            logger.warning(
+                "Codex review failed (fail-open): %s",
+                codex_stage_result.error or "unknown error",
+            )
+            codex_verdict_str = "error"
+    except Exception:
+        logger.warning("Codex review raised exception (fail-open)", exc_info=True)
+        codex_verdict_str = "error"
+
+    # Merge verdicts
+    claude_verdict_str = "approved" if claude_approved else "changes_requested"
+    merged_approved = _merge_review_verdicts(claude_approved, codex_approved)
+
+    # Submit ONE aggregate gh pr review (failure is logged internally;
+    # pipeline proceeds regardless since the merged verdict drives the
+    # review-fix loop).
+    _submit_aggregate_review(
+        pr_url,
+        cwd=cwd,
+        claude_verdict=claude_verdict_str,
+        codex_verdict=codex_verdict_str,
+        approved=merged_approved,
+        iteration=review_iteration,
+        env=env,
+    )
+
+    return StageResult(
+        stage="review",
+        success=True,
+        claude_result=claude_result,
+        codex_result=codex_result_obj,
+        review_approved=merged_approved,
+    )
+
+
+def _run_codex_review(
+    pr_url: str,
+    *,
+    cwd: str | Path,
+    log_file: Path | None = None,
+    env: dict[str, str] | None = None,
+    timeout: float | None = None,
+    codex_model: str | None = None,
+) -> StageResult:
+    """CODEX_REVIEW stage — Codex reviews the PR and posts inline comments.
+
+    Uses ``run_codex_streaming()`` from ``botfarm/codex.py`` for subprocess
+    management.  Codex does NOT submit ``gh pr review`` — Botfarm handles
+    the final review submission in multi-review mode.
+    """
+    owner, repo, number = _parse_pr_url(pr_url)
+
+    prompt = _build_codex_review_prompt(pr_url, owner, repo, number)
+
+    result = run_codex_streaming(
+        prompt,
+        cwd=cwd,
+        model=codex_model,
+        log_file=log_file,
+        env=env,
+        timeout=timeout,
+    )
+
+    if result.is_error:
+        return StageResult(
+            stage="codex_review",
+            success=False,
+            codex_result=result,
+            error=f"Codex reported error: {result.result_text[:200]}",
         )
 
     approved = _parse_review_approved(result.result_text)
 
     return StageResult(
-        stage="review",
+        stage="codex_review",
         success=True,
-        claude_result=result,
+        codex_result=result,
         review_approved=approved,
     )
 
@@ -1032,6 +1289,9 @@ def run_pipeline(
     slot_db_path: str | Path | None = None,
     pause_event: multiprocessing.Event | None = None,
     identities: IdentitiesConfig | None = None,
+    codex_reviewer_enabled: bool = False,
+    codex_reviewer_model: str = "",
+    codex_reviewer_timeout_minutes: int = 15,
 ) -> PipelineResult:
     """Execute the full implement→review→fix→pr_checks→merge pipeline.
 
@@ -1187,6 +1447,9 @@ def run_pipeline(
         placeholder_branch=placeholder_branch,
         coder_env=coder_env,
         reviewer_env=reviewer_env,
+        codex_reviewer_enabled=codex_reviewer_enabled,
+        codex_reviewer_model=codex_reviewer_model,
+        codex_reviewer_timeout_minutes=codex_reviewer_timeout_minutes,
     )
 
     # Build main-stage list: skip loop-managed stages (they're handled
@@ -1356,6 +1619,9 @@ class _PipelineContext:
     placeholder_branch: str | None = None
     coder_env: dict[str, str] | None = None
     reviewer_env: dict[str, str] | None = None
+    codex_reviewer_enabled: bool = False
+    codex_reviewer_model: str = ""
+    codex_reviewer_timeout_minutes: int = 15
 
     def _env_for_stage(self, stage: str) -> dict[str, str] | None:
         """Return the appropriate env dict for a given stage.
@@ -1451,6 +1717,19 @@ class _PipelineContext:
             def on_context_fill(turn: int, fill_pct: float) -> None:
                 update_stage_run_context_fill(_conn, _sr_id, fill_pct)
 
+        # Codex reviewer params (only relevant for review stage)
+        codex_kwargs: dict = {}
+        if stage == "review" and self.codex_reviewer_enabled:
+            codex_kwargs = {
+                "codex_enabled": True,
+                "codex_model": self.codex_reviewer_model or None,
+                "codex_timeout": self.codex_reviewer_timeout_minutes * 60.0,
+                "codex_log_file": _make_stage_log_path(
+                    self.log_dir, "codex_review", iteration,
+                ),
+                "review_iteration": iteration,
+            }
+
         try:
             result = _execute_stage(
                 stage,
@@ -1465,6 +1744,7 @@ class _PipelineContext:
                 env=self._env_for_stage(stage),
                 on_context_fill=on_context_fill,
                 stage_tpl=stage_tpl,
+                **codex_kwargs,
             )
         except Exception as exc:
             logger.error("Stage '%s' raised: %s", stage, exc)
@@ -1769,6 +2049,11 @@ def _execute_stage(
     env: dict[str, str] | None = None,
     on_context_fill: ContextFillCallback | None = None,
     stage_tpl: StageTemplate | None = None,
+    codex_enabled: bool = False,
+    codex_model: str | None = None,
+    codex_timeout: float | None = None,
+    codex_log_file: Path | None = None,
+    review_iteration: int = 1,
 ) -> StageResult:
     """Dispatch to the appropriate stage runner.
 
@@ -1823,6 +2108,11 @@ def _execute_stage(
         return _run_review(
             pr_url, cwd=cwd, max_turns=max_turns, log_file=log_file,
             env=env, on_context_fill=on_context_fill,
+            codex_enabled=codex_enabled,
+            codex_log_file=codex_log_file,
+            codex_timeout=codex_timeout,
+            codex_model=codex_model,
+            review_iteration=review_iteration,
         )
     elif stage == "fix":
         if not pr_url:
