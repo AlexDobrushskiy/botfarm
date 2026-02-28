@@ -12,6 +12,7 @@ import logging
 import multiprocessing
 import os
 import re
+import signal
 import sqlite3
 import subprocess
 import threading
@@ -277,6 +278,30 @@ def parse_stream_json_result(result_data: dict) -> ClaudeResult:
     )
 
 
+def _terminate_process_group(proc: subprocess.Popen, graceful_timeout: float = 5.0) -> None:
+    """Send SIGTERM then SIGKILL to the process group headed by *proc*.
+
+    Because we launch Claude with ``start_new_session=True``, its PID is
+    the process group leader.  Sending signals to the *group* ensures
+    MCP server children (Playwright, Context7, etc.) that inherited the
+    stdout pipe are also terminated.
+    """
+    if proc.poll() is not None:
+        return  # already exited
+    pgid = os.getpgid(proc.pid)
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except OSError:
+        return
+    try:
+        proc.wait(timeout=graceful_timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except OSError:
+            pass
+
+
 def run_claude_streaming(
     prompt: str,
     *,
@@ -326,6 +351,7 @@ def run_claude_streaming(
         text=True,
         cwd=str(cwd),
         env=subprocess_env,
+        start_new_session=True,
     )
 
     # Write prompt and close stdin
@@ -350,12 +376,9 @@ def run_claude_streaming(
 
     def _watchdog():
         if not cancel_watchdog.wait(timeout):
-            # Timeout elapsed before cancellation — kill the process
+            # Timeout elapsed before cancellation — kill the process group
             timed_out.set()
-            try:
-                proc.kill()
-            except OSError:
-                pass
+            _terminate_process_group(proc)
 
     watchdog_thread: threading.Thread | None = None
     if timeout is not None and timeout > 0:
@@ -415,12 +438,15 @@ def run_claude_streaming(
 
             elif msg_type == "result":
                 claude_result = parse_stream_json_result(event)
+                break
     finally:
         # Cancel watchdog
         cancel_watchdog.set()
         if watchdog_thread is not None:
             watchdog_thread.join(timeout=2)
 
+    # Terminate the process group (Claude + MCP server children) if still alive
+    _terminate_process_group(proc)
     proc.wait()
     stderr_thread.join(timeout=5)
 
@@ -438,7 +464,7 @@ def run_claude_streaming(
         finally:
             log_fh.close()
 
-    if timed_out.is_set() and proc.returncode in (-9, 137, None):
+    if timed_out.is_set() and proc.returncode in (-15, -9, 137, 143, None):
         raise TimeoutError(
             f"claude streaming process timed out after {timeout}s"
         )

@@ -24,6 +24,7 @@ from botfarm.worker import (
     _build_implement_prompt,
     _compute_turn_context_fill,
     _is_investigation,
+    _terminate_process_group,
     build_coder_env,
     build_git_env,
     build_reviewer_env,
@@ -443,6 +444,21 @@ class TestRunClaudeStreaming:
         assert "--verbose" in cmd
 
     @patch("botfarm.worker.subprocess.Popen")
+    def test_start_new_session_enabled(self, mock_popen, tmp_path):
+        """Popen is called with start_new_session=True for process group control."""
+        ndjson = _make_stream_ndjson()
+        mock_proc = MagicMock()
+        mock_proc.stdin = MagicMock()
+        mock_proc.stdout = iter(ndjson.splitlines(keepends=True))
+        mock_proc.stderr = iter([])
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = 0
+        mock_popen.return_value = mock_proc
+
+        run_claude_streaming("do stuff", cwd=tmp_path, max_turns=10)
+        assert mock_popen.call_args.kwargs["start_new_session"] is True
+
+    @patch("botfarm.worker.subprocess.Popen")
     def test_invokes_context_fill_callback(self, mock_popen, tmp_path):
         ndjson = _make_stream_ndjson()
         mock_proc = MagicMock()
@@ -558,9 +574,11 @@ class TestRunClaudeStreaming:
         call_kwargs = mock_popen.call_args.kwargs
         assert call_kwargs["env"]["BOTFARM_DB_PATH"] == "/tmp/slot.db"
 
+    @patch("botfarm.worker.os.killpg")
+    @patch("botfarm.worker.os.getpgid", return_value=12345)
     @patch("botfarm.worker.subprocess.Popen")
-    def test_timeout_kills_process(self, mock_popen, tmp_path):
-        """When the process exceeds the timeout, it is killed and TimeoutError is raised."""
+    def test_timeout_kills_process(self, mock_popen, mock_getpgid, mock_killpg, tmp_path):
+        """When the process exceeds the timeout, the process group is killed and TimeoutError is raised."""
         import threading
 
         # Simulate a process that blocks forever on stdout
@@ -576,17 +594,19 @@ class TestRunClaudeStreaming:
         mock_proc.stdin = MagicMock()
         mock_proc.stdout = slow_iter()
         mock_proc.stderr = iter([])
-        mock_proc.returncode = -9  # killed by signal
-        mock_proc.wait.return_value = -9
-        # When kill() is called, unblock the iterator
-        mock_proc.kill.side_effect = lambda: block.set()
+        mock_proc.pid = 12345
+        mock_proc.returncode = -15  # killed by SIGTERM
+        mock_proc.wait.return_value = -15
+        mock_proc.poll.return_value = None  # process still running
+        # When killpg is called, unblock the iterator
+        mock_killpg.side_effect = lambda *_args: block.set()
         mock_popen.return_value = mock_proc
 
         with pytest.raises(TimeoutError, match="timed out after 0.1s"):
             run_claude_streaming(
                 "do stuff", cwd=tmp_path, max_turns=10, timeout=0.1,
             )
-        mock_proc.kill.assert_called_once()
+        mock_killpg.assert_called()
 
     @patch("botfarm.worker.subprocess.Popen")
     def test_no_timeout_when_process_completes(self, mock_popen, tmp_path):
@@ -657,8 +677,10 @@ class TestRunClaudeStreaming:
         assert "sess-stream" in content
         assert "STDERR" not in content
 
+    @patch("botfarm.worker.os.killpg")
+    @patch("botfarm.worker.os.getpgid", return_value=12345)
     @patch("botfarm.worker.subprocess.Popen")
-    def test_timeout_with_log_file(self, mock_popen, tmp_path):
+    def test_timeout_with_log_file(self, mock_popen, mock_getpgid, mock_killpg, tmp_path):
         """Timeout still writes partial log and closes the file handle."""
         import threading
 
@@ -674,9 +696,11 @@ class TestRunClaudeStreaming:
         mock_proc.stdin = MagicMock()
         mock_proc.stdout = slow_iter()
         mock_proc.stderr = iter([])
-        mock_proc.returncode = -9
-        mock_proc.wait.return_value = -9
-        mock_proc.kill.side_effect = lambda: block.set()
+        mock_proc.pid = 12345
+        mock_proc.returncode = -15
+        mock_proc.wait.return_value = -15
+        mock_proc.poll.return_value = None
+        mock_killpg.side_effect = lambda *_args: block.set()
         mock_popen.return_value = mock_proc
 
         log_file = tmp_path / "timeout.log"
@@ -690,6 +714,90 @@ class TestRunClaudeStreaming:
         assert log_file.exists()
         content = log_file.read_text()
         assert "system" in content or "init" in content
+
+    @patch("botfarm.worker.subprocess.Popen")
+    def test_stdout_loop_exits_after_result(self, mock_popen, tmp_path):
+        """After receiving a result message, the stdout loop breaks immediately
+        without waiting for EOF — the fix for MCP server children holding the pipe."""
+        import threading
+
+        ndjson = _make_stream_ndjson()
+        lines = ndjson.splitlines(keepends=True)
+        lines_read = []
+
+        # Append a line that blocks forever *after* the result message.
+        # If the loop doesn't break on result, this will hang.
+        block = threading.Event()
+
+        def iter_with_trailing_block():
+            for line in lines:
+                lines_read.append(line)
+                yield line
+            # Simulate MCP server children holding stdout open after result
+            block.wait(timeout=5)
+            yield '{"type": "trailing_garbage"}\n'
+
+        mock_proc = MagicMock()
+        mock_proc.stdin = MagicMock()
+        mock_proc.stdout = iter_with_trailing_block()
+        mock_proc.stderr = iter([])
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = 0
+        mock_popen.return_value = mock_proc
+
+        result = run_claude_streaming("do stuff", cwd=tmp_path, max_turns=10)
+
+        assert result.session_id == "sess-stream"
+        assert result.result_text == "Done streaming"
+        # The trailing block line should NOT have been read
+        block.set()  # unblock to allow cleanup
+
+
+# ---------------------------------------------------------------------------
+# _terminate_process_group
+# ---------------------------------------------------------------------------
+
+
+class TestTerminateProcessGroup:
+    def test_already_exited_is_noop(self):
+        """If process has already exited, no signals are sent."""
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 0
+        _terminate_process_group(mock_proc)
+        # No kill attempts
+
+    @patch("botfarm.worker.os.killpg")
+    @patch("botfarm.worker.os.getpgid", return_value=42)
+    def test_sigterm_then_exit(self, mock_getpgid, mock_killpg):
+        """SIGTERM is sent and process exits within grace period."""
+        import signal
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        mock_proc.pid = 42
+        mock_proc.wait.return_value = -15
+
+        _terminate_process_group(mock_proc)
+
+        mock_killpg.assert_called_once_with(42, signal.SIGTERM)
+        mock_proc.wait.assert_called_once_with(timeout=5.0)
+
+    @patch("botfarm.worker.os.killpg")
+    @patch("botfarm.worker.os.getpgid", return_value=42)
+    def test_sigterm_timeout_escalates_to_sigkill(self, mock_getpgid, mock_killpg):
+        """If SIGTERM doesn't work within the grace period, SIGKILL is sent."""
+        import signal
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        mock_proc.pid = 42
+        mock_proc.wait.side_effect = subprocess.TimeoutExpired(cmd="claude", timeout=5)
+
+        _terminate_process_group(mock_proc)
+
+        assert mock_killpg.call_count == 2
+        mock_killpg.assert_any_call(42, signal.SIGTERM)
+        mock_killpg.assert_any_call(42, signal.SIGKILL)
 
 
 # ---------------------------------------------------------------------------
