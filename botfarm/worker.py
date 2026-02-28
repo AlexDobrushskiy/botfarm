@@ -1651,6 +1651,88 @@ class _PipelineContext:
         except ValueError:
             return None
 
+    def _record_codex_review(
+        self,
+        result: StageResult,
+        *,
+        iteration: int,
+        codex_log_file: Path | None,
+        on_extra_usage: bool = False,
+    ) -> None:
+        """Record Codex review events and a separate ``codex_review`` stage_runs row."""
+        if not result.success:
+            # Claude failed → Codex never ran
+            insert_event(
+                self.conn,
+                task_id=self.task_id,
+                event_type="codex_review_skipped",
+                detail="Claude review failed",
+            )
+            self.conn.commit()
+            return
+
+        codex = result.codex_result
+        if codex is None:
+            # Codex was enabled but raised an exception — no result captured
+            insert_event(
+                self.conn,
+                task_id=self.task_id,
+                event_type="codex_review_started",
+            )
+            insert_event(
+                self.conn,
+                task_id=self.task_id,
+                event_type="codex_review_failed",
+                detail="Codex raised exception (no result captured)",
+            )
+            self.conn.commit()
+            return
+
+        # Codex ran and produced a result
+        insert_event(
+            self.conn,
+            task_id=self.task_id,
+            event_type="codex_review_started",
+        )
+        self.conn.commit()
+
+        if codex.is_error:
+            insert_event(
+                self.conn,
+                task_id=self.task_id,
+                event_type="codex_review_failed",
+                detail=codex.result_text[:200] if codex.result_text else "unknown error",
+            )
+        else:
+            codex_approved = _parse_review_approved(codex.result_text)
+            verdict_str = "approved" if codex_approved else "changes_requested"
+            insert_event(
+                self.conn,
+                task_id=self.task_id,
+                event_type="codex_review_completed",
+                detail=f"verdict={verdict_str}",
+            )
+        self.conn.commit()
+
+        # Record separate codex_review stage_runs row
+        insert_stage_run(
+            self.conn,
+            task_id=self.task_id,
+            stage="codex_review",
+            iteration=iteration,
+            session_id=codex.thread_id,
+            turns=codex.num_turns,
+            duration_seconds=codex.duration_seconds,
+            input_tokens=codex.input_tokens,
+            output_tokens=codex.output_tokens,
+            cache_read_input_tokens=codex.cached_input_tokens,
+            cache_creation_input_tokens=0,
+            total_cost_usd=0.0,
+            log_file_path=str(codex_log_file) if codex_log_file else None,
+            on_extra_usage=on_extra_usage,
+        )
+        self.conn.commit()
+
     def run_and_record(
         self,
         stage: str,
@@ -1750,10 +1832,27 @@ class _PipelineContext:
             logger.error("Stage '%s' raised: %s", stage, exc)
             if stage_run_id is not None:
                 delete_stage_run(self.conn, stage_run_id)
+            if codex_kwargs:
+                insert_event(
+                    self.conn,
+                    task_id=self.task_id,
+                    event_type="codex_review_skipped",
+                    detail=f"review stage raised: {str(exc)[:200]}",
+                )
+                self.conn.commit()
             self.pipeline.failure_stage = stage
             self.pipeline.failure_reason = str(exc)[:500]
             _record_failure(self.conn, self.task_id, self.pipeline)
             return None
+
+        # Record Codex review as a separate stage run + events
+        if codex_kwargs:
+            self._record_codex_review(
+                result,
+                iteration=iteration,
+                codex_log_file=codex_kwargs.get("codex_log_file"),
+                on_extra_usage=extra_usage,
+            )
 
         return self._finish_stage(
             stage, result, wall_start, iteration,
