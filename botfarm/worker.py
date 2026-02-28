@@ -469,7 +469,7 @@ def run_claude_streaming(
             f"claude streaming process timed out after {timeout}s"
         )
 
-    if proc.returncode != 0:
+    if proc.returncode != 0 and claude_result is None:
         logger.error(
             "claude (streaming) exited with code %d\nstderr: %s",
             proc.returncode,
@@ -477,6 +477,13 @@ def run_claude_streaming(
         )
         raise subprocess.CalledProcessError(
             proc.returncode, cmd, output=stdout_text, stderr=stderr_text,
+        )
+
+    if proc.returncode != 0 and claude_result is not None:
+        logger.warning(
+            "claude (streaming) exited with code %d after result was parsed "
+            "(likely killed during MCP server cleanup)",
+            proc.returncode,
         )
 
     if claude_result is None:
