@@ -384,6 +384,7 @@ def create_app(
     get_degraded: Callable[[], bool] | None = None,
     update_failed_event: threading.Event | None = None,
     git_env: dict[str, str] | None = None,
+    auto_restart: bool = True,
 ) -> FastAPI:
     """Create the FastAPI dashboard application.
 
@@ -439,6 +440,7 @@ def create_app(
     app.state.get_degraded = get_degraded
     app.state.update_in_progress = False
     app.state.update_failed_event = update_failed_event
+    app.state.auto_restart = auto_restart
     app.state.logs_dir = Path(logs_dir).expanduser() if logs_dir else None
     app.state.git_env = git_env
 
@@ -1439,16 +1441,23 @@ def create_app(
                 "request": request,
                 "update_status": "updating",
                 "commits_behind": 0,
+                "auto_restart": app.state.auto_restart,
             })
         count = _check_commits_behind()
         return templates.TemplateResponse("partials/update_banner.html", {
             "request": request,
             "update_status": "idle",
             "commits_behind": count,
+            "auto_restart": app.state.auto_restart,
         })
 
     @app.post("/api/update")
     def api_update():
+        if not app.state.auto_restart:
+            return JSONResponse(
+                {"error": "Auto-restart is disabled. Update manually on the server."},
+                status_code=409,
+            )
         cb = app.state.on_update
         if cb is None:
             return JSONResponse(
@@ -2281,6 +2290,7 @@ def start_dashboard(
     get_degraded: Callable[[], bool] | None = None,
     update_failed_event: threading.Event | None = None,
     git_env: dict[str, str] | None = None,
+    auto_restart: bool = True,
 ) -> threading.Thread | None:
     """Start the dashboard server in a background daemon thread.
 
@@ -2302,6 +2312,7 @@ def start_dashboard(
         get_degraded=get_degraded,
         update_failed_event=update_failed_event,
         git_env=git_env,
+        auto_restart=auto_restart,
     )
 
     def _run():

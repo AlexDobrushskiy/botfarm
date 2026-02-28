@@ -3,6 +3,7 @@
     <span><strong>Updating&hellip;</strong> Pulling latest code and restarting.</span>
 </div>
 {% elif commits_behind and commits_behind > 0 %}
+{% if auto_restart %}
 <div style="background: var(--pico-color-blue-600, #2563eb); color: #fff; padding: 0.5rem 1rem; border-radius: var(--pico-border-radius); margin-bottom: 1rem; display: flex; align-items: center; justify-content: space-between;">
     <span>
         <strong>Update available</strong>
@@ -17,4 +18,18 @@
         Update &amp; Restart
     </button>
 </div>
+{% else %}
+<div style="background: var(--pico-color-amber-600, #d97706); color: #fff; padding: 0.5rem 1rem; border-radius: var(--pico-border-radius); margin-bottom: 1rem; display: flex; align-items: center; justify-content: space-between;">
+    <span>
+        <strong>Update available</strong>
+        ({{ commits_behind }} commit{{ "s" if commits_behind != 1 else "" }} behind) &mdash;
+        Auto-restart is disabled. Update manually on the server.
+    </span>
+    <button class="pause-btn"
+            style="background: rgba(255,255,255,0.3); color: rgba(255,255,255,0.6); cursor: not-allowed;"
+            disabled>
+        Update &amp; Restart
+    </button>
+</div>
+{% endif %}
 {% endif %}

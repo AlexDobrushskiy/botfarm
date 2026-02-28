@@ -3,6 +3,7 @@
 import json
 import sqlite3
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import yaml
@@ -4108,3 +4109,53 @@ class TestCodexConfigToggles:
         assert "codex_reviewer_enabled" in body
         assert "codex_reviewer_model" in body
         assert "codex_reviewer_timeout_minutes" in body
+
+
+# --- Auto-restart banner ---
+
+
+class TestAutoRestartBanner:
+    """Tests for auto-restart behaviour in the update banner and API."""
+
+    @pytest.fixture()
+    def client_auto_restart(self, db_file):
+        app = create_app(db_path=db_file, auto_restart=True)
+        return TestClient(app)
+
+    @pytest.fixture()
+    def client_no_auto_restart(self, db_file):
+        app = create_app(db_path=db_file, auto_restart=False)
+        return TestClient(app)
+
+    def test_api_update_allowed_with_auto_restart(self, db_file):
+        called = []
+        app = create_app(db_path=db_file, auto_restart=True, on_update=lambda: called.append(1))
+        client = TestClient(app)
+        resp = client.post("/api/update")
+        assert resp.status_code == 200
+        assert called  # callback was invoked
+
+    def test_api_update_blocked_without_auto_restart(self, client_no_auto_restart):
+        resp = client_no_auto_restart.post("/api/update")
+        assert resp.status_code == 409
+        assert "Auto-restart is disabled" in resp.json()["error"]
+
+    @patch("botfarm.dashboard.commits_behind", return_value=3)
+    def test_banner_shows_button_with_auto_restart(self, _mock_cb, client_auto_restart):
+        resp = client_auto_restart.get("/partials/update-banner")
+        assert resp.status_code == 200
+        body = resp.text
+        assert "Update &amp; Restart" in body
+        assert "disabled" not in body
+
+    @patch("botfarm.dashboard.commits_behind", return_value=3)
+    def test_banner_disables_button_without_auto_restart(self, _mock_cb, client_no_auto_restart):
+        resp = client_no_auto_restart.get("/partials/update-banner")
+        assert resp.status_code == 200
+        body = resp.text
+        assert "disabled" in body
+        assert "Auto-restart is disabled" in body
+
+    def test_auto_restart_defaults_to_true(self, db_file):
+        app = create_app(db_path=db_file)
+        assert app.state.auto_restart is True
