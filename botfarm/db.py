@@ -602,11 +602,11 @@ def upsert_slot(conn: sqlite3.Connection, slot_data: dict) -> None:
             ticket_title=excluded.ticket_title,
             branch=excluded.branch,
             pr_url=excluded.pr_url,
-            stage=excluded.stage,
+            stage=COALESCE(excluded.stage, slots.stage),
             stage_iteration=excluded.stage_iteration,
-            current_session_id=excluded.current_session_id,
+            current_session_id=COALESCE(excluded.current_session_id, slots.current_session_id),
             started_at=excluded.started_at,
-            stage_started_at=excluded.stage_started_at,
+            stage_started_at=COALESCE(excluded.stage_started_at, slots.stage_started_at),
             sigterm_sent_at=excluded.sigterm_sent_at,
             pid=excluded.pid,
             interrupted_by_limit=excluded.interrupted_by_limit,
@@ -636,6 +636,25 @@ def upsert_slot(conn: sqlite3.Connection, slot_data: dict) -> None:
             labels,
             now,
         ),
+    )
+
+
+def clear_slot_stage(conn: sqlite3.Connection, project: str, slot_id: int) -> None:
+    """Explicitly NULL out stage-related fields for a slot.
+
+    Because upsert_slot() uses COALESCE to protect worker-written stage
+    values from being overwritten, callers that legitimately need to clear
+    these fields (e.g. free_slot, assign_ticket) must use this helper.
+    """
+    conn.execute(
+        """UPDATE slots SET
+            stage = NULL,
+            stage_iteration = 0,
+            stage_started_at = NULL,
+            current_session_id = NULL,
+            updated_at = ?
+           WHERE project = ? AND slot_id = ?""",
+        (_now_iso(), project, slot_id),
     )
 
 

@@ -19,6 +19,7 @@ from botfarm.config import (
 )
 from botfarm.db import (
     SchemaVersionError,
+    clear_slot_stage,
     get_task_history,
     init_db,
     load_all_project_pause_states,
@@ -688,6 +689,7 @@ def reset(project, reset_all, force, config_path):
             # Apply free_slot fields and write to DB
             slot.update(_FREE_SLOT_FIELDS)
             upsert_slot(conn, slot)
+            clear_slot_stage(conn, slot["project"], slot["slot_id"])
 
         try:
             conn.commit()

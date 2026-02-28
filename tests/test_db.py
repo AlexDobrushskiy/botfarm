@@ -10,6 +10,7 @@ from botfarm.db import (
     SCHEMA_VERSION,
     SchemaVersionError,
     _discover_migrations,
+    clear_slot_stage,
     count_tasks,
     get_distinct_projects,
     get_events,
@@ -1577,6 +1578,119 @@ class TestSlotRuntimeState:
         conn.commit()
         rows = load_all_slots(conn)
         assert len(rows) == 3
+
+
+# ---------------------------------------------------------------------------
+# Stage COALESCE protection and clear_slot_stage
+# ---------------------------------------------------------------------------
+
+
+class TestUpsertSlotCoalesce:
+    """upsert_slot uses COALESCE so NULL stage values don't overwrite
+    non-NULL values already in the database."""
+
+    def test_null_stage_does_not_overwrite_existing(self, conn):
+        # First insert with a real stage value
+        upsert_slot(conn, {
+            "project": "proj", "slot_id": 1, "status": "busy",
+            "stage": "implement", "stage_iteration": 1,
+            "stage_started_at": "2026-01-01T00:00:00Z",
+            "current_session_id": "sess-1",
+        })
+        conn.commit()
+
+        # Second upsert with stage=None (as _save() would do when
+        # the supervisor's in-memory slot has stage=None)
+        upsert_slot(conn, {
+            "project": "proj", "slot_id": 1, "status": "busy",
+            "stage": None, "stage_iteration": 0,
+            "stage_started_at": None, "current_session_id": None,
+        })
+        conn.commit()
+
+        rows = load_all_slots(conn)
+        assert rows[0]["stage"] == "implement"
+        assert rows[0]["stage_started_at"] == "2026-01-01T00:00:00Z"
+        assert rows[0]["current_session_id"] == "sess-1"
+
+    def test_non_null_stage_does_overwrite(self, conn):
+        """When supervisor has a real stage value, it should overwrite."""
+        upsert_slot(conn, {
+            "project": "proj", "slot_id": 1, "status": "busy",
+            "stage": "implement",
+        })
+        conn.commit()
+
+        upsert_slot(conn, {
+            "project": "proj", "slot_id": 1, "status": "busy",
+            "stage": "review", "stage_iteration": 2,
+        })
+        conn.commit()
+
+        rows = load_all_slots(conn)
+        assert rows[0]["stage"] == "review"
+        assert rows[0]["stage_iteration"] == 2
+
+
+class TestClearSlotStage:
+    def test_clears_stage_fields(self, conn):
+        upsert_slot(conn, {
+            "project": "proj", "slot_id": 1, "status": "busy",
+            "stage": "implement", "stage_iteration": 2,
+            "stage_started_at": "2026-01-01T00:00:00Z",
+            "current_session_id": "sess-1",
+        })
+        conn.commit()
+
+        clear_slot_stage(conn, "proj", 1)
+        conn.commit()
+
+        rows = load_all_slots(conn)
+        assert rows[0]["stage"] is None
+        assert rows[0]["stage_iteration"] == 0
+        assert rows[0]["stage_started_at"] is None
+        assert rows[0]["current_session_id"] is None
+
+    def test_clear_then_upsert_stays_null(self, conn):
+        """After clear_slot_stage, a subsequent upsert with NULL stage
+        should keep the fields NULL (not revive old values)."""
+        upsert_slot(conn, {
+            "project": "proj", "slot_id": 1, "status": "busy",
+            "stage": "implement",
+        })
+        conn.commit()
+
+        clear_slot_stage(conn, "proj", 1)
+        conn.commit()
+
+        # Another upsert with stage=None
+        upsert_slot(conn, {
+            "project": "proj", "slot_id": 1, "status": "busy",
+        })
+        conn.commit()
+
+        rows = load_all_slots(conn)
+        assert rows[0]["stage"] is None
+
+    def test_only_affects_target_slot(self, conn):
+        upsert_slot(conn, {
+            "project": "proj", "slot_id": 1, "status": "busy",
+            "stage": "implement",
+        })
+        upsert_slot(conn, {
+            "project": "proj", "slot_id": 2, "status": "busy",
+            "stage": "review",
+        })
+        conn.commit()
+
+        clear_slot_stage(conn, "proj", 1)
+        conn.commit()
+
+        rows = load_all_slots(conn)
+        slot1 = [r for r in rows if r["slot_id"] == 1][0]
+        slot2 = [r for r in rows if r["slot_id"] == 2][0]
+        assert slot1["stage"] is None
+        assert slot2["stage"] == "review"
 
 
 # ---------------------------------------------------------------------------

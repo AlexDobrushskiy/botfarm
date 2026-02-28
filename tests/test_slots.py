@@ -1139,6 +1139,157 @@ class TestRefreshStagesFromDisk:
 
 
 # ---------------------------------------------------------------------------
+# Stage race condition: _save() must not overwrite worker-written stage
+# ---------------------------------------------------------------------------
+
+
+class TestStageRaceProtection:
+    """Verify that upsert_slot() COALESCE prevents supervisor _save()
+    from overwriting worker-written stage fields with NULL."""
+
+    def test_save_does_not_overwrite_worker_stage(self, tmp_path: Path):
+        """Core race scenario: worker writes stage, then supervisor _save()
+        with stage=None must NOT overwrite to NULL."""
+        db_path = tmp_path / "test.db"
+        mgr = SlotManager(db_path=db_path)
+        mgr.register_slot("proj", 1)
+        mgr.assign_ticket(
+            "proj", 1, ticket_id="T-1", ticket_title="T1", branch="b1"
+        )
+
+        # Worker subprocess writes stage directly to DB
+        update_slot_stage(db_path, "proj", 1, stage="implement", session_id="sess-1")
+
+        # Supervisor's in-memory slot still has stage=None (hasn't refreshed yet)
+        slot = mgr.get_slot("proj", 1)
+        assert slot.stage is None
+
+        # Supervisor triggers _save() (e.g. from set_pid or another mutation)
+        mgr.set_pid("proj", 1, 12345)
+
+        # DB should still have the worker's stage value
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM slots WHERE project='proj' AND slot_id=1"
+        ).fetchone()
+        assert row["stage"] == "implement", (
+            "supervisor _save() overwrote worker stage with NULL"
+        )
+        assert row["current_session_id"] == "sess-1"
+        assert row["stage_started_at"] is not None
+        conn.close()
+
+    def test_save_preserves_stage_across_multiple_saves(self, tmp_path: Path):
+        """Multiple _save() calls must not erode the worker's stage."""
+        db_path = tmp_path / "test.db"
+        mgr = SlotManager(db_path=db_path)
+        mgr.register_slot("proj", 1)
+        mgr.assign_ticket(
+            "proj", 1, ticket_id="T-1", ticket_title="T1", branch="b1"
+        )
+
+        update_slot_stage(db_path, "proj", 1, stage="implement")
+
+        # Multiple supervisor saves (simulating several ticks)
+        mgr.save()
+        mgr.save()
+        mgr.save()
+
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT stage FROM slots WHERE project='proj' AND slot_id=1"
+        ).fetchone()
+        assert row["stage"] == "implement"
+        conn.close()
+
+    def test_free_slot_clears_stage(self, tmp_path: Path):
+        """free_slot() must explicitly clear stage fields despite COALESCE."""
+        db_path = tmp_path / "test.db"
+        mgr = SlotManager(db_path=db_path)
+        mgr.register_slot("proj", 1)
+        mgr.assign_ticket(
+            "proj", 1, ticket_id="T-1", ticket_title="T1", branch="b1"
+        )
+
+        update_slot_stage(
+            db_path, "proj", 1, stage="implement", session_id="sess-1"
+        )
+        mgr.refresh_stages_from_disk()
+
+        # Free the slot — should clear stage fields
+        mgr.free_slot("proj", 1)
+
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM slots WHERE project='proj' AND slot_id=1"
+        ).fetchone()
+        assert row["stage"] is None
+        assert row["stage_started_at"] is None
+        assert row["current_session_id"] is None
+        assert row["stage_iteration"] == 0
+        conn.close()
+
+    def test_assign_ticket_clears_previous_stage(self, tmp_path: Path):
+        """assign_ticket() must clear stage fields from a previous assignment."""
+        db_path = tmp_path / "test.db"
+        mgr = SlotManager(db_path=db_path)
+        mgr.register_slot("proj", 1)
+        mgr.assign_ticket(
+            "proj", 1, ticket_id="T-1", ticket_title="T1", branch="b1"
+        )
+
+        update_slot_stage(
+            db_path, "proj", 1, stage="review", iteration=3, session_id="sess-old"
+        )
+        mgr.refresh_stages_from_disk()
+
+        # Free then re-assign
+        mgr.free_slot("proj", 1)
+        mgr.assign_ticket(
+            "proj", 1, ticket_id="T-2", ticket_title="T2", branch="b2"
+        )
+
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM slots WHERE project='proj' AND slot_id=1"
+        ).fetchone()
+        assert row["stage"] is None
+        assert row["stage_started_at"] is None
+        assert row["current_session_id"] is None
+        assert row["stage_iteration"] == 0
+        assert row["ticket_id"] == "T-2"
+        conn.close()
+
+    def test_refresh_then_save_preserves_stage(self, tmp_path: Path):
+        """After refresh_stages_from_disk, _save() should write the
+        real stage value (not NULL) since the in-memory slot was updated."""
+        db_path = tmp_path / "test.db"
+        mgr = SlotManager(db_path=db_path)
+        mgr.register_slot("proj", 1)
+        mgr.assign_ticket(
+            "proj", 1, ticket_id="T-1", ticket_title="T1", branch="b1"
+        )
+
+        update_slot_stage(db_path, "proj", 1, stage="implement")
+        mgr.refresh_stages_from_disk()
+
+        # Now in-memory has stage="implement", so save should write it
+        mgr.save()
+
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT stage FROM slots WHERE project='proj' AND slot_id=1"
+        ).fetchone()
+        assert row["stage"] == "implement"
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
 # Per-project pause
 # ---------------------------------------------------------------------------
 
