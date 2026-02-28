@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from botfarm.db import (
+    clear_slot_stage,
     init_db,
     load_all_project_pause_states,
     load_all_slots,
@@ -227,11 +228,14 @@ class SlotManager:
         slot.stage = None
         slot.stage_iteration = 0
         slot.current_session_id = None
+        slot.stage_started_at = None
         slot.pr_url = None
         slot.interrupted_by_limit = False
         slot.stages_completed = []
         slot.ticket_labels = ticket_labels or []
         self._save()
+        clear_slot_stage(self._conn, project, slot_id)
+        self._conn.commit()
         return slot
 
     def set_pid(self, project: str, slot_id: int, pid: int) -> None:
@@ -327,6 +331,8 @@ class SlotManager:
         slot.stages_completed = []
         slot.ticket_labels = []
         self._save()
+        clear_slot_stage(self._conn, project, slot_id)
+        self._conn.commit()
 
     def resume_slot(self, project: str, slot_id: int) -> None:
         """Resume a paused slot back to busy."""
