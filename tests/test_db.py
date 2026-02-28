@@ -67,7 +67,7 @@ class TestInitDb:
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()
         }
-        assert tables >= {"tasks", "stage_runs", "usage_snapshots", "task_events", "schema_version", "slots", "dispatch_state", "queue_entries"}
+        assert tables >= {"tasks", "stage_runs", "usage_snapshots", "task_events", "schema_version", "slots", "dispatch_state", "queue_entries", "pipeline_templates", "stage_templates", "stage_loops"}
         c.close()
 
     def test_wal_mode_enabled(self, conn):
@@ -1877,3 +1877,281 @@ class TestProjectPauseState:
         conn.commit()
         result = load_all_project_pause_states(conn)
         assert result["proj-a"][1] is None
+
+
+# ---------------------------------------------------------------------------
+# Workflow definition tables (pipeline_templates, stage_templates, stage_loops)
+# ---------------------------------------------------------------------------
+
+
+class TestWorkflowDefinitionTables:
+    """Verify migration 015 creates tables, seeds data, and enforces constraints."""
+
+    def test_tables_exist(self, conn):
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        assert "pipeline_templates" in tables
+        assert "stage_templates" in tables
+        assert "stage_loops" in tables
+
+    # -- pipeline_templates seed data --
+
+    def test_implementation_pipeline_seeded(self, conn):
+        row = conn.execute(
+            "SELECT * FROM pipeline_templates WHERE name = 'implementation'"
+        ).fetchone()
+        assert row is not None
+        assert row["is_default"] == 1
+        assert row["ticket_label"] is None
+
+    def test_investigation_pipeline_seeded(self, conn):
+        row = conn.execute(
+            "SELECT * FROM pipeline_templates WHERE name = 'investigation'"
+        ).fetchone()
+        assert row is not None
+        assert row["is_default"] == 0
+        assert row["ticket_label"] == "Investigation"
+
+    def test_pipeline_count(self, conn):
+        count = conn.execute("SELECT COUNT(*) FROM pipeline_templates").fetchone()[0]
+        assert count == 2
+
+    # -- stage_templates seed data --
+
+    def test_implementation_stages_count(self, conn):
+        impl_id = conn.execute(
+            "SELECT id FROM pipeline_templates WHERE name = 'implementation'"
+        ).fetchone()["id"]
+        count = conn.execute(
+            "SELECT COUNT(*) FROM stage_templates WHERE pipeline_id = ?",
+            (impl_id,),
+        ).fetchone()[0]
+        assert count == 6
+
+    def test_implementation_stage_order(self, conn):
+        impl_id = conn.execute(
+            "SELECT id FROM pipeline_templates WHERE name = 'implementation'"
+        ).fetchone()["id"]
+        stages = conn.execute(
+            "SELECT name, stage_order FROM stage_templates WHERE pipeline_id = ? ORDER BY stage_order",
+            (impl_id,),
+        ).fetchall()
+        names = [s["name"] for s in stages]
+        assert names == ["implement", "review", "fix", "pr_checks", "ci_fix", "merge"]
+
+    def test_investigation_stages_count(self, conn):
+        inv_id = conn.execute(
+            "SELECT id FROM pipeline_templates WHERE name = 'investigation'"
+        ).fetchone()["id"]
+        count = conn.execute(
+            "SELECT COUNT(*) FROM stage_templates WHERE pipeline_id = ?",
+            (inv_id,),
+        ).fetchone()[0]
+        assert count == 1
+
+    def test_implement_stage_properties(self, conn):
+        impl_id = conn.execute(
+            "SELECT id FROM pipeline_templates WHERE name = 'implementation'"
+        ).fetchone()["id"]
+        row = conn.execute(
+            "SELECT * FROM stage_templates WHERE pipeline_id = ? AND name = 'implement'",
+            (impl_id,),
+        ).fetchone()
+        assert row["executor_type"] == "claude"
+        assert row["identity"] == "coder"
+        assert row["max_turns"] == 200
+        assert row["timeout_minutes"] == 120
+        assert row["result_parser"] == "pr_url"
+        assert "{ticket_id}" in row["prompt_template"]
+
+    def test_review_stage_properties(self, conn):
+        impl_id = conn.execute(
+            "SELECT id FROM pipeline_templates WHERE name = 'implementation'"
+        ).fetchone()["id"]
+        row = conn.execute(
+            "SELECT * FROM stage_templates WHERE pipeline_id = ? AND name = 'review'",
+            (impl_id,),
+        ).fetchone()
+        assert row["executor_type"] == "claude"
+        assert row["identity"] == "reviewer"
+        assert row["max_turns"] == 100
+        assert row["result_parser"] == "review_verdict"
+        assert "{pr_url}" in row["prompt_template"]
+
+    def test_pr_checks_stage_properties(self, conn):
+        impl_id = conn.execute(
+            "SELECT id FROM pipeline_templates WHERE name = 'implementation'"
+        ).fetchone()["id"]
+        row = conn.execute(
+            "SELECT * FROM stage_templates WHERE pipeline_id = ? AND name = 'pr_checks'",
+            (impl_id,),
+        ).fetchone()
+        assert row["executor_type"] == "shell"
+        assert row["shell_command"] == "gh pr checks {pr_url} --watch"
+        assert row["prompt_template"] is None
+        assert row["identity"] is None
+
+    def test_merge_stage_properties(self, conn):
+        impl_id = conn.execute(
+            "SELECT id FROM pipeline_templates WHERE name = 'implementation'"
+        ).fetchone()["id"]
+        row = conn.execute(
+            "SELECT * FROM stage_templates WHERE pipeline_id = ? AND name = 'merge'",
+            (impl_id,),
+        ).fetchone()
+        assert row["executor_type"] == "internal"
+        assert row["prompt_template"] is None
+
+    def test_ci_fix_stage_properties(self, conn):
+        impl_id = conn.execute(
+            "SELECT id FROM pipeline_templates WHERE name = 'implementation'"
+        ).fetchone()["id"]
+        row = conn.execute(
+            "SELECT * FROM stage_templates WHERE pipeline_id = ? AND name = 'ci_fix'",
+            (impl_id,),
+        ).fetchone()
+        assert row["executor_type"] == "claude"
+        assert row["identity"] == "coder"
+        assert "{ci_failure_output}" in row["prompt_template"]
+        assert "{pr_url}" in row["prompt_template"]
+
+    def test_investigation_implement_stage(self, conn):
+        inv_id = conn.execute(
+            "SELECT id FROM pipeline_templates WHERE name = 'investigation'"
+        ).fetchone()["id"]
+        row = conn.execute(
+            "SELECT * FROM stage_templates WHERE pipeline_id = ? AND name = 'implement'",
+            (inv_id,),
+        ).fetchone()
+        assert row["executor_type"] == "claude"
+        assert row["identity"] == "coder"
+        assert row["max_turns"] == 200
+        assert row["timeout_minutes"] == 30
+        assert "{ticket_id}" in row["prompt_template"]
+        assert "investigation" in row["prompt_template"].lower()
+
+    # -- stage_loops seed data --
+
+    def test_implementation_loops_count(self, conn):
+        impl_id = conn.execute(
+            "SELECT id FROM pipeline_templates WHERE name = 'implementation'"
+        ).fetchone()["id"]
+        count = conn.execute(
+            "SELECT COUNT(*) FROM stage_loops WHERE pipeline_id = ?",
+            (impl_id,),
+        ).fetchone()[0]
+        assert count == 2
+
+    def test_review_loop(self, conn):
+        impl_id = conn.execute(
+            "SELECT id FROM pipeline_templates WHERE name = 'implementation'"
+        ).fetchone()["id"]
+        row = conn.execute(
+            "SELECT * FROM stage_loops WHERE pipeline_id = ? AND name = 'review_loop'",
+            (impl_id,),
+        ).fetchone()
+        assert row["start_stage"] == "review"
+        assert row["end_stage"] == "fix"
+        assert row["max_iterations"] == 3
+        assert row["config_key"] == "max_review_iterations"
+        assert row["exit_condition"] == "review_approved"
+        assert row["on_failure_stage"] is None
+
+    def test_ci_retry_loop(self, conn):
+        impl_id = conn.execute(
+            "SELECT id FROM pipeline_templates WHERE name = 'implementation'"
+        ).fetchone()["id"]
+        row = conn.execute(
+            "SELECT * FROM stage_loops WHERE pipeline_id = ? AND name = 'ci_retry_loop'",
+            (impl_id,),
+        ).fetchone()
+        assert row["start_stage"] == "ci_fix"
+        assert row["end_stage"] == "pr_checks"
+        assert row["max_iterations"] == 2
+        assert row["config_key"] == "max_ci_retries"
+        assert row["exit_condition"] == "ci_passed"
+        assert row["on_failure_stage"] == "ci_fix"
+
+    def test_investigation_no_loops(self, conn):
+        inv_id = conn.execute(
+            "SELECT id FROM pipeline_templates WHERE name = 'investigation'"
+        ).fetchone()["id"]
+        count = conn.execute(
+            "SELECT COUNT(*) FROM stage_loops WHERE pipeline_id = ?",
+            (inv_id,),
+        ).fetchone()[0]
+        assert count == 0
+
+    # -- schema constraints --
+
+    def test_pipeline_name_unique(self, conn):
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO pipeline_templates (name, is_default) VALUES ('implementation', 0)"
+            )
+
+    def test_stage_name_unique_per_pipeline(self, conn):
+        impl_id = conn.execute(
+            "SELECT id FROM pipeline_templates WHERE name = 'implementation'"
+        ).fetchone()["id"]
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO stage_templates (pipeline_id, name, stage_order, executor_type) "
+                "VALUES (?, 'implement', 99, 'claude')",
+                (impl_id,),
+            )
+
+    def test_stage_order_unique_per_pipeline(self, conn):
+        impl_id = conn.execute(
+            "SELECT id FROM pipeline_templates WHERE name = 'implementation'"
+        ).fetchone()["id"]
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO stage_templates (pipeline_id, name, stage_order, executor_type) "
+                "VALUES (?, 'new_stage', 1, 'claude')",
+                (impl_id,),
+            )
+
+    def test_loop_name_unique_per_pipeline(self, conn):
+        impl_id = conn.execute(
+            "SELECT id FROM pipeline_templates WHERE name = 'implementation'"
+        ).fetchone()["id"]
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO stage_loops (pipeline_id, name, start_stage, end_stage, max_iterations) "
+                "VALUES (?, 'review_loop', 'review', 'fix', 5)",
+                (impl_id,),
+            )
+
+    def test_stage_foreign_key(self, conn):
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO stage_templates (pipeline_id, name, stage_order, executor_type) "
+                "VALUES (9999, 'orphan', 1, 'claude')"
+            )
+
+    def test_loop_foreign_key(self, conn):
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO stage_loops (pipeline_id, name, start_stage, end_stage, max_iterations) "
+                "VALUES (9999, 'orphan', 'a', 'b', 1)"
+            )
+
+    # -- migration on existing DB --
+
+    def test_migration_applies_on_existing_db(self, tmp_path):
+        """Simulate migrating from version 14 to 15."""
+        db_file = tmp_path / "existing.db"
+        c = init_db(db_file, allow_migration=True)
+        # Verify tables exist and seed data is present
+        count = c.execute("SELECT COUNT(*) FROM pipeline_templates").fetchone()[0]
+        assert count == 2
+        count = c.execute("SELECT COUNT(*) FROM stage_templates").fetchone()[0]
+        assert count == 7  # 6 impl + 1 investigation
+        count = c.execute("SELECT COUNT(*) FROM stage_loops").fetchone()[0]
+        assert count == 2
+        c.close()
