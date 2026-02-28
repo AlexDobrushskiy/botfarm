@@ -495,14 +495,14 @@ class TestCodexEventsRecorded:
 
     @patch("botfarm.worker._execute_stage")
     def test_codex_exception_no_result(self, mock_exec, conn, task_id, tmp_path):
-        """Codex raised exception (no result captured) records started + failed."""
-        # Review succeeds but codex_result is None (Codex exception path in _run_review)
+        """Codex not invoked (codex_result=None) records codex_review_skipped."""
+        # Review succeeds but codex_result is None (Codex never ran)
         mock_exec.side_effect = [
             _mock_stage_result("implement", pr_url=PR_URL),
             _mock_stage_result(
                 "review",
                 review_approved=True,
-                codex_result=None,  # Codex raised exception
+                codex_result=None,  # Codex not invoked
             ),
             _mock_stage_result("pr_checks"),
             _mock_stage_result("merge"),
@@ -518,8 +518,9 @@ class TestCodexEventsRecorded:
 
         events = get_events(conn, task_id=task_id)
         event_types = [e["event_type"] for e in events]
-        assert "codex_review_started" in event_types
-        assert "codex_review_failed" in event_types
+        assert "codex_review_skipped" in event_types
+        skipped = [e for e in events if e["event_type"] == "codex_review_skipped"][0]
+        assert "no result" in skipped["detail"]
 
     @patch("botfarm.worker._execute_stage")
     def test_no_codex_events_when_disabled(self, mock_exec, conn, task_id, tmp_path):
