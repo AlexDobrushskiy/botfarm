@@ -1485,7 +1485,7 @@ def test_config_codex_enabled_rejects_string(tmp_path):
         "agents": {"codex_reviewer_enabled": "true"},
     }
     config_path = _write_config(tmp_path, data)
-    with pytest.raises(ConfigError, match="must be a boolean"):
+    with pytest.raises(ConfigError, match=r"agents\.codex_reviewer_enabled must be a boolean"):
         load_config(config_path)
 
 
