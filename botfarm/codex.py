@@ -10,12 +10,13 @@ from __future__ import annotations
 import json
 import logging
 import os
-import signal
 import subprocess
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+
+from botfarm.process import terminate_process_group
 
 logger = logging.getLogger(__name__)
 
@@ -37,29 +38,6 @@ class CodexResult:
     input_tokens: int = 0
     output_tokens: int = 0
     cached_input_tokens: int = 0
-
-
-# ---------------------------------------------------------------------------
-# Process termination helper (mirrors worker._terminate_process_group)
-# ---------------------------------------------------------------------------
-
-
-def _terminate_process_group(proc: subprocess.Popen, graceful_timeout: float = 5.0) -> None:
-    """Send SIGTERM then SIGKILL to the process group headed by *proc*."""
-    if proc.poll() is not None:
-        return
-    try:
-        pgid = os.getpgid(proc.pid)
-        os.killpg(pgid, signal.SIGTERM)
-    except OSError:
-        return
-    try:
-        proc.wait(timeout=graceful_timeout)
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(pgid, signal.SIGKILL)
-        except OSError:
-            pass
 
 
 # ---------------------------------------------------------------------------
@@ -189,8 +167,11 @@ def run_codex_streaming(
     )
 
     # Write prompt and close stdin
-    proc.stdin.write(prompt)
-    proc.stdin.close()
+    try:
+        proc.stdin.write(prompt)
+        proc.stdin.close()
+    except BrokenPipeError:
+        logger.warning("Codex process closed stdin before prompt was written")
 
     # Drain stderr on a background thread to prevent deadlock
     stderr_lines: list[str] = []
@@ -209,7 +190,7 @@ def run_codex_streaming(
     def _watchdog():
         if not cancel_watchdog.wait(timeout):
             timed_out.set()
-            _terminate_process_group(proc)
+            terminate_process_group(proc)
 
     watchdog_thread: threading.Thread | None = None
     if timeout is not None and timeout > 0:
@@ -246,7 +227,7 @@ def run_codex_streaming(
             watchdog_thread.join(timeout=2)
 
     # Terminate the process group if still alive
-    _terminate_process_group(proc)
+    terminate_process_group(proc)
     proc.wait()
     stderr_thread.join(timeout=5)
 

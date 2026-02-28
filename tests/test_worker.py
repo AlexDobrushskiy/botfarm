@@ -12,6 +12,7 @@ import pytest
 from botfarm.db import get_stage_runs, get_task, init_db, insert_stage_run, insert_task
 from botfarm.slots import SlotManager
 from botfarm.config import CoderIdentity, IdentitiesConfig, ReviewerIdentity
+from botfarm.process import terminate_process_group as _terminate_process_group
 from botfarm.worker import (
     STAGES,
     ClaudeResult,
@@ -24,7 +25,6 @@ from botfarm.worker import (
     _build_implement_prompt,
     _compute_turn_context_fill,
     _is_investigation,
-    _terminate_process_group,
     build_coder_env,
     build_git_env,
     build_reviewer_env,

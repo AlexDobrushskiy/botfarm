@@ -12,7 +12,6 @@ import logging
 import multiprocessing
 import os
 import re
-import signal
 import sqlite3
 import subprocess
 import threading
@@ -24,6 +23,7 @@ from pathlib import Path
 
 from botfarm.config import IdentitiesConfig
 from botfarm.db import delete_stage_run, insert_event, insert_stage_run, is_extra_usage_active, update_stage_run_context_fill, update_task
+from botfarm.process import terminate_process_group as _terminate_process_group
 from botfarm.slots import update_slot_stage
 from botfarm.workflow import (
     PipelineTemplate,
@@ -307,30 +307,6 @@ def parse_stream_json_result(result_data: dict) -> ClaudeResult:
         context_fill_pct=context_fill_pct,
         model_usage_json=model_usage_json,
     )
-
-
-def _terminate_process_group(proc: subprocess.Popen, graceful_timeout: float = 5.0) -> None:
-    """Send SIGTERM then SIGKILL to the process group headed by *proc*.
-
-    Because we launch Claude with ``start_new_session=True``, its PID is
-    the process group leader.  Sending signals to the *group* ensures
-    MCP server children (Playwright, Context7, etc.) that inherited the
-    stdout pipe are also terminated.
-    """
-    if proc.poll() is not None:
-        return  # already exited
-    try:
-        pgid = os.getpgid(proc.pid)
-        os.killpg(pgid, signal.SIGTERM)
-    except OSError:
-        return
-    try:
-        proc.wait(timeout=graceful_timeout)
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(pgid, signal.SIGKILL)
-        except OSError:
-            pass
 
 
 def run_claude_streaming(

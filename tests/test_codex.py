@@ -317,7 +317,7 @@ class TestCodexTimeout:
             proc.wait = MagicMock(return_value=-9)
 
         with patch("botfarm.codex.subprocess.Popen", return_value=proc), \
-             patch("botfarm.codex._terminate_process_group", side_effect=fake_terminate):
+             patch("botfarm.codex.terminate_process_group", side_effect=fake_terminate):
             result = run_codex_streaming(
                 "Review this code",
                 cwd=tmp_path,
