@@ -402,6 +402,204 @@
         .log-line-result     { color: #3fb950; font-weight: 600; }
         .log-line-system     { color: #8b949e; font-style: italic; }
         .log-line-log        { color: #c9d1d9; }
+
+        /* Workflow visualization */
+        .workflow-tabs {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 1.5rem;
+        }
+        .workflow-tab {
+            padding: 0.5rem 1.2rem;
+            border: 2px solid var(--pico-muted-color);
+            border-radius: var(--pico-border-radius);
+            background: transparent;
+            color: var(--pico-muted-color);
+            cursor: pointer;
+            font-size: 0.9rem;
+            font-weight: 600;
+            transition: all 0.15s ease;
+        }
+        .workflow-tab:hover { border-color: var(--pico-primary); color: var(--pico-primary); }
+        .workflow-tab-active {
+            border-color: var(--pico-primary);
+            background: var(--pico-primary);
+            color: var(--pico-primary-inverse);
+        }
+        .workflow-tab small {
+            font-weight: 400;
+            opacity: 0.8;
+            margin-left: 0.25rem;
+        }
+        .workflow-description {
+            color: var(--pico-muted-color);
+            margin-bottom: 0.5rem;
+        }
+        .workflow-label-hint {
+            font-size: 0.85rem;
+            color: var(--pico-muted-color);
+            margin-bottom: 1.5rem;
+        }
+        .workflow-label-hint code {
+            background: var(--pico-form-element-background-color);
+            padding: 0.1rem 0.4rem;
+            border-radius: 0.25rem;
+        }
+        .workflow-flowchart {
+            overflow-x: auto;
+            padding: 1rem 0 2rem;
+        }
+        .workflow-flow {
+            display: flex;
+            align-items: flex-start;
+            gap: 0;
+            min-width: max-content;
+        }
+        .workflow-stage-col {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .workflow-arrow {
+            display: flex;
+            align-items: center;
+            padding-top: 1.2rem;
+        }
+        .workflow-node {
+            border: 2px solid;
+            border-radius: 0.75rem;
+            padding: 0.75rem 1.2rem;
+            text-align: center;
+            cursor: pointer;
+            transition: transform 0.1s ease, box-shadow 0.15s ease;
+            min-width: 7rem;
+        }
+        .workflow-node:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+        }
+        .workflow-node-claude {
+            border-color: rgba(129, 140, 248, 0.6);
+            background: rgba(129, 140, 248, 0.08);
+        }
+        .workflow-node-shell {
+            border-color: rgba(251, 146, 60, 0.6);
+            background: rgba(251, 146, 60, 0.08);
+        }
+        .workflow-node-internal {
+            border-color: rgba(34, 197, 94, 0.6);
+            background: rgba(34, 197, 94, 0.08);
+        }
+        .workflow-node-name {
+            font-weight: 700;
+            font-size: 0.95rem;
+            margin-bottom: 0.2rem;
+        }
+        .workflow-identity-badge {
+            display: inline-block;
+            font-size: 0.7rem;
+            padding: 0.05rem 0.4rem;
+            border-radius: 0.5rem;
+            background: rgba(129, 140, 248, 0.2);
+            color: #a5b4fc;
+        }
+        .workflow-timeout {
+            display: block;
+            font-size: 0.7rem;
+            color: var(--pico-muted-color);
+            margin-top: 0.2rem;
+        }
+        .workflow-detail {
+            margin-top: 0.5rem;
+            background: var(--pico-card-background-color);
+            border: 1px solid var(--pico-muted-border-color);
+            border-radius: var(--pico-border-radius);
+            padding: 0.5rem;
+            font-size: 0.8rem;
+            min-width: 10rem;
+        }
+        .workflow-detail table {
+            margin: 0;
+            font-size: 0.8rem;
+        }
+        .workflow-detail th {
+            text-align: right;
+            padding: 0.15rem 0.5rem 0.15rem 0;
+            color: var(--pico-muted-color);
+            white-space: nowrap;
+        }
+        .workflow-detail td {
+            padding: 0.15rem 0;
+        }
+        .workflow-loop-branch {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin-top: 0.5rem;
+        }
+        .workflow-decision {
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .workflow-yes-label {
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: var(--pico-ins-color);
+            margin-top: -0.1rem;
+        }
+        .workflow-no-path {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin-top: 0.25rem;
+        }
+        .workflow-no-label {
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: var(--pico-del-color);
+        }
+        .workflow-no-arrow { margin: 0.15rem 0; }
+        .workflow-node-loop {
+            border-style: dashed;
+        }
+        .workflow-loop-arc {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin-top: 0.25rem;
+        }
+        .workflow-loop-label {
+            font-size: 0.72rem;
+            color: var(--pico-del-color);
+            font-style: italic;
+        }
+        .workflow-single {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 2rem 0;
+        }
+        .workflow-note {
+            margin-top: 0.75rem;
+            font-size: 0.85rem;
+            color: var(--pico-muted-color);
+            font-style: italic;
+        }
+        @media (max-width: 768px) {
+            .workflow-flow {
+                flex-direction: column;
+                align-items: center;
+            }
+            .workflow-arrow {
+                padding-top: 0;
+                transform: rotate(90deg);
+            }
+            .workflow-tabs {
+                flex-wrap: wrap;
+            }
+        }
     </style>
     <script>
     function updateCountdowns() {
@@ -469,6 +667,7 @@
             <li><a href="/history"{% if active_page == "history" %} aria-current="page"{% endif %}>Task History</a></li>
             <li><a href="/usage"{% if active_page == "usage" %} aria-current="page"{% endif %}>Usage Trends</a></li>
             <li><a href="/metrics"{% if active_page == "metrics" %} aria-current="page"{% endif %}>Metrics</a></li>
+            <li><a href="/workflow"{% if active_page == "workflow" %} aria-current="page"{% endif %}>Workflow</a></li>
             <li><a href="/config"{% if active_page == "config" %} aria-current="page"{% endif %}>Configuration</a></li>
             <li><a href="/identities"{% if active_page == "identities" %} aria-current="page"{% endif %}>Identities</a></li>
             <li><a href="/health"{% if active_page == "health" %} aria-current="page"{% endif %}>Health</a></li>

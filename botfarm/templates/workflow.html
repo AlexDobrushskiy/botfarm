@@ -1,0 +1,186 @@
+{% extends "base.html" %}
+{% set active_page = "workflow" %}
+{% block title %}Workflow - Botfarm{% endblock %}
+{% block content %}
+<h1>Pipeline Workflow</h1>
+
+{% if not pipelines %}
+<p>No pipeline definitions found. Run the supervisor to seed default pipelines.</p>
+{% else %}
+
+{% if pipelines|length > 1 %}
+<div class="workflow-tabs" role="tablist">
+    {% for pipeline in pipelines %}
+    <button class="workflow-tab{% if loop.first %} workflow-tab-active{% endif %}"
+            role="tab"
+            aria-selected="{{ 'true' if loop.first else 'false' }}"
+            data-pipeline="{{ pipeline.name }}"
+            onclick="switchPipeline('{{ pipeline.name }}')">
+        {{ pipeline.name | capitalize }}
+        {% if pipeline.is_default %}<small>(default)</small>{% endif %}
+    </button>
+    {% endfor %}
+</div>
+{% endif %}
+
+{% for pipeline in pipelines %}
+<div class="workflow-pipeline" id="pipeline-{{ pipeline.name }}" {% if not loop.first %}style="display:none"{% endif %}>
+
+    {% if pipeline.description %}
+    <p class="workflow-description">{{ pipeline.description }}</p>
+    {% endif %}
+
+    {% if pipeline.ticket_label %}
+    <p class="workflow-label-hint">Triggered by ticket label: <code>{{ pipeline.ticket_label }}</code></p>
+    {% endif %}
+
+    {% if pipeline.main_stages|length <= 1 %}
+    {# Investigation pipeline — single stage #}
+    <div class="workflow-single">
+        {% set stage = pipeline.stages[0] %}
+        <div class="workflow-node workflow-node-{{ stage.executor_type }}" onclick="toggleDetail(this)">
+            <div class="workflow-node-name">{{ stage.name }}</div>
+            {% if stage.identity %}
+            <span class="workflow-identity-badge">{{ stage.identity }}</span>
+            {% endif %}
+            {% if stage.timeout_minutes %}
+            <span class="workflow-timeout">{{ stage.timeout_minutes }}min</span>
+            {% endif %}
+        </div>
+        <div class="workflow-detail" style="display:none">
+            <table>
+                <tr><th>Executor</th><td>{{ stage.executor_type }}</td></tr>
+                {% if stage.identity %}<tr><th>Identity</th><td>{{ stage.identity }}</td></tr>{% endif %}
+                {% if stage.max_turns %}<tr><th>Max turns</th><td>{{ stage.max_turns }}</td></tr>{% endif %}
+                {% if stage.timeout_minutes %}<tr><th>Timeout</th><td>{{ stage.timeout_minutes }} min</td></tr>{% endif %}
+                {% if stage.result_parser %}<tr><th>Result parser</th><td><code>{{ stage.result_parser }}</code></td></tr>{% endif %}
+            </table>
+        </div>
+        <p class="workflow-note">Research only — no PR created</p>
+    </div>
+    {% else %}
+    {# Full pipeline flowchart #}
+    <div class="workflow-flowchart">
+        {# Main happy-path flow #}
+        <div class="workflow-flow">
+            {% for stage in pipeline.main_stages %}
+            {% if not loop.first %}
+            <div class="workflow-arrow">
+                <svg width="40" height="24" viewBox="0 0 40 24">
+                    <line x1="0" y1="12" x2="32" y2="12" stroke="var(--pico-muted-color)" stroke-width="2"/>
+                    <polygon points="32,6 40,12 32,18" fill="var(--pico-muted-color)"/>
+                </svg>
+            </div>
+            {% endif %}
+
+            <div class="workflow-stage-col">
+                <div class="workflow-node workflow-node-{{ stage.executor_type }}" onclick="toggleDetail(this)">
+                    <div class="workflow-node-name">{{ stage.name }}</div>
+                    {% if stage.identity %}
+                    <span class="workflow-identity-badge">{{ stage.identity }}</span>
+                    {% endif %}
+                    {% if stage.timeout_minutes %}
+                    <span class="workflow-timeout">{{ stage.timeout_minutes }}min</span>
+                    {% endif %}
+                </div>
+                <div class="workflow-detail" style="display:none">
+                    <table>
+                        <tr><th>Executor</th><td>{{ stage.executor_type }}</td></tr>
+                        {% if stage.identity %}<tr><th>Identity</th><td>{{ stage.identity }}</td></tr>{% endif %}
+                        {% if stage.max_turns %}<tr><th>Max turns</th><td>{{ stage.max_turns }}</td></tr>{% endif %}
+                        {% if stage.timeout_minutes %}<tr><th>Timeout</th><td>{{ stage.timeout_minutes }} min</td></tr>{% endif %}
+                        {% if stage.result_parser %}<tr><th>Result parser</th><td><code>{{ stage.result_parser }}</code></td></tr>{% endif %}
+                    </table>
+                </div>
+
+                {# Decision diamond + loop branch after this stage if it has a loop #}
+                {% for lp in pipeline.loops %}
+                {% if lp.decision_stage == stage.name %}
+                <div class="workflow-loop-branch">
+                    <div class="workflow-decision">
+                        <svg class="workflow-diamond-svg" width="80" height="50" viewBox="0 0 80 50">
+                            <polygon points="40,2 78,25 40,48 2,25" fill="none" stroke="var(--pico-color-yellow-500, #eab308)" stroke-width="2"/>
+                            <text x="40" y="29" text-anchor="middle" fill="var(--pico-color-yellow-500, #eab308)" font-size="10" font-weight="600">{{ lp.question }}</text>
+                        </svg>
+                        <span class="workflow-yes-label">Yes</span>
+                    </div>
+                    <div class="workflow-no-path">
+                        <span class="workflow-no-label">No</span>
+                        <svg class="workflow-no-arrow" width="2" height="20" viewBox="0 0 2 20">
+                            <line x1="1" y1="0" x2="1" y2="20" stroke="var(--pico-del-color)" stroke-width="2"/>
+                        </svg>
+                        {% if lp.fix_stage %}
+                        <div class="workflow-node workflow-node-{{ lp.fix_stage.executor_type }} workflow-node-loop" onclick="toggleDetail(this)">
+                            <div class="workflow-node-name">{{ lp.fix_stage.name }}</div>
+                            {% if lp.fix_stage.identity %}
+                            <span class="workflow-identity-badge">{{ lp.fix_stage.identity }}</span>
+                            {% endif %}
+                            {% if lp.fix_stage.timeout_minutes %}
+                            <span class="workflow-timeout">{{ lp.fix_stage.timeout_minutes }}min</span>
+                            {% endif %}
+                        </div>
+                        <div class="workflow-detail" style="display:none">
+                            <table>
+                                <tr><th>Executor</th><td>{{ lp.fix_stage.executor_type }}</td></tr>
+                                {% if lp.fix_stage.identity %}<tr><th>Identity</th><td>{{ lp.fix_stage.identity }}</td></tr>{% endif %}
+                                {% if lp.fix_stage.max_turns %}<tr><th>Max turns</th><td>{{ lp.fix_stage.max_turns }}</td></tr>{% endif %}
+                                {% if lp.fix_stage.timeout_minutes %}<tr><th>Timeout</th><td>{{ lp.fix_stage.timeout_minutes }} min</td></tr>{% endif %}
+                                {% if lp.fix_stage.result_parser %}<tr><th>Result parser</th><td><code>{{ lp.fix_stage.result_parser }}</code></td></tr>{% endif %}
+                            </table>
+                        </div>
+                        {% endif %}
+                        <div class="workflow-loop-arc">
+                            <svg width="100" height="36" viewBox="0 0 100 36">
+                                <path d="M50,2 C20,2 8,18 8,30 L8,34" fill="none" stroke="var(--pico-del-color)" stroke-width="2" stroke-dasharray="4,3"/>
+                                <polygon points="4,28 8,36 12,28" fill="var(--pico-del-color)"/>
+                            </svg>
+                            <span class="workflow-loop-label">max {{ lp.max_iterations }} {{ "iterations" if "review" in lp.name else "retries" }}</span>
+                        </div>
+                    </div>
+                </div>
+                {% endif %}
+                {% endfor %}
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+</div>
+{% endfor %}
+
+<script>
+function switchPipeline(name) {
+    document.querySelectorAll('.workflow-pipeline').forEach(function(el) {
+        el.style.display = 'none';
+    });
+    document.querySelectorAll('.workflow-tab').forEach(function(btn) {
+        btn.classList.remove('workflow-tab-active');
+        btn.setAttribute('aria-selected', 'false');
+    });
+    var target = document.getElementById('pipeline-' + name);
+    if (target) target.style.display = 'block';
+    var tab = document.querySelector('[data-pipeline="' + name + '"]');
+    if (tab) {
+        tab.classList.add('workflow-tab-active');
+        tab.setAttribute('aria-selected', 'true');
+    }
+}
+
+function toggleDetail(node) {
+    var detail = node.nextElementSibling;
+    while (detail && !detail.classList.contains('workflow-detail')) {
+        detail = detail.nextElementSibling;
+    }
+    if (!detail) {
+        // Check parent's next sibling for loop nodes
+        var parent = node.parentElement;
+        detail = parent ? parent.querySelector('.workflow-detail') : null;
+    }
+    if (detail) {
+        detail.style.display = detail.style.display === 'none' ? 'block' : 'none';
+    }
+}
+</script>
+
+{% endif %}
+{% endblock %}
