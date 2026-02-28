@@ -1028,12 +1028,8 @@ class TestCheckCodexReviewer:
 
     def test_missing_binary(self, tmp_path):
         config = self._make_config_with_codex(tmp_path)
-        with patch("botfarm.preflight.check_codex_available", return_value=False), \
-             patch.dict(os.environ, {}, clear=False):
-            # Remove OPENAI_API_KEY if present
-            env = {k: v for k, v in os.environ.items() if k != "OPENAI_API_KEY"}
-            with patch.dict(os.environ, env, clear=True):
-                results = check_codex_reviewer(config)
+        with patch("botfarm.preflight.check_codex_available", return_value=False):
+            results = check_codex_reviewer(config)
         binary_results = [r for r in results if r.name == "codex_reviewer:binary"]
         assert len(binary_results) == 1
         assert not binary_results[0].passed
@@ -1053,7 +1049,6 @@ class TestCheckCodexReviewer:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         with patch("botfarm.preflight.check_codex_available", return_value=True), \
              patch("botfarm.preflight.Path.expanduser") as mock_expand:
-            mock_path = type(mock_expand.return_value)
             mock_expand.return_value.exists.return_value = False
             results = check_codex_reviewer(config)
         auth_results = [r for r in results if r.name == "codex_reviewer:auth"]
@@ -1065,6 +1060,17 @@ class TestCheckCodexReviewer:
         config = self._make_config_with_codex(tmp_path)
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         with patch("botfarm.preflight.check_codex_available", return_value=True):
+            results = check_codex_reviewer(config)
+        auth_results = [r for r in results if r.name == "codex_reviewer:auth"]
+        assert len(auth_results) == 1
+        assert auth_results[0].passed
+
+    def test_auth_with_auth_file_only(self, tmp_path, monkeypatch):
+        config = self._make_config_with_codex(tmp_path)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        with patch("botfarm.preflight.check_codex_available", return_value=True), \
+             patch("botfarm.preflight.Path.expanduser") as mock_expand:
+            mock_expand.return_value.exists.return_value = True
             results = check_codex_reviewer(config)
         auth_results = [r for r in results if r.name == "codex_reviewer:auth"]
         assert len(auth_results) == 1
