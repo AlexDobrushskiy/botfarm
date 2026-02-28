@@ -284,6 +284,18 @@ def format_codex_ndjson_line(raw_line: str) -> tuple[str, str]:
     return ("log", stripped)
 
 
+def _review_display_status(exit_subtype: str | None) -> str:
+    """Map a review stage exit_subtype to a human-readable display status."""
+    exit_sub = (exit_subtype or "").lower()
+    if exit_sub in ("approved", "changes_requested"):
+        return exit_sub.upper()
+    if exit_sub == "skipped":
+        return "Skipped"
+    if exit_sub in ("failed", "error"):
+        return "Failed"
+    return "In Progress"
+
+
 def build_pipeline_state(
     stage_runs: list[dict], task_status: str | None,
 ) -> list[dict]:
@@ -314,15 +326,7 @@ def build_pipeline_state(
     codex_summary = None
     if codex_runs:
         last = codex_runs[-1]
-        exit_sub = (last.get("exit_subtype") or "").lower()
-        if exit_sub in ("approved", "changes_requested"):
-            codex_status = exit_sub.upper()
-        elif exit_sub == "skipped":
-            codex_status = "Skipped"
-        elif exit_sub in ("failed", "error"):
-            codex_status = "Failed"
-        else:
-            codex_status = "In Progress"
+        codex_status = _review_display_status(last.get("exit_subtype"))
         codex_summary = {"status": codex_status, "count": len(codex_runs)}
 
     # Find the last stage that has runs (by canonical order)
@@ -762,30 +766,19 @@ def create_app(
                     (task_row["id"],),
                 ).fetchone()
                 if codex_row:
-                    exit_sub = (codex_row["exit_subtype"] or "").lower()
-                    if exit_sub in ("approved", "changes_requested"):
-                        slot["codex_review_status"] = exit_sub.upper()
-                    elif exit_sub == "skipped":
-                        slot["codex_review_status"] = "Skipped"
-                    elif exit_sub in ("failed", "error"):
-                        slot["codex_review_status"] = "Failed"
-                    else:
-                        slot["codex_review_status"] = "In Progress"
-                # Also check the latest Claude review status
-                claude_row = conn.execute(
-                    "SELECT exit_subtype FROM stage_runs "
-                    "WHERE task_id = ? AND stage = 'review' "
-                    "ORDER BY id DESC LIMIT 1",
-                    (task_row["id"],),
-                ).fetchone()
-                if claude_row:
-                    c_exit = (claude_row["exit_subtype"] or "").lower()
-                    if c_exit in ("approved", "changes_requested"):
-                        slot["claude_review_status"] = c_exit.upper()
-                    else:
-                        slot["claude_review_status"] = "In Progress"
-                else:
-                    slot["claude_review_status"] = "In Progress"
+                    slot["codex_review_status"] = _review_display_status(
+                        codex_row["exit_subtype"]
+                    )
+                    # Also check the latest Claude review status
+                    claude_row = conn.execute(
+                        "SELECT exit_subtype FROM stage_runs "
+                        "WHERE task_id = ? AND stage = 'review' "
+                        "ORDER BY id DESC LIMIT 1",
+                        (task_row["id"],),
+                    ).fetchone()
+                    slot["claude_review_status"] = _review_display_status(
+                        claude_row["exit_subtype"] if claude_row else None
+                    )
         except sqlite3.OperationalError:
             pass
         finally:
