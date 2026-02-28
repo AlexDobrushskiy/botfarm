@@ -1318,10 +1318,10 @@ def create_app(
         "identity_linear_key": "Verify the identity's Linear API key is valid",
         "database": "Check DB path permissions or schema version",
         "config_consistency": "Review config for duplicate slot IDs or invalid project settings",
-        "credentials": "Verify Claude OAuth credentials are loaded correctly",
+        "claude_credentials": "Verify Claude OAuth credentials are loaded correctly",
         "notifications_webhook": "Check the webhook URL in config is valid and reachable",
-        "worktree_dirs": "Verify worktree parent directories exist and are writable",
-        "identity_cross_validation": "Review identity config for inconsistent or partial credential sets",
+        "worktree_dir": "Verify worktree parent directories exist and are writable",
+        "identity_cross": "Review identity config for inconsistent or partial credential sets",
     }
 
     def _get_preflight_data() -> dict:
