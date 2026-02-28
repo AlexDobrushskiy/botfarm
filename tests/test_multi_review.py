@@ -1,0 +1,533 @@
+"""Tests for multi-review orchestration (SMA-212).
+
+Tests cover:
+- Verdict merging (all truth table combinations)
+- Codex failure/timeout fallback to Claude-only
+- Claude prompt modifications for multi-review mode
+- Aggregate review submission
+- Codex disabled skips invocation
+- Full review stage with mocked Claude + Codex
+- Fix loop triggered on Codex rejection
+"""
+
+from __future__ import annotations
+
+import subprocess
+from pathlib import Path
+from unittest.mock import MagicMock, call, patch
+
+import pytest
+
+from botfarm.codex import CodexResult
+from botfarm.worker import (
+    ClaudeResult,
+    StageResult,
+    _build_claude_review_prompt,
+    _merge_review_verdicts,
+    _run_codex_review,
+    _run_review,
+    _submit_aggregate_review,
+)
+
+
+PR_URL = "https://github.com/owner/repo/pull/42"
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_claude_result(text: str = "done", is_error: bool = False) -> ClaudeResult:
+    return ClaudeResult(
+        session_id="s-test",
+        num_turns=5,
+        duration_seconds=15.0,
+        exit_subtype="tool_use",
+        result_text=text,
+        is_error=is_error,
+    )
+
+
+def _make_codex_result(text: str = "done", is_error: bool = False) -> CodexResult:
+    return CodexResult(
+        thread_id="t-test",
+        num_turns=3,
+        duration_seconds=10.0,
+        result_text=text,
+        is_error=is_error,
+    )
+
+
+# ---------------------------------------------------------------------------
+# _merge_review_verdicts — truth table
+# ---------------------------------------------------------------------------
+
+
+class TestVerdictMerge:
+    """Test all 7 rows from the verdict merge truth table."""
+
+    def test_both_approved(self):
+        assert _merge_review_verdicts(True, True) is True
+
+    def test_claude_approved_codex_changes(self):
+        assert _merge_review_verdicts(True, False) is False
+
+    def test_claude_changes_codex_approved(self):
+        assert _merge_review_verdicts(False, True) is False
+
+    def test_both_changes_requested(self):
+        assert _merge_review_verdicts(False, False) is False
+
+    def test_claude_approved_codex_error(self):
+        """Fail-open: Claude's APPROVED verdict stands when Codex errors."""
+        assert _merge_review_verdicts(True, None) is True
+
+    def test_claude_changes_codex_error(self):
+        """Fail-open: Claude's CHANGES_REQUESTED verdict stands when Codex errors."""
+        assert _merge_review_verdicts(False, None) is False
+
+    def test_codex_disabled(self):
+        """Single-reviewer fallback: Claude's verdict stands."""
+        assert _merge_review_verdicts(True, None) is True
+        assert _merge_review_verdicts(False, None) is False
+
+
+# ---------------------------------------------------------------------------
+# Codex failure fallback
+# ---------------------------------------------------------------------------
+
+
+class TestCodexFailureFallback:
+    """Codex error degrades gracefully to Claude-only verdict."""
+
+    @patch("botfarm.worker._submit_aggregate_review")
+    @patch("botfarm.worker._run_codex_review")
+    @patch("botfarm.worker._invoke_claude")
+    def test_codex_error_fallback(self, mock_claude, mock_codex, mock_submit, tmp_path):
+        """When Codex returns an error, Claude's verdict stands (fail-open)."""
+        mock_claude.return_value = _make_claude_result("VERDICT: APPROVED")
+        mock_codex.return_value = StageResult(
+            stage="codex_review",
+            success=False,
+            codex_result=_make_codex_result("error", is_error=True),
+            error="Codex reported error",
+        )
+
+        result = _run_review(
+            PR_URL, cwd=tmp_path, max_turns=10,
+            codex_enabled=True,
+        )
+
+        assert result.success is True
+        assert result.review_approved is True  # Claude's verdict stands
+        mock_submit.assert_called_once()
+        submit_kwargs = mock_submit.call_args.kwargs
+        assert submit_kwargs["codex_verdict"] == "error"
+        assert submit_kwargs["approved"] is True
+
+
+class TestCodexTimeoutFallback:
+    """Codex timeout degrades gracefully to Claude-only verdict."""
+
+    @patch("botfarm.worker._submit_aggregate_review")
+    @patch("botfarm.worker._run_codex_review")
+    @patch("botfarm.worker._invoke_claude")
+    def test_codex_timeout_fallback(self, mock_claude, mock_codex, mock_submit, tmp_path):
+        """When Codex raises an exception (timeout), Claude's verdict stands."""
+        mock_claude.return_value = _make_claude_result("VERDICT: APPROVED")
+        mock_codex.side_effect = Exception("Codex timed out")
+
+        result = _run_review(
+            PR_URL, cwd=tmp_path, max_turns=10,
+            codex_enabled=True,
+        )
+
+        assert result.success is True
+        assert result.review_approved is True  # Claude's verdict stands
+        assert result.codex_result is None
+        mock_submit.assert_called_once()
+        submit_kwargs = mock_submit.call_args.kwargs
+        assert submit_kwargs["codex_verdict"] == "error"
+
+
+# ---------------------------------------------------------------------------
+# Claude prompt content tests
+# ---------------------------------------------------------------------------
+
+
+class TestClaudePromptMultiReviewMode:
+    """Verify prompt modifications when codex_reviewer_enabled=True."""
+
+    def test_no_submit_gh_pr_review_instruction(self):
+        prompt = _build_claude_review_prompt(
+            PR_URL, "owner", "repo", "42", codex_enabled=True,
+        )
+        # Should NOT instruct to submit via gh pr review
+        assert "submit your overall assessment" not in prompt
+        assert "using 'gh pr review' with either --approve or --request-changes" not in prompt
+        # The "Do NOT submit" instruction IS expected
+        assert "Do NOT submit a final review via 'gh pr review'" in prompt
+
+    def test_has_verdict_markers(self):
+        prompt = _build_claude_review_prompt(
+            PR_URL, "owner", "repo", "42", codex_enabled=True,
+        )
+        assert "VERDICT: APPROVED" in prompt
+        assert "VERDICT: CHANGES_REQUESTED" in prompt
+
+    def test_has_no_submit_instruction(self):
+        prompt = _build_claude_review_prompt(
+            PR_URL, "owner", "repo", "42", codex_enabled=True,
+        )
+        assert "Do NOT submit a final review" in prompt
+
+    def test_has_inline_comment_api(self):
+        prompt = _build_claude_review_prompt(
+            PR_URL, "owner", "repo", "42", codex_enabled=True,
+        )
+        assert "gh api repos/owner/repo/pulls/42/comments" in prompt
+
+
+class TestClaudePromptSingleReviewMode:
+    """Verify prompt is unchanged when codex_reviewer_enabled=False."""
+
+    def test_has_gh_pr_review_instruction(self):
+        prompt = _build_claude_review_prompt(
+            PR_URL, "owner", "repo", "42", codex_enabled=False,
+        )
+        assert "gh pr review" in prompt
+        assert "--approve" in prompt
+        assert "--request-changes" in prompt
+
+    def test_has_verdict_markers(self):
+        prompt = _build_claude_review_prompt(
+            PR_URL, "owner", "repo", "42", codex_enabled=False,
+        )
+        assert "VERDICT: APPROVED" in prompt
+        assert "VERDICT: CHANGES_REQUESTED" in prompt
+
+    def test_no_do_not_submit(self):
+        prompt = _build_claude_review_prompt(
+            PR_URL, "owner", "repo", "42", codex_enabled=False,
+        )
+        assert "Do NOT submit a final review" not in prompt
+
+
+# ---------------------------------------------------------------------------
+# Aggregate review submission
+# ---------------------------------------------------------------------------
+
+
+class TestAggregateReviewSubmission:
+    """Verify Botfarm submits correct ``gh pr review``."""
+
+    @patch("botfarm.worker.subprocess.run")
+    def test_approved_review(self, mock_run, tmp_path):
+        _submit_aggregate_review(
+            PR_URL,
+            cwd=tmp_path,
+            claude_verdict="approved",
+            codex_verdict="approved",
+            approved=True,
+            iteration=1,
+        )
+
+        mock_run.assert_called_once()
+        cmd = mock_run.call_args[0][0]
+        assert "--approve" in cmd
+        assert "42" in cmd
+        body_idx = cmd.index("--body")
+        body = cmd[body_idx + 1]
+        assert "Claude: approved" in body
+        assert "Codex: approved" in body
+        assert "Overall: approved" in body
+
+    @patch("botfarm.worker.subprocess.run")
+    def test_changes_requested_review(self, mock_run, tmp_path):
+        _submit_aggregate_review(
+            PR_URL,
+            cwd=tmp_path,
+            claude_verdict="approved",
+            codex_verdict="changes_requested",
+            approved=False,
+            iteration=2,
+        )
+
+        cmd = mock_run.call_args[0][0]
+        assert "--request-changes" in cmd
+        body_idx = cmd.index("--body")
+        body = cmd[body_idx + 1]
+        assert "Review iteration 2" in body
+        assert "Overall: changes_requested" in body
+
+    @patch("botfarm.worker.subprocess.run")
+    def test_submission_failure_logged_not_raised(self, mock_run, tmp_path):
+        """Failure to submit review is logged but does not raise."""
+        mock_run.side_effect = subprocess.CalledProcessError(1, "gh")
+
+        # Should not raise
+        _submit_aggregate_review(
+            PR_URL,
+            cwd=tmp_path,
+            claude_verdict="approved",
+            codex_verdict="approved",
+            approved=True,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Codex disabled skips invocation
+# ---------------------------------------------------------------------------
+
+
+class TestCodexDisabledSkipsInvocation:
+    """No Codex subprocess when disabled."""
+
+    @patch("botfarm.worker._run_codex_review")
+    @patch("botfarm.worker._invoke_claude")
+    def test_codex_not_called_when_disabled(self, mock_claude, mock_codex, tmp_path):
+        mock_claude.return_value = _make_claude_result("VERDICT: APPROVED")
+
+        result = _run_review(
+            PR_URL, cwd=tmp_path, max_turns=10,
+            codex_enabled=False,
+        )
+
+        mock_codex.assert_not_called()
+        assert result.success is True
+        assert result.review_approved is True
+        assert result.codex_result is None
+
+    @patch("botfarm.worker._run_codex_review")
+    @patch("botfarm.worker._invoke_claude")
+    def test_codex_not_called_by_default(self, mock_claude, mock_codex, tmp_path):
+        """Default codex_enabled=False means no Codex invocation."""
+        mock_claude.return_value = _make_claude_result("VERDICT: APPROVED")
+
+        result = _run_review(PR_URL, cwd=tmp_path, max_turns=10)
+
+        mock_codex.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Integration: full review stage with mocked Claude + Codex
+# ---------------------------------------------------------------------------
+
+
+class TestReviewStageDualReviewer:
+    """Full review stage with mocked Claude + Codex subprocess."""
+
+    @patch("botfarm.worker._submit_aggregate_review")
+    @patch("botfarm.worker._run_codex_review")
+    @patch("botfarm.worker._invoke_claude")
+    def test_both_approve(self, mock_claude, mock_codex, mock_submit, tmp_path):
+        mock_claude.return_value = _make_claude_result("VERDICT: APPROVED")
+        mock_codex.return_value = StageResult(
+            stage="codex_review",
+            success=True,
+            codex_result=_make_codex_result("VERDICT: APPROVED"),
+            review_approved=True,
+        )
+
+        result = _run_review(
+            PR_URL, cwd=tmp_path, max_turns=10,
+            codex_enabled=True,
+        )
+
+        assert result.success is True
+        assert result.review_approved is True
+        assert result.claude_result is not None
+        assert result.codex_result is not None
+        mock_submit.assert_called_once()
+        assert mock_submit.call_args.kwargs["approved"] is True
+
+    @patch("botfarm.worker._submit_aggregate_review")
+    @patch("botfarm.worker._run_codex_review")
+    @patch("botfarm.worker._invoke_claude")
+    def test_codex_blocks(self, mock_claude, mock_codex, mock_submit, tmp_path):
+        """Codex requests changes while Claude approves — result is blocked."""
+        mock_claude.return_value = _make_claude_result("VERDICT: APPROVED")
+        mock_codex.return_value = StageResult(
+            stage="codex_review",
+            success=True,
+            codex_result=_make_codex_result("VERDICT: CHANGES_REQUESTED"),
+            review_approved=False,
+        )
+
+        result = _run_review(
+            PR_URL, cwd=tmp_path, max_turns=10,
+            codex_enabled=True,
+        )
+
+        assert result.success is True
+        assert result.review_approved is False
+        mock_submit.assert_called_once()
+        assert mock_submit.call_args.kwargs["approved"] is False
+
+    @patch("botfarm.worker._submit_aggregate_review")
+    @patch("botfarm.worker._run_codex_review")
+    @patch("botfarm.worker._invoke_claude")
+    def test_claude_error_stops_pipeline(self, mock_claude, mock_codex, mock_submit, tmp_path):
+        """Claude error stops pipeline — Codex is not invoked."""
+        mock_claude.return_value = _make_claude_result("Error", is_error=True)
+
+        result = _run_review(
+            PR_URL, cwd=tmp_path, max_turns=10,
+            codex_enabled=True,
+        )
+
+        assert result.success is False
+        mock_codex.assert_not_called()
+        mock_submit.assert_not_called()
+
+    @patch("botfarm.worker._submit_aggregate_review")
+    @patch("botfarm.worker._run_codex_review")
+    @patch("botfarm.worker._invoke_claude")
+    def test_claude_changes_codex_approved(self, mock_claude, mock_codex, mock_submit, tmp_path):
+        """Claude requests changes, Codex approves — result is still blocked."""
+        mock_claude.return_value = _make_claude_result("VERDICT: CHANGES_REQUESTED")
+        mock_codex.return_value = StageResult(
+            stage="codex_review",
+            success=True,
+            codex_result=_make_codex_result("VERDICT: APPROVED"),
+            review_approved=True,
+        )
+
+        result = _run_review(
+            PR_URL, cwd=tmp_path, max_turns=10,
+            codex_enabled=True,
+        )
+
+        assert result.success is True
+        assert result.review_approved is False
+
+
+# ---------------------------------------------------------------------------
+# Integration: fix loop triggers on Codex rejection
+# ---------------------------------------------------------------------------
+
+
+class TestReviewFixLoopCodexRequestsChanges:
+    """Verify fix loop triggers when Codex rejects."""
+
+    @patch("botfarm.worker._submit_aggregate_review")
+    @patch("botfarm.worker._run_codex_review")
+    @patch("botfarm.worker._invoke_claude")
+    def test_codex_rejection_triggers_changes_requested(
+        self, mock_claude, mock_codex, mock_submit, tmp_path,
+    ):
+        """When Codex requests changes, review_approved is False, triggering fix."""
+        mock_claude.return_value = _make_claude_result("VERDICT: APPROVED")
+        mock_codex.return_value = StageResult(
+            stage="codex_review",
+            success=True,
+            codex_result=_make_codex_result("VERDICT: CHANGES_REQUESTED"),
+            review_approved=False,
+        )
+
+        result = _run_review(
+            PR_URL, cwd=tmp_path, max_turns=10,
+            codex_enabled=True,
+        )
+
+        # review_approved=False means the review-fix loop will trigger a fix stage
+        assert result.review_approved is False
+        assert result.success is True
+
+
+# ---------------------------------------------------------------------------
+# _run_codex_review unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestRunCodexReview:
+    """Test the _run_codex_review function."""
+
+    @patch("botfarm.worker.run_codex_streaming")
+    def test_success_approved(self, mock_codex, tmp_path):
+        mock_codex.return_value = _make_codex_result("VERDICT: APPROVED")
+
+        result = _run_codex_review(PR_URL, cwd=tmp_path)
+
+        assert result.success is True
+        assert result.stage == "codex_review"
+        assert result.review_approved is True
+        assert result.codex_result is not None
+
+    @patch("botfarm.worker.run_codex_streaming")
+    def test_success_changes_requested(self, mock_codex, tmp_path):
+        mock_codex.return_value = _make_codex_result("VERDICT: CHANGES_REQUESTED")
+
+        result = _run_codex_review(PR_URL, cwd=tmp_path)
+
+        assert result.success is True
+        assert result.review_approved is False
+
+    @patch("botfarm.worker.run_codex_streaming")
+    def test_error_returns_failure(self, mock_codex, tmp_path):
+        mock_codex.return_value = _make_codex_result("Error", is_error=True)
+
+        result = _run_codex_review(PR_URL, cwd=tmp_path)
+
+        assert result.success is False
+        assert "Codex reported error" in result.error
+
+    @patch("botfarm.worker.run_codex_streaming")
+    def test_prompt_contains_codex_prefix(self, mock_codex, tmp_path):
+        mock_codex.return_value = _make_codex_result("VERDICT: APPROVED")
+
+        _run_codex_review(PR_URL, cwd=tmp_path)
+
+        prompt = mock_codex.call_args.kwargs.get("prompt") or mock_codex.call_args[0][0]
+        assert "CODEX: " in prompt
+
+    @patch("botfarm.worker.run_codex_streaming")
+    def test_prompt_no_gh_pr_review(self, mock_codex, tmp_path):
+        mock_codex.return_value = _make_codex_result("VERDICT: APPROVED")
+
+        _run_codex_review(PR_URL, cwd=tmp_path)
+
+        prompt = mock_codex.call_args.kwargs.get("prompt") or mock_codex.call_args[0][0]
+        assert "Do NOT submit a final review" in prompt
+
+    @patch("botfarm.worker.run_codex_streaming")
+    def test_prompt_fetches_existing_comments(self, mock_codex, tmp_path):
+        mock_codex.return_value = _make_codex_result("VERDICT: APPROVED")
+
+        _run_codex_review(PR_URL, cwd=tmp_path)
+
+        prompt = mock_codex.call_args.kwargs.get("prompt") or mock_codex.call_args[0][0]
+        assert "gh api repos/owner/repo/pulls/42/comments" in prompt
+
+    @patch("botfarm.worker.run_codex_streaming")
+    def test_model_and_timeout_passed(self, mock_codex, tmp_path):
+        mock_codex.return_value = _make_codex_result("VERDICT: APPROVED")
+
+        _run_codex_review(
+            PR_URL, cwd=tmp_path,
+            codex_model="o3", timeout=300.0,
+        )
+
+        kwargs = mock_codex.call_args.kwargs
+        assert kwargs["model"] == "o3"
+        assert kwargs["timeout"] == 300.0
+
+
+# ---------------------------------------------------------------------------
+# StageResult extension
+# ---------------------------------------------------------------------------
+
+
+class TestStageResultCodexField:
+    """Verify StageResult has the codex_result field."""
+
+    def test_default_none(self):
+        sr = StageResult(stage="review", success=True)
+        assert sr.codex_result is None
+
+    def test_with_codex_result(self):
+        cr = _make_codex_result("VERDICT: APPROVED")
+        sr = StageResult(stage="review", success=True, codex_result=cr)
+        assert sr.codex_result is cr
+        assert sr.codex_result.thread_id == "t-test"
