@@ -1322,6 +1322,7 @@ def create_app(
         "notifications_webhook": "Check the webhook URL in config is valid and reachable",
         "worktree_dir": "Verify worktree parent directories exist and are writable",
         "identity_cross": "Review identity config for inconsistent or partial credential sets",
+        "linear_team": "Verify the Linear team name in config matches your workspace and is accessible",
     }
 
     def _get_preflight_data() -> dict:
@@ -1362,7 +1363,6 @@ def create_app(
         data = _get_preflight_data()
         return templates.TemplateResponse("health.html", {
             "request": request,
-            "active_page": "health",
             **data,
         })
 
