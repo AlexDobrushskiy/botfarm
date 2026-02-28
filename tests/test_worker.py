@@ -3081,3 +3081,259 @@ class TestMergeEnvPropagation:
         for call in mock_run.call_args_list:
             call_kwargs = call[1]
             assert call_kwargs["env"] is None
+
+
+# ---------------------------------------------------------------------------
+# DB-driven pipeline tests
+# ---------------------------------------------------------------------------
+
+
+from botfarm.worker import (
+    _build_turns_cfg,
+    _derive_stages,
+    _run_claude_stage,
+)
+from botfarm.workflow import (
+    PipelineTemplate,
+    StageTemplate,
+    StageLoop,
+    get_stage,
+    load_pipeline,
+    render_prompt,
+)
+
+
+class TestDeriveStages:
+    def test_derives_from_pipeline(self, conn):
+        pipeline = load_pipeline(conn, [])
+        stages = _derive_stages(pipeline)
+        assert stages == ("implement", "review", "fix", "pr_checks", "ci_fix", "merge")
+
+    def test_investigation_pipeline_single_stage(self, conn):
+        pipeline = load_pipeline(conn, ["Investigation"])
+        stages = _derive_stages(pipeline)
+        assert stages == ("implement",)
+
+
+class TestBuildTurnsCfg:
+    def test_from_pipeline(self, conn):
+        pipeline = load_pipeline(conn, [])
+        cfg = _build_turns_cfg(pipeline)
+        assert cfg["implement"] == 200
+        assert cfg["review"] == 100
+        assert cfg["fix"] == 100
+
+    def test_overrides_take_precedence(self, conn):
+        pipeline = load_pipeline(conn, [])
+        cfg = _build_turns_cfg(pipeline, {"implement": 50})
+        assert cfg["implement"] == 50
+        assert cfg["review"] == 100
+
+
+class TestRunClaudeStage:
+    @patch("botfarm.worker._invoke_claude")
+    def test_uses_render_prompt(self, mock_invoke, conn):
+        pipeline = load_pipeline(conn, [])
+        stage_tpl = get_stage(pipeline, "implement")
+
+        mock_invoke.return_value = ClaudeResult(
+            session_id="sess-1", num_turns=5, duration_seconds=10.0,
+            exit_subtype="tool_use", result_text="Created PR https://github.com/org/repo/pull/42",
+        )
+        result = _run_claude_stage(
+            stage_tpl, cwd="/tmp", max_turns=100,
+            prompt_vars={"ticket_id": "SMA-42"},
+        )
+        # Verify prompt was rendered with ticket_id
+        called_prompt = mock_invoke.call_args[0][0]
+        assert "SMA-42" in called_prompt
+        assert "{ticket_id}" not in called_prompt
+
+    @patch("botfarm.worker._invoke_claude")
+    def test_pr_url_result_parser(self, mock_invoke, conn):
+        pipeline = load_pipeline(conn, [])
+        stage_tpl = get_stage(pipeline, "implement")
+
+        mock_invoke.return_value = ClaudeResult(
+            session_id="sess-1", num_turns=5, duration_seconds=10.0,
+            exit_subtype="tool_use",
+            result_text="Created PR https://github.com/org/repo/pull/42",
+        )
+        result = _run_claude_stage(
+            stage_tpl, cwd="/tmp", max_turns=100,
+            prompt_vars={"ticket_id": "SMA-42"},
+        )
+        assert result.pr_url == "https://github.com/org/repo/pull/42"
+        assert result.success is True
+
+    @patch("botfarm.worker._invoke_claude")
+    def test_review_verdict_result_parser(self, mock_invoke, conn):
+        pipeline = load_pipeline(conn, [])
+        stage_tpl = get_stage(pipeline, "review")
+
+        mock_invoke.return_value = ClaudeResult(
+            session_id="sess-1", num_turns=3, duration_seconds=10.0,
+            exit_subtype="tool_use",
+            result_text="VERDICT: APPROVED",
+        )
+        result = _run_claude_stage(
+            stage_tpl, cwd="/tmp", max_turns=100,
+            prompt_vars={
+                "pr_url": PR_URL,
+                "pr_number": "42",
+                "owner": "org",
+                "repo": "repo",
+            },
+        )
+        assert result.review_approved is True
+        assert result.success is True
+
+    @patch("botfarm.worker._invoke_claude")
+    def test_error_result(self, mock_invoke, conn):
+        pipeline = load_pipeline(conn, [])
+        stage_tpl = get_stage(pipeline, "implement")
+
+        mock_invoke.return_value = ClaudeResult(
+            session_id="sess-1", num_turns=1, duration_seconds=5.0,
+            exit_subtype="error", result_text="Something went wrong",
+            is_error=True,
+        )
+        result = _run_claude_stage(
+            stage_tpl, cwd="/tmp", max_turns=100,
+            prompt_vars={"ticket_id": "SMA-42"},
+        )
+        assert result.success is False
+        assert "Claude reported error" in result.error
+
+
+class TestExecuteStageWithTemplate:
+    @patch("botfarm.worker._invoke_claude")
+    def test_claude_executor_routes_correctly(self, mock_invoke, conn):
+        """executor_type='claude' uses _run_claude_stage."""
+        pipeline = load_pipeline(conn, [])
+        stage_tpl = get_stage(pipeline, "implement")
+        mock_invoke.return_value = ClaudeResult(
+            session_id="sess-1", num_turns=5, duration_seconds=10.0,
+            exit_subtype="tool_use", result_text="done",
+        )
+        from botfarm.worker import _execute_stage
+        result = _execute_stage(
+            "implement", ticket_id="SMA-42", pr_url=None, cwd="/tmp",
+            max_turns=100, pr_checks_timeout=600, stage_tpl=stage_tpl,
+        )
+        assert result.success is True
+        assert mock_invoke.called
+
+    @patch("botfarm.worker.subprocess.run")
+    def test_shell_executor_routes_to_pr_checks(self, mock_run, conn, tmp_path):
+        """executor_type='shell' routes to _run_pr_checks."""
+        pipeline = load_pipeline(conn, [])
+        stage_tpl = get_stage(pipeline, "pr_checks")
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["gh"], returncode=0, stdout="OK", stderr=""
+        )
+        from botfarm.worker import _execute_stage
+        result = _execute_stage(
+            "pr_checks", ticket_id="SMA-42", pr_url=PR_URL, cwd=tmp_path,
+            max_turns=100, pr_checks_timeout=600, stage_tpl=stage_tpl,
+        )
+        assert result.success is True
+
+    @patch("botfarm.worker.subprocess.run")
+    def test_internal_executor_routes_to_merge(self, mock_run, conn, tmp_path):
+        """executor_type='internal' routes to _run_merge."""
+        pipeline = load_pipeline(conn, [])
+        stage_tpl = get_stage(pipeline, "merge")
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["gh"], returncode=0, stdout="Merged", stderr=""
+        )
+        from botfarm.worker import _execute_stage
+        result = _execute_stage(
+            "merge", ticket_id="SMA-42", pr_url=PR_URL, cwd=tmp_path,
+            max_turns=100, pr_checks_timeout=600, stage_tpl=stage_tpl,
+        )
+        assert result.success is True
+
+
+class TestPipelineDbDriven:
+    @patch("botfarm.worker._execute_stage")
+    def test_pipeline_loads_from_db(self, mock_exec, conn, task_id, tmp_path):
+        """Pipeline loads template from DB and uses its stages."""
+        mock_exec.side_effect = [
+            _mock_stage_result("implement", pr_url=PR_URL, turns=10),
+            _mock_stage_result("review", turns=5),
+            _mock_stage_result("fix", turns=8),
+            _mock_stage_result("pr_checks"),
+            _mock_stage_result("merge"),
+        ]
+        result = run_pipeline(
+            ticket_id="SMA-99",
+            task_id=task_id,
+            cwd=tmp_path,
+            conn=conn,
+            max_review_iterations=1,
+        )
+        assert result.success is True
+        assert "implement" in result.stages_completed
+        assert "merge" in result.stages_completed
+
+    @patch("botfarm.worker._execute_stage")
+    def test_investigation_pipeline_from_db(self, mock_exec, conn, task_id, tmp_path):
+        """Investigation label selects investigation pipeline (single stage)."""
+        mock_exec.return_value = _mock_stage_result("implement", pr_url=None)
+        result = run_pipeline(
+            ticket_id="SMA-99",
+            ticket_labels=["Investigation"],
+            task_id=task_id,
+            cwd=tmp_path,
+            conn=conn,
+        )
+        assert result.success is True
+        assert result.stages_completed == ["implement"]
+        # Only 1 call — investigation pipeline has no review/fix/merge
+        assert mock_exec.call_count == 1
+
+    @patch("botfarm.worker._execute_stage")
+    def test_pipeline_context_has_template(self, mock_exec, conn, task_id, tmp_path):
+        """_PipelineContext.pipeline_tpl is set when pipeline loads from DB."""
+        captured_tpl = []
+
+        def capture(stage, **kwargs):
+            # The stage_tpl kwarg tells us the template was passed through
+            captured_tpl.append(kwargs.get("stage_tpl"))
+            return _mock_stage_result(stage, pr_url=PR_URL if stage == "implement" else None)
+
+        mock_exec.side_effect = capture
+        run_pipeline(
+            ticket_id="SMA-99",
+            task_id=task_id,
+            cwd=tmp_path,
+            conn=conn,
+            max_review_iterations=1,
+        )
+        # All stages should have received a stage_tpl
+        assert all(tpl is not None for tpl in captured_tpl)
+
+    @patch("botfarm.worker._execute_stage")
+    def test_env_routing_uses_identity(self, mock_exec, conn, task_id, tmp_path):
+        """Stage env is chosen by StageTemplate.identity, not hardcoded sets."""
+        envs = []
+
+        def capture(stage, **kwargs):
+            envs.append((stage, kwargs.get("env")))
+            return _mock_stage_result(stage, pr_url=PR_URL if stage == "implement" else None)
+
+        mock_exec.side_effect = capture
+        run_pipeline(
+            ticket_id="SMA-99",
+            task_id=task_id,
+            cwd=tmp_path,
+            conn=conn,
+            max_review_iterations=1,
+            slot_db_path="/tmp/slot.db",
+        )
+        env_by_stage = dict(envs)
+        # Coder stages should have BOTFARM_DB_PATH
+        assert env_by_stage["implement"]["BOTFARM_DB_PATH"] == "/tmp/slot.db"
+        # Review should also have BOTFARM_DB_PATH (reviewer env)
+        assert env_by_stage["review"]["BOTFARM_DB_PATH"] == "/tmp/slot.db"
