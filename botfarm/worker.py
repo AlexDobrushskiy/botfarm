@@ -288,8 +288,8 @@ def _terminate_process_group(proc: subprocess.Popen, graceful_timeout: float = 5
     """
     if proc.poll() is not None:
         return  # already exited
-    pgid = os.getpgid(proc.pid)
     try:
+        pgid = os.getpgid(proc.pid)
         os.killpg(pgid, signal.SIGTERM)
     except OSError:
         return
