@@ -2,12 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import subprocess
-import sys
-import textwrap
 import threading
-import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -168,7 +164,7 @@ class TestCodexMalformedJsonl:
 # ---------------------------------------------------------------------------
 
 
-def _make_fake_popen(stdout_lines, returncode=0, hang=False):
+def _make_fake_popen(stdout_lines, returncode=0):
     """Create a mock Popen that yields the given stdout lines."""
     proc = MagicMock()
     proc.pid = 99999
@@ -187,19 +183,7 @@ def _make_fake_popen(stdout_lines, returncode=0, hang=False):
         return returncode
 
     proc.poll = fake_poll
-
-    if hang:
-        # Simulate a hanging process that blocks on wait
-        original_wait = proc.wait
-
-        def blocking_wait(timeout=None):
-            if timeout is not None:
-                raise subprocess.TimeoutExpired(cmd="codex", timeout=timeout)
-
-        proc.wait = blocking_wait
-        proc.poll = lambda: None  # not exited yet
-    else:
-        proc.wait = MagicMock(return_value=returncode)
+    proc.wait = MagicMock(return_value=returncode)
 
     return proc
 
