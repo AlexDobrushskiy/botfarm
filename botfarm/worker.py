@@ -25,27 +25,58 @@ from pathlib import Path
 from botfarm.config import IdentitiesConfig
 from botfarm.db import delete_stage_run, insert_event, insert_stage_run, is_extra_usage_active, update_stage_run_context_fill, update_task
 from botfarm.slots import update_slot_stage
+from botfarm.workflow import (
+    PipelineTemplate,
+    StageLoop,
+    StageTemplate,
+    get_loop_for_stage,
+    get_stage,
+    load_pipeline,
+    render_prompt,
+    resolve_max_iterations,
+)
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Stage names — canonical ordering
+# Stage names — backward-compatible constant
 # ---------------------------------------------------------------------------
 
+# STAGES is kept as a module-level constant for backward compatibility
+# (supervisor.py imports it for stage-aware recovery).  It reflects the
+# *main* stages of the default implementation pipeline.  The actual stage
+# ordering is now driven by pipeline_templates / stage_templates in the DB.
 STAGES = ("implement", "review", "fix", "pr_checks", "merge")
 
-# Default max-turns per stage (can be overridden per invocation)
+
+# Backward-compatible identity sets — kept for tests and external callers.
+# New code should use StageTemplate.identity from the pipeline template.
+_CODER_STAGES = frozenset({"implement", "fix", "ci_fix", "pr_checks", "merge"})
+_REVIEWER_STAGES = frozenset({"review"})
+
+# Default max-turns per stage — kept for backward compatibility.
+# New code should use StageTemplate.max_turns from the pipeline template.
 DEFAULT_MAX_TURNS: dict[str, int] = {
     "implement": 200,
     "review": 100,
     "fix": 100,
 }
 
-# Stages that run under the coder identity
-_CODER_STAGES = frozenset({"implement", "fix", "pr_checks", "merge"})
 
-# Stages that run under the reviewer identity
-_REVIEWER_STAGES = frozenset({"review"})
+def _derive_stages(pipeline: PipelineTemplate) -> tuple[str, ...]:
+    """Derive the ordered stage-name tuple from a loaded pipeline."""
+    return tuple(s.name for s in pipeline.stages)
+
+
+def _build_turns_cfg(pipeline: PipelineTemplate, overrides: dict[str, int] | None = None) -> dict[str, int]:
+    """Build a max-turns dict from pipeline stage templates + caller overrides."""
+    cfg: dict[str, int] = {}
+    for s in pipeline.stages:
+        if s.max_turns is not None:
+            cfg[s.name] = s.max_turns
+    if overrides:
+        cfg.update(overrides)
+    return cfg
 
 
 def _build_ssh_command(key_path_str: str) -> str:
@@ -557,7 +588,12 @@ def _is_investigation(labels: list[str] | None) -> bool:
 
 
 def _build_implement_prompt(ticket_id: str, labels: list[str] | None) -> str:
-    """Build the implement-stage prompt, varying by ticket labels."""
+    """Build the implement-stage prompt, varying by ticket labels.
+
+    .. deprecated::
+        Kept for backward compatibility.  New code should use
+        ``render_prompt(stage_template, ticket_id=...)`` instead.
+    """
     if _is_investigation(labels):
         return (
             f"Work on Linear ticket {ticket_id}. "
@@ -572,6 +608,48 @@ def _build_implement_prompt(ticket_id: str, labels: list[str] | None) -> str:
     )
 
 
+def _run_claude_stage(
+    stage_tpl: StageTemplate,
+    *,
+    cwd: str | Path,
+    max_turns: int,
+    prompt_vars: dict[str, str],
+    log_file: Path | None = None,
+    env: dict[str, str] | None = None,
+    on_context_fill: ContextFillCallback | None = None,
+) -> StageResult:
+    """Generic runner for any claude-executor stage using its DB template."""
+    prompt = render_prompt(stage_tpl, **prompt_vars)
+    result = _invoke_claude(
+        prompt, cwd=cwd, max_turns=max_turns, log_file=log_file,
+        env=env, on_context_fill=on_context_fill,
+    )
+
+    if result.is_error:
+        return StageResult(
+            stage=stage_tpl.name,
+            success=False,
+            claude_result=result,
+            error=f"Claude reported error: {result.result_text[:200]}",
+        )
+
+    # Apply result_parser
+    pr_url: str | None = None
+    review_approved: bool | None = None
+    if stage_tpl.result_parser == "pr_url":
+        pr_url = _extract_pr_url(result.result_text)
+    elif stage_tpl.result_parser == "review_verdict":
+        review_approved = _parse_review_approved(result.result_text)
+
+    return StageResult(
+        stage=stage_tpl.name,
+        success=True,
+        claude_result=result,
+        pr_url=pr_url,
+        review_approved=review_approved,
+    )
+
+
 def _run_implement(
     ticket_id: str,
     *,
@@ -581,8 +659,16 @@ def _run_implement(
     log_file: Path | None = None,
     env: dict[str, str] | None = None,
     on_context_fill: ContextFillCallback | None = None,
+    stage_tpl: StageTemplate | None = None,
 ) -> StageResult:
     """IMPLEMENT stage — Claude Code implements the ticket and creates a PR."""
+    if stage_tpl is not None:
+        return _run_claude_stage(
+            stage_tpl, cwd=cwd, max_turns=max_turns,
+            prompt_vars={"ticket_id": ticket_id},
+            log_file=log_file, env=env, on_context_fill=on_context_fill,
+        )
+    # Legacy fallback
     prompt = _build_implement_prompt(ticket_id, ticket_labels)
     result = _invoke_claude(
         prompt, cwd=cwd, max_turns=max_turns, log_file=log_file,
@@ -597,7 +683,6 @@ def _run_implement(
             error=f"Claude reported error: {result.result_text[:200]}",
         )
 
-    # Try to extract PR URL from the result text
     pr_url = _extract_pr_url(result.result_text)
 
     return StageResult(
@@ -616,9 +701,22 @@ def _run_review(
     log_file: Path | None = None,
     env: dict[str, str] | None = None,
     on_context_fill: ContextFillCallback | None = None,
+    stage_tpl: StageTemplate | None = None,
 ) -> StageResult:
     """REVIEW stage — Fresh Claude Code reviews the PR and posts comments."""
     owner, repo, number = _parse_pr_url(pr_url)
+    if stage_tpl is not None:
+        return _run_claude_stage(
+            stage_tpl, cwd=cwd, max_turns=max_turns,
+            prompt_vars={
+                "pr_url": pr_url,
+                "pr_number": number,
+                "owner": owner,
+                "repo": repo,
+            },
+            log_file=log_file, env=env, on_context_fill=on_context_fill,
+        )
+    # Legacy fallback
     prompt = (
         f"Review the pull request at {pr_url}. "
         "Read the PR diff carefully. Be thorough but constructive.\n\n"
@@ -672,9 +770,22 @@ def _run_fix(
     log_file: Path | None = None,
     env: dict[str, str] | None = None,
     on_context_fill: ContextFillCallback | None = None,
+    stage_tpl: StageTemplate | None = None,
 ) -> StageResult:
     """FIX stage — Fresh Claude Code addresses review comments and pushes fixes."""
     owner, repo, number = _parse_pr_url(pr_url)
+    if stage_tpl is not None:
+        return _run_claude_stage(
+            stage_tpl, cwd=cwd, max_turns=max_turns,
+            prompt_vars={
+                "pr_url": pr_url,
+                "pr_number": number,
+                "owner": owner,
+                "repo": repo,
+            },
+            log_file=log_file, env=env, on_context_fill=on_context_fill,
+        )
+    # Legacy fallback
     prompt = (
         f"Address the review comments on PR {pr_url}. "
         "Read both the top-level review comment and any inline review comments "
@@ -758,8 +869,19 @@ def _run_ci_fix(
     log_file: Path | None = None,
     env: dict[str, str] | None = None,
     on_context_fill: ContextFillCallback | None = None,
+    stage_tpl: StageTemplate | None = None,
 ) -> StageResult:
-    """FIX stage variant — Claude Code fixes CI failures using CI output context."""
+    """CI FIX stage — Claude Code fixes CI failures using CI output context."""
+    if stage_tpl is not None:
+        return _run_claude_stage(
+            stage_tpl, cwd=cwd, max_turns=max_turns,
+            prompt_vars={
+                "pr_url": pr_url,
+                "ci_failure_output": ci_failure_output[:2000],
+            },
+            log_file=log_file, env=env, on_context_fill=on_context_fill,
+        )
+    # Legacy fallback
     prompt = (
         f"The CI checks on PR {pr_url} have failed. "
         "Diagnose and fix the CI failures based on the output below, "
@@ -970,7 +1092,6 @@ def run_pipeline(
     Returns:
         PipelineResult with aggregated metrics.
     """
-    turns_cfg = {**DEFAULT_MAX_TURNS, **(max_turns or {})}
     pipeline = PipelineResult(ticket_id=ticket_id, success=False, stages_completed=[])
 
     pr_url: str | None = None
@@ -982,8 +1103,81 @@ def run_pipeline(
     coder_env = build_coder_env(ident, slot_db_path) or None
     reviewer_env = build_reviewer_env(ident, slot_db_path) or None
 
-    # Validate resume_from_stage upfront
-    if resume_from_stage and resume_from_stage not in STAGES:
+    # --- Load pipeline template from DB ---
+    pipeline_tpl: PipelineTemplate | None = None
+    try:
+        pipeline_tpl = load_pipeline(conn, ticket_labels or [])
+        logger.info(
+            "Loaded pipeline '%s' for %s (stages: %s)",
+            pipeline_tpl.name, ticket_id,
+            ", ".join(s.name for s in pipeline_tpl.stages),
+        )
+    except Exception:
+        logger.warning(
+            "Could not load pipeline from DB for %s — using legacy constants",
+            ticket_id, exc_info=True,
+        )
+
+    # Derive stage ordering and max-turns from pipeline template
+    if pipeline_tpl is not None:
+        stages = _derive_stages(pipeline_tpl)
+        turns_cfg = _build_turns_cfg(pipeline_tpl, max_turns)
+    else:
+        stages = STAGES
+        turns_cfg = {
+            "implement": 200,
+            "review": 100,
+            "fix": 100,
+            **(max_turns or {}),
+        }
+
+    # Resolve loop configurations from DB
+    review_loop: StageLoop | None = None
+    ci_retry_loop: StageLoop | None = None
+    if pipeline_tpl is not None:
+        review_loop = get_loop_for_stage(pipeline_tpl, "review")
+        ci_retry_loop = get_loop_for_stage(pipeline_tpl, "ci_fix")
+
+    # Resolve effective iteration counts from loop config or fallback params
+    eff_max_review_iterations = max_review_iterations
+    if review_loop is not None:
+        from botfarm.config import AgentsConfig
+        _agents_cfg = AgentsConfig(
+            max_review_iterations=max_review_iterations,
+            max_ci_retries=max_ci_retries,
+        )
+        eff_max_review_iterations = resolve_max_iterations(review_loop, _agents_cfg)
+
+    eff_max_ci_retries = max_ci_retries
+    if ci_retry_loop is not None:
+        from botfarm.config import AgentsConfig
+        _agents_cfg = AgentsConfig(
+            max_review_iterations=max_review_iterations,
+            max_ci_retries=max_ci_retries,
+        )
+        eff_max_ci_retries = resolve_max_iterations(ci_retry_loop, _agents_cfg)
+
+    # Determine which stages are loop-managed (should be skipped in main
+    # iteration because they're handled inside a loop).
+    #
+    # Two loop patterns:
+    # 1. review_loop (no on_failure_stage): review runs in main flow,
+    #    fix only runs inside the loop → end_stage is managed
+    # 2. ci_retry_loop (has on_failure_stage): pr_checks runs in main flow,
+    #    ci_fix only triggered on failure → start_stage is managed
+    loop_managed_stages: set[str] = set()
+    if pipeline_tpl is not None:
+        for loop in pipeline_tpl.loops:
+            if loop.on_failure_stage:
+                # Retry-style loop: start_stage only runs on failure
+                loop_managed_stages.add(loop.start_stage)
+            else:
+                # Iteration-style loop: end_stage runs inside the loop
+                loop_managed_stages.add(loop.end_stage)
+
+    # Validate resume_from_stage upfront — check against all pipeline stages
+    # (including loop-managed ones), not just main stages.
+    if resume_from_stage and resume_from_stage not in stages:
         pipeline.failure_stage = resume_from_stage
         pipeline.failure_reason = f"Unknown resume stage: {resume_from_stage}"
         _record_failure(conn, task_id, pipeline)
@@ -1008,6 +1202,7 @@ def run_pipeline(
         turns_cfg=turns_cfg,
         pr_checks_timeout=pr_checks_timeout,
         pipeline=pipeline,
+        pipeline_tpl=pipeline_tpl,
         slot_manager=slot_manager,
         project=project,
         slot_id=slot_id,
@@ -1018,7 +1213,12 @@ def run_pipeline(
         reviewer_env=reviewer_env,
     )
 
-    for stage in STAGES:
+    # Build main-stage list: skip loop-managed stages (they're handled
+    # inside their respective loops), unless we're resuming from one.
+    resume_include = {resume_from_stage} if resume_from_stage and resume_from_stage in loop_managed_stages else set()
+    main_stages = [s for s in stages if s not in loop_managed_stages or s in resume_include]
+
+    for stage in main_stages:
         if skipping:
             if stage == resume_from_stage:
                 skipping = False
@@ -1044,14 +1244,10 @@ def run_pipeline(
 
         # ----- Review iteration loop -----
         if stage == "review":
-            success = _run_review_fix_loop(ctx, pr_url=pr_url, max_iterations=max_review_iterations)
+            success = _run_review_fix_loop(ctx, pr_url=pr_url, max_iterations=eff_max_review_iterations)
             if not success:
                 return pipeline
             # Ensure both review and fix appear in stages_completed.
-            # "review" is already added by run_and_record, but "fix" may
-            # not be if the reviewer approved on the first iteration
-            # (fix never ran).  We mark it complete so the outer loop's
-            # skip-fix guard works and stages_completed matches STAGES.
             if "review" not in pipeline.stages_completed:
                 pipeline.stages_completed.append("review")
             if "fix" not in pipeline.stages_completed:
@@ -1071,11 +1267,9 @@ def run_pipeline(
                 return pipeline
             update_task(conn, task_id, review_iterations=1)
             conn.commit()
-            # Verify fixes via remaining review iterations (iteration 1
-            # fix already completed; start review loop from iteration 2).
-            if max_review_iterations > 1:
+            if eff_max_review_iterations > 1:
                 success = _run_review_fix_loop(
-                    ctx, pr_url=pr_url, max_iterations=max_review_iterations,
+                    ctx, pr_url=pr_url, max_iterations=eff_max_review_iterations,
                     start_iteration=2,
                 )
                 if not success:
@@ -1093,14 +1287,14 @@ def run_pipeline(
                 # CI passed on first try
                 continue
             # CI failed — attempt retries if configured
-            if max_ci_retries > 0:
+            if eff_max_ci_retries > 0:
                 ci_failure_output = pipeline.failure_reason or "CI checks failed"
                 _reset_for_retry(ctx)
                 success = _run_ci_retry_loop(
                     ctx,
                     pr_url=pr_url,
                     ci_failure_output=ci_failure_output,
-                    max_retries=max_ci_retries,
+                    max_retries=eff_max_ci_retries,
                 )
                 if not success:
                     return pipeline
@@ -1111,13 +1305,13 @@ def run_pipeline(
             # No retries configured — fail
             return pipeline
 
-        # ----- Normal stages (implement, merge) -----
+        # ----- Normal stages (implement, merge, etc.) -----
         result = ctx.run_and_record(stage, pr_url=pr_url)
         if result is None:
             return pipeline
 
-        # Capture PR URL from implement stage
-        if stage == "implement" and result.pr_url:
+        # Capture PR URL from implement stage (or any stage with pr_url result_parser)
+        if result.pr_url:
             pr_url = result.pr_url
             pipeline.pr_url = pr_url
             update_task(conn, task_id, pr_url=pr_url)
@@ -1125,7 +1319,8 @@ def run_pipeline(
             if slot_manager and project and slot_id is not None:
                 slot_manager.set_pr_url(project, slot_id, pr_url)
 
-        # Investigation tickets short-circuit after implement — no PR expected
+        # Investigation/short pipelines: if implement is the last stage
+        # (pipeline has no more stages after it), short-circuit as success.
         if stage == "implement" and _is_investigation(ticket_labels):
             pipeline.success = True
             update_task(
@@ -1176,6 +1371,7 @@ class _PipelineContext:
     turns_cfg: dict[str, int]
     pr_checks_timeout: int
     pipeline: PipelineResult
+    pipeline_tpl: PipelineTemplate | None = None
     slot_manager: object | None = None
     project: str | None = None
     slot_id: int | None = None
@@ -1186,10 +1382,32 @@ class _PipelineContext:
     reviewer_env: dict[str, str] | None = None
 
     def _env_for_stage(self, stage: str) -> dict[str, str] | None:
-        """Return the appropriate env dict for a given stage."""
-        if stage in _REVIEWER_STAGES:
+        """Return the appropriate env dict for a given stage.
+
+        Uses StageTemplate.identity when a pipeline template is loaded,
+        falling back to the stage name for backward compatibility.
+        """
+        if self.pipeline_tpl is not None:
+            try:
+                tpl = get_stage(self.pipeline_tpl, stage)
+                if tpl.identity == "reviewer":
+                    return self.reviewer_env
+                return self.coder_env
+            except ValueError:
+                pass
+        # Legacy fallback
+        if stage == "review":
             return self.reviewer_env
         return self.coder_env
+
+    def _get_stage_tpl(self, stage: str) -> StageTemplate | None:
+        """Get the StageTemplate for a stage, or None if no pipeline loaded."""
+        if self.pipeline_tpl is None:
+            return None
+        try:
+            return get_stage(self.pipeline_tpl, stage)
+        except ValueError:
+            return None
 
     def run_and_record(
         self,
@@ -1231,7 +1449,12 @@ class _PipelineContext:
         # so per-turn context fill updates have a target row to update.
         on_context_fill: ContextFillCallback | None = None
         stage_run_id: int | None = None
-        uses_claude = stage in ("implement", "review", "fix")
+        stage_tpl = self._get_stage_tpl(stage)
+        uses_claude = (
+            stage_tpl.executor_type == "claude"
+            if stage_tpl is not None
+            else stage in ("implement", "review", "fix")
+        )
 
         extra_usage = is_extra_usage_active(self.conn)
 
@@ -1265,6 +1488,7 @@ class _PipelineContext:
                 placeholder_branch=self.placeholder_branch,
                 env=self._env_for_stage(stage),
                 on_context_fill=on_context_fill,
+                stage_tpl=stage_tpl,
             )
         except Exception as exc:
             logger.error("Stage '%s' raised: %s", stage, exc)
@@ -1488,12 +1712,14 @@ def _run_ci_retry_loop(
         def _ci_fix_on_fill(turn: int, fill_pct: float) -> None:
             update_stage_run_context_fill(ctx.conn, _sr_id, fill_pct)
 
+        ci_fix_tpl = ctx._get_stage_tpl("ci_fix")
         try:
             fix_result = _run_ci_fix(
                 pr_url, ci_failure_output=ci_failure_output,
-                cwd=ctx.cwd, max_turns=ctx.turns_cfg.get("fix", 100),
-                log_file=log_file, env=ctx._env_for_stage("fix"),
+                cwd=ctx.cwd, max_turns=ctx.turns_cfg.get("ci_fix", ctx.turns_cfg.get("fix", 100)),
+                log_file=log_file, env=ctx._env_for_stage("ci_fix") or ctx._env_for_stage("fix"),
                 on_context_fill=_ci_fix_on_fill,
+                stage_tpl=ci_fix_tpl,
             )
         except Exception as exc:
             logger.error("CI fix stage raised: %s", exc)
@@ -1566,8 +1792,49 @@ def _execute_stage(
     placeholder_branch: str | None = None,
     env: dict[str, str] | None = None,
     on_context_fill: ContextFillCallback | None = None,
+    stage_tpl: StageTemplate | None = None,
 ) -> StageResult:
-    """Dispatch to the appropriate stage runner."""
+    """Dispatch to the appropriate stage runner.
+
+    When *stage_tpl* is provided, routing uses ``executor_type`` from the
+    DB template.  Otherwise falls back to name-based dispatch for backward
+    compatibility.
+    """
+    # --- DB-driven routing via executor_type ---
+    if stage_tpl is not None:
+        if stage_tpl.executor_type == "claude":
+            # Build prompt variables based on stage name
+            prompt_vars: dict[str, str] = {}
+            if stage == "implement":
+                prompt_vars["ticket_id"] = ticket_id
+            elif pr_url:
+                owner, repo, number = _parse_pr_url(pr_url)
+                prompt_vars.update(
+                    pr_url=pr_url,
+                    pr_number=number,
+                    owner=owner,
+                    repo=repo,
+                )
+            return _run_claude_stage(
+                stage_tpl, cwd=cwd, max_turns=max_turns,
+                prompt_vars=prompt_vars,
+                log_file=log_file, env=env, on_context_fill=on_context_fill,
+            )
+        elif stage_tpl.executor_type == "shell":
+            if not pr_url:
+                raise ValueError(f"{stage} stage requires pr_url")
+            return _run_pr_checks(pr_url, cwd=cwd, timeout=pr_checks_timeout, log_file=log_file, env=env)
+        elif stage_tpl.executor_type == "internal":
+            if not pr_url:
+                raise ValueError(f"{stage} stage requires pr_url")
+            return _run_merge(
+                pr_url, cwd=cwd, log_file=log_file,
+                placeholder_branch=placeholder_branch, env=env,
+            )
+        else:
+            raise ValueError(f"Unknown executor_type: {stage_tpl.executor_type!r} for stage {stage!r}")
+
+    # --- Legacy name-based routing ---
     if stage == "implement":
         return _run_implement(
             ticket_id, ticket_labels=ticket_labels,
@@ -1596,11 +1863,8 @@ def _execute_stage(
         if not pr_url:
             raise ValueError(f"{stage} stage requires pr_url")
         return _run_merge(
-            pr_url,
-            cwd=cwd,
-            log_file=log_file,
-            placeholder_branch=placeholder_branch,
-            env=env,
+            pr_url, cwd=cwd, log_file=log_file,
+            placeholder_branch=placeholder_branch, env=env,
         )
     else:
         raise ValueError(f"Unknown stage: {stage}")

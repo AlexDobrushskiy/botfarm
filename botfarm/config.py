@@ -273,7 +273,7 @@ def _parse_project(data: dict) -> ProjectConfig:
     )
 
 
-_KNOWN_TIMEOUT_STAGES = {"implement", "review", "fix", "pr_checks", "merge"}
+_KNOWN_TIMEOUT_STAGES = {"implement", "review", "fix", "pr_checks", "ci_fix", "merge"}
 
 
 def resolve_stage_timeout(
