@@ -513,10 +513,9 @@ def init(path):
     help="Directory for log files (default: ~/.botfarm/logs/).",
 )
 @click.option(
-    "--auto-restart",
-    is_flag=True,
-    default=False,
-    help="Automatically restart after an update (exit code 42).",
+    "--auto-restart/--no-auto-restart",
+    default=True,
+    help="Automatically restart after an update (exit code 42). Enabled by default.",
 )
 def run(config_path, log_dir, auto_restart):
     """Run the supervisor in foreground mode."""
@@ -538,7 +537,7 @@ def run(config_path, log_dir, auto_restart):
         backup_count=config.logging.backup_count,
     )
 
-    supervisor = Supervisor(config, log_dir=log_dir or DEFAULT_LOG_DIR)
+    supervisor = Supervisor(config, log_dir=log_dir or DEFAULT_LOG_DIR, auto_restart=auto_restart)
     exit_code = supervisor.run()
 
     if exit_code == UPDATE_EXIT_CODE and auto_restart:

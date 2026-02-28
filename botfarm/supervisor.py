@@ -259,10 +259,12 @@ class Supervisor:
         config: BotfarmConfig,
         *,
         log_dir: str | Path | None = None,
+        auto_restart: bool = True,
     ) -> None:
         self._config = config
         self._log_dir = Path(log_dir or DEFAULT_LOG_DIR).expanduser()
         self._shutdown_requested = False
+        self._auto_restart = auto_restart
 
         # Lookup: project name -> ProjectConfig
         self._projects: dict[str, ProjectConfig] = {
@@ -986,6 +988,7 @@ class Supervisor:
                 get_degraded=lambda: self.degraded,
                 update_failed_event=self._update_failed_event,
                 git_env=self._git_env,
+                auto_restart=self._auto_restart,
             )
 
         # Run pre-flight health checks
