@@ -74,6 +74,16 @@
                             {%- endif -%}
                         </span>
                     {% endif %}
+                    {% if slot.stage == "review" and (slot.claude_review_status is defined or slot.codex_review_status is defined) %}
+                    <div class="slot-review-status">
+                        {% if slot.claude_review_status is defined %}
+                        <small>Claude: {{ slot.claude_review_status }}</small>
+                        {% endif %}
+                        {% if slot.codex_review_status is defined %}
+                        <small>Codex: {{ slot.codex_review_status }}</small>
+                        {% endif %}
+                    </div>
+                    {% endif %}
                 </div>
                 {% else %}
                 -
