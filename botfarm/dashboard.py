@@ -53,6 +53,7 @@ from botfarm.db import (
 )
 from botfarm.git_update import commits_behind
 from botfarm.worker import STAGES
+from botfarm.workflow import load_all_pipelines, resolve_max_iterations
 from botfarm.usage import refresh_usage_snapshot
 
 logger = logging.getLogger(__name__)
@@ -1300,6 +1301,123 @@ def create_app(
             "projects": projects,
             "filter_project": filter_project,
             "format_duration": _format_duration,
+            "supervisor": _supervisor_status(_read_state()),
+        })
+
+    # --- Workflow ---
+
+    @app.get("/workflow", response_class=HTMLResponse)
+    def workflow_page(request: Request):
+        conn = _get_db()
+        pipelines_data: list[dict] = []
+        if conn:
+            try:
+                pipelines = load_all_pipelines(conn)
+                agents_cfg = (
+                    app.state.botfarm_config.agents
+                    if app.state.botfarm_config
+                    else None
+                )
+                for pipeline in pipelines:
+                    # Determine loop-managed stages (not on happy path)
+                    loop_managed: set[str] = set()
+                    for loop in pipeline.loops:
+                        if loop.on_failure_stage:
+                            loop_managed.add(loop.start_stage)
+                        else:
+                            loop_managed.add(loop.end_stage)
+
+                    main_stages = [
+                        s for s in pipeline.stages
+                        if s.name not in loop_managed
+                    ]
+
+                    stages_list = [
+                        {
+                            "name": s.name,
+                            "executor_type": s.executor_type,
+                            "identity": s.identity,
+                            "timeout_minutes": s.timeout_minutes,
+                            "max_turns": s.max_turns,
+                            "result_parser": s.result_parser,
+                        }
+                        for s in pipeline.stages
+                    ]
+
+                    main_stages_list = [
+                        {
+                            "name": s.name,
+                            "executor_type": s.executor_type,
+                            "identity": s.identity,
+                            "timeout_minutes": s.timeout_minutes,
+                            "max_turns": s.max_turns,
+                            "result_parser": s.result_parser,
+                        }
+                        for s in main_stages
+                    ]
+
+                    loops_list = []
+                    for loop in pipeline.loops:
+                        eff_max = (
+                            resolve_max_iterations(loop, agents_cfg)
+                            if agents_cfg
+                            else loop.max_iterations
+                        )
+                        # Identify the decision stage and fix stage
+                        if loop.on_failure_stage:
+                            decision_stage = loop.end_stage
+                            fix_stage_name = loop.start_stage
+                        else:
+                            decision_stage = loop.start_stage
+                            fix_stage_name = loop.end_stage
+
+                        fix_stage_obj = next(
+                            (s for s in pipeline.stages if s.name == fix_stage_name),
+                            None,
+                        )
+
+                        condition = loop.exit_condition or ""
+                        if "review" in condition:
+                            question = "Approved?"
+                        elif "ci" in condition:
+                            question = "CI passed?"
+                        else:
+                            question = "Continue?"
+
+                        loops_list.append({
+                            "name": loop.name,
+                            "decision_stage": decision_stage,
+                            "fix_stage_name": fix_stage_name,
+                            "fix_stage": {
+                                "name": fix_stage_obj.name,
+                                "executor_type": fix_stage_obj.executor_type,
+                                "identity": fix_stage_obj.identity,
+                                "timeout_minutes": fix_stage_obj.timeout_minutes,
+                                "max_turns": fix_stage_obj.max_turns,
+                                "result_parser": fix_stage_obj.result_parser,
+                            } if fix_stage_obj else None,
+                            "max_iterations": eff_max,
+                            "question": question,
+                            "exit_condition": loop.exit_condition,
+                        })
+
+                    pipelines_data.append({
+                        "name": pipeline.name,
+                        "description": pipeline.description,
+                        "is_default": pipeline.is_default,
+                        "ticket_label": pipeline.ticket_label,
+                        "stages": stages_list,
+                        "main_stages": main_stages_list,
+                        "loops": loops_list,
+                    })
+            except sqlite3.OperationalError:
+                pass
+            finally:
+                conn.close()
+        return templates.TemplateResponse("workflow.html", {
+            "request": request,
+            "pipelines": pipelines_data,
+            "active_page": "workflow",
             "supervisor": _supervisor_status(_read_state()),
         })
 

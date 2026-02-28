@@ -4159,3 +4159,103 @@ class TestAutoRestartBanner:
     def test_auto_restart_defaults_to_true(self, db_file):
         app = create_app(db_path=db_file)
         assert app.state.auto_restart is True
+
+
+# --- Workflow page ---
+
+
+class TestWorkflowPage:
+    def test_workflow_returns_200(self, client):
+        resp = client.get("/workflow")
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers["content-type"]
+
+    def test_workflow_shows_implementation_pipeline(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        assert "implementation" in body.lower()
+        assert "implement" in body
+        assert "review" in body
+        assert "pr_checks" in body
+        assert "merge" in body
+
+    def test_workflow_shows_investigation_pipeline(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        assert "investigation" in body.lower()
+        assert "Investigation" in body or "investigation" in body
+
+    def test_workflow_shows_decision_points(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        assert "Approved?" in body
+        assert "CI passed?" in body
+
+    def test_workflow_shows_loop_iterations(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        assert "max 3 iterations" in body
+        assert "max 2 retries" in body
+
+    def test_workflow_shows_executor_types(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        assert "workflow-node-claude" in body
+        assert "workflow-node-shell" in body
+        assert "workflow-node-internal" in body
+
+    def test_workflow_shows_identity_badges(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        assert "coder" in body
+        assert "reviewer" in body
+
+    def test_workflow_shows_loop_fix_stages(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        assert "fix" in body
+        assert "ci_fix" in body
+
+    def test_workflow_nav_link(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        assert 'href="/workflow"' in body
+        assert 'aria-current="page"' in body
+
+    def test_workflow_pipeline_tabs(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        assert "workflow-tab" in body
+        assert "switchPipeline" in body
+
+    def test_workflow_no_db(self, tmp_path):
+        app = create_app(db_path=tmp_path / "nonexistent.db")
+        client = TestClient(app)
+        resp = client.get("/workflow")
+        assert resp.status_code == 200
+        assert "No pipeline definitions found" in resp.text
+
+    def test_workflow_shows_stage_timeouts(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        assert "min" in body
+
+    def test_workflow_shows_investigation_note(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        assert "Research only" in body
+
+    def test_workflow_config_overrides_loop_iterations(self, db_file):
+        """When botfarm_config is provided, loop max iterations should reflect config values."""
+        cfg = BotfarmConfig(
+            projects=[ProjectConfig(name="test", linear_team="T", base_dir="/tmp", worktree_prefix="w", slots=[1])],
+            linear=LinearConfig(api_key="test"),
+        )
+        cfg.agents.max_review_iterations = 5
+        cfg.agents.max_ci_retries = 4
+        app = create_app(db_path=db_file, botfarm_config=cfg)
+        client = TestClient(app)
+        resp = client.get("/workflow")
+        body = resp.text
+        assert "max 5 iterations" in body
+        assert "max 4 retries" in body

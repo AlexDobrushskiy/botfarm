@@ -121,6 +121,14 @@ def resolve_max_iterations(loop: StageLoop, agents_cfg: object) -> int:
     return loop.max_iterations
 
 
+def load_all_pipelines(conn: sqlite3.Connection) -> list[PipelineTemplate]:
+    """Load all pipeline templates from the database."""
+    rows = conn.execute(
+        "SELECT * FROM pipeline_templates ORDER BY is_default DESC, name"
+    ).fetchall()
+    return [_build_pipeline(conn, row) for row in rows]
+
+
 def _build_pipeline(conn: sqlite3.Connection, row: sqlite3.Row) -> PipelineTemplate:
     """Build a PipelineTemplate from a DB row, loading stages and loops."""
     pipeline_id = row["id"]
