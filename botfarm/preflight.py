@@ -38,6 +38,33 @@ class CheckResult:
 # ---------------------------------------------------------------------------
 
 
+def _resolve_remote_url(base: Path) -> str | None:
+    """Return the URL for the 'origin' remote, or *None* on failure."""
+    try:
+        proc = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=str(base),
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if proc.returncode == 0:
+            return proc.stdout.strip()
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    return None
+
+
+def _describe_identity(config: BotfarmConfig, env: dict[str, str] | None) -> str:
+    """Return a human-readable description of the SSH identity being used."""
+    ssh_key_path = config.identities.coder.ssh_key_path
+    if ssh_key_path:
+        return f"coder SSH key ({Path(ssh_key_path).expanduser()})"
+    if env and "GIT_SSH_COMMAND" in env:
+        return "custom GIT_SSH_COMMAND"
+    return "default SSH"
+
+
 def check_git_repos(
     config: BotfarmConfig,
     *,
@@ -49,6 +76,7 @@ def check_git_repos(
     the current environment for the ``git ls-remote`` call.
     """
     subprocess_env = {**os.environ, **env} if env else None
+    identity_desc = _describe_identity(config, env)
     results: list[CheckResult] = []
     for project in config.projects:
         base = Path(project.base_dir).expanduser()
@@ -66,6 +94,9 @@ def check_git_repos(
                 message=f"base_dir is not a git repository: {base}",
             ))
             continue
+        # Resolve remote URL for richer error messages
+        remote_url = _resolve_remote_url(base)
+        url_display = f" ({remote_url})" if remote_url else ""
         # Check that git remote is reachable
         try:
             proc = subprocess.run(
@@ -77,17 +108,23 @@ def check_git_repos(
                 env=subprocess_env,
             )
             if proc.returncode != 0:
+                raw_err = proc.stderr.strip()[:200]
                 results.append(CheckResult(
                     name=f"git_repo:{project.name}",
                     passed=False,
-                    message=f"git remote 'origin' not reachable: {proc.stderr.strip()[:200]}",
+                    message=(
+                        f"git remote 'origin'{url_display} not reachable "
+                        f"using {identity_desc}. "
+                        f"Ensure the associated GitHub account has access "
+                        f"to this repository. Raw error: {raw_err}"
+                    ),
                 ))
                 continue
         except subprocess.TimeoutExpired:
             results.append(CheckResult(
                 name=f"git_repo:{project.name}",
                 passed=False,
-                message="git ls-remote timed out after 15s",
+                message=f"git ls-remote{url_display} timed out after 15s",
             ))
             continue
         except FileNotFoundError:
