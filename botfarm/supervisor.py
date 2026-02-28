@@ -30,7 +30,7 @@ from pathlib import Path
 from types import FrameType
 
 from botfarm.config import BotfarmConfig, IdentitiesConfig, ProjectConfig, resolve_stage_timeout
-from botfarm.db import get_task, init_db, insert_event, insert_task, resolve_db_path, save_queue_entries, update_task
+from botfarm.db import get_events, get_task, init_db, insert_event, insert_task, resolve_db_path, save_queue_entries, update_task
 from botfarm.linear import LinearClient, LinearPoller, create_pollers
 from botfarm.notifications import Notifier
 from botfarm.preflight import CheckResult, log_preflight_summary, run_preflight_checks
@@ -1564,6 +1564,49 @@ class Supervisor:
     # Webhook notification helpers
     # ------------------------------------------------------------------
 
+    def _build_review_summary(self, task_id: int | None) -> str | None:
+        """Build a review summary string from DB events when Codex is enabled.
+
+        Returns None when Codex reviewer is disabled or no review events exist.
+        """
+        if not self._config.agents.codex_reviewer_enabled:
+            return None
+        if task_id is None:
+            return None
+
+        # Claude verdict from the latest claude_review_completed event
+        claude_events = get_events(
+            self._conn, task_id=task_id, event_type="claude_review_completed",
+        )
+        claude_str = "UNKNOWN"
+        if claude_events:
+            detail = claude_events[0]["detail"] or ""
+            if "approved" in detail and "changes_requested" not in detail:
+                claude_str = "APPROVED"
+            else:
+                claude_str = "CHANGES_REQUESTED"
+
+        # Codex verdict from events
+        codex_events = get_events(
+            self._conn, task_id=task_id, event_type="codex_review_completed",
+        )
+        codex_failed_events = get_events(
+            self._conn, task_id=task_id, event_type="codex_review_failed",
+        )
+
+        if codex_events:
+            detail = codex_events[0]["detail"] or ""
+            if "approved" in detail and "changes_requested" not in detail:
+                codex_str = "APPROVED"
+            else:
+                codex_str = "CHANGES_REQUESTED"
+            return f"Review: Claude {claude_str}, Codex {codex_str}"
+
+        if codex_failed_events:
+            return f"Review: Claude {claude_str}, Codex FAILED (fell back to Claude-only)"
+
+        return None
+
     def _notify_task_completed(self, slot: SlotState) -> None:
         """Send a webhook notification for a completed task."""
         task_id = self._find_task_id(slot.ticket_id)
@@ -1595,6 +1638,7 @@ class Supervisor:
             title=slot.ticket_title or "unknown",
             duration_seconds=duration,
             pr_url=pr_url,
+            review_summary=self._build_review_summary(task_id),
         )
 
     def _notify_task_failed(self, slot: SlotState) -> None:
@@ -1609,6 +1653,7 @@ class Supervisor:
             ticket_id=slot.ticket_id or "unknown",
             title=slot.ticket_title or "unknown",
             failure_reason=reason,
+            review_summary=self._build_review_summary(task_id),
         )
 
     # ------------------------------------------------------------------

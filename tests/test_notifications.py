@@ -274,3 +274,111 @@ class TestErrorHandling:
         assert n._client.post.call_count == 1
 
         n.close()
+
+
+# ---------------------------------------------------------------------------
+# Review summary in notifications (Codex reviewer verdicts)
+# ---------------------------------------------------------------------------
+
+
+class TestNotificationWithCodexVerdict:
+    @pytest.fixture()
+    def notifier(self):
+        n = Notifier(NotificationsConfig(
+            webhook_url="https://hooks.slack.com/services/xxx",
+            webhook_format="slack",
+        ))
+        n._client = MagicMock()
+        response = MagicMock()
+        response.raise_for_status = MagicMock()
+        n._client.post.return_value = response
+        yield n
+        n.close()
+
+    def test_task_completed_includes_review_summary(self, notifier):
+        notifier.notify_task_completed(
+            ticket_id="SMA-42",
+            title="Add feature",
+            review_summary="Review: Claude APPROVED, Codex APPROVED",
+        )
+        payload = notifier._client.post.call_args[1]["json"]
+        assert "Review: Claude APPROVED, Codex APPROVED" in payload["text"]
+        assert "SMA-42" in payload["text"]
+
+    def test_task_completed_review_summary_with_changes_requested(self, notifier):
+        notifier.notify_task_completed(
+            ticket_id="SMA-10",
+            title="Fix bug",
+            review_summary="Review: Claude APPROVED, Codex CHANGES_REQUESTED",
+        )
+        payload = notifier._client.post.call_args[1]["json"]
+        assert "Claude APPROVED" in payload["text"]
+        assert "Codex CHANGES_REQUESTED" in payload["text"]
+
+    def test_task_failed_includes_review_summary(self, notifier):
+        notifier.notify_task_failed(
+            ticket_id="SMA-5",
+            title="Broken",
+            failure_reason="review: max iterations",
+            review_summary="Review: Claude APPROVED, Codex CHANGES_REQUESTED",
+        )
+        payload = notifier._client.post.call_args[1]["json"]
+        assert "Review: Claude APPROVED, Codex CHANGES_REQUESTED" in payload["text"]
+        assert "max iterations" in payload["text"]
+
+    def test_task_failed_codex_failed_summary(self, notifier):
+        notifier.notify_task_failed(
+            ticket_id="SMA-7",
+            title="Issue",
+            review_summary="Review: Claude APPROVED, Codex FAILED (fell back to Claude-only)",
+        )
+        payload = notifier._client.post.call_args[1]["json"]
+        assert "Codex FAILED" in payload["text"]
+        assert "fell back to Claude-only" in payload["text"]
+
+
+class TestNotificationWithoutCodex:
+    @pytest.fixture()
+    def notifier(self):
+        n = Notifier(NotificationsConfig(
+            webhook_url="https://hooks.slack.com/services/xxx",
+            webhook_format="slack",
+        ))
+        n._client = MagicMock()
+        response = MagicMock()
+        response.raise_for_status = MagicMock()
+        n._client.post.return_value = response
+        yield n
+        n.close()
+
+    def test_task_completed_no_review_summary(self, notifier):
+        notifier.notify_task_completed(
+            ticket_id="SMA-42",
+            title="Add feature",
+        )
+        payload = notifier._client.post.call_args[1]["json"]
+        assert "SMA-42" in payload["text"]
+        assert "Review:" not in payload["text"]
+        assert "Codex" not in payload["text"]
+
+    def test_task_failed_no_review_summary(self, notifier):
+        notifier.notify_task_failed(
+            ticket_id="SMA-5",
+            title="Broken",
+            failure_reason="implement: tests failed",
+        )
+        payload = notifier._client.post.call_args[1]["json"]
+        assert "tests failed" in payload["text"]
+        assert "Review:" not in payload["text"]
+        assert "Codex" not in payload["text"]
+
+    def test_task_completed_none_review_summary_unchanged(self, notifier):
+        notifier.notify_task_completed(
+            ticket_id="SMA-1",
+            title="Simple",
+            review_summary=None,
+        )
+        payload = notifier._client.post.call_args[1]["json"]
+        text = payload["text"]
+        assert "SMA-1" in text
+        assert "Review:" not in text
