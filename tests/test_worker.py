@@ -2720,6 +2720,29 @@ class TestPromptContent:
         assert "comments/COMMENT_ID/replies" in prompt
         assert "Fixed" in prompt
 
+    @patch("botfarm.worker.run_claude_streaming")
+    def test_fix_prompt_multi_reviewer(self, mock_claude, tmp_path):
+        mock_claude.return_value = ClaudeResult(
+            session_id="s", num_turns=1, duration_seconds=1.0,
+            exit_subtype="", result_text="done",
+        )
+        _run_fix(PR_URL, cwd=tmp_path, max_turns=10, codex_enabled=True)
+        prompt = mock_claude.call_args.args[0]
+        assert "multiple reviewers" in prompt
+        assert "CODEX: " in prompt
+        assert "Address all comments regardless of source" in prompt
+
+    @patch("botfarm.worker.run_claude_streaming")
+    def test_fix_prompt_single_reviewer(self, mock_claude, tmp_path):
+        mock_claude.return_value = ClaudeResult(
+            session_id="s", num_turns=1, duration_seconds=1.0,
+            exit_subtype="", result_text="done",
+        )
+        _run_fix(PR_URL, cwd=tmp_path, max_turns=10, codex_enabled=False)
+        prompt = mock_claude.call_args.args[0]
+        assert "multiple reviewers" not in prompt
+        assert "CODEX: " not in prompt
+
 
 # ---------------------------------------------------------------------------
 # Investigation label detection and prompt selection

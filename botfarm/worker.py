@@ -1004,6 +1004,7 @@ def _run_fix(
     env: dict[str, str] | None = None,
     on_context_fill: ContextFillCallback | None = None,
     stage_tpl: StageTemplate | None = None,
+    codex_enabled: bool = False,
 ) -> StageResult:
     """FIX stage — Fresh Claude Code addresses review comments and pushes fixes."""
     owner, repo, number = _parse_pr_url(pr_url)
@@ -1026,6 +1027,14 @@ def _run_fix(
         "to list inline comments. Note each comment's `id` field from the API response.\n\n"
         "Make the necessary code changes for each comment, run tests, "
         "commit and push the fixes.\n\n"
+    )
+    if codex_enabled:
+        prompt += (
+            "Note: Comments may come from multiple reviewers. Comments prefixed with "
+            "\"CODEX: \" are from the Codex reviewer. Address all comments regardless "
+            "of source.\n\n"
+        )
+    prompt += (
         "After addressing (or deciding to skip) each inline comment, reply to it using:\n"
         f"  gh api repos/{owner}/{repo}/pulls/{number}/comments/COMMENT_ID/replies -f body='...'\n"
         "Replace COMMENT_ID with the comment's `id` from the earlier API response.\n\n"
@@ -2219,6 +2228,7 @@ def _execute_stage(
         return _run_fix(
             pr_url, cwd=cwd, max_turns=max_turns, log_file=log_file,
             env=env, on_context_fill=on_context_fill,
+            codex_enabled=codex_enabled,
         )
     elif stage == "pr_checks":
         if not pr_url:
