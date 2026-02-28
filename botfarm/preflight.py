@@ -578,17 +578,18 @@ def check_codex_reviewer(config: BotfarmConfig) -> list[CheckResult]:
 
     results: list[CheckResult] = []
 
-    if not check_codex_available():
+    codex_ok, codex_msg = check_codex_available()
+    if not codex_ok:
         results.append(CheckResult(
             name="codex_reviewer:binary",
             passed=False,
-            message="codex binary not found on PATH — install Codex or disable codex_reviewer_enabled",
+            message=f"{codex_msg} — install Codex or disable codex_reviewer_enabled",
         ))
     else:
         results.append(CheckResult(
             name="codex_reviewer:binary",
             passed=True,
-            message="OK — codex binary found",
+            message=f"OK — {codex_msg}",
         ))
 
     has_api_key = bool(os.environ.get("OPENAI_API_KEY"))
