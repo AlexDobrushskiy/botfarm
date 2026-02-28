@@ -71,6 +71,7 @@ class Notifier:
         title: str,
         duration_seconds: float | None = None,
         pr_url: str | None = None,
+        review_summary: str | None = None,
     ) -> None:
         """Notify that a task completed successfully."""
         lines = [f"*Task completed:* {ticket_id} — {title}"]
@@ -85,6 +86,8 @@ class Notifier:
             details.append(f"PR: {pr_url}")
         if details:
             lines.append(" | ".join(details))
+        if review_summary:
+            lines.append(review_summary)
         self._send("task_completed", "\n".join(lines))
 
     def notify_task_failed(
@@ -93,11 +96,14 @@ class Notifier:
         ticket_id: str,
         title: str,
         failure_reason: str | None = None,
+        review_summary: str | None = None,
     ) -> None:
         """Notify that a task failed."""
         lines = [f"*Task failed:* {ticket_id} — {title}"]
         if failure_reason:
             lines.append(f"Reason: {failure_reason[:200]}")
+        if review_summary:
+            lines.append(review_summary)
         self._send("task_failed", "\n".join(lines))
 
     def notify_limit_hit(

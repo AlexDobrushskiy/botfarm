@@ -519,6 +519,7 @@ class StageResult:
     pr_url: str | None = None
     error: str | None = None
     review_approved: bool | None = None
+    claude_review_approved: bool | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -891,6 +892,7 @@ def _run_review(
             success=True,
             claude_result=claude_result,
             review_approved=claude_approved,
+            claude_review_approved=claude_approved,
         )
 
     # --- Multi-review mode: run Codex sequentially ---
@@ -946,6 +948,7 @@ def _run_review(
         claude_result=claude_result,
         codex_result=codex_result_obj,
         review_approved=merged_approved,
+        claude_review_approved=claude_approved,
     )
 
 
@@ -1679,6 +1682,17 @@ class _PipelineContext:
             )
             self.conn.commit()
             return
+
+        # Record Claude's individual review verdict
+        if result.claude_review_approved is not None:
+            claude_verdict = "approved" if result.claude_review_approved else "changes_requested"
+            insert_event(
+                self.conn,
+                task_id=self.task_id,
+                event_type="claude_review_completed",
+                detail=f"verdict={claude_verdict}",
+            )
+            self.conn.commit()
 
         codex = result.codex_result
         if codex is None:
