@@ -86,6 +86,9 @@
             {% if stage.status == 'completed' %}&#10003;{% elif stage.status == 'failed' %}&#10005;{% endif %}
         </div>
         <div class="pipeline-label">{{ stage.name | replace("_", " ") }}</div>
+        {% if stage.codex_review is defined and stage.codex_review %}
+        <div class="pipeline-badge pipeline-badge-codex">Codex: {{ stage.codex_review.status }}</div>
+        {% endif %}
         {% if stage.iteration_count > 1 %}
         <div class="pipeline-badge">&times;{{ stage.iteration_count }}</div>
         {% endif %}
@@ -145,7 +148,7 @@
         <tbody>
             {% for stage in stages %}
             <tr>
-                <td>{{ stage.stage }}</td>
+                <td>{% if stage.stage == "codex_review" %}Codex Review{% else %}{{ stage.stage }}{% endif %}</td>
                 <td>{{ stage.iteration }}</td>
                 <td>{{ format_duration(stage.duration_seconds | int) if stage.duration_seconds is not none else "-" }}</td>
                 <td>{{ stage.turns if stage.turns is not none else "-" }}</td>

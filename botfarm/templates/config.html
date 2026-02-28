@@ -234,6 +234,16 @@
             {% for stage, minutes in full_config_values.agents.timeout_minutes.items() %}
             <tr><td>Timeout: {{ stage }}</td><td>{{ minutes }} min</td></tr>
             {% endfor %}
+            <tr>
+                <td>Codex Reviewer</td>
+                <td class="{{ 'bool-yes' if full_config_values.agents.codex_reviewer_enabled else 'bool-no' }}">
+                    {{ "Enabled" if full_config_values.agents.codex_reviewer_enabled else "Disabled" }}
+                </td>
+            </tr>
+            {% if full_config_values.agents.codex_reviewer_enabled %}
+            <tr><td>Codex Reviewer Model</td><td>{{ full_config_values.agents.codex_reviewer_model or "default" }}</td></tr>
+            <tr><td>Codex Reviewer Timeout</td><td>{{ full_config_values.agents.codex_reviewer_timeout_minutes }} min</td></tr>
+            {% endif %}
         </tbody>
     </table>
     </figure>
@@ -409,6 +419,27 @@
                        value="{{ minutes }}" min="1" required>
             </label>
             {% endfor %}
+        </div>
+
+        <h3>Codex Reviewer</h3>
+        <fieldset>
+            <label>
+                <input type="checkbox" id="agents-codex_reviewer_enabled" name="codex_reviewer_enabled" role="switch"
+                       {% if config_values.agents.codex_reviewer_enabled %}checked{% endif %}>
+                Enable Codex Reviewer
+            </label>
+        </fieldset>
+        <div class="grid">
+            <label for="agents-codex_reviewer_model">
+                Codex Reviewer Model
+                <input type="text" id="agents-codex_reviewer_model" name="codex_reviewer_model"
+                       value="{{ config_values.agents.codex_reviewer_model }}" placeholder="default">
+            </label>
+            <label for="agents-codex_reviewer_timeout_minutes">
+                Codex Reviewer Timeout (minutes)
+                <input type="number" id="agents-codex_reviewer_timeout_minutes" name="codex_reviewer_timeout_minutes"
+                       value="{{ config_values.agents.codex_reviewer_timeout_minutes }}" min="1" required>
+            </label>
         </div>
         <button type="submit">Save Agent Settings</button>
     </form>

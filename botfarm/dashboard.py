@@ -212,18 +212,106 @@ def _summarize_tool_input(tool_name: str, tool_input: dict) -> str:
     return ""
 
 
+def format_codex_ndjson_line(raw_line: str) -> tuple[str, str]:
+    """Parse a raw Codex JSONL line and return ``(event_type, formatted_text)``.
+
+    Handles Codex Responses API event types:
+    ``thread.started``, ``turn.started``, ``item.completed``,
+    ``turn.completed``.
+
+    For ``item.completed`` events, ``agent_message`` text is shown
+    prominently, ``reasoning`` is dimmed, and ``shell_command`` /
+    ``shell_result`` are shown in code block style.
+    """
+    stripped = raw_line.strip()
+    if not stripped:
+        return ("log", "")
+
+    try:
+        event = json.loads(stripped)
+    except (json.JSONDecodeError, ValueError):
+        return ("log", stripped)
+
+    if not isinstance(event, dict):
+        return ("log", stripped)
+
+    event_type = event.get("type", "")
+
+    if event_type == "thread.started":
+        return ("system", "[Codex thread started]")
+
+    if event_type == "turn.started":
+        return ("system", "[Codex turn started]")
+
+    if event_type == "turn.completed":
+        status = event.get("status", "")
+        return ("result", f"[Codex turn completed: {status}]" if status else "[Codex turn completed]")
+
+    if event_type == "item.completed":
+        item = event.get("item") or {}
+        item_type = item.get("type", "")
+
+        if item_type == "agent_message":
+            text = ""
+            for block in item.get("content", []):
+                if isinstance(block, dict) and block.get("type") == "text":
+                    text += block.get("text", "")
+            return ("assistant", text.strip() if text.strip() else "[agent message]")
+
+        if item_type == "reasoning":
+            text = ""
+            for block in item.get("content", []):
+                if isinstance(block, dict) and block.get("type") == "text":
+                    text += block.get("text", "")
+            return ("system", text.strip() if text.strip() else "[reasoning]")
+
+        if item_type == "shell_command":
+            cmd = item.get("command", "")
+            return ("tool_use", f"$ {cmd}" if cmd else "[shell command]")
+
+        if item_type == "shell_result":
+            output = item.get("output", "")
+            snippet = output[:500] if output else ""
+            return ("tool_result", snippet if snippet else "[shell result]")
+
+        # Other item types — show type
+        return ("system", f"[{item_type}]" if item_type else "[item]")
+
+    # Unknown event type — show raw type
+    if event_type:
+        return ("system", f"[{event_type}]")
+
+    return ("log", stripped)
+
+
+def _review_display_status(exit_subtype: str | None) -> str:
+    """Map a review stage exit_subtype to a human-readable display status."""
+    exit_sub = (exit_subtype or "").lower()
+    if exit_sub in ("approved", "changes_requested"):
+        return exit_sub.upper()
+    if exit_sub == "skipped":
+        return "Skipped"
+    if exit_sub in ("failed", "error"):
+        return "Failed"
+    return "In Progress"
+
+
 def build_pipeline_state(
     stage_runs: list[dict], task_status: str | None,
 ) -> list[dict]:
     """Aggregate stage runs into per-stage pipeline state for the stepper.
 
     Returns a list of dicts (one per canonical stage) with keys:
-        name, status, iteration_count, has_limit_restart
+        name, status, iteration_count, has_limit_restart, codex_review
     """
-    # Collect info per stage
+    # Collect info per stage, excluding codex_review from pipeline stages
     stage_info: dict[str, dict] = {}
+    codex_runs: list[dict] = []
     for run in stage_runs:
         name = run["stage"]
+        if name == "codex_review":
+            codex_runs.append(run)
+            continue
         if name not in stage_info:
             stage_info[name] = {
                 "count": 0,
@@ -233,6 +321,13 @@ def build_pipeline_state(
         info["count"] += 1
         if run.get("was_limit_restart"):
             info["has_limit_restart"] = True
+
+    # Summarise Codex review runs for attachment to the review stage
+    codex_summary = None
+    if codex_runs:
+        last = codex_runs[-1]
+        codex_status = _review_display_status(last.get("exit_subtype"))
+        codex_summary = {"status": codex_status, "count": len(codex_runs)}
 
     # Find the last stage that has runs (by canonical order)
     last_run_idx = -1
@@ -260,12 +355,16 @@ def build_pipeline_state(
         else:
             status = "pending"
 
-        result.append({
+        entry: dict = {
             "name": stage_name,
             "status": status,
             "iteration_count": info["count"] if info else 0,
             "has_limit_restart": info["has_limit_restart"] if info else False,
-        })
+        }
+        # Attach Codex review summary to the review stage
+        if stage_name == "review" and codex_summary:
+            entry["codex_review"] = codex_summary
+        result.append(entry)
 
     return result
 
@@ -553,6 +652,7 @@ def create_app(
         state = _read_state()
         slots = _enrich_slots_with_context_fill(state.get("slots", []))
         slots = _enrich_slots_with_pipeline(slots)
+        slots = _enrich_slots_with_codex_review(slots)
         dispatch_paused = state.get("dispatch_paused", False)
         dispatch_pause_reason = state.get("dispatch_pause_reason")
         usage = state.get("usage", {})
@@ -633,11 +733,64 @@ def create_app(
                 slot["pipeline"] = []
         return slots
 
+    def _enrich_slots_with_codex_review(slots: list[dict]) -> list[dict]:
+        """Attach Codex review status to busy slots in the review stage."""
+        review_tickets = [
+            s["ticket_id"] for s in slots
+            if s.get("status") == "busy"
+            and s.get("stage") == "review"
+            and s.get("ticket_id")
+        ]
+        if not review_tickets:
+            return slots
+        conn = _get_db()
+        if not conn:
+            return slots
+        try:
+            for slot in slots:
+                tid = slot.get("ticket_id")
+                if tid not in review_tickets:
+                    continue
+                # Look up task_id for this ticket
+                task_row = conn.execute(
+                    "SELECT id FROM tasks WHERE ticket_id = ? ORDER BY id DESC LIMIT 1",
+                    (tid,),
+                ).fetchone()
+                if not task_row:
+                    continue
+                # Find the latest codex_review stage run
+                codex_row = conn.execute(
+                    "SELECT exit_subtype FROM stage_runs "
+                    "WHERE task_id = ? AND stage = 'codex_review' "
+                    "ORDER BY id DESC LIMIT 1",
+                    (task_row["id"],),
+                ).fetchone()
+                if codex_row:
+                    slot["codex_review_status"] = _review_display_status(
+                        codex_row["exit_subtype"]
+                    )
+                    # Also check the latest Claude review status
+                    claude_row = conn.execute(
+                        "SELECT exit_subtype FROM stage_runs "
+                        "WHERE task_id = ? AND stage = 'review' "
+                        "ORDER BY id DESC LIMIT 1",
+                        (task_row["id"],),
+                    ).fetchone()
+                    slot["claude_review_status"] = _review_display_status(
+                        claude_row["exit_subtype"] if claude_row else None
+                    )
+        except sqlite3.OperationalError:
+            pass
+        finally:
+            conn.close()
+        return slots
+
     @app.get("/partials/slots", response_class=HTMLResponse)
     def partial_slots(request: Request):
         state = _read_state()
         slots = _enrich_slots_with_context_fill(state.get("slots", []))
         slots = _enrich_slots_with_pipeline(slots)
+        slots = _enrich_slots_with_codex_review(slots)
         dispatch_paused = state.get("dispatch_paused", False)
         dispatch_pause_reason = state.get("dispatch_pause_reason")
         project_pauses = state.get("project_pauses", {})
@@ -1443,6 +1596,9 @@ def create_app(
                     for label, stages in cfg.agents.timeout_overrides.items()
                 },
                 "timeout_grace_seconds": cfg.agents.timeout_grace_seconds,
+                "codex_reviewer_enabled": cfg.agents.codex_reviewer_enabled,
+                "codex_reviewer_model": cfg.agents.codex_reviewer_model,
+                "codex_reviewer_timeout_minutes": cfg.agents.codex_reviewer_timeout_minutes,
             },
             "usage_limits": {
                 "enabled": cfg.usage_limits.enabled,
@@ -1492,6 +1648,9 @@ def create_app(
                     for label, stages in cfg.agents.timeout_overrides.items()
                 },
                 "timeout_grace_seconds": cfg.agents.timeout_grace_seconds,
+                "codex_reviewer_enabled": cfg.agents.codex_reviewer_enabled,
+                "codex_reviewer_model": cfg.agents.codex_reviewer_model,
+                "codex_reviewer_timeout_minutes": cfg.agents.codex_reviewer_timeout_minutes,
             },
             "notifications": {
                 "webhook_url": cfg.notifications.webhook_url,
@@ -1917,7 +2076,7 @@ def create_app(
         files = _find_log_files(ticket_id, stage)
         return files[0] if files else None
 
-    _ALL_LOG_STAGES = list(STAGES) + ["ci_fix"]
+    _ALL_LOG_STAGES = list(STAGES) + ["ci_fix", "codex_review"]
 
     def _available_stages_with_logs(ticket_id: str) -> list[str]:
         """Return stage names that have log files, in canonical order."""
@@ -2064,13 +2223,16 @@ def create_app(
         if log_file is None:
             return PlainTextResponse("No log file found", status_code=404)
 
+        # Use Codex formatter for codex_review stage logs
+        line_formatter = format_codex_ndjson_line if stage == "codex_review" else format_ndjson_line
+
         async def event_generator():
             try:
                 with open(log_file, errors="replace") as f:
                     while True:
                         line = await asyncio.to_thread(f.readline)
                         if line:
-                            event_type, formatted = format_ndjson_line(line)
+                            event_type, formatted = line_formatter(line)
                             if formatted:
                                 yield {
                                     "event": event_type,

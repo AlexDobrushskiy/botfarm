@@ -18,7 +18,7 @@ from botfarm.config import (
     ProjectConfig,
     ReviewerIdentity,
 )
-from botfarm.dashboard import build_pipeline_state, create_app, format_ndjson_line, start_dashboard
+from botfarm.dashboard import build_pipeline_state, create_app, format_codex_ndjson_line, format_ndjson_line, start_dashboard
 from botfarm.db import (
     count_tasks,
     get_distinct_projects,
@@ -2292,6 +2292,73 @@ class TestBuildPipelineState:
         names = [s["name"] for s in result]
         assert names == ["implement", "review", "fix", "pr_checks", "merge"]
 
+    def test_codex_review_not_a_pipeline_stage(self):
+        """codex_review runs should NOT create a separate pipeline stage."""
+        runs = [
+            {"stage": "implement", "exit_subtype": "done", "was_limit_restart": 0},
+            {"stage": "review", "exit_subtype": "approved", "was_limit_restart": 0},
+            {"stage": "codex_review", "exit_subtype": "approved", "was_limit_restart": 0},
+            {"stage": "pr_checks", "exit_subtype": None, "was_limit_restart": 0},
+        ]
+        result = build_pipeline_state(runs, "in_progress")
+        names = [s["name"] for s in result]
+        assert "codex_review" not in names
+        assert len(result) == 5  # only canonical stages
+
+    def test_codex_review_attached_to_review_stage(self):
+        """codex_review info should be attached to the review stage entry."""
+        runs = [
+            {"stage": "implement", "exit_subtype": "done", "was_limit_restart": 0},
+            {"stage": "review", "exit_subtype": "approved", "was_limit_restart": 0},
+            {"stage": "codex_review", "exit_subtype": "approved", "was_limit_restart": 0},
+            {"stage": "pr_checks", "exit_subtype": None, "was_limit_restart": 0},
+        ]
+        result = build_pipeline_state(runs, "in_progress")
+        review = next(s for s in result if s["name"] == "review")
+        assert "codex_review" in review
+        assert review["codex_review"]["status"] == "APPROVED"
+        assert review["codex_review"]["count"] == 1
+
+    def test_codex_review_changes_requested(self):
+        runs = [
+            {"stage": "implement", "exit_subtype": "done", "was_limit_restart": 0},
+            {"stage": "review", "exit_subtype": "approved", "was_limit_restart": 0},
+            {"stage": "codex_review", "exit_subtype": "changes_requested", "was_limit_restart": 0},
+        ]
+        result = build_pipeline_state(runs, "in_progress")
+        review = next(s for s in result if s["name"] == "review")
+        assert review["codex_review"]["status"] == "CHANGES_REQUESTED"
+
+    def test_codex_review_skipped(self):
+        runs = [
+            {"stage": "implement", "exit_subtype": "done", "was_limit_restart": 0},
+            {"stage": "review", "exit_subtype": "approved", "was_limit_restart": 0},
+            {"stage": "codex_review", "exit_subtype": "skipped", "was_limit_restart": 0},
+        ]
+        result = build_pipeline_state(runs, "completed")
+        review = next(s for s in result if s["name"] == "review")
+        assert review["codex_review"]["status"] == "Skipped"
+
+    def test_codex_review_failed(self):
+        runs = [
+            {"stage": "implement", "exit_subtype": "done", "was_limit_restart": 0},
+            {"stage": "review", "exit_subtype": "approved", "was_limit_restart": 0},
+            {"stage": "codex_review", "exit_subtype": "failed", "was_limit_restart": 0},
+        ]
+        result = build_pipeline_state(runs, "in_progress")
+        review = next(s for s in result if s["name"] == "review")
+        assert review["codex_review"]["status"] == "Failed"
+
+    def test_no_codex_review_no_key(self):
+        """When there are no codex_review runs, review stage has no codex_review key."""
+        runs = [
+            {"stage": "implement", "exit_subtype": "done", "was_limit_restart": 0},
+            {"stage": "review", "exit_subtype": "approved", "was_limit_restart": 0},
+        ]
+        result = build_pipeline_state(runs, "completed")
+        review = next(s for s in result if s["name"] == "review")
+        assert "codex_review" not in review
+
 
 class TestTaskDetailPipeline:
     def test_stepper_renders_on_task_page(self, client):
@@ -3848,3 +3915,196 @@ class TestRerunPreflightAPI:
         client = TestClient(app)
         resp = client.post("/api/rerun-preflight")
         assert resp.status_code == 503
+
+
+# --- Codex JSONL formatter ---
+
+
+class TestFormatCodexNdjsonLine:
+    def test_empty_line(self):
+        event_type, text = format_codex_ndjson_line("")
+        assert event_type == "log"
+        assert text == ""
+
+    def test_non_json_passthrough(self):
+        event_type, text = format_codex_ndjson_line("just a plain line")
+        assert event_type == "log"
+        assert text == "just a plain line"
+
+    def test_thread_started(self):
+        line = json.dumps({"type": "thread.started"})
+        event_type, text = format_codex_ndjson_line(line)
+        assert event_type == "system"
+        assert "thread started" in text.lower()
+
+    def test_turn_started(self):
+        line = json.dumps({"type": "turn.started"})
+        event_type, text = format_codex_ndjson_line(line)
+        assert event_type == "system"
+        assert "turn started" in text.lower()
+
+    def test_turn_completed(self):
+        line = json.dumps({"type": "turn.completed", "status": "completed"})
+        event_type, text = format_codex_ndjson_line(line)
+        assert event_type == "result"
+        assert "completed" in text.lower()
+
+    def test_item_completed_agent_message(self):
+        line = json.dumps({
+            "type": "item.completed",
+            "item": {
+                "type": "agent_message",
+                "content": [{"type": "text", "text": "Review looks good"}],
+            },
+        })
+        event_type, text = format_codex_ndjson_line(line)
+        assert event_type == "assistant"
+        assert "Review looks good" in text
+
+    def test_item_completed_reasoning(self):
+        line = json.dumps({
+            "type": "item.completed",
+            "item": {
+                "type": "reasoning",
+                "content": [{"type": "text", "text": "Thinking about the code"}],
+            },
+        })
+        event_type, text = format_codex_ndjson_line(line)
+        assert event_type == "system"
+        assert "Thinking about the code" in text
+
+    def test_item_completed_shell_command(self):
+        line = json.dumps({
+            "type": "item.completed",
+            "item": {"type": "shell_command", "command": "ls -la"},
+        })
+        event_type, text = format_codex_ndjson_line(line)
+        assert event_type == "tool_use"
+        assert "ls -la" in text
+
+    def test_item_completed_shell_result(self):
+        line = json.dumps({
+            "type": "item.completed",
+            "item": {"type": "shell_result", "output": "file1.py\nfile2.py"},
+        })
+        event_type, text = format_codex_ndjson_line(line)
+        assert event_type == "tool_result"
+        assert "file1.py" in text
+
+    def test_unknown_event_type(self):
+        line = json.dumps({"type": "some.unknown"})
+        event_type, text = format_codex_ndjson_line(line)
+        assert event_type == "system"
+        assert "some.unknown" in text
+
+
+# --- Codex review log viewer ---
+
+
+class TestLogViewerCodexStage:
+    def test_codex_review_stage_in_log_tabs(self, tmp_path):
+        """codex_review logs should be discoverable and selectable in the log viewer."""
+        db_path = tmp_path / "test.db"
+        conn = init_db(db_path)
+        task_id = insert_task(
+            conn, ticket_id="TST-CX1", title="Test Codex",
+            project="proj", slot=1, status="completed",
+        )
+        insert_stage_run(
+            conn, task_id=task_id, stage="implement", iteration=1,
+            turns=10, duration_seconds=60.0,
+        )
+        insert_stage_run(
+            conn, task_id=task_id, stage="review", iteration=1,
+            turns=5, duration_seconds=30.0,
+        )
+        insert_stage_run(
+            conn, task_id=task_id, stage="codex_review", iteration=1,
+            turns=3, duration_seconds=20.0, exit_subtype="approved",
+        )
+        conn.commit()
+        conn.close()
+
+        # Create log files
+        logs_dir = tmp_path / "logs"
+        ticket_dir = logs_dir / "TST-CX1"
+        ticket_dir.mkdir(parents=True)
+        (ticket_dir / "implement-20260228-120000.log").write_text("impl log")
+        (ticket_dir / "review-20260228-120100.log").write_text("review log")
+        (ticket_dir / "codex_review-20260228-120200.log").write_text(
+            json.dumps({"type": "item.completed", "item": {"type": "agent_message", "content": [{"type": "text", "text": "LGTM"}]}}) + "\n"
+        )
+
+        app = create_app(db_path=db_path, logs_dir=str(logs_dir))
+        client = TestClient(app)
+
+        resp = client.get("/task/TST-CX1/logs")
+        assert resp.status_code == 200
+        body = resp.text
+        assert "codex review" in body.lower() or "codex_review" in body.lower()
+
+    def test_codex_review_stage_detail_shows_label(self, tmp_path):
+        """codex_review stage runs should show 'Codex Review' label in task detail."""
+        db_path = tmp_path / "test.db"
+        conn = init_db(db_path)
+        task_id = insert_task(
+            conn, ticket_id="TST-CX2", title="Test Codex Label",
+            project="proj", slot=1, status="completed",
+        )
+        insert_stage_run(
+            conn, task_id=task_id, stage="review", iteration=1,
+            turns=5, duration_seconds=30.0,
+        )
+        insert_stage_run(
+            conn, task_id=task_id, stage="codex_review", iteration=1,
+            turns=3, duration_seconds=20.0, exit_subtype="approved",
+        )
+        conn.commit()
+        conn.close()
+
+        app = create_app(db_path=db_path)
+        client = TestClient(app)
+
+        resp = client.get(f"/task/{task_id}")
+        assert resp.status_code == 200
+        assert "Codex Review" in resp.text
+
+
+# --- Codex config toggles ---
+
+
+class TestCodexConfigToggles:
+    @pytest.fixture()
+    def config_client(self, tmp_path):
+        db_path = tmp_path / "test.db"
+        conn = init_db(db_path)
+        conn.close()
+        cfg = BotfarmConfig(
+            projects=[ProjectConfig(
+                name="proj", linear_team="team",
+                base_dir="/tmp/test", worktree_prefix="/tmp/test-wt",
+                slots=[1],
+            )],
+            linear=LinearConfig(api_key="test-key", workspace="test"),
+            source_path=str(tmp_path / "config.yaml"),
+        )
+        # Write a minimal config.yaml for edit tests
+        yaml_data = {"agents": {}}
+        (tmp_path / "config.yaml").write_text(yaml.dump(yaml_data))
+        app = create_app(db_path=db_path, botfarm_config=cfg)
+        return TestClient(app)
+
+    def test_config_view_shows_codex_fields(self, config_client):
+        """Config view tab should show Codex reviewer status."""
+        resp = config_client.get("/config")
+        assert resp.status_code == 200
+        assert "Codex Reviewer" in resp.text
+
+    def test_config_edit_shows_codex_fields(self, config_client):
+        """Config edit tab should have Codex reviewer form fields."""
+        resp = config_client.get("/config")
+        assert resp.status_code == 200
+        body = resp.text
+        assert "codex_reviewer_enabled" in body
+        assert "codex_reviewer_model" in body
+        assert "codex_reviewer_timeout_minutes" in body
