@@ -851,39 +851,62 @@ def _run_review(
     """
     owner, repo, number = _parse_pr_url(pr_url)
 
-    # --- DB-driven template path (unchanged) ---
-    # NOTE: multi-review (codex) is not yet supported with DB-driven
-    # templates; codex_enabled is ignored when stage_tpl is set.
+    # --- DB-driven template path ---
     if stage_tpl is not None:
-        return _run_claude_stage(
-            stage_tpl, cwd=cwd, max_turns=max_turns,
-            prompt_vars={
-                "pr_url": pr_url,
-                "pr_number": number,
-                "owner": owner,
-                "repo": repo,
-            },
-            log_file=log_file, env=env, on_context_fill=on_context_fill,
+        # When codex is enabled, append multi-reviewer instructions to the
+        # rendered template prompt so Claude does NOT submit gh pr review.
+        prompt_vars = {
+            "pr_url": pr_url,
+            "pr_number": number,
+            "owner": owner,
+            "repo": repo,
+        }
+        if codex_enabled:
+            # Run Claude via the DB template with the multi-reviewer note
+            prompt = render_prompt(stage_tpl, **prompt_vars)
+            prompt += (
+                "\n\nDo NOT submit a final review via 'gh pr review'. Only post inline "
+                "comments and output your verdict marker."
+            )
+            claude_result = _invoke_claude(
+                prompt, cwd=cwd, max_turns=max_turns, log_file=log_file,
+                env=env, on_context_fill=on_context_fill,
+            )
+            if claude_result.is_error:
+                return StageResult(
+                    stage=stage_tpl.name,
+                    success=False,
+                    claude_result=claude_result,
+                    error=f"Claude reported error: {claude_result.result_text[:200]}",
+                )
+            claude_approved = _parse_review_approved(claude_result.result_text)
+            # Continue to Codex section below
+        else:
+            # Single-reviewer mode with DB template — unchanged behaviour
+            return _run_claude_stage(
+                stage_tpl, cwd=cwd, max_turns=max_turns,
+                prompt_vars=prompt_vars,
+                log_file=log_file, env=env, on_context_fill=on_context_fill,
+            )
+    else:
+        # --- Legacy fallback ---
+        prompt = _build_claude_review_prompt(
+            pr_url, owner, repo, number, codex_enabled=codex_enabled,
+        )
+        claude_result = _invoke_claude(
+            prompt, cwd=cwd, max_turns=max_turns, log_file=log_file,
+            env=env, on_context_fill=on_context_fill,
         )
 
-    # --- Legacy fallback ---
-    prompt = _build_claude_review_prompt(
-        pr_url, owner, repo, number, codex_enabled=codex_enabled,
-    )
-    claude_result = _invoke_claude(
-        prompt, cwd=cwd, max_turns=max_turns, log_file=log_file,
-        env=env, on_context_fill=on_context_fill,
-    )
+        if claude_result.is_error:
+            return StageResult(
+                stage="review",
+                success=False,
+                claude_result=claude_result,
+                error=f"Claude reported error: {claude_result.result_text[:200]}",
+            )
 
-    if claude_result.is_error:
-        return StageResult(
-            stage="review",
-            success=False,
-            claude_result=claude_result,
-            error=f"Claude reported error: {claude_result.result_text[:200]}",
-        )
-
-    claude_approved = _parse_review_approved(claude_result.result_text)
+        claude_approved = _parse_review_approved(claude_result.result_text)
 
     # --- Single-reviewer mode: return immediately ---
     if not codex_enabled:
@@ -1696,17 +1719,14 @@ class _PipelineContext:
 
         codex = result.codex_result
         if codex is None:
-            # Codex was enabled but raised an exception — no result captured
+            # Codex was enabled but never ran (e.g. exception before
+            # invocation or template path that didn't invoke Codex).
+            # Record as skipped rather than misleading failed.
             insert_event(
                 self.conn,
                 task_id=self.task_id,
-                event_type="codex_review_started",
-            )
-            insert_event(
-                self.conn,
-                task_id=self.task_id,
-                event_type="codex_review_failed",
-                detail="Codex raised exception (no result captured)",
+                event_type="codex_review_skipped",
+                detail="no result (Codex not invoked)",
             )
             self.conn.commit()
             return
@@ -2186,7 +2206,22 @@ def _execute_stage(
     # --- DB-driven routing via executor_type ---
     if stage_tpl is not None:
         if stage_tpl.executor_type == "claude":
-            # Build prompt variables based on stage name
+            # Review stage routes through _run_review() so it can
+            # integrate the Codex dual-reviewer flow when enabled.
+            if stage == "review":
+                if not pr_url:
+                    raise ValueError(f"{stage} stage requires pr_url")
+                return _run_review(
+                    pr_url, cwd=cwd, max_turns=max_turns, log_file=log_file,
+                    env=env, on_context_fill=on_context_fill,
+                    stage_tpl=stage_tpl,
+                    codex_enabled=codex_enabled,
+                    codex_log_file=codex_log_file,
+                    codex_timeout=codex_timeout,
+                    codex_model=codex_model,
+                    review_iteration=review_iteration,
+                )
+            # Other claude stages use the generic runner
             prompt_vars: dict[str, str] = {}
             if stage == "implement":
                 prompt_vars["ticket_id"] = ticket_id

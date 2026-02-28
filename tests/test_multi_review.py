@@ -19,6 +19,7 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 
 from botfarm.codex import CodexResult
+from botfarm.workflow import StageTemplate
 from botfarm.worker import (
     ClaudeResult,
     StageResult,
@@ -37,6 +38,21 @@ PR_URL = "https://github.com/owner/repo/pull/42"
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _make_review_stage_tpl() -> StageTemplate:
+    """Create a minimal review StageTemplate for testing."""
+    return StageTemplate(
+        name="review",
+        stage_order=2,
+        executor_type="claude",
+        identity="reviewer",
+        prompt_template="Review the pull request at {pr_url}. VERDICT: APPROVED or CHANGES_REQUESTED",
+        max_turns=10,
+        timeout_minutes=30,
+        shell_command=None,
+        result_parser="review_verdict",
+    )
 
 
 def _make_claude_result(text: str = "done", is_error: bool = False) -> ClaudeResult:
@@ -544,3 +560,162 @@ class TestStageResultCodexField:
         sr = StageResult(stage="review", success=True, codex_result=cr)
         assert sr.codex_result is cr
         assert sr.codex_result.thread_id == "t-test"
+
+
+# ---------------------------------------------------------------------------
+# DB template + Codex integration
+# ---------------------------------------------------------------------------
+
+
+class TestDBTemplateWithCodex:
+    """Verify _run_review() works with DB templates and Codex enabled."""
+
+    @patch("botfarm.worker._submit_aggregate_review")
+    @patch("botfarm.worker._run_codex_review")
+    @patch("botfarm.worker._invoke_claude")
+    def test_both_approve(self, mock_claude, mock_codex, mock_submit, tmp_path):
+        """DB template + Codex enabled: both approve → merged approved."""
+        mock_claude.return_value = _make_claude_result("VERDICT: APPROVED")
+        mock_codex.return_value = StageResult(
+            stage="codex_review",
+            success=True,
+            codex_result=_make_codex_result("VERDICT: APPROVED"),
+            review_approved=True,
+        )
+
+        result = _run_review(
+            PR_URL, cwd=tmp_path, max_turns=10,
+            stage_tpl=_make_review_stage_tpl(),
+            codex_enabled=True,
+        )
+
+        assert result.success is True
+        assert result.review_approved is True
+        assert result.codex_result is not None
+        assert result.claude_result is not None
+        mock_submit.assert_called_once()
+        assert mock_submit.call_args.kwargs["approved"] is True
+
+    @patch("botfarm.worker._submit_aggregate_review")
+    @patch("botfarm.worker._run_codex_review")
+    @patch("botfarm.worker._invoke_claude")
+    def test_codex_blocks(self, mock_claude, mock_codex, mock_submit, tmp_path):
+        """DB template + Codex requests changes → merged blocked."""
+        mock_claude.return_value = _make_claude_result("VERDICT: APPROVED")
+        mock_codex.return_value = StageResult(
+            stage="codex_review",
+            success=True,
+            codex_result=_make_codex_result("VERDICT: CHANGES_REQUESTED"),
+            review_approved=False,
+        )
+
+        result = _run_review(
+            PR_URL, cwd=tmp_path, max_turns=10,
+            stage_tpl=_make_review_stage_tpl(),
+            codex_enabled=True,
+        )
+
+        assert result.success is True
+        assert result.review_approved is False
+        mock_submit.assert_called_once()
+        assert mock_submit.call_args.kwargs["approved"] is False
+
+    @patch("botfarm.worker._submit_aggregate_review")
+    @patch("botfarm.worker._run_codex_review")
+    @patch("botfarm.worker._invoke_claude")
+    def test_codex_error_fallback(self, mock_claude, mock_codex, mock_submit, tmp_path):
+        """DB template + Codex error → Claude verdict stands (fail-open)."""
+        mock_claude.return_value = _make_claude_result("VERDICT: APPROVED")
+        mock_codex.return_value = StageResult(
+            stage="codex_review",
+            success=False,
+            codex_result=_make_codex_result("error", is_error=True),
+            error="Codex reported error",
+        )
+
+        result = _run_review(
+            PR_URL, cwd=tmp_path, max_turns=10,
+            stage_tpl=_make_review_stage_tpl(),
+            codex_enabled=True,
+        )
+
+        assert result.success is True
+        assert result.review_approved is True  # Claude's verdict stands
+        mock_submit.assert_called_once()
+        assert mock_submit.call_args.kwargs["codex_verdict"] == "error"
+
+    @patch("botfarm.worker._submit_aggregate_review")
+    @patch("botfarm.worker._run_codex_review")
+    @patch("botfarm.worker._invoke_claude")
+    def test_claude_error_stops(self, mock_claude, mock_codex, mock_submit, tmp_path):
+        """DB template + Claude error → no Codex invocation."""
+        mock_claude.return_value = _make_claude_result("Error", is_error=True)
+
+        result = _run_review(
+            PR_URL, cwd=tmp_path, max_turns=10,
+            stage_tpl=_make_review_stage_tpl(),
+            codex_enabled=True,
+        )
+
+        assert result.success is False
+        mock_codex.assert_not_called()
+        mock_submit.assert_not_called()
+
+    @patch("botfarm.worker._run_codex_review")
+    @patch("botfarm.worker._invoke_claude")
+    def test_codex_disabled_uses_claude_stage(self, mock_claude, mock_codex, tmp_path):
+        """DB template + Codex disabled → single-reviewer, no Codex."""
+        mock_claude.return_value = _make_claude_result("VERDICT: APPROVED")
+
+        result = _run_review(
+            PR_URL, cwd=tmp_path, max_turns=10,
+            stage_tpl=_make_review_stage_tpl(),
+            codex_enabled=False,
+        )
+
+        assert result.success is True
+        assert result.review_approved is True
+        mock_codex.assert_not_called()
+        assert result.codex_result is None
+
+    @patch("botfarm.worker._submit_aggregate_review")
+    @patch("botfarm.worker._run_codex_review")
+    @patch("botfarm.worker._invoke_claude")
+    def test_prompt_has_no_submit_instruction(self, mock_claude, mock_codex, mock_submit, tmp_path):
+        """DB template + Codex: prompt includes 'Do NOT submit' instruction."""
+        mock_claude.return_value = _make_claude_result("VERDICT: APPROVED")
+        mock_codex.return_value = StageResult(
+            stage="codex_review",
+            success=True,
+            codex_result=_make_codex_result("VERDICT: APPROVED"),
+            review_approved=True,
+        )
+
+        _run_review(
+            PR_URL, cwd=tmp_path, max_turns=10,
+            stage_tpl=_make_review_stage_tpl(),
+            codex_enabled=True,
+        )
+
+        prompt = mock_claude.call_args[0][0]
+        assert "Do NOT submit a final review via 'gh pr review'" in prompt
+
+    @patch("botfarm.worker._submit_aggregate_review")
+    @patch("botfarm.worker._run_codex_review")
+    @patch("botfarm.worker._invoke_claude")
+    def test_codex_exception_fallback(self, mock_claude, mock_codex, mock_submit, tmp_path):
+        """DB template + Codex raises exception → Claude verdict stands."""
+        mock_claude.return_value = _make_claude_result("VERDICT: APPROVED")
+        mock_codex.side_effect = Exception("Codex timed out")
+
+        result = _run_review(
+            PR_URL, cwd=tmp_path, max_turns=10,
+            stage_tpl=_make_review_stage_tpl(),
+            codex_enabled=True,
+        )
+
+        assert result.success is True
+        assert result.review_approved is True
+        assert result.codex_result is None
+        mock_submit.assert_called_once()
+        assert mock_submit.call_args.kwargs["codex_verdict"] == "error"
