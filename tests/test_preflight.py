@@ -23,6 +23,8 @@ from botfarm.db import SCHEMA_VERSION
 from botfarm.linear import LinearAPIError
 from botfarm.preflight import (
     CheckResult,
+    _describe_identity,
+    _resolve_remote_url,
     check_config_consistency,
     check_credentials,
     check_database,
@@ -73,7 +75,79 @@ def _make_config(
 # ---------------------------------------------------------------------------
 
 
+class TestResolveRemoteUrl:
+    def test_returns_url_on_success(self, tmp_path):
+        with patch("botfarm.preflight.subprocess.run") as mock_run:
+            mock_run.return_value.returncode = 0
+            mock_run.return_value.stdout = "git@github.com:org/repo.git\n"
+            result = _resolve_remote_url(tmp_path)
+        assert result == "git@github.com:org/repo.git"
+
+    def test_returns_none_on_failure(self, tmp_path):
+        with patch("botfarm.preflight.subprocess.run") as mock_run:
+            mock_run.return_value.returncode = 2
+            mock_run.return_value.stdout = ""
+            result = _resolve_remote_url(tmp_path)
+        assert result is None
+
+    def test_returns_none_on_timeout(self, tmp_path):
+        with patch("botfarm.preflight.subprocess.run",
+                    side_effect=subprocess.TimeoutExpired("git", 5)):
+            result = _resolve_remote_url(tmp_path)
+        assert result is None
+
+    def test_returns_none_on_file_not_found(self, tmp_path):
+        with patch("botfarm.preflight.subprocess.run",
+                    side_effect=FileNotFoundError("git")):
+            result = _resolve_remote_url(tmp_path)
+        assert result is None
+
+
+class TestDescribeIdentity:
+    def test_coder_ssh_key_configured(self, tmp_path):
+        config = _make_config(tmp_path, identities=IdentitiesConfig(
+            coder=CoderIdentity(ssh_key_path="~/.botfarm/coder_id_ed25519"),
+        ))
+        desc = _describe_identity(config, env=None)
+        assert "coder SSH key" in desc
+        assert "coder_id_ed25519" in desc
+
+    def test_custom_git_ssh_command(self, tmp_path):
+        config = _make_config(tmp_path)
+        desc = _describe_identity(config, env={"GIT_SSH_COMMAND": "ssh -i /my/key"})
+        assert desc == "custom GIT_SSH_COMMAND"
+
+    def test_default_ssh(self, tmp_path):
+        config = _make_config(tmp_path)
+        desc = _describe_identity(config, env=None)
+        assert desc == "default SSH"
+
+    def test_coder_ssh_key_takes_priority_over_env(self, tmp_path):
+        config = _make_config(tmp_path, identities=IdentitiesConfig(
+            coder=CoderIdentity(ssh_key_path="~/.botfarm/coder_id_ed25519"),
+        ))
+        desc = _describe_identity(config, env={"GIT_SSH_COMMAND": "ssh -i /other"})
+        assert "coder SSH key" in desc
+
+
 class TestCheckGitRepos:
+    def _mock_git_calls(self, mock_run, *, ls_remote_rc=0, ls_remote_stderr="",
+                         remote_url="git@github.com:org/repo.git"):
+        """Configure mock_run to handle get-url then ls-remote calls."""
+        url_result = subprocess.CompletedProcess(
+            args=["git", "remote", "get-url", "origin"],
+            returncode=0 if remote_url else 2,
+            stdout=f"{remote_url}\n" if remote_url else "",
+            stderr="",
+        )
+        ls_result = subprocess.CompletedProcess(
+            args=["git", "ls-remote", "--exit-code", "origin"],
+            returncode=ls_remote_rc,
+            stdout="",
+            stderr=ls_remote_stderr,
+        )
+        mock_run.side_effect = [url_result, ls_result]
+
     def test_pass_valid_git_repo(self, tmp_path):
         base = tmp_path / "myrepo"
         base.mkdir()
@@ -83,7 +157,7 @@ class TestCheckGitRepos:
             worktree_prefix="p-", slots=[1],
         )])
         with patch("botfarm.preflight.subprocess.run") as mock_run:
-            mock_run.return_value.returncode = 0
+            self._mock_git_calls(mock_run)
             results = check_git_repos(config)
         assert len(results) == 1
         assert results[0].passed
@@ -111,7 +185,7 @@ class TestCheckGitRepos:
         assert not results[0].passed
         assert "not a git repository" in results[0].message
 
-    def test_fail_remote_unreachable(self, tmp_path):
+    def test_fail_remote_unreachable_includes_url_and_identity(self, tmp_path):
         base = tmp_path / "myrepo"
         base.mkdir()
         (base / ".git").mkdir()
@@ -120,16 +194,45 @@ class TestCheckGitRepos:
             worktree_prefix="p-", slots=[1],
         )])
         with patch("botfarm.preflight.subprocess.run") as mock_run:
-            mock_run.return_value.returncode = 128
-            mock_run.return_value.stderr = "fatal: could not read from remote"
+            self._mock_git_calls(
+                mock_run,
+                ls_remote_rc=128,
+                ls_remote_stderr="fatal: Repository not found.",
+                remote_url="git@github.com:org/training-plan-proto.git",
+            )
             results = check_git_repos(config)
         assert len(results) == 1
         assert not results[0].passed
-        assert "not reachable" in results[0].message
+        msg = results[0].message
+        assert "not reachable" in msg
+        assert "git@github.com:org/training-plan-proto.git" in msg
+        assert "default SSH" in msg
+        assert "Ensure the associated GitHub account has access" in msg
+        assert "Repository not found" in msg
 
-    def test_fail_git_timeout(self, tmp_path):
-        import subprocess
+    def test_fail_remote_unreachable_with_coder_ssh_key(self, tmp_path):
+        base = tmp_path / "myrepo"
+        base.mkdir()
+        (base / ".git").mkdir()
+        config = _make_config(tmp_path, identities=IdentitiesConfig(
+            coder=CoderIdentity(ssh_key_path="~/.botfarm/coder_id_ed25519"),
+        ), projects=[ProjectConfig(
+            name="p1", linear_team="T", base_dir=str(base),
+            worktree_prefix="p-", slots=[1],
+        )])
+        with patch("botfarm.preflight.subprocess.run") as mock_run:
+            self._mock_git_calls(
+                mock_run,
+                ls_remote_rc=128,
+                ls_remote_stderr="ERROR: Repository not found.",
+            )
+            results = check_git_repos(config)
+        assert len(results) == 1
+        msg = results[0].message
+        assert "coder SSH key" in msg
+        assert "coder_id_ed25519" in msg
 
+    def test_fail_remote_unreachable_without_url(self, tmp_path):
         base = tmp_path / "myrepo"
         base.mkdir()
         (base / ".git").mkdir()
@@ -137,13 +240,44 @@ class TestCheckGitRepos:
             name="p1", linear_team="T", base_dir=str(base),
             worktree_prefix="p-", slots=[1],
         )])
-        with patch("botfarm.preflight.subprocess.run", side_effect=subprocess.TimeoutExpired("git", 15)):
+        with patch("botfarm.preflight.subprocess.run") as mock_run:
+            self._mock_git_calls(
+                mock_run,
+                ls_remote_rc=128,
+                ls_remote_stderr="fatal: could not read from remote",
+                remote_url=None,
+            )
+            results = check_git_repos(config)
+        assert len(results) == 1
+        msg = results[0].message
+        assert "not reachable" in msg
+        # No URL in parentheses when resolution fails
+        assert "(git@" not in msg
+
+    def test_fail_git_timeout(self, tmp_path):
+        base = tmp_path / "myrepo"
+        base.mkdir()
+        (base / ".git").mkdir()
+        config = _make_config(tmp_path, projects=[ProjectConfig(
+            name="p1", linear_team="T", base_dir=str(base),
+            worktree_prefix="p-", slots=[1],
+        )])
+        # First call (get-url) succeeds, second (ls-remote) times out
+        url_result = subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout="git@github.com:org/repo.git\n", stderr="",
+        )
+        with patch("botfarm.preflight.subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                url_result,
+                subprocess.TimeoutExpired("git", 15),
+            ]
             results = check_git_repos(config)
         assert len(results) == 1
         assert not results[0].passed
         assert "timed out" in results[0].message
 
-    def test_passes_env_to_subprocess(self, tmp_path):
+    def test_passes_env_to_ls_remote_only(self, tmp_path):
         base = tmp_path / "myrepo"
         base.mkdir()
         (base / ".git").mkdir()
@@ -153,11 +287,14 @@ class TestCheckGitRepos:
         )])
         custom_env = {"GIT_SSH_COMMAND": "ssh -i /my/key"}
         with patch("botfarm.preflight.subprocess.run") as mock_run:
-            mock_run.return_value.returncode = 0
+            self._mock_git_calls(mock_run)
             results = check_git_repos(config, env=custom_env)
         assert len(results) == 1
         assert results[0].passed
-        call_env = mock_run.call_args.kwargs.get("env")
+        # First call (get-url) should NOT get custom env
+        assert mock_run.call_args_list[0].kwargs.get("env") is None
+        # Second call (ls-remote) should get custom env
+        call_env = mock_run.call_args_list[1].kwargs.get("env")
         assert call_env is not None
         assert call_env["GIT_SSH_COMMAND"] == "ssh -i /my/key"
 
@@ -170,9 +307,10 @@ class TestCheckGitRepos:
             worktree_prefix="p-", slots=[1],
         )])
         with patch("botfarm.preflight.subprocess.run") as mock_run:
-            mock_run.return_value.returncode = 0
+            self._mock_git_calls(mock_run)
             check_git_repos(config, env=None)
-        assert mock_run.call_args.kwargs.get("env") is None
+        # ls-remote call (second) should have env=None
+        assert mock_run.call_args_list[1].kwargs.get("env") is None
 
 
 # ---------------------------------------------------------------------------
@@ -852,6 +990,8 @@ class TestRunPreflightChecks:
              ), \
              patch("botfarm.preflight._load_token", return_value=token):
             mock_run.return_value.returncode = 0
+            mock_run.return_value.stdout = "git@github.com:org/repo.git\n"
+            mock_run.return_value.stderr = ""
             results = run_preflight_checks(config)
 
         # Should have results from all check categories
