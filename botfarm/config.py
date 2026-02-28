@@ -69,6 +69,9 @@ agents:
   #   Investigation:
   #     implement: 30
   timeout_grace_seconds: 10
+  codex_reviewer_enabled: false
+  codex_reviewer_model: ""              # e.g. "o3", "o4-mini", or empty for default
+  codex_reviewer_timeout_minutes: 15    # separate from Claude review timeout
 
 # identities:
 #   coder:
@@ -146,6 +149,9 @@ class AgentsConfig:
     })
     timeout_overrides: dict[str, dict[str, int]] = field(default_factory=dict)
     timeout_grace_seconds: int = 10
+    codex_reviewer_enabled: bool = False
+    codex_reviewer_model: str = ""
+    codex_reviewer_timeout_minutes: int = 15
 
 
 @dataclass
@@ -353,6 +359,9 @@ def _validate_config(config: BotfarmConfig) -> None:
     if config.agents.timeout_grace_seconds < 0:
         raise ConfigError("agents.timeout_grace_seconds must be at least 0")
 
+    if config.agents.codex_reviewer_timeout_minutes < 1:
+        raise ConfigError("agents.codex_reviewer_timeout_minutes must be at least 1")
+
     if config.logging.max_bytes < 1:
         raise ConfigError("logging.max_bytes must be at least 1")
 
@@ -372,12 +381,12 @@ def _validate_config(config: BotfarmConfig) -> None:
         raise ConfigError("notifications.rate_limit_seconds must be at least 0")
 
 
-def _parse_bool(data: dict, key: str, default: bool) -> bool:
+def _parse_bool(data: dict, key: str, default: bool, *, section: str = "linear") -> bool:
     """Parse a boolean config value, rejecting non-boolean types."""
     value = data.get(key, default)
     if not isinstance(value, bool):
         raise ConfigError(
-            f"linear.{key} must be a boolean (true/false), got: {value!r}"
+            f"{section}.{key} must be a boolean (true/false), got: {value!r}"
         )
     return value
 
@@ -434,7 +443,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
 
     ul_data = data.get("usage_limits", {})
     usage_limits = UsageLimitsConfig(
-        enabled=_parse_bool(ul_data, "enabled", True),
+        enabled=_parse_bool(ul_data, "enabled", True, section="usage_limits"),
         pause_five_hour_threshold=float(ul_data.get("pause_five_hour_threshold", 0.85)),
         pause_seven_day_threshold=float(ul_data.get("pause_seven_day_threshold", 0.90)),
     )
@@ -477,6 +486,11 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         timeout_minutes=timeout_minutes,
         timeout_overrides=timeout_overrides,
         timeout_grace_seconds=int(agents_data.get("timeout_grace_seconds", 10)),
+        codex_reviewer_enabled=_parse_bool(agents_data, "codex_reviewer_enabled", False, section="agents"),
+        codex_reviewer_model=str(agents_data.get("codex_reviewer_model", "")),
+        codex_reviewer_timeout_minutes=int(
+            agents_data.get("codex_reviewer_timeout_minutes", 15)
+        ),
     )
 
     log_data = data.get("logging", {})
@@ -555,6 +569,9 @@ EDITABLE_FIELDS: dict[tuple[str, str], dict] = {
     ("agents", "max_ci_retries"): {"type": "int", "min": 0},
     ("agents", "timeout_minutes"): {"type": "timeout_dict"},
     ("agents", "timeout_grace_seconds"): {"type": "int", "min": 0},
+    ("agents", "codex_reviewer_enabled"): {"type": "bool"},
+    ("agents", "codex_reviewer_model"): {"type": "str"},
+    ("agents", "codex_reviewer_timeout_minutes"): {"type": "int", "min": 1},
 }
 
 # Fields that require a supervisor restart to take effect.
@@ -594,7 +611,11 @@ def _validate_field(
     errors: list[str] = []
     field_name = f"{section}.{key}"
 
-    if spec["type"] == "bool":
+    if spec["type"] == "str":
+        if not isinstance(value, str):
+            errors.append(f"'{field_name}' must be a string, got {type(value).__name__}")
+
+    elif spec["type"] == "bool":
         if not isinstance(value, bool):
             errors.append(f"'{field_name}' must be a boolean, got {type(value).__name__}")
 

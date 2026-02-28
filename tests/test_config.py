@@ -1424,3 +1424,103 @@ def test_load_config_identities_env_var_expansion(tmp_path, monkeypatch):
 
     assert config.identities.coder.github_token == "ghp_expanded"
     assert config.identities.reviewer.github_token == "ghp_rev_expanded"
+
+
+# --- Codex reviewer config ---
+
+
+def test_config_codex_fields(tmp_path):
+    """Parse YAML with codex reviewer fields."""
+    data = {
+        **MINIMAL_CONFIG,
+        "agents": {
+            "codex_reviewer_enabled": True,
+            "codex_reviewer_model": "o3",
+            "codex_reviewer_timeout_minutes": 20,
+        },
+    }
+    config_path = _write_config(tmp_path, data)
+    config = load_config(config_path)
+    assert config.agents.codex_reviewer_enabled is True
+    assert config.agents.codex_reviewer_model == "o3"
+    assert config.agents.codex_reviewer_timeout_minutes == 20
+
+
+def test_config_codex_defaults(tmp_path):
+    """Verify defaults when codex reviewer fields are absent."""
+    config_path = _write_config(tmp_path, MINIMAL_CONFIG)
+    config = load_config(config_path)
+    assert config.agents.codex_reviewer_enabled is False
+    assert config.agents.codex_reviewer_model == ""
+    assert config.agents.codex_reviewer_timeout_minutes == 15
+
+
+def test_config_codex_editable():
+    """Verify codex reviewer fields appear in EDITABLE_FIELDS."""
+    from botfarm.config import EDITABLE_FIELDS
+
+    assert ("agents", "codex_reviewer_enabled") in EDITABLE_FIELDS
+    assert ("agents", "codex_reviewer_model") in EDITABLE_FIELDS
+    assert ("agents", "codex_reviewer_timeout_minutes") in EDITABLE_FIELDS
+    assert EDITABLE_FIELDS[("agents", "codex_reviewer_enabled")]["type"] == "bool"
+    assert EDITABLE_FIELDS[("agents", "codex_reviewer_model")]["type"] == "str"
+    assert EDITABLE_FIELDS[("agents", "codex_reviewer_timeout_minutes")]["type"] == "int"
+
+
+def test_config_codex_timeout_validation(tmp_path):
+    """codex_reviewer_timeout_minutes must be at least 1."""
+    data = {
+        **MINIMAL_CONFIG,
+        "agents": {"codex_reviewer_timeout_minutes": 0},
+    }
+    config_path = _write_config(tmp_path, data)
+    with pytest.raises(ConfigError, match="codex_reviewer_timeout_minutes"):
+        load_config(config_path)
+
+
+def test_config_codex_enabled_rejects_string(tmp_path):
+    """codex_reviewer_enabled must be a boolean."""
+    data = {
+        **MINIMAL_CONFIG,
+        "agents": {"codex_reviewer_enabled": "true"},
+    }
+    config_path = _write_config(tmp_path, data)
+    with pytest.raises(ConfigError, match=r"agents\.codex_reviewer_enabled must be a boolean"):
+        load_config(config_path)
+
+
+def test_config_codex_editable_validation():
+    """Validate codex reviewer editable fields via validate_config_updates."""
+    # Valid updates
+    assert validate_config_updates({
+        "agents": {
+            "codex_reviewer_enabled": True,
+            "codex_reviewer_model": "o4-mini",
+            "codex_reviewer_timeout_minutes": 10,
+        },
+    }) == []
+
+    # Invalid: timeout too low
+    errors = validate_config_updates({
+        "agents": {"codex_reviewer_timeout_minutes": 0},
+    })
+    assert any("at least 1" in e for e in errors)
+
+    # Invalid: model not a string
+    errors = validate_config_updates({
+        "agents": {"codex_reviewer_model": 123},
+    })
+    assert any("string" in e for e in errors)
+
+    # Invalid: enabled not a bool
+    errors = validate_config_updates({
+        "agents": {"codex_reviewer_enabled": "yes"},
+    })
+    assert any("boolean" in e for e in errors)
+
+
+def test_default_config_template_includes_codex_fields():
+    from botfarm.config import DEFAULT_CONFIG_TEMPLATE
+    assert "codex_reviewer_enabled:" in DEFAULT_CONFIG_TEMPLATE
+    assert "codex_reviewer_model:" in DEFAULT_CONFIG_TEMPLATE
+    assert "codex_reviewer_timeout_minutes:" in DEFAULT_CONFIG_TEMPLATE

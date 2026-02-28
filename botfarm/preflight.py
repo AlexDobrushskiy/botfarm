@@ -15,6 +15,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from botfarm.codex import check_codex_available
 from botfarm.config import BotfarmConfig
 from botfarm.credentials import CredentialError, _load_token
 from botfarm.db import SCHEMA_VERSION, resolve_db_path
@@ -570,6 +571,47 @@ def check_identity_linear_api_key(config: BotfarmConfig) -> list[CheckResult]:
     return results
 
 
+def check_codex_reviewer(config: BotfarmConfig) -> list[CheckResult]:
+    """Validate Codex reviewer prerequisites when enabled."""
+    if not config.agents.codex_reviewer_enabled:
+        return []
+
+    results: list[CheckResult] = []
+
+    if not check_codex_available():
+        results.append(CheckResult(
+            name="codex_reviewer:binary",
+            passed=False,
+            message="codex binary not found on PATH — install Codex or disable codex_reviewer_enabled",
+        ))
+    else:
+        results.append(CheckResult(
+            name="codex_reviewer:binary",
+            passed=True,
+            message="OK — codex binary found",
+        ))
+
+    has_api_key = bool(os.environ.get("OPENAI_API_KEY"))
+    has_auth_file = Path("~/.codex/auth.json").expanduser().exists()
+    if not has_api_key and not has_auth_file:
+        results.append(CheckResult(
+            name="codex_reviewer:auth",
+            passed=False,
+            message=(
+                "OPENAI_API_KEY is not set and ~/.codex/auth.json not found — "
+                "Codex requires one of these for authentication"
+            ),
+        ))
+    else:
+        results.append(CheckResult(
+            name="codex_reviewer:auth",
+            passed=True,
+            message="OK — Codex authentication available",
+        ))
+
+    return results
+
+
 def check_identity_cross_validation(config: BotfarmConfig) -> list[CheckResult]:
     """Warn about potentially inconsistent identity configuration."""
     results: list[CheckResult] = []
@@ -632,6 +674,7 @@ def run_preflight_checks(
     results.extend(check_identity_github_tokens(config))
     results.extend(check_identity_linear_api_key(config))
     results.extend(check_identity_cross_validation(config))
+    results.extend(check_codex_reviewer(config))
     return results
 
 

@@ -9,6 +9,7 @@ from unittest.mock import patch
 import pytest
 
 from botfarm.config import (
+    AgentsConfig,
     BotfarmConfig,
     CoderIdentity,
     DatabaseConfig,
@@ -25,6 +26,7 @@ from botfarm.preflight import (
     CheckResult,
     _describe_identity,
     _resolve_remote_url,
+    check_codex_reviewer,
     check_config_consistency,
     check_credentials,
     check_database,
@@ -48,6 +50,7 @@ def _make_config(
     linear: LinearConfig | None = None,
     notifications: NotificationsConfig | None = None,
     identities: IdentitiesConfig | None = None,
+    agents: AgentsConfig | None = None,
 ) -> BotfarmConfig:
     """Build a BotfarmConfig with sensible defaults for testing."""
     if projects is None:
@@ -67,6 +70,7 @@ def _make_config(
         database=DatabaseConfig(),
         notifications=notifications or NotificationsConfig(),
         identities=identities or IdentitiesConfig(),
+        agents=agents or AgentsConfig(),
     )
 
 
@@ -1005,3 +1009,69 @@ class TestRunPreflightChecks:
 
         # All should pass
         assert all(r.passed for r in results)
+
+
+# --- check_codex_reviewer ---
+
+
+class TestCheckCodexReviewer:
+    def _make_config_with_codex(self, tmp_path, enabled=True):
+        return _make_config(
+            tmp_path,
+            agents=AgentsConfig(codex_reviewer_enabled=enabled),
+        )
+
+    def test_disabled_returns_empty(self, tmp_path):
+        config = _make_config(tmp_path)
+        results = check_codex_reviewer(config)
+        assert results == []
+
+    def test_missing_binary(self, tmp_path):
+        config = self._make_config_with_codex(tmp_path)
+        with patch("botfarm.preflight.check_codex_available", return_value=False):
+            results = check_codex_reviewer(config)
+        binary_results = [r for r in results if r.name == "codex_reviewer:binary"]
+        assert len(binary_results) == 1
+        assert not binary_results[0].passed
+        assert "not found on PATH" in binary_results[0].message
+
+    def test_binary_found(self, tmp_path, monkeypatch):
+        config = self._make_config_with_codex(tmp_path)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        with patch("botfarm.preflight.check_codex_available", return_value=True):
+            results = check_codex_reviewer(config)
+        binary_results = [r for r in results if r.name == "codex_reviewer:binary"]
+        assert len(binary_results) == 1
+        assert binary_results[0].passed
+
+    def test_missing_auth(self, tmp_path, monkeypatch):
+        config = self._make_config_with_codex(tmp_path)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        with patch("botfarm.preflight.check_codex_available", return_value=True), \
+             patch("botfarm.preflight.Path.expanduser") as mock_expand:
+            mock_expand.return_value.exists.return_value = False
+            results = check_codex_reviewer(config)
+        auth_results = [r for r in results if r.name == "codex_reviewer:auth"]
+        assert len(auth_results) == 1
+        assert not auth_results[0].passed
+        assert "OPENAI_API_KEY" in auth_results[0].message
+
+    def test_auth_with_api_key(self, tmp_path, monkeypatch):
+        config = self._make_config_with_codex(tmp_path)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        with patch("botfarm.preflight.check_codex_available", return_value=True):
+            results = check_codex_reviewer(config)
+        auth_results = [r for r in results if r.name == "codex_reviewer:auth"]
+        assert len(auth_results) == 1
+        assert auth_results[0].passed
+
+    def test_auth_with_auth_file_only(self, tmp_path, monkeypatch):
+        config = self._make_config_with_codex(tmp_path)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        with patch("botfarm.preflight.check_codex_available", return_value=True), \
+             patch("botfarm.preflight.Path.expanduser") as mock_expand:
+            mock_expand.return_value.exists.return_value = True
+            results = check_codex_reviewer(config)
+        auth_results = [r for r in results if r.name == "codex_reviewer:auth"]
+        assert len(auth_results) == 1
+        assert auth_results[0].passed
