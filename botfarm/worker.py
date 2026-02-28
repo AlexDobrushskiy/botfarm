@@ -671,6 +671,42 @@ def _run_implement(
     )
 
 
+def _review_inline_comment_instructions(
+    owner: str,
+    repo: str,
+    number: str,
+    *,
+    body_example: str = "comment",
+) -> str:
+    """Return the shared inline-comment API instructions used by both reviewers."""
+    return (
+        "For file-specific feedback, post inline review comments on the exact "
+        "lines where changes are needed. First get the head SHA with:\n"
+        f"  gh pr view {number} --json headRefOid --jq .headRefOid\n"
+        "Then post each inline comment using:\n"
+        f"  gh api repos/{owner}/{repo}/pulls/{number}/comments "
+        f"-f body='{body_example}' -f commit_id='HEAD_SHA' -f path='file.py' "
+        "-F line=42 -f side='RIGHT'\n\n"
+    )
+
+
+def _review_verdict_instructions(*, submit_review: bool) -> str:
+    """Return the shared verdict marker instructions used by both reviewers."""
+    return (
+        "IMPORTANT: If you posted ANY inline comments with suggestions, issues, "
+        "or actionable feedback, you MUST "
+        + ("output " if not submit_review else "use --request-changes and output ")
+        + "VERDICT: CHANGES_REQUESTED. Only "
+        + ("output " if not submit_review else "use --approve and output ")
+        + "VERDICT: APPROVED "
+        "when there are ZERO actionable inline comments.\n\n"
+        "At the very end of your response, output exactly one of these verdict "
+        "markers on its own line:\n"
+        "  VERDICT: APPROVED\n"
+        "  VERDICT: CHANGES_REQUESTED"
+    )
+
+
 def _build_claude_review_prompt(
     pr_url: str,
     owner: str,
@@ -683,14 +719,8 @@ def _build_claude_review_prompt(
     prompt = (
         f"Review the pull request at {pr_url}. "
         "Read the PR diff carefully. Be thorough but constructive.\n\n"
-        "For file-specific feedback, post inline review comments on the exact "
-        "lines where changes are needed. First get the head SHA with:\n"
-        f"  gh pr view {number} --json headRefOid --jq .headRefOid\n"
-        "Then post each inline comment using:\n"
-        f"  gh api repos/{owner}/{repo}/pulls/{number}/comments "
-        "-f body='comment' -f commit_id='HEAD_SHA' -f path='file.py' "
-        "-F line=42 -f side='RIGHT'\n\n"
     )
+    prompt += _review_inline_comment_instructions(owner, repo, number)
     if codex_enabled:
         # Multi-review mode: Claude must NOT submit gh pr review
         prompt += (
@@ -704,19 +734,32 @@ def _build_claude_review_prompt(
             "using 'gh pr review' with either --approve or --request-changes "
             "and a summary body.\n\n"
         )
-    prompt += (
-        "IMPORTANT: If you posted ANY inline comments with suggestions, issues, "
-        "or actionable feedback, you MUST "
-        + ("output " if codex_enabled else "use --request-changes and output ")
-        + "VERDICT: CHANGES_REQUESTED. Only "
-        + ("output " if codex_enabled else "use --approve and output ")
-        + "VERDICT: APPROVED "
-        "when there are ZERO actionable inline comments.\n\n"
-        "At the very end of your response, output exactly one of these verdict "
-        "markers on its own line:\n"
-        "  VERDICT: APPROVED\n"
-        "  VERDICT: CHANGES_REQUESTED"
+    prompt += _review_verdict_instructions(submit_review=not codex_enabled)
+    return prompt
+
+
+def _build_codex_review_prompt(
+    pr_url: str,
+    owner: str,
+    repo: str,
+    number: str,
+) -> str:
+    """Build the Codex review prompt."""
+    prompt = (
+        f"Review the pull request at {pr_url}. "
+        "Read the PR diff carefully. Be thorough but constructive.\n\n"
+        "IMPORTANT: First fetch existing review comments to avoid posting duplicate feedback:\n"
+        f"  gh api repos/{owner}/{repo}/pulls/{number}/comments\n\n"
     )
+    prompt += _review_inline_comment_instructions(
+        owner, repo, number, body_example="CODEX: <your comment>",
+    )
+    prompt += (
+        "ALL your inline comments MUST start with the prefix 'CODEX: ' in the body.\n\n"
+        "Do NOT submit a final review via 'gh pr review'. Only post inline comments "
+        "and output your verdict marker.\n\n"
+    )
+    prompt += _review_verdict_instructions(submit_review=False)
     return prompt
 
 
@@ -743,11 +786,14 @@ def _submit_aggregate_review(
     approved: bool,
     iteration: int = 1,
     env: dict[str, str] | None = None,
-) -> None:
+) -> bool:
     """Submit a single ``gh pr review`` with the aggregate verdict.
 
     This is used in multi-review mode where neither Claude nor Codex
     submits their own ``gh pr review``.
+
+    Returns ``True`` if the review was posted successfully, ``False``
+    otherwise (the error is logged as a warning).
     """
     owner, repo, number = _parse_pr_url(pr_url)
     action = "--approve" if approved else "--request-changes"
@@ -774,8 +820,10 @@ def _submit_aggregate_review(
             timeout=60,
             check=True,
         )
+        return True
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         logger.warning("Failed to submit aggregate review: %s", exc)
+        return False
 
 
 def _run_review(
@@ -914,29 +962,7 @@ def _run_codex_review(
     """
     owner, repo, number = _parse_pr_url(pr_url)
 
-    prompt = (
-        f"Review the pull request at {pr_url}. "
-        "Read the PR diff carefully. Be thorough but constructive.\n\n"
-        "IMPORTANT: First fetch existing review comments to avoid posting duplicate feedback:\n"
-        f"  gh api repos/{owner}/{repo}/pulls/{number}/comments\n\n"
-        "For file-specific feedback, post inline review comments on the exact "
-        "lines where changes are needed. First get the head SHA with:\n"
-        f"  gh pr view {number} --json headRefOid --jq .headRefOid\n"
-        "Then post each inline comment using:\n"
-        f"  gh api repos/{owner}/{repo}/pulls/{number}/comments "
-        "-f body='CODEX: <your comment>' -f commit_id='HEAD_SHA' -f path='file.py' "
-        "-F line=42 -f side='RIGHT'\n\n"
-        "ALL your inline comments MUST start with the prefix 'CODEX: ' in the body.\n\n"
-        "Do NOT submit a final review via 'gh pr review'. Only post inline comments "
-        "and output your verdict marker.\n\n"
-        "IMPORTANT: If you posted ANY inline comments with suggestions, issues, "
-        "or actionable feedback, you MUST output VERDICT: CHANGES_REQUESTED. "
-        "Only output VERDICT: APPROVED when there are ZERO actionable inline comments.\n\n"
-        "At the very end of your response, output exactly one of these verdict "
-        "markers on its own line:\n"
-        "  VERDICT: APPROVED\n"
-        "  VERDICT: CHANGES_REQUESTED"
-    )
+    prompt = _build_codex_review_prompt(pr_url, owner, repo, number)
 
     result = run_codex_streaming(
         prompt,
@@ -1259,6 +1285,9 @@ def run_pipeline(
     slot_db_path: str | Path | None = None,
     pause_event: multiprocessing.Event | None = None,
     identities: IdentitiesConfig | None = None,
+    codex_reviewer_enabled: bool = False,
+    codex_reviewer_model: str = "",
+    codex_reviewer_timeout_minutes: int = 15,
 ) -> PipelineResult:
     """Execute the full implement→review→fix→pr_checks→merge pipeline.
 
@@ -1414,6 +1443,9 @@ def run_pipeline(
         placeholder_branch=placeholder_branch,
         coder_env=coder_env,
         reviewer_env=reviewer_env,
+        codex_reviewer_enabled=codex_reviewer_enabled,
+        codex_reviewer_model=codex_reviewer_model,
+        codex_reviewer_timeout_minutes=codex_reviewer_timeout_minutes,
     )
 
     # Build main-stage list: skip loop-managed stages (they're handled
@@ -1583,6 +1615,9 @@ class _PipelineContext:
     placeholder_branch: str | None = None
     coder_env: dict[str, str] | None = None
     reviewer_env: dict[str, str] | None = None
+    codex_reviewer_enabled: bool = False
+    codex_reviewer_model: str = ""
+    codex_reviewer_timeout_minutes: int = 15
 
     def _env_for_stage(self, stage: str) -> dict[str, str] | None:
         """Return the appropriate env dict for a given stage.
@@ -1678,6 +1713,19 @@ class _PipelineContext:
             def on_context_fill(turn: int, fill_pct: float) -> None:
                 update_stage_run_context_fill(_conn, _sr_id, fill_pct)
 
+        # Codex reviewer params (only relevant for review stage)
+        codex_kwargs: dict = {}
+        if stage == "review" and self.codex_reviewer_enabled:
+            codex_kwargs = {
+                "codex_enabled": True,
+                "codex_model": self.codex_reviewer_model or None,
+                "codex_timeout": self.codex_reviewer_timeout_minutes * 60.0,
+                "codex_log_file": _make_stage_log_path(
+                    self.log_dir, "codex_review", iteration,
+                ),
+                "review_iteration": iteration,
+            }
+
         try:
             result = _execute_stage(
                 stage,
@@ -1692,6 +1740,7 @@ class _PipelineContext:
                 env=self._env_for_stage(stage),
                 on_context_fill=on_context_fill,
                 stage_tpl=stage_tpl,
+                **codex_kwargs,
             )
         except Exception as exc:
             logger.error("Stage '%s' raised: %s", stage, exc)
@@ -1996,6 +2045,11 @@ def _execute_stage(
     env: dict[str, str] | None = None,
     on_context_fill: ContextFillCallback | None = None,
     stage_tpl: StageTemplate | None = None,
+    codex_enabled: bool = False,
+    codex_model: str | None = None,
+    codex_timeout: float | None = None,
+    codex_log_file: Path | None = None,
+    review_iteration: int = 1,
 ) -> StageResult:
     """Dispatch to the appropriate stage runner.
 
@@ -2050,6 +2104,11 @@ def _execute_stage(
         return _run_review(
             pr_url, cwd=cwd, max_turns=max_turns, log_file=log_file,
             env=env, on_context_fill=on_context_fill,
+            codex_enabled=codex_enabled,
+            codex_log_file=codex_log_file,
+            codex_timeout=codex_timeout,
+            codex_model=codex_model,
+            review_iteration=review_iteration,
         )
     elif stage == "fix":
         if not pr_url:

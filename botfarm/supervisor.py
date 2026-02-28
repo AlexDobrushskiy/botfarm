@@ -93,6 +93,9 @@ def _worker_entry(
     slot_db_path: str | None = None,
     pause_event: multiprocessing.Event | None = None,
     identities: IdentitiesConfig | None = None,
+    codex_reviewer_enabled: bool = False,
+    codex_reviewer_model: str = "",
+    codex_reviewer_timeout_minutes: int = 15,
 ) -> None:
     """Entry point for a worker subprocess.
 
@@ -141,6 +144,9 @@ def _worker_entry(
             slot_db_path=slot_db_path,
             pause_event=pause_event,
             identities=identities,
+            codex_reviewer_enabled=codex_reviewer_enabled,
+            codex_reviewer_model=codex_reviewer_model,
+            codex_reviewer_timeout_minutes=codex_reviewer_timeout_minutes,
         )
         if result.paused:
             result_queue.put(_WorkerResult(
@@ -740,6 +746,9 @@ class Supervisor:
                 "slot_db_path": slot_db,
                 "pause_event": pause_event,
                 "identities": self._config.identities,
+                "codex_reviewer_enabled": self._config.agents.codex_reviewer_enabled,
+                "codex_reviewer_model": self._config.agents.codex_reviewer_model,
+                "codex_reviewer_timeout_minutes": self._config.agents.codex_reviewer_timeout_minutes,
             },
             daemon=False,
         )
@@ -1830,6 +1839,9 @@ class Supervisor:
                 "slot_db_path": slot_db,
                 "pause_event": pause_event,
                 "identities": self._config.identities,
+                "codex_reviewer_enabled": self._config.agents.codex_reviewer_enabled,
+                "codex_reviewer_model": self._config.agents.codex_reviewer_model,
+                "codex_reviewer_timeout_minutes": self._config.agents.codex_reviewer_timeout_minutes,
             },
             daemon=False,
         )
@@ -1996,6 +2008,9 @@ class Supervisor:
                 "slot_db_path": slot_db,
                 "pause_event": pause_event,
                 "identities": self._config.identities,
+                "codex_reviewer_enabled": self._config.agents.codex_reviewer_enabled,
+                "codex_reviewer_model": self._config.agents.codex_reviewer_model,
+                "codex_reviewer_timeout_minutes": self._config.agents.codex_reviewer_timeout_minutes,
             },
             daemon=False,
         )
@@ -2367,6 +2382,9 @@ class Supervisor:
                 "slot_db_path": slot_db,
                 "pause_event": pause_event,
                 "identities": self._config.identities,
+                "codex_reviewer_enabled": self._config.agents.codex_reviewer_enabled,
+                "codex_reviewer_model": self._config.agents.codex_reviewer_model,
+                "codex_reviewer_timeout_minutes": self._config.agents.codex_reviewer_timeout_minutes,
             },
             daemon=False,  # Not daemon — survives supervisor exit
         )

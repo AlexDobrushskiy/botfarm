@@ -23,6 +23,7 @@ from botfarm.worker import (
     ClaudeResult,
     StageResult,
     _build_claude_review_prompt,
+    _build_codex_review_prompt,
     _merge_review_verdicts,
     _run_codex_review,
     _run_review,
@@ -262,18 +263,30 @@ class TestAggregateReviewSubmission:
         assert "Overall: changes_requested" in body
 
     @patch("botfarm.worker.subprocess.run")
-    def test_submission_failure_logged_not_raised(self, mock_run, tmp_path):
-        """Failure to submit review is logged but does not raise."""
+    def test_submission_failure_returns_false(self, mock_run, tmp_path):
+        """Failure to submit review returns False (does not raise)."""
         mock_run.side_effect = subprocess.CalledProcessError(1, "gh")
 
-        # Should not raise
-        _submit_aggregate_review(
+        result = _submit_aggregate_review(
             PR_URL,
             cwd=tmp_path,
             claude_verdict="approved",
             codex_verdict="approved",
             approved=True,
         )
+        assert result is False
+
+    @patch("botfarm.worker.subprocess.run")
+    def test_submission_success_returns_true(self, mock_run, tmp_path):
+        """Successful submission returns True."""
+        result = _submit_aggregate_review(
+            PR_URL,
+            cwd=tmp_path,
+            claude_verdict="approved",
+            codex_verdict="approved",
+            approved=True,
+        )
+        assert result is True
 
 
 # ---------------------------------------------------------------------------
