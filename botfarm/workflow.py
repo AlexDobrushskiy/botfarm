@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 
 @dataclass
 class StageTemplate:
+    id: int
     name: str
     stage_order: int
     executor_type: str  # "claude", "shell", "internal"
@@ -140,6 +141,7 @@ def _build_pipeline(conn: sqlite3.Connection, row: sqlite3.Row) -> PipelineTempl
 
     stages = [
         StageTemplate(
+            id=s["id"],
             name=s["name"],
             stage_order=s["stage_order"],
             executor_type=s["executor_type"],

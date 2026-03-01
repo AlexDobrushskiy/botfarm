@@ -43,6 +43,7 @@ PR_URL = "https://github.com/owner/repo/pull/42"
 def _make_review_stage_tpl() -> StageTemplate:
     """Create a minimal review StageTemplate for testing."""
     return StageTemplate(
+        id=2,
         name="review",
         stage_order=2,
         executor_type="claude",

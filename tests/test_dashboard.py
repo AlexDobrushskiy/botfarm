@@ -4260,6 +4260,49 @@ class TestWorkflowPage:
         assert "max 5 iterations" in body
         assert "max 4 retries" in body
 
+    def test_workflow_shows_prompt_edit_buttons(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        assert "prompt-edit-btn" in body
+        assert "enterEditMode" in body
+
+    def test_workflow_shows_prompt_preview(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        assert "prompt-preview" in body
+        assert "prompt-textarea" in body
+
+    def test_workflow_shows_variable_chips(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        assert "prompt-chip" in body
+        assert "{ticket_id}" in body
+        assert "{pr_url}" in body
+        assert "{pr_number}" in body
+        assert "{owner}" in body
+        assert "{repo}" in body
+        assert "{ci_failure_output}" in body
+
+    def test_workflow_shows_na_for_shell_stages(self, client):
+        """Shell/internal stages with no prompt show N/A."""
+        resp = client.get("/workflow")
+        body = resp.text
+        assert "prompt-na" in body
+
+    def test_workflow_prompt_save_cancel_buttons(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        assert "prompt-save-btn" in body
+        assert "prompt-cancel-btn" in body
+        assert "savePrompt" in body
+        assert "cancelEdit" in body
+
+    def test_workflow_unknown_var_detection(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        assert "checkUnknownVars" in body
+        assert "KNOWN_VARS" in body
+
 
 # --- Workflow API ---
 
@@ -4481,6 +4524,19 @@ class TestApiUpdateStage:
         data = resp.json()
         assert data["ok"] is True
         assert data["data"]["max_turns"] == 999
+
+    def test_update_prompt_template(self, client):
+        pipelines = client.get("/api/workflow/pipelines").json()["data"]
+        stage = pipelines[0]["stages"][0]
+        new_prompt = "Updated prompt for {ticket_id} with {pr_url}"
+        resp = client.patch(
+            f"/api/workflow/stages/{stage['id']}",
+            json={"prompt_template": new_prompt},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["data"]["prompt_template"] == new_prompt
 
     def test_update_nonexistent_stage(self, client):
         resp = client.patch(
