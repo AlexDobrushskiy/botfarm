@@ -1780,11 +1780,12 @@ def create_app(
                     status_code=404,
                 )
             reorder_stages(conn, pipeline_id, stage_ids)
-            errors = validate_pipeline(conn, pipeline_id)
-            if errors:
-                return JSONResponse({"ok": False, "errors": errors}, status_code=400)
+            warnings = validate_pipeline(conn, pipeline_id)
             data = _pipeline_to_dict(conn, pipeline_id)
-            return JSONResponse({"ok": True, "data": data})
+            resp: dict = {"ok": True, "data": data}
+            if warnings:
+                resp["warnings"] = warnings
+            return JSONResponse(resp)
         except ValueError as exc:
             return JSONResponse({"ok": False, "errors": [str(exc)]}, status_code=400)
         except Exception as exc:
@@ -1900,7 +1901,8 @@ def create_app(
             delete_loop(conn, loop_id)
             return JSONResponse({"ok": True, "data": None})
         except ValueError as exc:
-            return JSONResponse({"ok": False, "errors": [str(exc)]}, status_code=400)
+            status = 404 if "not found" in str(exc).lower() else 400
+            return JSONResponse({"ok": False, "errors": [str(exc)]}, status_code=status)
         except Exception as exc:
             logger.exception("Failed to delete loop %s", loop_id)
             return JSONResponse({"ok": False, "errors": [str(exc)]}, status_code=500)

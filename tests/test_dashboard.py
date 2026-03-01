@@ -4660,5 +4660,5 @@ class TestApiDeleteLoop:
 
     def test_delete_nonexistent_loop(self, client):
         resp = client.delete("/api/workflow/loops/99999")
-        assert resp.status_code == 400
+        assert resp.status_code == 404
         assert resp.json()["ok"] is False
