@@ -1,6 +1,7 @@
 import os
 import signal
 import sqlite3
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -31,6 +32,7 @@ from botfarm.db import (
     upsert_slot,
 )
 from botfarm.slots import SlotState, _is_pid_alive
+from botfarm.systemd_service import UNIT_PATH, generate_unit, install_service, uninstall_service
 from botfarm.usage import refresh_usage_snapshot
 
 ENV_FILE_PATH = DEFAULT_CONFIG_DIR / ".env"
@@ -701,3 +703,87 @@ def reset(project, reset_all, force, config_path):
         click.echo(f"Reset {len(targets)} slot(s) to free.")
     finally:
         conn.close()
+
+
+@main.command(name="install-service")
+@click.option(
+    "--config",
+    "config_path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help="Path to config file to pass to the service.",
+)
+@click.option(
+    "--working-dir",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    default=None,
+    help="Working directory for the service (default: current directory).",
+)
+@click.option(
+    "--env-file",
+    "env_files",
+    type=click.Path(path_type=Path),
+    multiple=True,
+    help="Environment file(s) to include. May be repeated.",
+)
+def install_service_cmd(config_path, working_dir, env_files):
+    """Install and enable a systemd user service for the botfarm supervisor.
+
+    The service auto-restarts on crashes and signals (SIGTERM, SIGINT) but
+    does NOT restart on a clean stop (exit code 0).
+
+    Requires: systemd with user session support and loginctl enable-linger
+    for auto-start on boot.
+    """
+    env_file_list = list(env_files) if env_files else None
+
+    # Preview the generated unit
+    try:
+        unit_content = generate_unit(
+            config_path=config_path,
+            working_dir=working_dir,
+            env_files=env_file_list,
+        )
+    except FileNotFoundError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    click.echo(f"Unit file to be written to {UNIT_PATH}:\n")
+    click.echo(unit_content)
+
+    try:
+        path = install_service(
+            config_path=config_path,
+            working_dir=working_dir,
+            env_files=env_file_list,
+        )
+    except FileNotFoundError as exc:
+        raise click.ClickException(str(exc)) from exc
+    except subprocess.CalledProcessError as exc:
+        raise click.ClickException(
+            f"systemctl command failed: {exc.stderr or exc}"
+        ) from exc
+
+    click.echo(f"Service installed and enabled: {path}")
+    click.echo(
+        "\nTo start now:     systemctl --user start botfarm"
+        "\nTo check status:  systemctl --user status botfarm"
+        "\nTo view logs:     journalctl --user -u botfarm -f"
+        "\nFor boot start:   loginctl enable-linger"
+    )
+
+
+@main.command(name="uninstall-service")
+def uninstall_service_cmd():
+    """Stop, disable, and remove the botfarm systemd user service."""
+    if not UNIT_PATH.exists():
+        click.echo("No botfarm service installed.")
+        return
+
+    try:
+        uninstall_service()
+    except subprocess.CalledProcessError as exc:
+        raise click.ClickException(
+            f"systemctl command failed: {exc.stderr or exc}"
+        ) from exc
+
+    click.echo("Service stopped, disabled, and removed.")
