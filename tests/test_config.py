@@ -9,6 +9,7 @@ import yaml
 from botfarm.config import (
     AgentsConfig,
     BotfarmConfig,
+    CapacityConfig,
     CoderIdentity,
     ConfigError,
     IdentitiesConfig,
@@ -1524,3 +1525,232 @@ def test_default_config_template_includes_codex_fields():
     assert "codex_reviewer_enabled:" in DEFAULT_CONFIG_TEMPLATE
     assert "codex_reviewer_model:" in DEFAULT_CONFIG_TEMPLATE
     assert "codex_reviewer_timeout_minutes:" in DEFAULT_CONFIG_TEMPLATE
+
+
+# --- capacity_monitoring config ---
+
+
+def test_load_config_capacity_monitoring_defaults(tmp_path):
+    config_path = _write_config(tmp_path, MINIMAL_CONFIG)
+    config = load_config(config_path)
+    assert config.linear.issue_limit == 250
+    cap = config.linear.capacity_monitoring
+    assert cap.enabled is True
+    assert cap.warning_threshold == 0.70
+    assert cap.critical_threshold == 0.85
+    assert cap.pause_threshold == 0.95
+    assert cap.resume_threshold == 0.90
+
+
+def test_load_config_capacity_monitoring_custom(tmp_path):
+    data = {
+        **MINIMAL_CONFIG,
+        "linear": {
+            **MINIMAL_CONFIG["linear"],
+            "issue_limit": 500,
+            "capacity_monitoring": {
+                "enabled": False,
+                "warning_threshold": 0.60,
+                "critical_threshold": 0.75,
+                "pause_threshold": 0.90,
+                "resume_threshold": 0.80,
+            },
+        },
+    }
+    config_path = _write_config(tmp_path, data)
+    config = load_config(config_path)
+    assert config.linear.issue_limit == 500
+    cap = config.linear.capacity_monitoring
+    assert cap.enabled is False
+    assert cap.warning_threshold == 0.60
+    assert cap.critical_threshold == 0.75
+    assert cap.pause_threshold == 0.90
+    assert cap.resume_threshold == 0.80
+
+
+def test_load_config_capacity_threshold_out_of_range(tmp_path):
+    data = {
+        **MINIMAL_CONFIG,
+        "linear": {
+            **MINIMAL_CONFIG["linear"],
+            "capacity_monitoring": {
+                "warning_threshold": 1.5,
+            },
+        },
+    }
+    config_path = _write_config(tmp_path, data)
+    with pytest.raises(ConfigError, match="between 0.0 and 1.0"):
+        load_config(config_path)
+
+
+def test_load_config_capacity_threshold_negative(tmp_path):
+    data = {
+        **MINIMAL_CONFIG,
+        "linear": {
+            **MINIMAL_CONFIG["linear"],
+            "capacity_monitoring": {
+                "pause_threshold": -0.1,
+            },
+        },
+    }
+    config_path = _write_config(tmp_path, data)
+    with pytest.raises(ConfigError, match="between 0.0 and 1.0"):
+        load_config(config_path)
+
+
+def test_load_config_capacity_resume_must_be_less_than_pause(tmp_path):
+    data = {
+        **MINIMAL_CONFIG,
+        "linear": {
+            **MINIMAL_CONFIG["linear"],
+            "capacity_monitoring": {
+                "pause_threshold": 0.90,
+                "resume_threshold": 0.95,
+            },
+        },
+    }
+    config_path = _write_config(tmp_path, data)
+    with pytest.raises(ConfigError, match="resume_threshold must be less than pause_threshold"):
+        load_config(config_path)
+
+
+def test_load_config_capacity_resume_equal_pause_rejected(tmp_path):
+    data = {
+        **MINIMAL_CONFIG,
+        "linear": {
+            **MINIMAL_CONFIG["linear"],
+            "capacity_monitoring": {
+                "pause_threshold": 0.90,
+                "resume_threshold": 0.90,
+            },
+        },
+    }
+    config_path = _write_config(tmp_path, data)
+    with pytest.raises(ConfigError, match="resume_threshold must be less than pause_threshold"):
+        load_config(config_path)
+
+
+def test_load_config_issue_limit_zero_rejected(tmp_path):
+    data = {
+        **MINIMAL_CONFIG,
+        "linear": {
+            **MINIMAL_CONFIG["linear"],
+            "issue_limit": 0,
+        },
+    }
+    config_path = _write_config(tmp_path, data)
+    with pytest.raises(ConfigError, match="issue_limit must be at least 1"):
+        load_config(config_path)
+
+
+def test_capacity_config_editable_fields():
+    from botfarm.config import EDITABLE_FIELDS
+
+    assert ("linear", "issue_limit") in EDITABLE_FIELDS
+    assert EDITABLE_FIELDS[("linear", "issue_limit")]["type"] == "int"
+
+    for field in ("enabled", "warning_threshold", "critical_threshold",
+                  "pause_threshold", "resume_threshold"):
+        key = ("linear.capacity_monitoring", field)
+        assert key in EDITABLE_FIELDS, f"{key} not in EDITABLE_FIELDS"
+
+
+def test_capacity_config_editable_validation():
+    # Valid updates
+    assert validate_config_updates({
+        "linear": {"issue_limit": 500},
+        "linear.capacity_monitoring": {
+            "enabled": True,
+            "warning_threshold": 0.60,
+            "critical_threshold": 0.75,
+            "pause_threshold": 0.90,
+            "resume_threshold": 0.80,
+        },
+    }) == []
+
+    # Invalid: threshold out of range
+    errors = validate_config_updates({
+        "linear.capacity_monitoring": {"warning_threshold": 1.5},
+    })
+    assert any("at most 1.0" in e for e in errors)
+
+    # Invalid: threshold negative
+    errors = validate_config_updates({
+        "linear.capacity_monitoring": {"pause_threshold": -0.1},
+    })
+    assert any("at least 0.0" in e for e in errors)
+
+    # Invalid: issue_limit too low
+    errors = validate_config_updates({
+        "linear": {"issue_limit": 0},
+    })
+    assert any("at least 1" in e for e in errors)
+
+    # Invalid: enabled not a bool
+    errors = validate_config_updates({
+        "linear.capacity_monitoring": {"enabled": "yes"},
+    })
+    assert any("boolean" in e for e in errors)
+
+
+def test_apply_capacity_monitoring_updates():
+    config = BotfarmConfig(
+        projects=[
+            ProjectConfig(
+                name="test", linear_team="T", base_dir="~/t",
+                worktree_prefix="t-", slots=[1],
+            ),
+        ],
+    )
+    apply_config_updates(config, {
+        "linear": {"issue_limit": 500},
+        "linear.capacity_monitoring": {
+            "warning_threshold": 0.60,
+            "pause_threshold": 0.92,
+        },
+    })
+    assert config.linear.issue_limit == 500
+    assert config.linear.capacity_monitoring.warning_threshold == 0.60
+    assert config.linear.capacity_monitoring.pause_threshold == 0.92
+    # Unchanged fields keep defaults
+    assert config.linear.capacity_monitoring.critical_threshold == 0.85
+
+
+def test_write_config_updates_capacity_monitoring(tmp_path):
+    data = {
+        **MINIMAL_CONFIG,
+        "linear": {
+            **MINIMAL_CONFIG["linear"],
+            "capacity_monitoring": {
+                "warning_threshold": 0.70,
+                "critical_threshold": 0.85,
+            },
+        },
+    }
+    config_path = _write_config(tmp_path, data)
+    write_config_updates(config_path, {
+        "linear.capacity_monitoring": {"warning_threshold": 0.60},
+    })
+    result = yaml.safe_load(config_path.read_text())
+    assert result["linear"]["capacity_monitoring"]["warning_threshold"] == 0.60
+    # Other fields preserved
+    assert result["linear"]["capacity_monitoring"]["critical_threshold"] == 0.85
+
+
+def test_write_config_updates_creates_capacity_monitoring_section(tmp_path):
+    config_path = _write_config(tmp_path, MINIMAL_CONFIG)
+    write_config_updates(config_path, {
+        "linear.capacity_monitoring": {"pause_threshold": 0.92},
+    })
+    result = yaml.safe_load(config_path.read_text())
+    assert result["linear"]["capacity_monitoring"]["pause_threshold"] == 0.92
+
+
+def test_default_config_template_includes_capacity_fields():
+    from botfarm.config import DEFAULT_CONFIG_TEMPLATE
+    assert "issue_limit:" in DEFAULT_CONFIG_TEMPLATE
+    assert "capacity_monitoring:" in DEFAULT_CONFIG_TEMPLATE
+    assert "warning_threshold:" in DEFAULT_CONFIG_TEMPLATE
+    assert "critical_threshold:" in DEFAULT_CONFIG_TEMPLATE
+    assert "pause_threshold:" in DEFAULT_CONFIG_TEMPLATE
+    assert "resume_threshold:" in DEFAULT_CONFIG_TEMPLATE
