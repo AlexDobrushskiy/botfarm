@@ -4190,6 +4190,13 @@ class TestManualPauseResume:
         # Start with a usage-based pause (contains "utilization")
         sm.set_dispatch_paused(True, "5-hour utilization at 85% exceeds threshold 75%")
 
+        # Need a busy worker so _handle_update_request waits (returns early)
+        # instead of proceeding to git pull which would fail and unpause.
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+
         # Request an update — _handle_update_request should take over the reason
         supervisor.request_update()
         supervisor._handle_update_request()
