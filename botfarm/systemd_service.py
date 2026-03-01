@@ -70,9 +70,13 @@ def generate_unit(
     """
     botfarm_bin = _find_botfarm_bin()
 
-    exec_parts = [botfarm_bin, "run", "--no-auto-restart"]
+    def _quote(p: str) -> str:
+        """Quote a path for systemd ExecStart if it contains spaces."""
+        return f'"{p}"' if " " in p else p
+
+    exec_parts = [_quote(botfarm_bin), "run", "--no-auto-restart"]
     if config_path is not None:
-        exec_parts.extend(["--config", str(config_path)])
+        exec_parts.extend(["--config", _quote(str(config_path))])
 
     wd = str((working_dir or Path.cwd()).resolve())
 
@@ -94,16 +98,25 @@ def install_service(
     config_path: Path | None = None,
     working_dir: Path | None = None,
     env_files: list[Path] | None = None,
+    unit_content: str | None = None,
 ) -> Path:
     """Write the unit file, reload systemd, and enable the service.
 
     Returns the path to the installed unit file.
+
+    Parameters
+    ----------
+    unit_content:
+        Pre-generated unit file content.  When provided the other
+        generation parameters are ignored and this content is written
+        directly, avoiding a redundant ``generate_unit()`` call.
     """
-    unit_content = generate_unit(
-        config_path=config_path,
-        working_dir=working_dir,
-        env_files=env_files,
-    )
+    if unit_content is None:
+        unit_content = generate_unit(
+            config_path=config_path,
+            working_dir=working_dir,
+            env_files=env_files,
+        )
 
     USER_UNIT_DIR.mkdir(parents=True, exist_ok=True)
     UNIT_PATH.write_text(unit_content)

@@ -751,11 +751,7 @@ def install_service_cmd(config_path, working_dir, env_files):
     click.echo(unit_content)
 
     try:
-        path = install_service(
-            config_path=config_path,
-            working_dir=working_dir,
-            env_files=env_file_list,
-        )
+        path = install_service(unit_content=unit_content)
     except FileNotFoundError as exc:
         raise click.ClickException(str(exc)) from exc
     except subprocess.CalledProcessError as exc:
