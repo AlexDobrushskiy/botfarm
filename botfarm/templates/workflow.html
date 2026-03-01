@@ -559,10 +559,11 @@ function saveStageProperties(stageId) {
                 node = node.previousElementSibling;
             }
             if (node) {
-                // Update executor type class
+                // Update executor type class (preserve loop flag before stripping)
+                var isLoop = node.classList.contains('workflow-node-loop');
                 node.className = node.className.replace(/workflow-node-\w+/g, '');
                 node.classList.add('workflow-node', 'workflow-node-' + data.executor_type);
-                if (node.classList.contains('workflow-node-loop')) {
+                if (isLoop) {
                     node.classList.add('workflow-node-loop');
                 }
                 // Update identity badge
@@ -598,7 +599,12 @@ function saveStageProperties(stageId) {
             setTimeout(function() { feedbackEl.innerHTML = ''; }, 2000);
         } else {
             var errors = result.data.errors || ['Unknown error'];
-            feedbackEl.innerHTML = '<div class="config-feedback error" role="alert">' + errors.join('; ') + '</div>';
+            var errDiv = document.createElement('div');
+            errDiv.className = 'config-feedback error';
+            errDiv.setAttribute('role', 'alert');
+            errDiv.textContent = errors.join('; ');
+            feedbackEl.innerHTML = '';
+            feedbackEl.appendChild(errDiv);
         }
     })
     .catch(function() {
@@ -688,7 +694,12 @@ function savePrompt(stageId) {
             }, 1500);
         } else {
             var errors = result.data.errors || ['Unknown error'];
-            feedbackEl.innerHTML = '<div class="config-feedback error" role="alert">' + errors.join('; ') + '</div>';
+            var errDiv = document.createElement('div');
+            errDiv.className = 'config-feedback error';
+            errDiv.setAttribute('role', 'alert');
+            errDiv.textContent = errors.join('; ');
+            feedbackEl.innerHTML = '';
+            feedbackEl.appendChild(errDiv);
         }
     })
     .catch(function() {
