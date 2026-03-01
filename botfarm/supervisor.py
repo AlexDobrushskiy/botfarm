@@ -2296,8 +2296,6 @@ class Supervisor:
     # Capacity polling
     # ------------------------------------------------------------------
 
-    _CAPACITY_LEVELS = ("normal", "warning", "critical", "blocked")
-
     def _compute_capacity_level(self, utilization: float) -> str:
         """Map a utilization ratio to a capacity level string."""
         cap = self._config.linear.capacity_monitoring
