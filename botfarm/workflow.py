@@ -345,7 +345,7 @@ def create_stage(
 def update_stage(conn: sqlite3.Connection, stage_id: int, **kwargs: object) -> None:
     """Update any stage field."""
     allowed = {
-        "name", "stage_order", "executor_type", "identity",
+        "name", "executor_type", "identity",
         "prompt_template", "max_turns", "timeout_minutes",
         "shell_command", "result_parser",
     }
@@ -372,10 +372,16 @@ def delete_stage(conn: sqlite3.Connection, stage_id: int) -> None:
     stage_name = row["name"]
     deleted_order = row["stage_order"]
 
-    # Remove loops referencing this stage
+    # Remove loops referencing this stage as start or end
     conn.execute(
         "DELETE FROM stage_loops WHERE pipeline_id = ? AND (start_stage = ? OR end_stage = ?)",
         (pipeline_id, stage_name, stage_name),
+    )
+    # Clear on_failure_stage references in remaining loops
+    conn.execute(
+        "UPDATE stage_loops SET on_failure_stage = NULL "
+        "WHERE pipeline_id = ? AND on_failure_stage = ?",
+        (pipeline_id, stage_name),
     )
 
     conn.execute("DELETE FROM stage_templates WHERE id = ?", (stage_id,))
@@ -515,9 +521,9 @@ def validate_pipeline(conn: sqlite3.Connection, pipeline_id: int) -> list[str]:
                 errors.append(f"Duplicate stage name {sn!r}")
             seen.add(sn)
 
-        # Stage orders contiguous (1..N with no gaps)
+        # Stage orders contiguous and 1-based (1..N with no gaps)
         orders = sorted(s["stage_order"] for s in stage_rows)
-        expected = list(range(orders[0], orders[0] + len(orders)))
+        expected = list(range(1, len(orders) + 1))
         if orders != expected:
             errors.append(
                 f"Stage orders are not contiguous: {orders}"
@@ -525,7 +531,6 @@ def validate_pipeline(conn: sqlite3.Connection, pipeline_id: int) -> list[str]:
 
     # Build lookup for validation
     stage_name_set = {s["name"] for s in stage_rows}
-    stage_order_map = {s["name"]: s["stage_order"] for s in stage_rows}
 
     # Loops
     loop_rows = conn.execute(
@@ -541,6 +546,11 @@ def validate_pipeline(conn: sqlite3.Connection, pipeline_id: int) -> list[str]:
         if lp["end_stage"] not in stage_name_set:
             errors.append(
                 f"Loop {lp['name']!r}: end_stage {lp['end_stage']!r} "
+                f"does not reference an existing stage"
+            )
+        if lp["on_failure_stage"] and lp["on_failure_stage"] not in stage_name_set:
+            errors.append(
+                f"Loop {lp['name']!r}: on_failure_stage {lp['on_failure_stage']!r} "
                 f"does not reference an existing stage"
             )
     return errors

@@ -726,6 +726,19 @@ class TestDeleteStage:
         pipeline = load_pipeline_by_name(conn, "loop_cleanup")
         assert len(pipeline.loops) == 0
 
+    def test_delete_stage_clears_on_failure_stage_reference(self, conn):
+        pid = create_pipeline(conn, "on_fail_cleanup")
+        create_stage(conn, pid, "step1", 1, "claude")
+        s2 = create_stage(conn, pid, "step2", 2, "claude")
+        create_stage(conn, pid, "step3", 3, "claude")
+        # Loop references step1→step3 with on_failure_stage=step2
+        create_loop(conn, pid, "test_loop", "step1", "step3", 3, on_failure_stage="step2")
+        delete_stage(conn, s2)
+        pipeline = load_pipeline_by_name(conn, "on_fail_cleanup")
+        # Loop should survive (start/end are step1/step3), but on_failure_stage should be NULL
+        assert len(pipeline.loops) == 1
+        assert pipeline.loops[0].on_failure_stage is None
+
     def test_delete_nonexistent_stage_raises(self, conn):
         with pytest.raises(ValueError, match="not found"):
             delete_stage(conn, 99999)
@@ -935,6 +948,31 @@ class TestValidatePipeline:
         create_loop(conn, pid, "bad_loop", "step1", "nonexistent", 3)
         errors = validate_pipeline(conn, pid)
         assert any("end_stage" in e and "nonexistent" in e for e in errors)
+
+    def test_loop_references_nonexistent_on_failure_stage(self, conn):
+        pid = create_pipeline(conn, "bad_on_fail")
+        create_stage(conn, pid, "step1", 1, "claude")
+        create_stage(conn, pid, "step2", 2, "claude")
+        create_loop(conn, pid, "loop", "step1", "step2", 3, on_failure_stage="nonexistent")
+        errors = validate_pipeline(conn, pid)
+        assert any("on_failure_stage" in e and "nonexistent" in e for e in errors)
+
+    def test_non_1_based_stage_orders_detected(self, conn):
+        pid = create_pipeline(conn, "non1based")
+        create_stage(conn, pid, "step1", 1, "claude")
+        create_stage(conn, pid, "step2", 2, "claude")
+        # Shift orders to start at 2 via offset to avoid UNIQUE constraint
+        conn.execute(
+            "UPDATE stage_templates SET stage_order = stage_order + 100 WHERE pipeline_id = ?",
+            (pid,),
+        )
+        conn.execute(
+            "UPDATE stage_templates SET stage_order = stage_order - 99 WHERE pipeline_id = ?",
+            (pid,),
+        )
+        conn.commit()
+        errors = validate_pipeline(conn, pid)
+        assert any("not contiguous" in e for e in errors)
 
     def test_multiple_errors_returned(self, conn):
         pid = create_pipeline(conn, "multi_err")
