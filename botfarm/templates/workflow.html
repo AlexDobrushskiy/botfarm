@@ -297,6 +297,11 @@ input[type="number"].stage-prop-input {
     background: rgba(239, 68, 68, 0.15);
     color: var(--pico-del-color);
 }
+.stage-props-feedback .config-feedback.warning {
+    background: rgba(245, 158, 11, 0.15);
+    color: var(--pico-color-yellow-500, #eab308);
+    margin-top: 0.3rem;
+}
 .stage-props-actions {
     margin-top: 0.4rem;
 }
@@ -550,7 +555,12 @@ function saveStageProperties(stageId) {
         saveBtn.removeAttribute('aria-busy');
         saveBtn.textContent = 'Save Properties';
         if (result.ok && result.data.ok) {
-            feedbackEl.innerHTML = '<div class="config-feedback success" role="alert">Properties saved.</div>';
+            var successDiv = document.createElement('div');
+            successDiv.className = 'config-feedback success';
+            successDiv.setAttribute('role', 'alert');
+            successDiv.textContent = 'Properties saved.';
+            feedbackEl.innerHTML = '';
+            feedbackEl.appendChild(successDiv);
             // Update the node badge if executor type or identity changed
             var data = result.data.data;
             var detail = feedbackEl.closest('.workflow-detail');
@@ -595,8 +605,17 @@ function saveStageProperties(stageId) {
                     timeoutBadge.remove();
                 }
             }
-            // Auto-dismiss feedback
-            setTimeout(function() { feedbackEl.innerHTML = ''; }, 2000);
+            // Surface validation warnings if any
+            var warnings = result.data.warnings;
+            if (warnings && warnings.length > 0) {
+                var warnDiv = document.createElement('div');
+                warnDiv.className = 'config-feedback warning';
+                warnDiv.setAttribute('role', 'alert');
+                warnDiv.textContent = warnings.join('; ');
+                feedbackEl.appendChild(warnDiv);
+            }
+            // Auto-dismiss feedback (longer if warnings present)
+            setTimeout(function() { feedbackEl.innerHTML = ''; }, warnings && warnings.length ? 5000 : 2000);
         } else {
             var errors = result.data.errors || ['Unknown error'];
             var errDiv = document.createElement('div');
@@ -610,7 +629,12 @@ function saveStageProperties(stageId) {
     .catch(function() {
         saveBtn.removeAttribute('aria-busy');
         saveBtn.textContent = 'Save Properties';
-        feedbackEl.innerHTML = '<div class="config-feedback error" role="alert">Network error.</div>';
+        var netErrDiv = document.createElement('div');
+        netErrDiv.className = 'config-feedback error';
+        netErrDiv.setAttribute('role', 'alert');
+        netErrDiv.textContent = 'Network error.';
+        feedbackEl.innerHTML = '';
+        feedbackEl.appendChild(netErrDiv);
     });
 }
 
@@ -661,7 +685,12 @@ function savePrompt(stageId) {
         saveBtn.removeAttribute('aria-busy');
         saveBtn.textContent = 'Save';
         if (result.ok && result.data.ok) {
-            feedbackEl.innerHTML = '<div class="config-feedback success" role="alert">Prompt saved.</div>';
+            var pSuccessDiv = document.createElement('div');
+            pSuccessDiv.className = 'config-feedback success';
+            pSuccessDiv.setAttribute('role', 'alert');
+            pSuccessDiv.textContent = 'Prompt saved.';
+            feedbackEl.innerHTML = '';
+            feedbackEl.appendChild(pSuccessDiv);
             // Update the view-mode preview
             var viewEl = document.querySelector('.prompt-view[data-stage-id="' + stageId + '"]');
             var preEl = viewEl.querySelector('.prompt-preview');
@@ -705,7 +734,12 @@ function savePrompt(stageId) {
     .catch(function() {
         saveBtn.removeAttribute('aria-busy');
         saveBtn.textContent = 'Save';
-        feedbackEl.innerHTML = '<div class="config-feedback error" role="alert">Network error.</div>';
+        var pNetErrDiv = document.createElement('div');
+        pNetErrDiv.className = 'config-feedback error';
+        pNetErrDiv.setAttribute('role', 'alert');
+        pNetErrDiv.textContent = 'Network error.';
+        feedbackEl.innerHTML = '';
+        feedbackEl.appendChild(pNetErrDiv);
     });
 }
 
