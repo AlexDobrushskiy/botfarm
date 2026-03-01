@@ -1661,8 +1661,7 @@ def create_app(
             )
             errors = validate_pipeline(conn, pipeline_id)
             if errors:
-                conn.execute("DELETE FROM stage_templates WHERE id = ?", (new_id,))
-                conn.commit()
+                delete_stage(conn, new_id)
                 return JSONResponse({"ok": False, "errors": errors}, status_code=400)
             stage_row = conn.execute(
                 "SELECT * FROM stage_templates WHERE id = ?", (new_id,)
