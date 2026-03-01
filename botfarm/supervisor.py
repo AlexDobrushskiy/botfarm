@@ -2244,18 +2244,19 @@ class Supervisor:
                 self._notifier.notify_limit_hit(reason=reason)
             return
 
-        # Utilization is below thresholds — resume if previously paused
-        # (but don't override a manual pause)
+        # Utilization is below thresholds — resume if previously paused by
+        # usage checks.  Other pause reasons (manual_pause, update_in_progress)
+        # must be cleared by their own flow.
         if self._slot_manager.dispatch_paused:
-            if self._slot_manager.dispatch_pause_reason == "manual_pause":
-                return  # Manual pause takes priority — don't auto-resume
-            prev_reason = self._slot_manager.dispatch_pause_reason
+            reason = self._slot_manager.dispatch_pause_reason
+            if reason is None or "utilization" not in reason:
+                return  # Not a usage-based pause — don't auto-resume
             logger.info("Dispatch resumed — utilization dropped below thresholds")
             self._slot_manager.set_dispatch_paused(False)
             insert_event(
                 self._conn,
                 event_type="dispatch_resumed",
-                detail=f"previous_reason={prev_reason}",
+                detail=f"previous_reason={reason}",
             )
             self._conn.commit()
             self._notifier.notify_limit_cleared()
