@@ -4178,6 +4178,39 @@ class TestManualPauseResume:
         assert sm.dispatch_paused is True
         assert sm.dispatch_pause_reason == "update_in_progress"
 
+    def test_update_request_overrides_usage_pause_reason(self, supervisor):
+        """Update requested while usage-paused should take over the pause reason.
+
+        Regression: if the supervisor is already paused for utilization and an
+        update is requested, _handle_update_request must override the reason to
+        "update_in_progress" so that _poll_and_dispatch won't auto-resume when
+        utilization drops.
+        """
+        sm = supervisor.slot_manager
+        # Start with a usage-based pause (contains "utilization")
+        sm.set_dispatch_paused(True, "5-hour utilization at 85% exceeds threshold 75%")
+
+        # Request an update — _handle_update_request should take over the reason
+        supervisor.request_update()
+        supervisor._handle_update_request()
+
+        assert sm.dispatch_paused is True
+        assert sm.dispatch_pause_reason == "update_in_progress"
+
+        # Now simulate utilization dropping — _poll_and_dispatch should NOT resume
+        supervisor._usage_poller._state.utilization_5h = 0.10
+        supervisor._usage_poller._state.utilization_7d = 0.10
+
+        poller = supervisor._pollers["test-project"]
+        poller.poll.return_value = PollResult(candidates=[_make_issue()], blocked=[], auto_close_parents=[])
+
+        with patch.object(supervisor, "_dispatch_worker") as mock_dispatch:
+            supervisor._poll_and_dispatch()
+            mock_dispatch.assert_not_called()
+
+        assert sm.dispatch_paused is True
+        assert sm.dispatch_pause_reason == "update_in_progress"
+
     def test_paused_result_propagates_stages_completed(self, supervisor):
         """Paused worker result syncs stages_completed to supervisor slot."""
         sm = supervisor.slot_manager

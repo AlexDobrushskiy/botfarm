@@ -2102,7 +2102,7 @@ class Supervisor:
 
         from botfarm.git_update import UPDATE_EXIT_CODE, pull_and_install
 
-        # Step 1: Pause dispatch if not already paused
+        # Step 1: Pause dispatch (or take over an existing pause)
         if not self._slot_manager.dispatch_paused:
             logger.info("Update requested — pausing dispatch for update")
             self._slot_manager.set_dispatch_paused(True, "update_in_progress")
@@ -2112,6 +2112,12 @@ class Supervisor:
                 detail="pausing workers for update",
             )
             self._conn.commit()
+        elif self._slot_manager.dispatch_pause_reason != "update_in_progress":
+            prev = self._slot_manager.dispatch_pause_reason
+            logger.info(
+                "Update requested — taking over existing pause (was: %s)", prev,
+            )
+            self._slot_manager.set_dispatch_paused(True, "update_in_progress")
 
         # Signal all active workers to pause after current stage
         for key, proc in self._workers.items():
