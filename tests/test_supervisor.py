@@ -4917,7 +4917,7 @@ class TestTicketHistoryCapture:
 
         row = get_ticket_history_entry(supervisor._conn, "TST-1")
         assert row is not None
-        assert row["capture_source"] == "completion"
+        assert row["capture_source"] == "failure"
 
     def test_capture_failure_does_not_block_dispatch(self, supervisor):
         """If ticket history capture fails, dispatch should still proceed."""

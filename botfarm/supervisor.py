@@ -1418,9 +1418,10 @@ class Supervisor:
 
         # Capture ticket history at completion
         if slot.ticket_id:
+            client = poller._client if poller else None
             self._capture_ticket_history(
                 slot.ticket_id, "completion",
-                pr_url=slot.pr_url, branch_name=slot.branch,
+                client=client, pr_url=slot.pr_url, branch_name=slot.branch,
             )
 
         insert_event(
@@ -1492,9 +1493,10 @@ class Supervisor:
 
         # Capture ticket history at failure
         if slot.ticket_id:
+            client = poller._client if poller else None
             self._capture_ticket_history(
-                slot.ticket_id, "completion",
-                pr_url=slot.pr_url, branch_name=slot.branch,
+                slot.ticket_id, "failure",
+                client=client, pr_url=slot.pr_url, branch_name=slot.branch,
             )
 
         insert_event(
@@ -1784,6 +1786,7 @@ class Supervisor:
         ticket_id: str,
         capture_source: str,
         *,
+        client: "LinearClient | None" = None,
         pr_url: str | None = None,
         branch_name: str | None = None,
     ) -> None:
@@ -1791,16 +1794,15 @@ class Supervisor:
 
         Failures are logged but never block the caller.
         """
-        poller = None
-        for p in self._pollers.values():
-            poller = p
-            break
-        if poller is None:
-            logger.warning("No poller available for ticket history capture of %s", ticket_id)
-            return
+        if client is None:
+            poller = next(iter(self._pollers.values()), None)
+            if poller is None:
+                logger.warning("No poller available for ticket history capture of %s", ticket_id)
+                return
+            client = poller._client
 
         try:
-            details = poller._client.fetch_issue_details(ticket_id)
+            details = client.fetch_issue_details(ticket_id)
             details["capture_source"] = capture_source
             if pr_url:
                 details["pr_url"] = pr_url
@@ -2464,7 +2466,8 @@ class Supervisor:
 
         # Capture full ticket details for history
         self._capture_ticket_history(
-            issue.identifier, "dispatch", branch_name=branch,
+            issue.identifier, "dispatch",
+            client=poller._client, branch_name=branch,
         )
 
         # Create per-ticket log directory

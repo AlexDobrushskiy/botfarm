@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 
@@ -567,8 +568,6 @@ class LinearClient:
         Returns a dict with all structured fields ready for
         ``upsert_ticket_history()``.
         """
-        import json
-
         data = self._execute(ISSUE_DETAILS_QUERY, {"identifier": identifier})
         issue = data.get("issue")
         if not issue:
