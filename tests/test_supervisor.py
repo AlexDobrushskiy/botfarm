@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import logging.handlers
 import os
@@ -22,7 +23,7 @@ from botfarm.config import (
     LinearConfig,
     ProjectConfig,
 )
-from botfarm.db import get_events, get_task, init_db, insert_task, update_task
+from botfarm.db import get_events, get_task, get_ticket_history_entry, init_db, insert_task, update_task
 from botfarm.linear import LinearIssue, PollResult
 from botfarm.supervisor import (
     DEFAULT_LOG_DIR,
@@ -4821,3 +4822,179 @@ class TestDegradedMode:
         # After shutdown, supervisor._conn is closed, but we can check
         # the preflight results were stored
         assert len(supervisor._preflight_results) == 1
+
+
+# ---------------------------------------------------------------------------
+# Ticket history capture
+# ---------------------------------------------------------------------------
+
+
+class TestTicketHistoryCapture:
+    def _mock_fetch_issue_details(self, identifier):
+        """Return a dict mimicking LinearClient.fetch_issue_details()."""
+        return {
+            "ticket_id": identifier,
+            "linear_uuid": f"uuid-{identifier}",
+            "title": f"Title for {identifier}",
+            "description": "Some description",
+            "status": "In Progress",
+            "priority": 2,
+            "url": f"https://linear.app/test/{identifier}",
+            "assignee_name": "Bot",
+            "assignee_email": "bot@test.com",
+            "creator_name": "User",
+            "project_name": "test-project",
+            "team_name": "TST",
+            "estimate": None,
+            "due_date": None,
+            "parent_id": None,
+            "children_ids": json.dumps([]),
+            "blocked_by": json.dumps([]),
+            "blocks": json.dumps([]),
+            "labels": json.dumps([]),
+            "comments_json": json.dumps([]),
+            "linear_created_at": "2026-01-01T00:00:00Z",
+            "linear_updated_at": "2026-02-01T00:00:00Z",
+            "linear_completed_at": None,
+            "raw_json": json.dumps({"id": f"uuid-{identifier}"}),
+        }
+
+    def test_dispatch_captures_ticket_history(self, supervisor):
+        """Dispatch should capture ticket details into ticket_history."""
+        issue = _make_issue()
+        slot = supervisor.slot_manager.get_slot("test-project", 1)
+        poller = supervisor._pollers["test-project"]
+        poller._client.fetch_issue_details.side_effect = self._mock_fetch_issue_details
+
+        with patch("botfarm.supervisor.multiprocessing.Process") as MockProc:
+            mock_proc = MagicMock()
+            mock_proc.pid = 12345
+            MockProc.return_value = mock_proc
+            supervisor._dispatch_worker("test-project", slot, issue, poller)
+
+        row = get_ticket_history_entry(supervisor._conn, "TST-1")
+        assert row is not None
+        assert row["title"] == "Title for TST-1"
+        assert row["capture_source"] == "dispatch"
+        assert row["branch_name"] == "test-project-slot-1"
+
+    def test_completion_captures_ticket_history(self, supervisor):
+        """Completed slot should capture ticket details into ticket_history."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        slot = sm.get_slot("test-project", 1)
+        slot.pr_url = "https://github.com/test/pr/1"
+        sm.mark_completed("test-project", 1)
+
+        poller = supervisor._pollers["test-project"]
+        poller._client.fetch_issue_details.side_effect = self._mock_fetch_issue_details
+
+        with patch.object(supervisor, "_check_pr_status", return_value=None):
+            supervisor._handle_finished_slots()
+
+        row = get_ticket_history_entry(supervisor._conn, "TST-1")
+        assert row is not None
+        assert row["capture_source"] == "completion"
+        assert row["pr_url"] == "https://github.com/test/pr/1"
+        assert row["branch_name"] == "b1"
+
+    def test_failure_captures_ticket_history(self, supervisor):
+        """Failed slot should capture ticket details into ticket_history."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.mark_failed("test-project", 1, reason="crash")
+
+        poller = supervisor._pollers["test-project"]
+        poller._client.fetch_issue_details.side_effect = self._mock_fetch_issue_details
+
+        supervisor._handle_finished_slots()
+
+        row = get_ticket_history_entry(supervisor._conn, "TST-1")
+        assert row is not None
+        assert row["capture_source"] == "failure"
+
+    def test_capture_failure_does_not_block_dispatch(self, supervisor):
+        """If ticket history capture fails, dispatch should still proceed."""
+        issue = _make_issue()
+        slot = supervisor.slot_manager.get_slot("test-project", 1)
+        poller = supervisor._pollers["test-project"]
+        poller._client.fetch_issue_details.side_effect = Exception("API down")
+
+        with patch("botfarm.supervisor.multiprocessing.Process") as MockProc:
+            mock_proc = MagicMock()
+            mock_proc.pid = 12345
+            MockProc.return_value = mock_proc
+            supervisor._dispatch_worker("test-project", slot, issue, poller)
+
+        # Dispatch still happened
+        updated_slot = supervisor.slot_manager.get_slot("test-project", 1)
+        assert updated_slot.status == "busy"
+        assert updated_slot.ticket_id == "TST-1"
+
+        # No ticket history entry
+        row = get_ticket_history_entry(supervisor._conn, "TST-1")
+        assert row is None
+
+    def test_capture_failure_does_not_block_completion(self, supervisor):
+        """If ticket history capture fails at completion, slot is still freed."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.mark_completed("test-project", 1)
+
+        poller = supervisor._pollers["test-project"]
+        poller._client.fetch_issue_details.side_effect = Exception("API down")
+
+        with patch.object(supervisor, "_check_pr_status", return_value=None):
+            supervisor._handle_finished_slots()
+
+        assert sm.get_slot("test-project", 1).status == "free"
+
+    def test_capture_failure_does_not_block_failure_handling(self, supervisor):
+        """If ticket history capture fails at failure, slot is still freed."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.mark_failed("test-project", 1, reason="crash")
+
+        poller = supervisor._pollers["test-project"]
+        poller._client.fetch_issue_details.side_effect = Exception("API down")
+
+        supervisor._handle_finished_slots()
+
+        assert sm.get_slot("test-project", 1).status == "free"
+
+    def test_completion_updates_dispatch_capture(self, supervisor):
+        """Completion capture should update an existing dispatch capture."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+
+        poller = supervisor._pollers["test-project"]
+        poller._client.fetch_issue_details.side_effect = self._mock_fetch_issue_details
+
+        # Simulate dispatch capture
+        supervisor._capture_ticket_history("TST-1", "dispatch", branch_name="b1")
+        row = get_ticket_history_entry(supervisor._conn, "TST-1")
+        assert row["capture_source"] == "dispatch"
+
+        # Simulate completion capture
+        supervisor._capture_ticket_history(
+            "TST-1", "completion",
+            pr_url="https://github.com/test/pr/1", branch_name="b1",
+        )
+        row = get_ticket_history_entry(supervisor._conn, "TST-1")
+        assert row["capture_source"] == "completion"
+        assert row["pr_url"] == "https://github.com/test/pr/1"

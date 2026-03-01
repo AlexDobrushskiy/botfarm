@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 
@@ -196,6 +197,51 @@ query ActiveIssuesCount($first: Int!, $after: String) {
     pageInfo {
       hasNextPage
       endCursor
+    }
+  }
+}
+"""
+
+ISSUE_DETAILS_QUERY = """
+query IssueDetails($identifier: String!) {
+  issue(id: $identifier) {
+    id
+    identifier
+    title
+    description
+    priority
+    url
+    estimate
+    dueDate
+    createdAt
+    updatedAt
+    completedAt
+    state { name }
+    creator { name }
+    assignee { name, email }
+    project { name }
+    team { name, key }
+    parent { identifier, title }
+    children { nodes { identifier } }
+    labels { nodes { name } }
+    relations {
+      nodes {
+        type
+        relatedIssue { identifier }
+      }
+    }
+    inverseRelations {
+      nodes {
+        type
+        issue { identifier }
+      }
+    }
+    comments(first: 50) {
+      nodes {
+        body
+        user { name }
+        createdAt
+      }
     }
   }
 }
@@ -515,6 +561,88 @@ class LinearClient:
             return None
 
         return ActiveIssuesCount(total=total, by_project=by_project)
+
+    def fetch_issue_details(self, identifier: str) -> dict:
+        """Fetch full details for a single issue by identifier.
+
+        Returns a dict with all structured fields ready for
+        ``upsert_ticket_history()``.
+        """
+        data = self._execute(ISSUE_DETAILS_QUERY, {"identifier": identifier})
+        issue = data.get("issue")
+        if not issue:
+            raise LinearAPIError(f"Issue '{identifier}' not found")
+
+        assignee = issue.get("assignee") or {}
+        creator = issue.get("creator") or {}
+        project = issue.get("project") or {}
+        team = issue.get("team") or {}
+        parent = issue.get("parent") or {}
+        state = issue.get("state") or {}
+
+        # Children identifiers
+        child_nodes = issue.get("children", {}).get("nodes", [])
+        children_ids = [ch.get("identifier", "") for ch in child_nodes]
+
+        # Labels
+        label_nodes = issue.get("labels", {}).get("nodes", [])
+        labels = [ln.get("name", "") for ln in label_nodes]
+
+        # Blocking relations
+        blocked_by = []
+        blocks = []
+        for rel in issue.get("relations", {}).get("nodes", []):
+            rel_type = rel.get("type", "")
+            related_id = (rel.get("relatedIssue") or {}).get("identifier", "")
+            if rel_type == "isBlockedBy":
+                blocked_by.append(related_id)
+            elif rel_type == "blocks":
+                blocks.append(related_id)
+        for rel in issue.get("inverseRelations", {}).get("nodes", []):
+            rel_type = rel.get("type", "")
+            related_id = (rel.get("issue") or {}).get("identifier", "")
+            if rel_type == "blocks":
+                blocked_by.append(related_id)
+            elif rel_type == "isBlockedBy":
+                blocks.append(related_id)
+
+        # Comments
+        comment_nodes = issue.get("comments", {}).get("nodes", [])
+        comments = [
+            {
+                "body": c.get("body", ""),
+                "author": (c.get("user") or {}).get("name", ""),
+                "created_at": c.get("createdAt", ""),
+            }
+            for c in comment_nodes
+        ]
+
+        return {
+            "ticket_id": issue.get("identifier", identifier),
+            "linear_uuid": issue.get("id", ""),
+            "title": issue.get("title", ""),
+            "description": issue.get("description"),
+            "status": state.get("name"),
+            "priority": issue.get("priority"),
+            "url": issue.get("url", ""),
+            "assignee_name": assignee.get("name"),
+            "assignee_email": assignee.get("email"),
+            "creator_name": creator.get("name"),
+            "project_name": project.get("name"),
+            "team_name": team.get("name"),
+            "estimate": issue.get("estimate"),
+            "due_date": issue.get("dueDate"),
+            "parent_id": parent.get("identifier"),
+            "children_ids": json.dumps(children_ids),
+            "blocked_by": json.dumps(blocked_by),
+            "blocks": json.dumps(blocks),
+            "labels": json.dumps(labels),
+            "comments_json": json.dumps(comments),
+            "linear_created_at": issue.get("createdAt"),
+            "linear_updated_at": issue.get("updatedAt"),
+            "linear_completed_at": issue.get("completedAt"),
+            "raw_json": json.dumps(issue),
+        }
 
     def count_active_issues_for_project(self, project_name: str) -> int | None:
         """Count active issues for a specific project.
