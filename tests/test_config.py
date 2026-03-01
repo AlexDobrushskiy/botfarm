@@ -1692,6 +1692,32 @@ def test_capacity_config_editable_validation():
     })
     assert any("boolean" in e for e in errors)
 
+    # Invalid: resume_threshold >= pause_threshold (cross-field)
+    errors = validate_config_updates({
+        "linear.capacity_monitoring": {
+            "pause_threshold": 0.90,
+            "resume_threshold": 0.95,
+        },
+    })
+    assert any("resume_threshold must be less than pause_threshold" in e for e in errors)
+
+    # Invalid: resume_threshold == pause_threshold (cross-field)
+    errors = validate_config_updates({
+        "linear.capacity_monitoring": {
+            "pause_threshold": 0.90,
+            "resume_threshold": 0.90,
+        },
+    })
+    assert any("resume_threshold must be less than pause_threshold" in e for e in errors)
+
+    # Valid: resume_threshold < pause_threshold (cross-field)
+    assert validate_config_updates({
+        "linear.capacity_monitoring": {
+            "pause_threshold": 0.95,
+            "resume_threshold": 0.90,
+        },
+    }) == []
+
 
 def test_apply_capacity_monitoring_updates():
     config = BotfarmConfig(

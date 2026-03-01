@@ -653,6 +653,25 @@ def validate_config_updates(updates: dict) -> list[str]:
                 errors.append(f"'{section}.{key}' is not an editable field")
                 continue
             errors.extend(_validate_field(section, key, value, spec))
+
+    # Cross-field invariant: resume_threshold must be less than pause_threshold
+    cap_fields = updates.get("linear.capacity_monitoring", {})
+    if isinstance(cap_fields, dict):
+        resume = cap_fields.get("resume_threshold")
+        pause = cap_fields.get("pause_threshold")
+        if (
+            resume is not None
+            and pause is not None
+            and isinstance(resume, (int, float))
+            and not isinstance(resume, bool)
+            and isinstance(pause, (int, float))
+            and not isinstance(pause, bool)
+            and float(resume) >= float(pause)
+        ):
+            errors.append(
+                "linear.capacity_monitoring.resume_threshold must be less than pause_threshold"
+            )
+
     return errors
 
 
