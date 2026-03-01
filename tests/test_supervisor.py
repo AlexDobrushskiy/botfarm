@@ -4158,6 +4158,71 @@ class TestManualPauseResume:
         assert sm.dispatch_paused is True
         assert sm.dispatch_pause_reason == "manual_pause"
 
+    def test_update_in_progress_does_not_auto_resume(self, supervisor):
+        """_poll_and_dispatch should not resume dispatch when paused for update_in_progress."""
+        sm = supervisor.slot_manager
+        sm.set_dispatch_paused(True, "update_in_progress")
+
+        # Set utilization to low values that would normally trigger resume
+        supervisor._usage_poller._state.utilization_5h = 0.10
+        supervisor._usage_poller._state.utilization_7d = 0.10
+
+        poller = supervisor._pollers["test-project"]
+        poller.poll.return_value = PollResult(candidates=[_make_issue()], blocked=[], auto_close_parents=[])
+
+        with patch.object(supervisor, "_dispatch_worker") as mock_dispatch:
+            supervisor._poll_and_dispatch()
+            mock_dispatch.assert_not_called()
+
+        # Should still be paused
+        assert sm.dispatch_paused is True
+        assert sm.dispatch_pause_reason == "update_in_progress"
+
+    def test_update_request_overrides_usage_pause_reason(self, supervisor):
+        """Update requested while usage-paused should take over the pause reason.
+
+        Regression: if the supervisor is already paused for utilization and an
+        update is requested, _handle_update_request must override the reason to
+        "update_in_progress" so that _poll_and_dispatch won't auto-resume when
+        utilization drops.
+        """
+        sm = supervisor.slot_manager
+        # Start with a usage-based pause (contains "utilization")
+        sm.set_dispatch_paused(True, "5-hour utilization at 85% exceeds threshold 75%")
+
+        # Need a busy worker so _handle_update_request waits (returns early)
+        # instead of proceeding to git pull which would fail and unpause.
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+
+        # Request an update — _handle_update_request should take over the reason
+        supervisor.request_update()
+        supervisor._handle_update_request()
+
+        assert sm.dispatch_paused is True
+        assert sm.dispatch_pause_reason == "update_in_progress"
+
+        # Verify update_started event was recorded for the take-over
+        events = get_events(supervisor._conn, event_type="update_started")
+        assert len(events) == 1
+        assert "taking over" in events[0]["detail"]
+
+        # Now simulate utilization dropping — _poll_and_dispatch should NOT resume
+        supervisor._usage_poller._state.utilization_5h = 0.10
+        supervisor._usage_poller._state.utilization_7d = 0.10
+
+        poller = supervisor._pollers["test-project"]
+        poller.poll.return_value = PollResult(candidates=[_make_issue()], blocked=[], auto_close_parents=[])
+
+        with patch.object(supervisor, "_dispatch_worker") as mock_dispatch:
+            supervisor._poll_and_dispatch()
+            mock_dispatch.assert_not_called()
+
+        assert sm.dispatch_paused is True
+        assert sm.dispatch_pause_reason == "update_in_progress"
+
     def test_paused_result_propagates_stages_completed(self, supervisor):
         """Paused worker result syncs stages_completed to supervisor slot."""
         sm = supervisor.slot_manager

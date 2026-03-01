@@ -2102,7 +2102,7 @@ class Supervisor:
 
         from botfarm.git_update import UPDATE_EXIT_CODE, pull_and_install
 
-        # Step 1: Pause dispatch if not already paused
+        # Step 1: Pause dispatch (or take over an existing pause)
         if not self._slot_manager.dispatch_paused:
             logger.info("Update requested — pausing dispatch for update")
             self._slot_manager.set_dispatch_paused(True, "update_in_progress")
@@ -2110,6 +2110,18 @@ class Supervisor:
                 self._conn,
                 event_type="update_started",
                 detail="pausing workers for update",
+            )
+            self._conn.commit()
+        elif self._slot_manager.dispatch_pause_reason != "update_in_progress":
+            prev = self._slot_manager.dispatch_pause_reason
+            logger.info(
+                "Update requested — taking over existing pause (was: %s)", prev,
+            )
+            self._slot_manager.set_dispatch_paused(True, "update_in_progress")
+            insert_event(
+                self._conn,
+                event_type="update_started",
+                detail=f"taking over existing pause (was: {prev})",
             )
             self._conn.commit()
 
@@ -2244,12 +2256,13 @@ class Supervisor:
                 self._notifier.notify_limit_hit(reason=reason)
             return
 
-        # Utilization is below thresholds — resume if previously paused
-        # (but don't override a manual pause)
+        # Utilization is below thresholds — resume if previously paused by
+        # usage checks.  Other pause reasons (manual_pause, update_in_progress)
+        # must be cleared by their own flow.
         if self._slot_manager.dispatch_paused:
-            if self._slot_manager.dispatch_pause_reason == "manual_pause":
-                return  # Manual pause takes priority — don't auto-resume
             prev_reason = self._slot_manager.dispatch_pause_reason
+            if prev_reason is None or "utilization" not in prev_reason:
+                return  # Not a usage-based pause — don't auto-resume
             logger.info("Dispatch resumed — utilization dropped below thresholds")
             self._slot_manager.set_dispatch_paused(False)
             insert_event(
