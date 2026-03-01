@@ -2343,7 +2343,7 @@ def create_app(
         # Validate runtime updates
         all_errors: list[str] = []
         if runtime_updates:
-            all_errors.extend(validate_config_updates(runtime_updates))
+            all_errors.extend(validate_config_updates(runtime_updates, cfg))
 
         # Validate structural updates
         if structural_updates:

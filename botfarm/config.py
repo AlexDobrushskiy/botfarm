@@ -343,6 +343,16 @@ def _validate_config(config: BotfarmConfig) -> None:
             raise ConfigError(
                 f"linear.capacity_monitoring.{attr} must be between 0.0 and 1.0"
             )
+    if cap.warning_threshold > cap.critical_threshold:
+        raise ConfigError(
+            "linear.capacity_monitoring.warning_threshold must be "
+            "less than or equal to critical_threshold"
+        )
+    if cap.critical_threshold > cap.pause_threshold:
+        raise ConfigError(
+            "linear.capacity_monitoring.critical_threshold must be "
+            "less than or equal to pause_threshold"
+        )
     if cap.resume_threshold >= cap.pause_threshold:
         raise ConfigError(
             "linear.capacity_monitoring.resume_threshold must be less than pause_threshold"
@@ -635,10 +645,14 @@ STRUCTURAL_FIELDS: dict[tuple[str, str], dict] = {
 }
 
 
-def validate_config_updates(updates: dict) -> list[str]:
+def validate_config_updates(
+    updates: dict, config: BotfarmConfig | None = None,
+) -> list[str]:
     """Validate a partial config update dict.
 
     ``updates`` is a nested dict like ``{"linear": {"poll_interval_seconds": 60}}``.
+    When ``config`` is provided, cross-field invariants are checked against the
+    current in-memory values for fields not present in the update.
     Returns a list of error messages (empty means valid).
     """
     errors: list[str] = []
@@ -654,22 +668,41 @@ def validate_config_updates(updates: dict) -> list[str]:
                 continue
             errors.extend(_validate_field(section, key, value, spec))
 
-    # Cross-field invariant: resume_threshold must be less than pause_threshold
+    # Cross-field invariants for capacity monitoring thresholds
     cap_fields = updates.get("linear.capacity_monitoring", {})
     if isinstance(cap_fields, dict):
-        resume = cap_fields.get("resume_threshold")
-        pause = cap_fields.get("pause_threshold")
-        if (
-            resume is not None
-            and pause is not None
-            and isinstance(resume, (int, float))
-            and not isinstance(resume, bool)
-            and isinstance(pause, (int, float))
-            and not isinstance(pause, bool)
-            and float(resume) >= float(pause)
-        ):
+        # Resolve effective values: use update if present, fall back to config
+        cap_cfg = config.linear.capacity_monitoring if config else None
+
+        def _resolve(field: str) -> float | None:
+            val = cap_fields.get(field)
+            if val is not None and isinstance(val, (int, float)) and not isinstance(val, bool):
+                return float(val)
+            if cap_cfg is not None:
+                return float(getattr(cap_cfg, field))
+            return None
+
+        resume = _resolve("resume_threshold")
+        pause = _resolve("pause_threshold")
+        warning = _resolve("warning_threshold")
+        critical = _resolve("critical_threshold")
+
+        # resume_threshold must be less than pause_threshold
+        if resume is not None and pause is not None and resume >= pause:
             errors.append(
                 "linear.capacity_monitoring.resume_threshold must be less than pause_threshold"
+            )
+
+        # warning_threshold <= critical_threshold <= pause_threshold
+        if warning is not None and critical is not None and warning > critical:
+            errors.append(
+                "linear.capacity_monitoring.warning_threshold must be "
+                "less than or equal to critical_threshold"
+            )
+        if critical is not None and pause is not None and critical > pause:
+            errors.append(
+                "linear.capacity_monitoring.critical_threshold must be "
+                "less than or equal to pause_threshold"
             )
 
     return errors

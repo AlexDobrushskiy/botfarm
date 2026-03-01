@@ -1643,6 +1643,42 @@ def test_load_config_issue_limit_zero_rejected(tmp_path):
         load_config(config_path)
 
 
+def test_load_config_warning_above_critical_rejected(tmp_path):
+    data = {
+        **MINIMAL_CONFIG,
+        "linear": {
+            **MINIMAL_CONFIG["linear"],
+            "capacity_monitoring": {
+                "warning_threshold": 0.90,
+                "critical_threshold": 0.70,
+                "pause_threshold": 0.95,
+                "resume_threshold": 0.60,
+            },
+        },
+    }
+    config_path = _write_config(tmp_path, data)
+    with pytest.raises(ConfigError, match="warning_threshold must be less than or equal to critical_threshold"):
+        load_config(config_path)
+
+
+def test_load_config_critical_above_pause_rejected(tmp_path):
+    data = {
+        **MINIMAL_CONFIG,
+        "linear": {
+            **MINIMAL_CONFIG["linear"],
+            "capacity_monitoring": {
+                "warning_threshold": 0.70,
+                "critical_threshold": 0.98,
+                "pause_threshold": 0.95,
+                "resume_threshold": 0.90,
+            },
+        },
+    }
+    config_path = _write_config(tmp_path, data)
+    with pytest.raises(ConfigError, match="critical_threshold must be less than or equal to pause_threshold"):
+        load_config(config_path)
+
+
 def test_capacity_config_editable_fields():
     from botfarm.config import EDITABLE_FIELDS
 
@@ -1717,6 +1753,87 @@ def test_capacity_config_editable_validation():
             "resume_threshold": 0.90,
         },
     }) == []
+
+    # Invalid: warning_threshold > critical_threshold (ordering)
+    errors = validate_config_updates({
+        "linear.capacity_monitoring": {
+            "warning_threshold": 0.90,
+            "critical_threshold": 0.70,
+        },
+    })
+    assert any("warning_threshold must be less than or equal to critical_threshold" in e for e in errors)
+
+    # Invalid: critical_threshold > pause_threshold (ordering)
+    errors = validate_config_updates({
+        "linear.capacity_monitoring": {
+            "critical_threshold": 0.98,
+            "pause_threshold": 0.95,
+        },
+    })
+    assert any("critical_threshold must be less than or equal to pause_threshold" in e for e in errors)
+
+    # Valid: warning <= critical <= pause (ordering)
+    assert validate_config_updates({
+        "linear.capacity_monitoring": {
+            "warning_threshold": 0.70,
+            "critical_threshold": 0.85,
+            "pause_threshold": 0.95,
+        },
+    }) == []
+
+
+def test_capacity_cross_field_validation_with_config():
+    """Cross-field validation falls back to current config when only one threshold is updated."""
+    config = BotfarmConfig(
+        projects=[
+            ProjectConfig(
+                name="test", linear_team="T", base_dir="~/t",
+                worktree_prefix="t-", slots=[1],
+            ),
+        ],
+        linear=LinearConfig(
+            api_key="test",
+            capacity_monitoring=CapacityConfig(
+                resume_threshold=0.90,
+                pause_threshold=0.95,
+            ),
+        ),
+    )
+
+    # Lowering pause_threshold below current resume_threshold (0.90) should fail
+    errors = validate_config_updates(
+        {"linear.capacity_monitoring": {"pause_threshold": 0.85}},
+        config=config,
+    )
+    assert any("resume_threshold must be less than pause_threshold" in e for e in errors)
+
+    # Raising resume_threshold above current pause_threshold (0.95) should fail
+    errors = validate_config_updates(
+        {"linear.capacity_monitoring": {"resume_threshold": 0.96}},
+        config=config,
+    )
+    assert any("resume_threshold must be less than pause_threshold" in e for e in errors)
+
+    # Valid: lowering pause_threshold but still above resume_threshold
+    errors = validate_config_updates(
+        {"linear.capacity_monitoring": {"pause_threshold": 0.92}},
+        config=config,
+    )
+    assert errors == []
+
+    # Without config, single-field update cannot be cross-validated (no error)
+    errors = validate_config_updates(
+        {"linear.capacity_monitoring": {"pause_threshold": 0.85}},
+    )
+    assert errors == []
+
+    # Ordering: setting warning above current critical (0.85) with config
+    config.linear.capacity_monitoring.critical_threshold = 0.85
+    errors = validate_config_updates(
+        {"linear.capacity_monitoring": {"warning_threshold": 0.90}},
+        config=config,
+    )
+    assert any("warning_threshold must be less than or equal to critical_threshold" in e for e in errors)
 
 
 def test_apply_capacity_monitoring_updates():
