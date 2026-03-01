@@ -4204,6 +4204,11 @@ class TestManualPauseResume:
         assert sm.dispatch_paused is True
         assert sm.dispatch_pause_reason == "update_in_progress"
 
+        # Verify update_started event was recorded for the take-over
+        events = get_events(supervisor._conn, event_type="update_started")
+        assert len(events) == 1
+        assert "taking over" in events[0]["detail"]
+
         # Now simulate utilization dropping — _poll_and_dispatch should NOT resume
         supervisor._usage_poller._state.utilization_5h = 0.10
         supervisor._usage_poller._state.utilization_7d = 0.10
