@@ -33,6 +33,7 @@ linear:
   poll_interval_seconds: 30
   exclude_tags:
     - Human
+  issue_limit: 250  # Free plan default, override for paid plans
   # Workflow status names (must match your Linear team's workflow)
   todo_status: Todo
   in_progress_status: In Progress
@@ -43,6 +44,12 @@ linear:
   comment_on_failure: true
   comment_on_completion: false
   comment_on_limit_pause: false
+  capacity_monitoring:
+    enabled: true
+    warning_threshold: 0.70   # Yellow in dashboard
+    critical_threshold: 0.85  # Red in dashboard + webhook
+    pause_threshold: 0.95     # Auto-pause dispatch
+    resume_threshold: 0.90    # Resume after capacity freed (hysteresis)
 
 database:
   # path is ignored — set BOTFARM_DB_PATH in your .env file instead
@@ -102,11 +109,21 @@ class ProjectConfig:
 
 
 @dataclass
+class CapacityConfig:
+    enabled: bool = True
+    warning_threshold: float = 0.70
+    critical_threshold: float = 0.85
+    pause_threshold: float = 0.95
+    resume_threshold: float = 0.90
+
+
+@dataclass
 class LinearConfig:
     api_key: str = ""
     workspace: str = ""
     poll_interval_seconds: int = 30
     exclude_tags: list[str] = field(default_factory=lambda: ["Human"])
+    issue_limit: int = 250
     # Configurable workflow status names
     todo_status: str = "Todo"
     in_progress_status: str = "In Progress"
@@ -117,6 +134,7 @@ class LinearConfig:
     comment_on_failure: bool = True
     comment_on_completion: bool = False
     comment_on_limit_pause: bool = False
+    capacity_monitoring: CapacityConfig = field(default_factory=CapacityConfig)
 
 
 @dataclass
@@ -315,6 +333,31 @@ def _validate_config(config: BotfarmConfig) -> None:
         if not (0.0 <= val <= 1.0):
             raise ConfigError(f"usage_limits.{attr} must be between 0.0 and 1.0")
 
+    if config.linear.issue_limit < 1:
+        raise ConfigError("linear.issue_limit must be at least 1")
+
+    cap = config.linear.capacity_monitoring
+    for attr in ("warning_threshold", "critical_threshold", "pause_threshold", "resume_threshold"):
+        val = getattr(cap, attr)
+        if not (0.0 <= val <= 1.0):
+            raise ConfigError(
+                f"linear.capacity_monitoring.{attr} must be between 0.0 and 1.0"
+            )
+    if cap.warning_threshold > cap.critical_threshold:
+        raise ConfigError(
+            "linear.capacity_monitoring.warning_threshold must be "
+            "less than or equal to critical_threshold"
+        )
+    if cap.critical_threshold > cap.pause_threshold:
+        raise ConfigError(
+            "linear.capacity_monitoring.critical_threshold must be "
+            "less than or equal to pause_threshold"
+        )
+    if cap.resume_threshold >= cap.pause_threshold:
+        raise ConfigError(
+            "linear.capacity_monitoring.resume_threshold must be less than pause_threshold"
+        )
+
     if config.agents.max_review_iterations < 1:
         raise ConfigError("agents.max_review_iterations must be at least 1")
 
@@ -421,11 +464,23 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
     projects = [_parse_project(p) for p in data["projects"]]
 
     linear_data = data.get("linear", {})
+    cap_data = linear_data.get("capacity_monitoring", {})
+    if not isinstance(cap_data, dict):
+        cap_data = {}
+    capacity_monitoring = CapacityConfig(
+        enabled=_parse_bool(cap_data, "enabled", True, section="linear.capacity_monitoring"),
+        warning_threshold=float(cap_data.get("warning_threshold", 0.70)),
+        critical_threshold=float(cap_data.get("critical_threshold", 0.85)),
+        pause_threshold=float(cap_data.get("pause_threshold", 0.95)),
+        resume_threshold=float(cap_data.get("resume_threshold", 0.90)),
+    )
+
     linear = LinearConfig(
         api_key=linear_data.get("api_key", ""),
         workspace=linear_data.get("workspace", ""),
         poll_interval_seconds=linear_data.get("poll_interval_seconds", 30),
         exclude_tags=linear_data.get("exclude_tags", ["Human"]),
+        issue_limit=int(linear_data.get("issue_limit", 250)),
         todo_status=str(linear_data.get("todo_status", "Todo")),
         in_progress_status=str(linear_data.get("in_progress_status", "In Progress")),
         done_status=str(linear_data.get("done_status", "Done")),
@@ -434,6 +489,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         comment_on_failure=_parse_bool(linear_data, "comment_on_failure", True),
         comment_on_completion=_parse_bool(linear_data, "comment_on_completion", False),
         comment_on_limit_pause=_parse_bool(linear_data, "comment_on_limit_pause", False),
+        capacity_monitoring=capacity_monitoring,
     )
 
     db_data = data.get("database", {})
@@ -559,9 +615,15 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
 # Each key is a tuple path (section, field) with validation metadata.
 EDITABLE_FIELDS: dict[tuple[str, str], dict] = {
     ("linear", "poll_interval_seconds"): {"type": "int", "min": 1},
+    ("linear", "issue_limit"): {"type": "int", "min": 1},
     ("linear", "comment_on_failure"): {"type": "bool"},
     ("linear", "comment_on_completion"): {"type": "bool"},
     ("linear", "comment_on_limit_pause"): {"type": "bool"},
+    ("linear.capacity_monitoring", "enabled"): {"type": "bool"},
+    ("linear.capacity_monitoring", "warning_threshold"): {"type": "float", "min": 0.0, "max": 1.0},
+    ("linear.capacity_monitoring", "critical_threshold"): {"type": "float", "min": 0.0, "max": 1.0},
+    ("linear.capacity_monitoring", "pause_threshold"): {"type": "float", "min": 0.0, "max": 1.0},
+    ("linear.capacity_monitoring", "resume_threshold"): {"type": "float", "min": 0.0, "max": 1.0},
     ("usage_limits", "enabled"): {"type": "bool"},
     ("usage_limits", "pause_five_hour_threshold"): {"type": "float", "min": 0.0, "max": 1.0},
     ("usage_limits", "pause_seven_day_threshold"): {"type": "float", "min": 0.0, "max": 1.0},
@@ -583,10 +645,14 @@ STRUCTURAL_FIELDS: dict[tuple[str, str], dict] = {
 }
 
 
-def validate_config_updates(updates: dict) -> list[str]:
+def validate_config_updates(
+    updates: dict, config: BotfarmConfig | None = None,
+) -> list[str]:
     """Validate a partial config update dict.
 
     ``updates`` is a nested dict like ``{"linear": {"poll_interval_seconds": 60}}``.
+    When ``config`` is provided, cross-field invariants are checked against the
+    current in-memory values for fields not present in the update.
     Returns a list of error messages (empty means valid).
     """
     errors: list[str] = []
@@ -601,6 +667,44 @@ def validate_config_updates(updates: dict) -> list[str]:
                 errors.append(f"'{section}.{key}' is not an editable field")
                 continue
             errors.extend(_validate_field(section, key, value, spec))
+
+    # Cross-field invariants for capacity monitoring thresholds
+    cap_fields = updates.get("linear.capacity_monitoring", {})
+    if isinstance(cap_fields, dict):
+        # Resolve effective values: use update if present, fall back to config
+        cap_cfg = config.linear.capacity_monitoring if config else None
+
+        def _resolve(field: str) -> float | None:
+            val = cap_fields.get(field)
+            if val is not None and isinstance(val, (int, float)) and not isinstance(val, bool):
+                return float(val)
+            if cap_cfg is not None:
+                return float(getattr(cap_cfg, field))
+            return None
+
+        resume = _resolve("resume_threshold")
+        pause = _resolve("pause_threshold")
+        warning = _resolve("warning_threshold")
+        critical = _resolve("critical_threshold")
+
+        # resume_threshold must be less than pause_threshold
+        if resume is not None and pause is not None and resume >= pause:
+            errors.append(
+                "linear.capacity_monitoring.resume_threshold must be less than pause_threshold"
+            )
+
+        # warning_threshold <= critical_threshold <= pause_threshold
+        if warning is not None and critical is not None and warning > critical:
+            errors.append(
+                "linear.capacity_monitoring.warning_threshold must be "
+                "less than or equal to critical_threshold"
+            )
+        if critical is not None and pause is not None and critical > pause:
+            errors.append(
+                "linear.capacity_monitoring.critical_threshold must be "
+                "less than or equal to pause_threshold"
+            )
+
     return errors
 
 
@@ -666,6 +770,7 @@ def apply_config_updates(config: BotfarmConfig, updates: dict) -> None:
     """
     section_map = {
         "linear": config.linear,
+        "linear.capacity_monitoring": config.linear.capacity_monitoring,
         "usage_limits": config.usage_limits,
         "agents": config.agents,
     }
@@ -700,16 +805,22 @@ def write_config_updates(config_path: Path, updates: dict) -> None:
         raise ConfigError("Config file must contain a YAML mapping")
 
     for section, fields in updates.items():
-        if section not in data:
-            data[section] = {}
-        section_data = data[section]
-        if not isinstance(section_data, dict):
+        # Support dotted section paths like "linear.capacity_monitoring"
+        parts = section.split(".")
+        target = data
+        for part in parts:
+            if part not in target:
+                target[part] = {}
+            target = target[part]
+            if not isinstance(target, dict):
+                break
+        if not isinstance(target, dict):
             continue
         for key, value in fields.items():
-            if key == "timeout_minutes" and isinstance(section_data.get(key), dict):
-                section_data[key].update(value)
+            if key == "timeout_minutes" and isinstance(target.get(key), dict):
+                target[key].update(value)
             else:
-                section_data[key] = value
+                target[key] = value
 
     write_yaml_atomic(config_path, data)
 
