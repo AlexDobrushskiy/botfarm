@@ -183,12 +183,37 @@ query ActiveIssuesCount($first: Int!, $after: String) {
     first: $first
     after: $after
     includeArchived: false
+    filter: {
+      state: { type: { nin: ["completed", "canceled"] } }
+    }
   ) {
     nodes {
       id
       project {
         name
       }
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}
+"""
+
+ACTIVE_ISSUES_FOR_PROJECT_COUNT_QUERY = """
+query ActiveIssuesForProjectCount($first: Int!, $after: String, $projectName: String!) {
+  issues(
+    first: $first
+    after: $after
+    includeArchived: false
+    filter: {
+      state: { type: { nin: ["completed", "canceled"] } }
+      project: { name: { eq: $projectName } }
+    }
+  ) {
+    nodes {
+      id
     }
     pageInfo {
       hasNextPage
@@ -449,10 +474,11 @@ class LinearClient:
         return state.get("type")
 
     def count_active_issues(self) -> ActiveIssuesCount | None:
-        """Count all active (non-archived) issues with per-project breakdown.
+        """Count active issues (excluding completed/canceled) with per-project breakdown.
 
-        Paginates through all issues requesting only ``id`` and
-        ``project.name`` to minimise API complexity cost.
+        Paginates through all non-archived, non-completed/canceled issues
+        requesting only ``id`` and ``project.name`` to minimise API
+        complexity cost.
 
         Returns an ``ActiveIssuesCount`` with total count and a dict
         mapping project names to their issue counts, or ``None`` on failure.
@@ -493,13 +519,37 @@ class LinearClient:
     def count_active_issues_for_project(self, project_name: str) -> int | None:
         """Count active issues for a specific project.
 
-        Convenience wrapper around ``count_active_issues`` that returns
-        just the count for *project_name*, or ``None`` on failure.
+        Uses a dedicated query filtered by project name to avoid
+        fetching unrelated issues.  Returns the count, or ``None``
+        on failure.
         """
-        result = self.count_active_issues()
-        if result is None:
+        total = 0
+        cursor: str | None = None
+
+        try:
+            while True:
+                variables: dict = {"first": 250, "projectName": project_name}
+                if cursor is not None:
+                    variables["after"] = cursor
+                data = self._execute(
+                    ACTIVE_ISSUES_FOR_PROJECT_COUNT_QUERY, variables
+                )
+                issues_data = data.get("issues", {})
+                nodes = issues_data.get("nodes", [])
+                total += len(nodes)
+
+                page_info = issues_data.get("pageInfo", {})
+                if page_info.get("hasNextPage"):
+                    cursor = page_info.get("endCursor")
+                else:
+                    break
+        except LinearAPIError:
+            logger.warning(
+                "Failed to count active issues for project %s", project_name
+            )
             return None
-        return result.by_project.get(project_name, 0)
+
+        return total
 
 
 class LinearPoller:

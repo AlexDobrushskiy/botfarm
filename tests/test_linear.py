@@ -17,6 +17,7 @@ from botfarm.config import (
 )
 from botfarm.linear import (
     ACTIVE_ISSUES_COUNT_QUERY,
+    ACTIVE_ISSUES_FOR_PROJECT_COUNT_QUERY,
     LINEAR_API_URL,
     ActiveIssuesCount,
     LinearAPIError,
@@ -1495,35 +1496,46 @@ class TestCountActiveIssues:
 class TestCountActiveIssuesForProject:
     """Tests for LinearClient.count_active_issues_for_project."""
 
-    def test_returns_count_for_existing_project(self):
-        client = LinearClient(api_key="test-key")
-        resp = _graphql_response({
+    def _make_page(self, nodes, has_next=False, end_cursor=None):
+        return _graphql_response({
             "issues": {
-                "nodes": [
-                    {"id": "1", "project": {"name": "Alpha"}},
-                    {"id": "2", "project": {"name": "Alpha"}},
-                    {"id": "3", "project": {"name": "Beta"}},
-                ],
-                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "nodes": nodes,
+                "pageInfo": {
+                    "hasNextPage": has_next,
+                    "endCursor": end_cursor,
+                },
             }
         })
-        with patch.object(httpx, "post", return_value=resp):
+
+    def test_returns_count_for_project(self):
+        client = LinearClient(api_key="test-key")
+        resp = self._make_page([{"id": "1"}, {"id": "2"}])
+        with patch.object(httpx, "post", return_value=resp) as mock_post:
             count = client.count_active_issues_for_project("Alpha")
         assert count == 2
+        body = mock_post.call_args.kwargs["json"]
+        assert body["query"] == ACTIVE_ISSUES_FOR_PROJECT_COUNT_QUERY
+        assert body["variables"]["projectName"] == "Alpha"
 
-    def test_returns_zero_for_unknown_project(self):
+    def test_returns_zero_when_no_issues(self):
         client = LinearClient(api_key="test-key")
-        resp = _graphql_response({
-            "issues": {
-                "nodes": [
-                    {"id": "1", "project": {"name": "Alpha"}},
-                ],
-                "pageInfo": {"hasNextPage": False, "endCursor": None},
-            }
-        })
+        resp = self._make_page([])
         with patch.object(httpx, "post", return_value=resp):
             count = client.count_active_issues_for_project("Unknown")
         assert count == 0
+
+    def test_paginates(self):
+        client = LinearClient(api_key="test-key")
+        page1 = self._make_page(
+            [{"id": "1"}], has_next=True, end_cursor="cursor-1"
+        )
+        page2 = self._make_page([{"id": "2"}, {"id": "3"}])
+        with patch.object(httpx, "post", side_effect=[page1, page2]) as mock_post:
+            count = client.count_active_issues_for_project("Alpha")
+        assert count == 3
+        second_call_vars = mock_post.call_args_list[1].kwargs["json"]["variables"]
+        assert second_call_vars["after"] == "cursor-1"
+        assert second_call_vars["projectName"] == "Alpha"
 
     def test_returns_none_on_api_error(self):
         client = LinearClient(api_key="test-key")
