@@ -806,3 +806,132 @@ def save_project_pause_state(
         """,
         (project, int(paused), reason if paused else None, _now_iso()),
     )
+
+
+# ---------------------------------------------------------------------------
+# Ticket history helpers
+# ---------------------------------------------------------------------------
+
+def upsert_ticket_history(conn: sqlite3.Connection, **fields: object) -> None:
+    """Insert or update a ticket history entry keyed on ``ticket_id``.
+
+    Accepts keyword arguments matching the ``ticket_history`` columns.
+    The ``ticket_id`` and ``capture_source`` fields are required.
+    """
+    ticket_id = fields.get("ticket_id")
+    if not ticket_id:
+        raise ValueError("ticket_id is required for upsert_ticket_history")
+    if not fields.get("capture_source"):
+        raise ValueError("capture_source is required for upsert_ticket_history")
+
+    # JSON-encode list fields
+    for list_field in ("children_ids", "blocked_by", "blocks", "labels", "comments_json"):
+        val = fields.get(list_field)
+        if val is not None and not isinstance(val, str):
+            fields[list_field] = json.dumps(val)
+
+    allowed_columns = {
+        "ticket_id", "linear_uuid", "title", "description", "status",
+        "priority", "url", "assignee_name", "assignee_email", "creator_name",
+        "project_name", "team_name", "estimate", "due_date", "parent_id",
+        "children_ids", "blocked_by", "blocks", "labels", "comments_json",
+        "pr_url", "branch_name", "linear_created_at", "linear_updated_at",
+        "linear_completed_at", "captured_at", "capture_source", "raw_json",
+        "deleted_from_linear",
+    }
+    filtered = {k: v for k, v in fields.items() if k in allowed_columns}
+
+    if "captured_at" not in filtered:
+        filtered["captured_at"] = _now_iso()
+
+    columns = list(filtered.keys())
+    placeholders = ", ".join("?" for _ in columns)
+    col_names = ", ".join(columns)
+
+    # On conflict, update all columns except ticket_id
+    update_cols = [c for c in columns if c != "ticket_id"]
+    update_clause = ", ".join(f"{c}=excluded.{c}" for c in update_cols)
+
+    conn.execute(
+        f"INSERT INTO ticket_history ({col_names}) VALUES ({placeholders}) "  # noqa: S608
+        f"ON CONFLICT(ticket_id) DO UPDATE SET {update_clause}",
+        [filtered[c] for c in columns],
+    )
+
+
+def get_ticket_history_entry(
+    conn: sqlite3.Connection, ticket_id: str,
+) -> sqlite3.Row | None:
+    """Fetch a single ticket history entry by ticket identifier."""
+    return conn.execute(
+        "SELECT * FROM ticket_history WHERE ticket_id = ?", (ticket_id,)
+    ).fetchone()
+
+
+def get_ticket_history_list(
+    conn: sqlite3.Connection,
+    *,
+    limit: int = 50,
+    offset: int = 0,
+    project: str | None = None,
+    status: str | None = None,
+    search: str | None = None,
+    sort_by: str = "captured_at",
+    sort_dir: str = "DESC",
+) -> list[sqlite3.Row]:
+    """Return ticket history entries with optional filters."""
+    allowed_sort_cols = {
+        "ticket_id", "title", "project_name", "status", "priority",
+        "captured_at", "linear_created_at", "linear_updated_at",
+    }
+    if sort_by not in allowed_sort_cols:
+        sort_by = "captured_at"
+    if sort_dir.upper() not in ("ASC", "DESC"):
+        sort_dir = "DESC"
+
+    query = "SELECT * FROM ticket_history WHERE 1=1"
+    params: list[object] = []
+    if project is not None:
+        query += " AND project_name = ?"
+        params.append(project)
+    if status is not None:
+        query += " AND status = ?"
+        params.append(status)
+    if search is not None:
+        query += " AND (ticket_id LIKE ? OR title LIKE ?)"
+        like = f"%{search}%"
+        params.extend([like, like])
+    query += f" ORDER BY {sort_by} {sort_dir.upper()} LIMIT ? OFFSET ?"  # noqa: S608
+    params.extend([limit, offset])
+    return conn.execute(query, params).fetchall()
+
+
+def count_ticket_history(
+    conn: sqlite3.Connection,
+    *,
+    project: str | None = None,
+    status: str | None = None,
+    search: str | None = None,
+) -> int:
+    """Count ticket history entries matching the given filters."""
+    query = "SELECT COUNT(*) FROM ticket_history WHERE 1=1"
+    params: list[object] = []
+    if project is not None:
+        query += " AND project_name = ?"
+        params.append(project)
+    if status is not None:
+        query += " AND status = ?"
+        params.append(status)
+    if search is not None:
+        query += " AND (ticket_id LIKE ? OR title LIKE ?)"
+        like = f"%{search}%"
+        params.extend([like, like])
+    return conn.execute(query, params).fetchone()[0]
+
+
+def mark_deleted_from_linear(conn: sqlite3.Connection, ticket_id: str) -> None:
+    """Mark a ticket as deleted from Linear."""
+    conn.execute(
+        "UPDATE ticket_history SET deleted_from_linear = 1 WHERE ticket_id = ?",
+        (ticket_id,),
+    )

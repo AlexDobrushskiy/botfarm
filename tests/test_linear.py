@@ -18,6 +18,7 @@ from botfarm.config import (
 from botfarm.linear import (
     ACTIVE_ISSUES_COUNT_QUERY,
     ACTIVE_ISSUES_FOR_PROJECT_COUNT_QUERY,
+    ISSUE_DETAILS_QUERY,
     LINEAR_API_URL,
     ActiveIssuesCount,
     LinearAPIError,
@@ -1577,3 +1578,192 @@ class TestIsIssueTerminal:
         client.fetch_issue_state_type.return_value = None
         poller = LinearPoller(client, _make_project(), [])
         assert poller.is_issue_terminal("TST-1") is False
+
+
+# ---------------------------------------------------------------------------
+# LinearClient.fetch_issue_details
+# ---------------------------------------------------------------------------
+
+
+def _full_issue_response():
+    """Build a complete GraphQL response for fetch_issue_details."""
+    return {
+        "issue": {
+            "id": "uuid-1",
+            "identifier": "SMA-10",
+            "title": "Test issue",
+            "description": "# Description\nBody text",
+            "priority": 2,
+            "url": "https://linear.app/test/SMA-10",
+            "estimate": 3.0,
+            "dueDate": "2026-03-15",
+            "createdAt": "2026-01-01T00:00:00Z",
+            "updatedAt": "2026-02-01T00:00:00Z",
+            "completedAt": None,
+            "state": {"name": "In Progress"},
+            "creator": {"name": "Alice"},
+            "assignee": {"name": "Bot", "email": "bot@test.com"},
+            "project": {"name": "Test Project"},
+            "team": {"name": "Team A", "key": "SMA"},
+            "parent": {"identifier": "SMA-5", "title": "Parent"},
+            "children": {"nodes": [{"identifier": "SMA-11"}, {"identifier": "SMA-12"}]},
+            "labels": {"nodes": [{"name": "bug"}, {"name": "p1"}]},
+            "relations": {
+                "nodes": [
+                    {"type": "isBlockedBy", "relatedIssue": {"identifier": "SMA-8"}},
+                    {"type": "blocks", "relatedIssue": {"identifier": "SMA-15"}},
+                ]
+            },
+            "inverseRelations": {
+                "nodes": [
+                    {"type": "blocks", "relatedIssue": None, "issue": {"identifier": "SMA-9"}},
+                ]
+            },
+            "comments": {
+                "nodes": [
+                    {"body": "First comment", "user": {"name": "Alice"}, "createdAt": "2026-01-02T00:00:00Z"},
+                    {"body": "Second comment", "user": {"name": "Bob"}, "createdAt": "2026-01-03T00:00:00Z"},
+                ]
+            },
+        }
+    }
+
+
+class TestFetchIssueDetails:
+    def test_parses_full_response(self):
+        client = LinearClient(api_key="test-key")
+        resp = _graphql_response(_full_issue_response())
+
+        with patch.object(httpx, "post", return_value=resp):
+            result = client.fetch_issue_details("SMA-10")
+
+        assert result["ticket_id"] == "SMA-10"
+        assert result["linear_uuid"] == "uuid-1"
+        assert result["title"] == "Test issue"
+        assert result["description"] == "# Description\nBody text"
+        assert result["status"] == "In Progress"
+        assert result["priority"] == 2
+        assert result["assignee_name"] == "Bot"
+        assert result["assignee_email"] == "bot@test.com"
+        assert result["creator_name"] == "Alice"
+        assert result["project_name"] == "Test Project"
+        assert result["team_name"] == "Team A"
+        assert result["estimate"] == 3.0
+        assert result["due_date"] == "2026-03-15"
+        assert result["parent_id"] == "SMA-5"
+        assert result["linear_created_at"] == "2026-01-01T00:00:00Z"
+
+    def test_parses_children_ids(self):
+        import json
+        client = LinearClient(api_key="test-key")
+        resp = _graphql_response(_full_issue_response())
+
+        with patch.object(httpx, "post", return_value=resp):
+            result = client.fetch_issue_details("SMA-10")
+
+        children = json.loads(result["children_ids"])
+        assert children == ["SMA-11", "SMA-12"]
+
+    def test_parses_labels(self):
+        import json
+        client = LinearClient(api_key="test-key")
+        resp = _graphql_response(_full_issue_response())
+
+        with patch.object(httpx, "post", return_value=resp):
+            result = client.fetch_issue_details("SMA-10")
+
+        labels = json.loads(result["labels"])
+        assert labels == ["bug", "p1"]
+
+    def test_parses_blocking_relations(self):
+        import json
+        client = LinearClient(api_key="test-key")
+        resp = _graphql_response(_full_issue_response())
+
+        with patch.object(httpx, "post", return_value=resp):
+            result = client.fetch_issue_details("SMA-10")
+
+        blocked_by = json.loads(result["blocked_by"])
+        blocks = json.loads(result["blocks"])
+        assert "SMA-8" in blocked_by
+        assert "SMA-9" in blocked_by  # from inverseRelations
+        assert "SMA-15" in blocks
+
+    def test_parses_comments(self):
+        import json
+        client = LinearClient(api_key="test-key")
+        resp = _graphql_response(_full_issue_response())
+
+        with patch.object(httpx, "post", return_value=resp):
+            result = client.fetch_issue_details("SMA-10")
+
+        comments = json.loads(result["comments_json"])
+        assert len(comments) == 2
+        assert comments[0]["body"] == "First comment"
+        assert comments[0]["author"] == "Alice"
+
+    def test_handles_missing_optional_fields(self):
+        """Issue with no parent, no comments, no assignee, etc."""
+        import json
+        client = LinearClient(api_key="test-key")
+        minimal_issue = {
+            "issue": {
+                "id": "uuid-2",
+                "identifier": "SMA-20",
+                "title": "Minimal issue",
+                "description": None,
+                "priority": 4,
+                "url": "https://linear.app/test/SMA-20",
+                "estimate": None,
+                "dueDate": None,
+                "createdAt": "2026-01-01T00:00:00Z",
+                "updatedAt": "2026-01-01T00:00:00Z",
+                "completedAt": None,
+                "state": {"name": "Todo"},
+                "creator": None,
+                "assignee": None,
+                "project": None,
+                "team": None,
+                "parent": None,
+                "children": {"nodes": []},
+                "labels": {"nodes": []},
+                "relations": {"nodes": []},
+                "inverseRelations": {"nodes": []},
+                "comments": {"nodes": []},
+            }
+        }
+        resp = _graphql_response(minimal_issue)
+
+        with patch.object(httpx, "post", return_value=resp):
+            result = client.fetch_issue_details("SMA-20")
+
+        assert result["ticket_id"] == "SMA-20"
+        assert result["description"] is None
+        assert result["assignee_name"] is None
+        assert result["assignee_email"] is None
+        assert result["creator_name"] is None
+        assert result["project_name"] is None
+        assert result["parent_id"] is None
+        assert json.loads(result["children_ids"]) == []
+        assert json.loads(result["labels"]) == []
+        assert json.loads(result["comments_json"]) == []
+
+    def test_raises_on_not_found(self):
+        client = LinearClient(api_key="test-key")
+        resp = _graphql_response({"issue": None})
+
+        with patch.object(httpx, "post", return_value=resp):
+            with pytest.raises(LinearAPIError, match="not found"):
+                client.fetch_issue_details("SMA-999")
+
+    def test_includes_raw_json(self):
+        import json
+        client = LinearClient(api_key="test-key")
+        resp = _graphql_response(_full_issue_response())
+
+        with patch.object(httpx, "post", return_value=resp):
+            result = client.fetch_issue_details("SMA-10")
+
+        raw = json.loads(result["raw_json"])
+        assert raw["id"] == "uuid-1"
+        assert raw["identifier"] == "SMA-10"

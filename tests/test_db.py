@@ -12,6 +12,7 @@ from botfarm.db import (
     _discover_migrations,
     clear_slot_stage,
     count_tasks,
+    count_ticket_history,
     get_distinct_projects,
     get_events,
     get_latest_context_fill_by_ticket,
@@ -21,6 +22,8 @@ from botfarm.db import (
     get_task,
     get_task_by_ticket,
     get_task_history,
+    get_ticket_history_entry,
+    get_ticket_history_list,
     get_usage_snapshots,
     init_db,
     insert_event,
@@ -32,6 +35,7 @@ from botfarm.db import (
     load_all_slots,
     load_capacity_state,
     load_dispatch_state,
+    mark_deleted_from_linear,
     resolve_db_path,
     save_capacity_state,
     save_dispatch_state,
@@ -40,6 +44,7 @@ from botfarm.db import (
     update_stage_run_context_fill,
     update_task,
     upsert_slot,
+    upsert_ticket_history,
 )
 
 
@@ -69,7 +74,7 @@ class TestInitDb:
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()
         }
-        assert tables >= {"tasks", "stage_runs", "usage_snapshots", "task_events", "schema_version", "slots", "dispatch_state", "queue_entries", "pipeline_templates", "stage_templates", "stage_loops"}
+        assert tables >= {"tasks", "stage_runs", "usage_snapshots", "task_events", "schema_version", "slots", "dispatch_state", "queue_entries", "pipeline_templates", "stage_templates", "stage_loops", "ticket_history"}
         c.close()
 
     def test_wal_mode_enabled(self, conn):
@@ -2263,3 +2268,198 @@ class TestCapacityTracking:
         result = load_capacity_state(conn)
         assert result is not None
         assert result["issue_count"] == 200
+
+
+# ---------------------------------------------------------------------------
+# Ticket history helpers
+# ---------------------------------------------------------------------------
+
+
+class TestTicketHistoryTable:
+    def test_table_exists(self, conn):
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        assert "ticket_history" in tables
+
+    def test_indexes_exist(self, conn):
+        indexes = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index'"
+            ).fetchall()
+        }
+        assert "idx_ticket_history_ticket_id" in indexes
+        assert "idx_ticket_history_project" in indexes
+        assert "idx_ticket_history_status" in indexes
+        assert "idx_ticket_history_captured_at" in indexes
+
+
+class TestUpsertTicketHistory:
+    def test_insert_new_entry(self, conn):
+        upsert_ticket_history(
+            conn,
+            ticket_id="SMA-100",
+            title="Test ticket",
+            capture_source="dispatch",
+        )
+        conn.commit()
+        row = get_ticket_history_entry(conn, "SMA-100")
+        assert row is not None
+        assert row["title"] == "Test ticket"
+        assert row["capture_source"] == "dispatch"
+
+    def test_update_existing_entry(self, conn):
+        upsert_ticket_history(
+            conn,
+            ticket_id="SMA-100",
+            title="Original title",
+            capture_source="dispatch",
+        )
+        conn.commit()
+        upsert_ticket_history(
+            conn,
+            ticket_id="SMA-100",
+            title="Updated title",
+            capture_source="completion",
+            pr_url="https://github.com/test/pr/1",
+        )
+        conn.commit()
+        row = get_ticket_history_entry(conn, "SMA-100")
+        assert row["title"] == "Updated title"
+        assert row["capture_source"] == "completion"
+        assert row["pr_url"] == "https://github.com/test/pr/1"
+
+    def test_all_fields(self, conn):
+        upsert_ticket_history(
+            conn,
+            ticket_id="SMA-200",
+            linear_uuid="uuid-123",
+            title="Full ticket",
+            description="# Description\nSome markdown",
+            status="In Progress",
+            priority=2,
+            url="https://linear.app/test/SMA-200",
+            assignee_name="Bot",
+            assignee_email="bot@test.com",
+            creator_name="User",
+            project_name="Test Project",
+            team_name="Team A",
+            estimate=3.0,
+            due_date="2026-03-15",
+            parent_id="SMA-199",
+            children_ids=["SMA-201", "SMA-202"],
+            blocked_by=["SMA-198"],
+            blocks=["SMA-203"],
+            labels=["bug", "urgent"],
+            comments_json=[{"body": "comment", "author": "user", "created_at": "2026-01-01"}],
+            pr_url="https://github.com/test/pr/1",
+            branch_name="feature-branch",
+            linear_created_at="2026-01-01T00:00:00Z",
+            linear_updated_at="2026-02-01T00:00:00Z",
+            linear_completed_at=None,
+            capture_source="dispatch",
+            raw_json='{"id": "uuid-123"}',
+        )
+        conn.commit()
+        row = get_ticket_history_entry(conn, "SMA-200")
+        assert row["linear_uuid"] == "uuid-123"
+        assert row["description"] == "# Description\nSome markdown"
+        assert row["priority"] == 2
+        assert row["project_name"] == "Test Project"
+        assert row["branch_name"] == "feature-branch"
+
+    def test_json_list_fields_serialized(self, conn):
+        upsert_ticket_history(
+            conn,
+            ticket_id="SMA-300",
+            title="JSON test",
+            capture_source="dispatch",
+            labels=["bug", "p1"],
+            children_ids=["SMA-301"],
+        )
+        conn.commit()
+        row = get_ticket_history_entry(conn, "SMA-300")
+        import json
+        assert json.loads(row["labels"]) == ["bug", "p1"]
+        assert json.loads(row["children_ids"]) == ["SMA-301"]
+
+    def test_requires_ticket_id(self, conn):
+        with pytest.raises(ValueError, match="ticket_id"):
+            upsert_ticket_history(conn, title="No ID", capture_source="dispatch")
+
+    def test_requires_capture_source(self, conn):
+        with pytest.raises(ValueError, match="capture_source"):
+            upsert_ticket_history(conn, ticket_id="SMA-1", title="No source")
+
+
+class TestGetTicketHistoryList:
+    def _seed(self, conn):
+        for i in range(5):
+            upsert_ticket_history(
+                conn,
+                ticket_id=f"SMA-{i + 1}",
+                title=f"Ticket {i + 1}",
+                capture_source="dispatch",
+                project_name="Project A" if i < 3 else "Project B",
+                status="Done" if i < 2 else "In Progress",
+            )
+        conn.commit()
+
+    def test_list_all(self, conn):
+        self._seed(conn)
+        rows = get_ticket_history_list(conn)
+        assert len(rows) == 5
+
+    def test_filter_by_project(self, conn):
+        self._seed(conn)
+        rows = get_ticket_history_list(conn, project="Project A")
+        assert len(rows) == 3
+
+    def test_filter_by_status(self, conn):
+        self._seed(conn)
+        rows = get_ticket_history_list(conn, status="Done")
+        assert len(rows) == 2
+
+    def test_search_by_title(self, conn):
+        self._seed(conn)
+        rows = get_ticket_history_list(conn, search="Ticket 3")
+        assert len(rows) == 1
+        assert rows[0]["ticket_id"] == "SMA-3"
+
+    def test_search_by_ticket_id(self, conn):
+        self._seed(conn)
+        rows = get_ticket_history_list(conn, search="SMA-4")
+        assert len(rows) == 1
+
+    def test_pagination(self, conn):
+        self._seed(conn)
+        rows = get_ticket_history_list(conn, limit=2, offset=0)
+        assert len(rows) == 2
+        rows2 = get_ticket_history_list(conn, limit=2, offset=2)
+        assert len(rows2) == 2
+
+    def test_count(self, conn):
+        self._seed(conn)
+        assert count_ticket_history(conn) == 5
+        assert count_ticket_history(conn, project="Project A") == 3
+        assert count_ticket_history(conn, status="Done") == 2
+        assert count_ticket_history(conn, search="SMA-5") == 1
+
+
+class TestMarkDeletedFromLinear:
+    def test_marks_as_deleted(self, conn):
+        upsert_ticket_history(
+            conn,
+            ticket_id="SMA-99",
+            title="Will be deleted",
+            capture_source="dispatch",
+        )
+        conn.commit()
+        assert get_ticket_history_entry(conn, "SMA-99")["deleted_from_linear"] == 0
+        mark_deleted_from_linear(conn, "SMA-99")
+        conn.commit()
+        assert get_ticket_history_entry(conn, "SMA-99")["deleted_from_linear"] == 1

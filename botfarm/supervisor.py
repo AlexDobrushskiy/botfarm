@@ -30,7 +30,7 @@ from pathlib import Path
 from types import FrameType
 
 from botfarm.config import BotfarmConfig, IdentitiesConfig, ProjectConfig, resolve_stage_timeout
-from botfarm.db import get_events, get_task, init_db, insert_event, insert_task, resolve_db_path, save_queue_entries, update_task
+from botfarm.db import get_events, get_task, init_db, insert_event, insert_task, resolve_db_path, save_queue_entries, update_task, upsert_ticket_history
 from botfarm.linear import LinearClient, LinearPoller, create_pollers
 from botfarm.notifications import Notifier
 from botfarm.preflight import CheckResult, log_preflight_summary, run_preflight_checks
@@ -1416,6 +1416,13 @@ class Supervisor:
         # Webhook notification
         self._notify_task_completed(slot)
 
+        # Capture ticket history at completion
+        if slot.ticket_id:
+            self._capture_ticket_history(
+                slot.ticket_id, "completion",
+                pr_url=slot.pr_url, branch_name=slot.branch,
+            )
+
         insert_event(
             self._conn,
             event_type="slot_completed",
@@ -1482,6 +1489,13 @@ class Supervisor:
 
         # Webhook notification
         self._notify_task_failed(slot)
+
+        # Capture ticket history at failure
+        if slot.ticket_id:
+            self._capture_ticket_history(
+                slot.ticket_id, "completion",
+                pr_url=slot.pr_url, branch_name=slot.branch,
+            )
 
         insert_event(
             self._conn,
@@ -1764,6 +1778,43 @@ class Supervisor:
         """Atomically increment the limit_interruptions counter on a task."""
         from botfarm.db import increment_limit_interruptions
         increment_limit_interruptions(self._conn, task_id)
+
+    def _capture_ticket_history(
+        self,
+        ticket_id: str,
+        capture_source: str,
+        *,
+        pr_url: str | None = None,
+        branch_name: str | None = None,
+    ) -> None:
+        """Fetch full ticket details from Linear and upsert into ticket_history.
+
+        Failures are logged but never block the caller.
+        """
+        poller = None
+        for p in self._pollers.values():
+            poller = p
+            break
+        if poller is None:
+            logger.warning("No poller available for ticket history capture of %s", ticket_id)
+            return
+
+        try:
+            details = poller._client.fetch_issue_details(ticket_id)
+            details["capture_source"] = capture_source
+            if pr_url:
+                details["pr_url"] = pr_url
+            if branch_name:
+                details["branch_name"] = branch_name
+            upsert_ticket_history(self._conn, **details)
+            self._conn.commit()
+            logger.info("Captured ticket history for %s (source=%s)", ticket_id, capture_source)
+        except Exception:
+            logger.warning(
+                "Failed to capture ticket history for %s — continuing",
+                ticket_id,
+                exc_info=True,
+            )
 
     # ------------------------------------------------------------------
     # Resume paused slots
@@ -2410,6 +2461,11 @@ class Supervisor:
             f"slot={slot.slot_id}",
         )
         self._conn.commit()
+
+        # Capture full ticket details for history
+        self._capture_ticket_history(
+            issue.identifier, "dispatch", branch_name=branch,
+        )
 
         # Create per-ticket log directory
         ticket_log_dir = self._log_dir / issue.identifier
