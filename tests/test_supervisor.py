@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import logging.handlers
 import os
@@ -4831,7 +4832,6 @@ class TestDegradedMode:
 class TestTicketHistoryCapture:
     def _mock_fetch_issue_details(self, identifier):
         """Return a dict mimicking LinearClient.fetch_issue_details()."""
-        import json
         return {
             "ticket_id": identifier,
             "linear_uuid": f"uuid-{identifier}",

@@ -35,7 +35,6 @@ CREATE TABLE IF NOT EXISTS ticket_history (
     deleted_from_linear INTEGER NOT NULL DEFAULT 0
 );
 
-CREATE INDEX IF NOT EXISTS idx_ticket_history_ticket_id ON ticket_history(ticket_id);
 CREATE INDEX IF NOT EXISTS idx_ticket_history_project ON ticket_history(project_name);
 CREATE INDEX IF NOT EXISTS idx_ticket_history_status ON ticket_history(status);
 CREATE INDEX IF NOT EXISTS idx_ticket_history_captured_at ON ticket_history(captured_at);

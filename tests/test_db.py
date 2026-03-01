@@ -2292,7 +2292,6 @@ class TestTicketHistoryTable:
                 "SELECT name FROM sqlite_master WHERE type='index'"
             ).fetchall()
         }
-        assert "idx_ticket_history_ticket_id" in indexes
         assert "idx_ticket_history_project" in indexes
         assert "idx_ticket_history_status" in indexes
         assert "idx_ticket_history_captured_at" in indexes
