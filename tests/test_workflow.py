@@ -779,6 +779,27 @@ class TestReorderStages:
         names = [s.name for s in pipeline.stages]
         assert names == ["step1", "step2"]
 
+    def test_reorder_with_missing_stage_raises(self, conn):
+        pid = create_pipeline(conn, "reorder_missing")
+        s1 = create_stage(conn, pid, "step1", 1, "claude")
+        s2 = create_stage(conn, pid, "step2", 2, "claude")
+        with pytest.raises(ValueError, match="exactly the stage IDs"):
+            reorder_stages(conn, pid, [s1])
+
+    def test_reorder_with_extra_stage_raises(self, conn):
+        pid = create_pipeline(conn, "reorder_extra")
+        s1 = create_stage(conn, pid, "step1", 1, "claude")
+        with pytest.raises(ValueError, match="exactly the stage IDs"):
+            reorder_stages(conn, pid, [s1, 99999])
+
+    def test_reorder_with_foreign_stage_raises(self, conn):
+        pid1 = create_pipeline(conn, "reorder_p1")
+        s1 = create_stage(conn, pid1, "step1", 1, "claude")
+        pid2 = create_pipeline(conn, "reorder_p2")
+        s2 = create_stage(conn, pid2, "other", 1, "claude")
+        with pytest.raises(ValueError, match="exactly the stage IDs"):
+            reorder_stages(conn, pid1, [s2])
+
 
 # ---------------------------------------------------------------------------
 # Loop CRUD — create_loop

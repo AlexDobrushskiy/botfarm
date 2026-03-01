@@ -404,7 +404,21 @@ def delete_stage(conn: sqlite3.Connection, stage_id: int) -> None:
 def reorder_stages(
     conn: sqlite3.Connection, pipeline_id: int, ordered_stage_ids: list[int]
 ) -> None:
-    """Bulk-update stage_order to match the given ID sequence."""
+    """Bulk-update stage_order to match the given ID sequence.
+
+    Raises ValueError if *ordered_stage_ids* does not exactly match the set of
+    stage IDs belonging to the pipeline.
+    """
+    existing = {
+        r["id"]
+        for r in conn.execute(
+            "SELECT id FROM stage_templates WHERE pipeline_id = ?", (pipeline_id,)
+        ).fetchall()
+    }
+    if set(ordered_stage_ids) != existing:
+        raise ValueError(
+            "ordered_stage_ids must contain exactly the stage IDs for the pipeline"
+        )
     # Use a temporary large offset to avoid UNIQUE constraint violations during reorder
     offset = 10000
     for new_order, stage_id in enumerate(ordered_stage_ids, start=1):
