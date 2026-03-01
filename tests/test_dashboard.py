@@ -4283,11 +4283,11 @@ class TestWorkflowPage:
         assert "{repo}" in body
         assert "{ci_failure_output}" in body
 
-    def test_workflow_shows_na_for_shell_stages(self, client):
-        """Shell/internal stages with no prompt show N/A."""
+    def test_workflow_hides_prompt_for_non_claude_stages(self, client):
+        """Shell/internal stages have prompt section hidden."""
         resp = client.get("/workflow")
         body = resp.text
-        assert "prompt-na" in body
+        assert "stage-field-claude" in body
 
     def test_workflow_prompt_save_cancel_buttons(self, client):
         resp = client.get("/workflow")
@@ -4302,6 +4302,55 @@ class TestWorkflowPage:
         body = resp.text
         assert "checkUnknownVars" in body
         assert "KNOWN_VARS" in body
+
+    def test_workflow_shows_stage_properties_form(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        assert "stage-props-form" in body
+        assert "prop-executor_type-" in body
+        assert "prop-identity-" in body
+        assert "prop-max_turns-" in body
+        assert "prop-timeout_minutes-" in body
+        assert "prop-result_parser-" in body
+
+    def test_workflow_shows_executor_type_dropdown(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        assert 'value="claude"' in body
+        assert 'value="shell"' in body
+        assert 'value="internal"' in body
+        assert "onExecutorTypeChange" in body
+
+    def test_workflow_shows_identity_dropdown(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        assert 'value="coder"' in body
+        assert 'value="reviewer"' in body
+
+    def test_workflow_shows_result_parser_dropdown(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        assert 'value="pr_url"' in body
+        assert 'value="review_verdict"' in body
+
+    def test_workflow_shows_shell_command_field(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        assert "prop-shell_command-" in body
+        assert "stage-field-shell" in body
+
+    def test_workflow_shows_save_properties_button(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        assert "saveStageProperties" in body
+        assert "Save Properties" in body
+
+    def test_workflow_conditional_visibility_classes(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        assert "stage-field-claude" in body
+        assert "stage-field-shell" in body
+        assert "stage-field-not-internal" in body
 
 
 # --- Workflow API ---
@@ -4553,6 +4602,87 @@ class TestApiUpdateStage:
             json={"bogus": "value"},
         )
         assert resp.status_code == 400
+
+    def test_update_executor_type(self, client):
+        pipelines = client.get("/api/workflow/pipelines").json()["data"]
+        stage = pipelines[0]["stages"][0]
+        resp = client.patch(
+            f"/api/workflow/stages/{stage['id']}",
+            json={"executor_type": "shell", "shell_command": "echo hello", "identity": None, "max_turns": None},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["data"]["executor_type"] == "shell"
+        assert data["data"]["shell_command"] == "echo hello"
+        assert data["data"]["identity"] is None
+        assert data["data"]["max_turns"] is None
+
+    def test_update_multiple_properties(self, client):
+        pipelines = client.get("/api/workflow/pipelines").json()["data"]
+        stage = pipelines[0]["stages"][0]
+        resp = client.patch(
+            f"/api/workflow/stages/{stage['id']}",
+            json={
+                "identity": "reviewer",
+                "max_turns": 50,
+                "timeout_minutes": 30,
+                "result_parser": "review_verdict",
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert data["identity"] == "reviewer"
+        assert data["max_turns"] == 50
+        assert data["timeout_minutes"] == 30
+        assert data["result_parser"] == "review_verdict"
+
+    def test_update_null_out_optional_fields(self, client):
+        pipelines = client.get("/api/workflow/pipelines").json()["data"]
+        stage = pipelines[0]["stages"][0]
+        resp = client.patch(
+            f"/api/workflow/stages/{stage['id']}",
+            json={"identity": None, "max_turns": None, "timeout_minutes": None, "result_parser": None},
+        )
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert data["identity"] is None
+        assert data["max_turns"] is None
+        assert data["timeout_minutes"] is None
+        assert data["result_parser"] is None
+
+    def test_update_shell_command(self, client):
+        pipelines = client.get("/api/workflow/pipelines").json()["data"]
+        # Find the shell stage (pr_checks)
+        shell_stage = None
+        for s in pipelines[0]["stages"]:
+            if s["executor_type"] == "shell":
+                shell_stage = s
+                break
+        assert shell_stage is not None
+        new_cmd = "gh pr checks {pr_url} --watch --fail-fast"
+        resp = client.patch(
+            f"/api/workflow/stages/{shell_stage['id']}",
+            json={"shell_command": new_cmd},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["data"]["shell_command"] == new_cmd
+
+    def test_update_response_includes_shell_command(self, client):
+        pipelines = client.get("/api/workflow/pipelines").json()["data"]
+        stage = pipelines[0]["stages"][0]
+        resp = client.patch(
+            f"/api/workflow/stages/{stage['id']}",
+            json={"timeout_minutes": 60},
+        )
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert "shell_command" in data
+        assert "executor_type" in data
+        assert "identity" in data
+        assert "max_turns" in data
+        assert "timeout_minutes" in data
+        assert "result_parser" in data
 
 
 class TestApiDeleteStage:

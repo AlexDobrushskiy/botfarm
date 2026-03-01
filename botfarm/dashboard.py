@@ -1356,6 +1356,7 @@ def create_app(
                             "prompt_template": s.prompt_template,
                             "timeout_minutes": s.timeout_minutes,
                             "max_turns": s.max_turns,
+                            "shell_command": s.shell_command,
                             "result_parser": s.result_parser,
                         }
                         for s in pipeline.stages
@@ -1370,6 +1371,7 @@ def create_app(
                             "prompt_template": s.prompt_template,
                             "timeout_minutes": s.timeout_minutes,
                             "max_turns": s.max_turns,
+                            "shell_command": s.shell_command,
                             "result_parser": s.result_parser,
                         }
                         for s in main_stages
@@ -1415,6 +1417,7 @@ def create_app(
                                 "prompt_template": fix_stage_obj.prompt_template,
                                 "timeout_minutes": fix_stage_obj.timeout_minutes,
                                 "max_turns": fix_stage_obj.max_turns,
+                                "shell_command": fix_stage_obj.shell_command,
                                 "result_parser": fix_stage_obj.result_parser,
                             } if fix_stage_obj else None,
                             "max_iterations": eff_max,

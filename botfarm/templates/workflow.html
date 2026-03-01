@@ -2,15 +2,74 @@
 {% set active_page = "workflow" %}
 {% block title %}Workflow - Botfarm{% endblock %}
 
-{# ── Macro: prompt editor per stage ── #}
-{% macro prompt_editor(stage) %}
-<tr class="prompt-row">
-    <th>Prompt</th>
-    <td>
-    {% if stage.executor_type in ('shell', 'internal') and not stage.prompt_template %}
-        <span class="prompt-na">N/A</span>
-    {% else %}
-        {# View mode #}
+{# ── Macro: stage detail panel with editable properties + prompt editor ── #}
+{% macro stage_detail(stage) %}
+<div class="workflow-detail" style="display:none">
+    <div class="stage-props-form" data-stage-id="{{ stage.id }}">
+        <div class="stage-prop-row">
+            <label class="stage-prop-label" for="prop-executor_type-{{ stage.id }}">Executor</label>
+            <select class="stage-prop-input" id="prop-executor_type-{{ stage.id }}"
+                    onchange="onExecutorTypeChange({{ stage.id }})">
+                <option value="claude" {% if stage.executor_type == 'claude' %}selected{% endif %}>claude</option>
+                <option value="shell" {% if stage.executor_type == 'shell' %}selected{% endif %}>shell</option>
+                <option value="internal" {% if stage.executor_type == 'internal' %}selected{% endif %}>internal</option>
+            </select>
+        </div>
+
+        <div class="stage-prop-row stage-field-claude" data-stage-id="{{ stage.id }}"
+             {% if stage.executor_type != 'claude' %}style="display:none"{% endif %}>
+            <label class="stage-prop-label" for="prop-identity-{{ stage.id }}">Identity</label>
+            <select class="stage-prop-input" id="prop-identity-{{ stage.id }}">
+                <option value="" {% if not stage.identity %}selected{% endif %}>(none)</option>
+                <option value="coder" {% if stage.identity == 'coder' %}selected{% endif %}>coder</option>
+                <option value="reviewer" {% if stage.identity == 'reviewer' %}selected{% endif %}>reviewer</option>
+            </select>
+        </div>
+
+        <div class="stage-prop-row stage-field-claude" data-stage-id="{{ stage.id }}"
+             {% if stage.executor_type != 'claude' %}style="display:none"{% endif %}>
+            <label class="stage-prop-label" for="prop-max_turns-{{ stage.id }}">Max turns</label>
+            <input type="number" class="stage-prop-input" id="prop-max_turns-{{ stage.id }}"
+                   value="{{ stage.max_turns if stage.max_turns is not none else '' }}" min="1" placeholder="Unlimited">
+        </div>
+
+        <div class="stage-prop-row stage-field-shell" data-stage-id="{{ stage.id }}"
+             {% if stage.executor_type != 'shell' %}style="display:none"{% endif %}>
+            <label class="stage-prop-label" for="prop-shell_command-{{ stage.id }}">Shell command</label>
+            <input type="text" class="stage-prop-input stage-prop-input-wide" id="prop-shell_command-{{ stage.id }}"
+                   value="{{ stage.shell_command or '' }}" placeholder="e.g. gh pr checks {pr_url} --watch">
+        </div>
+
+        <div class="stage-prop-row">
+            <label class="stage-prop-label" for="prop-timeout_minutes-{{ stage.id }}">Timeout</label>
+            <div class="stage-prop-with-unit">
+                <input type="number" class="stage-prop-input" id="prop-timeout_minutes-{{ stage.id }}"
+                       value="{{ stage.timeout_minutes if stage.timeout_minutes is not none else '' }}" min="1" placeholder="Inherit">
+                <span class="stage-prop-unit">min</span>
+            </div>
+        </div>
+
+        <div class="stage-prop-row stage-field-not-internal" data-stage-id="{{ stage.id }}"
+             {% if stage.executor_type == 'internal' %}style="display:none"{% endif %}>
+            <label class="stage-prop-label" for="prop-result_parser-{{ stage.id }}">Result parser</label>
+            <select class="stage-prop-input" id="prop-result_parser-{{ stage.id }}">
+                <option value="" {% if not stage.result_parser %}selected{% endif %}>(none)</option>
+                <option value="pr_url" {% if stage.result_parser == 'pr_url' %}selected{% endif %}>pr_url</option>
+                <option value="review_verdict" {% if stage.result_parser == 'review_verdict' %}selected{% endif %}>review_verdict</option>
+            </select>
+        </div>
+
+        <div class="stage-props-feedback" id="props-feedback-{{ stage.id }}"></div>
+        <div class="stage-props-actions">
+            <button type="button" class="prompt-save-btn" id="props-save-btn-{{ stage.id }}"
+                    onclick="saveStageProperties({{ stage.id }})">Save Properties</button>
+        </div>
+    </div>
+
+    {# Prompt editor — visible for claude executor type #}
+    <div class="stage-prompt-section stage-field-claude" data-stage-id="{{ stage.id }}"
+         {% if stage.executor_type != 'claude' %}style="display:none"{% endif %}>
+        <label class="stage-prop-label">Prompt</label>
         <div class="prompt-view" data-stage-id="{{ stage.id }}">
             {% if stage.prompt_template %}
             <pre class="prompt-preview">{{ stage.prompt_template }}</pre>
@@ -20,7 +79,6 @@
             <button class="prompt-edit-btn" type="button"
                     onclick="enterEditMode(this, {{ stage.id }})">Edit</button>
         </div>
-        {# Edit mode (hidden by default) #}
         <div class="prompt-edit" data-stage-id="{{ stage.id }}" style="display:none">
             <textarea class="prompt-textarea" rows="8"
                       data-stage-id="{{ stage.id }}"
@@ -43,9 +101,8 @@
                         onclick="cancelEdit({{ stage.id }})">Cancel</button>
             </div>
         </div>
-    {% endif %}
-    </td>
-</tr>
+    </div>
+</div>
 {% endmacro %}
 
 {% block content %}
@@ -94,16 +151,7 @@
             <span class="workflow-timeout">{{ stage.timeout_minutes }}min</span>
             {% endif %}
         </div>
-        <div class="workflow-detail" style="display:none">
-            <table>
-                <tr><th>Executor</th><td>{{ stage.executor_type }}</td></tr>
-                {% if stage.identity %}<tr><th>Identity</th><td>{{ stage.identity }}</td></tr>{% endif %}
-                {% if stage.max_turns %}<tr><th>Max turns</th><td>{{ stage.max_turns }}</td></tr>{% endif %}
-                {% if stage.timeout_minutes %}<tr><th>Timeout</th><td>{{ stage.timeout_minutes }} min</td></tr>{% endif %}
-                {% if stage.result_parser %}<tr><th>Result parser</th><td><code>{{ stage.result_parser }}</code></td></tr>{% endif %}
-                {{ prompt_editor(stage) }}
-            </table>
-        </div>
+        {{ stage_detail(stage) }}
         <p class="workflow-note">Research only — no PR created</p>
     </div>
     {% else %}
@@ -131,16 +179,7 @@
                     <span class="workflow-timeout">{{ stage.timeout_minutes }}min</span>
                     {% endif %}
                 </div>
-                <div class="workflow-detail" style="display:none">
-                    <table>
-                        <tr><th>Executor</th><td>{{ stage.executor_type }}</td></tr>
-                        {% if stage.identity %}<tr><th>Identity</th><td>{{ stage.identity }}</td></tr>{% endif %}
-                        {% if stage.max_turns %}<tr><th>Max turns</th><td>{{ stage.max_turns }}</td></tr>{% endif %}
-                        {% if stage.timeout_minutes %}<tr><th>Timeout</th><td>{{ stage.timeout_minutes }} min</td></tr>{% endif %}
-                        {% if stage.result_parser %}<tr><th>Result parser</th><td><code>{{ stage.result_parser }}</code></td></tr>{% endif %}
-                        {{ prompt_editor(stage) }}
-                    </table>
-                </div>
+                {{ stage_detail(stage) }}
 
                 {# Decision diamond + loop branch after this stage if it has a loop #}
                 {% for lp in pipeline.loops %}
@@ -168,16 +207,7 @@
                             <span class="workflow-timeout">{{ lp.fix_stage.timeout_minutes }}min</span>
                             {% endif %}
                         </div>
-                        <div class="workflow-detail" style="display:none">
-                            <table>
-                                <tr><th>Executor</th><td>{{ lp.fix_stage.executor_type }}</td></tr>
-                                {% if lp.fix_stage.identity %}<tr><th>Identity</th><td>{{ lp.fix_stage.identity }}</td></tr>{% endif %}
-                                {% if lp.fix_stage.max_turns %}<tr><th>Max turns</th><td>{{ lp.fix_stage.max_turns }}</td></tr>{% endif %}
-                                {% if lp.fix_stage.timeout_minutes %}<tr><th>Timeout</th><td>{{ lp.fix_stage.timeout_minutes }} min</td></tr>{% endif %}
-                                {% if lp.fix_stage.result_parser %}<tr><th>Result parser</th><td><code>{{ lp.fix_stage.result_parser }}</code></td></tr>{% endif %}
-                                {{ prompt_editor(lp.fix_stage) }}
-                            </table>
-                        </div>
+                        {{ stage_detail(lp.fix_stage) }}
                         {% endif %}
                         <div class="workflow-loop-arc">
                             <svg width="100" height="36" viewBox="0 0 100 36">
@@ -199,7 +229,84 @@
 {% endfor %}
 
 <style>
-/* ── Prompt editor styles ── */
+/* ── Stage properties form styles ── */
+.stage-props-form {
+    padding: 0.5rem 0;
+}
+.stage-prop-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.4rem;
+}
+.stage-prop-label {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--pico-muted-color);
+    min-width: 6.5rem;
+    flex-shrink: 0;
+}
+.stage-prop-input {
+    font-size: 0.78rem;
+    padding: 0.2rem 0.4rem;
+    background: var(--pico-form-element-background-color);
+    color: var(--pico-color);
+    border: 1px solid var(--pico-form-element-border-color);
+    border-radius: var(--pico-border-radius);
+    margin: 0;
+    height: auto;
+    line-height: 1.4;
+}
+.stage-prop-input:focus {
+    border-color: var(--pico-primary);
+    outline: none;
+}
+select.stage-prop-input {
+    min-width: 7rem;
+    cursor: pointer;
+}
+input[type="number"].stage-prop-input {
+    width: 6rem;
+}
+.stage-prop-input-wide {
+    flex: 1;
+    min-width: 12rem;
+}
+.stage-prop-with-unit {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+}
+.stage-prop-unit {
+    font-size: 0.72rem;
+    color: var(--pico-muted-color);
+}
+.stage-props-feedback {
+    margin-top: 0.3rem;
+}
+.stage-props-feedback .config-feedback {
+    padding: 0.4rem 0.6rem;
+    border-radius: var(--pico-border-radius);
+    font-size: 0.75rem;
+}
+.stage-props-feedback .config-feedback.success {
+    background: rgba(34, 197, 94, 0.15);
+    color: var(--pico-ins-color);
+}
+.stage-props-feedback .config-feedback.error {
+    background: rgba(239, 68, 68, 0.15);
+    color: var(--pico-del-color);
+}
+.stage-props-actions {
+    margin-top: 0.4rem;
+}
+
+/* ── Prompt editor section ── */
+.stage-prompt-section {
+    margin-top: 0.6rem;
+    padding-top: 0.5rem;
+    border-top: 1px solid var(--pico-form-element-border-color);
+}
 .prompt-preview {
     white-space: pre-wrap;
     word-break: break-word;
@@ -207,7 +314,7 @@
     background: var(--pico-form-element-background-color);
     padding: 0.5rem;
     border-radius: var(--pico-border-radius);
-    margin: 0 0 0.4rem 0;
+    margin: 0.3rem 0 0.4rem 0;
     max-height: 8rem;
     overflow-y: auto;
 }
@@ -364,6 +471,141 @@ function toggleDetail(node) {
     if (detail) {
         detail.style.display = detail.style.display === 'none' ? 'block' : 'none';
     }
+}
+
+/* ── Stage properties editor functions ── */
+
+function onExecutorTypeChange(stageId) {
+    var execType = document.getElementById('prop-executor_type-' + stageId).value;
+    // Toggle visibility of conditional fields
+    var form = document.querySelector('.stage-props-form[data-stage-id="' + stageId + '"]');
+    var detail = form.closest('.workflow-detail');
+
+    // Claude-only fields
+    var claudeFields = detail.querySelectorAll('.stage-field-claude[data-stage-id="' + stageId + '"]');
+    claudeFields.forEach(function(el) {
+        el.style.display = execType === 'claude' ? '' : 'none';
+    });
+
+    // Shell-only fields
+    var shellFields = detail.querySelectorAll('.stage-field-shell[data-stage-id="' + stageId + '"]');
+    shellFields.forEach(function(el) {
+        el.style.display = execType === 'shell' ? '' : 'none';
+    });
+
+    // Not-internal fields (shown for claude and shell)
+    var notInternalFields = detail.querySelectorAll('.stage-field-not-internal[data-stage-id="' + stageId + '"]');
+    notInternalFields.forEach(function(el) {
+        el.style.display = execType !== 'internal' ? '' : 'none';
+    });
+}
+
+function saveStageProperties(stageId) {
+    var execType = document.getElementById('prop-executor_type-' + stageId).value;
+    var feedbackEl = document.getElementById('props-feedback-' + stageId);
+    var saveBtn = document.getElementById('props-save-btn-' + stageId);
+
+    // Collect properties, nulling out irrelevant fields based on executor type
+    var body = {executor_type: execType};
+
+    if (execType === 'claude') {
+        var identity = document.getElementById('prop-identity-' + stageId).value;
+        body.identity = identity || null;
+        var maxTurns = document.getElementById('prop-max_turns-' + stageId).value;
+        body.max_turns = maxTurns ? parseInt(maxTurns, 10) : null;
+        body.shell_command = null;
+    } else if (execType === 'shell') {
+        body.shell_command = document.getElementById('prop-shell_command-' + stageId).value || null;
+        body.identity = null;
+        body.max_turns = null;
+    } else {
+        // internal
+        body.identity = null;
+        body.max_turns = null;
+        body.shell_command = null;
+        body.result_parser = null;
+    }
+
+    var timeout = document.getElementById('prop-timeout_minutes-' + stageId).value;
+    body.timeout_minutes = timeout ? parseInt(timeout, 10) : null;
+
+    if (execType !== 'internal') {
+        var parser = document.getElementById('prop-result_parser-' + stageId).value;
+        body.result_parser = parser || null;
+    }
+
+    feedbackEl.innerHTML = '';
+    saveBtn.setAttribute('aria-busy', 'true');
+    saveBtn.textContent = 'Saving...';
+
+    fetch('/api/workflow/stages/' + stageId, {
+        method: 'PATCH',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body)
+    })
+    .then(function(resp) {
+        return resp.json().then(function(data) { return {ok: resp.ok, data: data}; });
+    })
+    .then(function(result) {
+        saveBtn.removeAttribute('aria-busy');
+        saveBtn.textContent = 'Save Properties';
+        if (result.ok && result.data.ok) {
+            feedbackEl.innerHTML = '<div class="config-feedback success" role="alert">Properties saved.</div>';
+            // Update the node badge if executor type or identity changed
+            var data = result.data.data;
+            var detail = feedbackEl.closest('.workflow-detail');
+            var node = detail.previousElementSibling;
+            while (node && !node.classList.contains('workflow-node')) {
+                node = node.previousElementSibling;
+            }
+            if (node) {
+                // Update executor type class
+                node.className = node.className.replace(/workflow-node-\w+/g, '');
+                node.classList.add('workflow-node', 'workflow-node-' + data.executor_type);
+                if (node.classList.contains('workflow-node-loop')) {
+                    node.classList.add('workflow-node-loop');
+                }
+                // Update identity badge
+                var badge = node.querySelector('.workflow-identity-badge');
+                if (data.identity) {
+                    if (badge) {
+                        badge.textContent = data.identity;
+                    } else {
+                        badge = document.createElement('span');
+                        badge.className = 'workflow-identity-badge';
+                        badge.textContent = data.identity;
+                        node.appendChild(badge);
+                    }
+                } else if (badge) {
+                    badge.remove();
+                }
+                // Update timeout badge
+                var timeoutBadge = node.querySelector('.workflow-timeout');
+                if (data.timeout_minutes) {
+                    if (timeoutBadge) {
+                        timeoutBadge.textContent = data.timeout_minutes + 'min';
+                    } else {
+                        timeoutBadge = document.createElement('span');
+                        timeoutBadge.className = 'workflow-timeout';
+                        timeoutBadge.textContent = data.timeout_minutes + 'min';
+                        node.appendChild(timeoutBadge);
+                    }
+                } else if (timeoutBadge) {
+                    timeoutBadge.remove();
+                }
+            }
+            // Auto-dismiss feedback
+            setTimeout(function() { feedbackEl.innerHTML = ''; }, 2000);
+        } else {
+            var errors = result.data.errors || ['Unknown error'];
+            feedbackEl.innerHTML = '<div class="config-feedback error" role="alert">' + errors.join('; ') + '</div>';
+        }
+    })
+    .catch(function() {
+        saveBtn.removeAttribute('aria-busy');
+        saveBtn.textContent = 'Save Properties';
+        feedbackEl.innerHTML = '<div class="config-feedback error" role="alert">Network error.</div>';
+    });
 }
 
 /* ── Prompt editor functions ── */
