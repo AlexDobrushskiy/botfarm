@@ -30,8 +30,10 @@ from botfarm.db import (
     is_extra_usage_active,
     load_all_project_pause_states,
     load_all_slots,
+    load_capacity_state,
     load_dispatch_state,
     resolve_db_path,
+    save_capacity_state,
     save_dispatch_state,
     save_project_pause_state,
     save_queue_entries,
@@ -2155,3 +2157,109 @@ class TestWorkflowDefinitionTables:
         count = c.execute("SELECT COUNT(*) FROM stage_loops").fetchone()[0]
         assert count == 2
         c.close()
+
+
+# ---------------------------------------------------------------------------
+# Capacity tracking (migration 016)
+# ---------------------------------------------------------------------------
+
+
+class TestCapacityTracking:
+    """Verify migration 016 columns and save/load helpers."""
+
+    def test_columns_exist(self, conn):
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(dispatch_state)").fetchall()}
+        assert "linear_issue_count" in cols
+        assert "linear_issue_limit" in cols
+        assert "linear_capacity_checked_at" in cols
+        assert "linear_capacity_by_project" in cols
+
+    def test_default_limit(self, conn):
+        conn.execute(
+            "INSERT INTO dispatch_state (id, paused) VALUES (1, 0) "
+            "ON CONFLICT(id) DO NOTHING"
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT linear_issue_limit FROM dispatch_state WHERE id = 1"
+        ).fetchone()
+        assert row["linear_issue_limit"] == 250
+
+    def test_load_returns_none_when_empty(self, conn):
+        result = load_capacity_state(conn)
+        assert result is None
+
+    def test_load_returns_none_when_no_count(self, conn):
+        save_dispatch_state(conn, paused=False)
+        conn.commit()
+        result = load_capacity_state(conn)
+        assert result is None
+
+    def test_save_and_load(self, conn):
+        by_project = {"Project A": 50, "Project B": 30}
+        save_capacity_state(
+            conn,
+            issue_count=80,
+            limit=250,
+            by_project=by_project,
+            checked_at="2026-03-01T10:00:00Z",
+        )
+        conn.commit()
+        result = load_capacity_state(conn)
+        assert result is not None
+        assert result["issue_count"] == 80
+        assert result["limit"] == 250
+        assert result["by_project"] == {"Project A": 50, "Project B": 30}
+        assert result["checked_at"] == "2026-03-01T10:00:00Z"
+
+    def test_save_updates_existing(self, conn):
+        save_capacity_state(
+            conn,
+            issue_count=80,
+            limit=250,
+            by_project={"A": 80},
+            checked_at="2026-03-01T10:00:00Z",
+        )
+        conn.commit()
+        save_capacity_state(
+            conn,
+            issue_count=100,
+            limit=250,
+            by_project={"A": 60, "B": 40},
+            checked_at="2026-03-01T11:00:00Z",
+        )
+        conn.commit()
+        result = load_capacity_state(conn)
+        assert result["issue_count"] == 100
+        assert result["by_project"] == {"A": 60, "B": 40}
+        assert result["checked_at"] == "2026-03-01T11:00:00Z"
+
+    def test_save_preserves_dispatch_pause_state(self, conn):
+        save_dispatch_state(conn, paused=True, reason="limit hit")
+        conn.commit()
+        save_capacity_state(
+            conn,
+            issue_count=200,
+            limit=250,
+            by_project={},
+            checked_at="2026-03-01T10:00:00Z",
+        )
+        conn.commit()
+        paused, reason, _ = load_dispatch_state(conn)
+        assert paused is True
+        assert reason == "limit hit"
+
+    def test_dispatch_save_preserves_capacity(self, conn):
+        save_capacity_state(
+            conn,
+            issue_count=200,
+            limit=250,
+            by_project={"X": 200},
+            checked_at="2026-03-01T10:00:00Z",
+        )
+        conn.commit()
+        save_dispatch_state(conn, paused=False)
+        conn.commit()
+        result = load_capacity_state(conn)
+        assert result is not None
+        assert result["issue_count"] == 200

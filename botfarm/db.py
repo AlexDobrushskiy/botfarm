@@ -717,6 +717,56 @@ def save_dispatch_state(
     )
 
 
+def save_capacity_state(
+    conn: sqlite3.Connection,
+    *,
+    issue_count: int,
+    limit: int,
+    by_project: dict[str, int],
+    checked_at: str,
+) -> None:
+    """Persist Linear capacity snapshot into the dispatch_state singleton row."""
+    by_project_json = json.dumps(by_project)
+    conn.execute(
+        """
+        INSERT INTO dispatch_state (id, paused, linear_issue_count, linear_issue_limit,
+                                    linear_capacity_by_project, linear_capacity_checked_at, updated_at)
+        VALUES (1, 0, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            linear_issue_count=excluded.linear_issue_count,
+            linear_issue_limit=excluded.linear_issue_limit,
+            linear_capacity_by_project=excluded.linear_capacity_by_project,
+            linear_capacity_checked_at=excluded.linear_capacity_checked_at,
+            updated_at=excluded.updated_at
+        """,
+        (issue_count, limit, by_project_json, checked_at, _now_iso()),
+    )
+
+
+def load_capacity_state(
+    conn: sqlite3.Connection,
+) -> dict | None:
+    """Load cached Linear capacity data from dispatch_state.
+
+    Returns a dict with keys ``issue_count``, ``limit``, ``by_project``,
+    and ``checked_at``, or ``None`` if no capacity data has been saved yet.
+    """
+    row = conn.execute(
+        "SELECT linear_issue_count, linear_issue_limit, "
+        "linear_capacity_by_project, linear_capacity_checked_at "
+        "FROM dispatch_state WHERE id = 1"
+    ).fetchone()
+    if row is None or row["linear_issue_count"] is None:
+        return None
+    by_project_raw = row["linear_capacity_by_project"]
+    return {
+        "issue_count": row["linear_issue_count"],
+        "limit": row["linear_issue_limit"],
+        "by_project": json.loads(by_project_raw) if by_project_raw else {},
+        "checked_at": row["linear_capacity_checked_at"],
+    }
+
+
 # ---------------------------------------------------------------------------
 # Per-project pause state helpers
 # ---------------------------------------------------------------------------
