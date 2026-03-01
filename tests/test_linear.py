@@ -16,7 +16,10 @@ from botfarm.config import (
     ProjectConfig,
 )
 from botfarm.linear import (
+    ACTIVE_ISSUES_COUNT_QUERY,
+    ACTIVE_ISSUES_FOR_PROJECT_COUNT_QUERY,
     LINEAR_API_URL,
+    ActiveIssuesCount,
     LinearAPIError,
     LinearClient,
     LinearIssue,
@@ -1405,6 +1408,140 @@ class TestFetchIssueStateType:
         with patch.object(httpx, "post", return_value=resp):
             result = client.fetch_issue_state_type("TST-1")
         assert result == "started"
+
+
+class TestCountActiveIssues:
+    """Tests for LinearClient.count_active_issues."""
+
+    def _make_page(self, nodes, has_next=False, end_cursor=None):
+        return _graphql_response({
+            "issues": {
+                "nodes": nodes,
+                "pageInfo": {
+                    "hasNextPage": has_next,
+                    "endCursor": end_cursor,
+                },
+            }
+        })
+
+    def test_single_page(self):
+        client = LinearClient(api_key="test-key")
+        resp = self._make_page([
+            {"id": "1", "project": {"name": "Alpha"}},
+            {"id": "2", "project": {"name": "Alpha"}},
+            {"id": "3", "project": {"name": "Beta"}},
+        ])
+        with patch.object(httpx, "post", return_value=resp):
+            result = client.count_active_issues()
+        assert result is not None
+        assert result.total == 3
+        assert result.by_project == {"Alpha": 2, "Beta": 1}
+
+    def test_pagination(self):
+        client = LinearClient(api_key="test-key")
+        page1 = self._make_page(
+            [{"id": "1", "project": {"name": "Alpha"}}],
+            has_next=True,
+            end_cursor="cursor-1",
+        )
+        page2 = self._make_page(
+            [{"id": "2", "project": {"name": "Beta"}}],
+        )
+        with patch.object(httpx, "post", side_effect=[page1, page2]) as mock_post:
+            result = client.count_active_issues()
+        assert result is not None
+        assert result.total == 2
+        assert result.by_project == {"Alpha": 1, "Beta": 1}
+        # Second call should include the cursor
+        second_call_vars = mock_post.call_args_list[1].kwargs["json"]["variables"]
+        assert second_call_vars["after"] == "cursor-1"
+
+    def test_no_project(self):
+        client = LinearClient(api_key="test-key")
+        resp = self._make_page([
+            {"id": "1", "project": None},
+            {"id": "2", "project": {"name": "Alpha"}},
+        ])
+        with patch.object(httpx, "post", return_value=resp):
+            result = client.count_active_issues()
+        assert result is not None
+        assert result.total == 2
+        assert result.by_project == {"(no project)": 1, "Alpha": 1}
+
+    def test_empty_result(self):
+        client = LinearClient(api_key="test-key")
+        resp = self._make_page([])
+        with patch.object(httpx, "post", return_value=resp):
+            result = client.count_active_issues()
+        assert result is not None
+        assert result.total == 0
+        assert result.by_project == {}
+
+    def test_returns_none_on_api_error(self):
+        client = LinearClient(api_key="test-key")
+        with patch.object(httpx, "post", side_effect=httpx.HTTPError("fail")):
+            result = client.count_active_issues()
+        assert result is None
+
+    def test_uses_correct_query_and_page_size(self):
+        client = LinearClient(api_key="test-key")
+        resp = self._make_page([])
+        with patch.object(httpx, "post", return_value=resp) as mock_post:
+            client.count_active_issues()
+        body = mock_post.call_args.kwargs["json"]
+        assert body["query"] == ACTIVE_ISSUES_COUNT_QUERY
+        assert body["variables"]["first"] == 250
+
+
+class TestCountActiveIssuesForProject:
+    """Tests for LinearClient.count_active_issues_for_project."""
+
+    def _make_page(self, nodes, has_next=False, end_cursor=None):
+        return _graphql_response({
+            "issues": {
+                "nodes": nodes,
+                "pageInfo": {
+                    "hasNextPage": has_next,
+                    "endCursor": end_cursor,
+                },
+            }
+        })
+
+    def test_returns_count_for_project(self):
+        client = LinearClient(api_key="test-key")
+        resp = self._make_page([{"id": "1"}, {"id": "2"}])
+        with patch.object(httpx, "post", return_value=resp) as mock_post:
+            count = client.count_active_issues_for_project("Alpha")
+        assert count == 2
+        body = mock_post.call_args.kwargs["json"]
+        assert body["query"] == ACTIVE_ISSUES_FOR_PROJECT_COUNT_QUERY
+        assert body["variables"]["projectName"] == "Alpha"
+
+    def test_returns_zero_when_no_issues(self):
+        client = LinearClient(api_key="test-key")
+        resp = self._make_page([])
+        with patch.object(httpx, "post", return_value=resp):
+            count = client.count_active_issues_for_project("Unknown")
+        assert count == 0
+
+    def test_paginates(self):
+        client = LinearClient(api_key="test-key")
+        page1 = self._make_page(
+            [{"id": "1"}], has_next=True, end_cursor="cursor-1"
+        )
+        page2 = self._make_page([{"id": "2"}, {"id": "3"}])
+        with patch.object(httpx, "post", side_effect=[page1, page2]) as mock_post:
+            count = client.count_active_issues_for_project("Alpha")
+        assert count == 3
+        second_call_vars = mock_post.call_args_list[1].kwargs["json"]["variables"]
+        assert second_call_vars["after"] == "cursor-1"
+        assert second_call_vars["projectName"] == "Alpha"
+
+    def test_returns_none_on_api_error(self):
+        client = LinearClient(api_key="test-key")
+        with patch.object(httpx, "post", side_effect=httpx.HTTPError("fail")):
+            count = client.count_active_issues_for_project("Alpha")
+        assert count is None
 
 
 class TestIsIssueTerminal:
