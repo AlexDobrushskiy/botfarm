@@ -5079,7 +5079,6 @@ class TestPollCapacity:
         supervisor._poll_capacity()
 
         assert supervisor._capacity_level == "blocked"
-        assert supervisor._capacity_paused is True
         assert supervisor.slot_manager.dispatch_paused is True
         assert supervisor.slot_manager.dispatch_pause_reason == "capacity_blocked"
         events = get_events(supervisor._conn, event_type="capacity_blocked")
@@ -5102,7 +5101,7 @@ class TestPollCapacity:
         )
         supervisor._poll_capacity()
         assert supervisor._capacity_level == "blocked"
-        assert supervisor._capacity_paused is True
+        assert supervisor.slot_manager.dispatch_paused is True
 
     def test_resume_below_resume_threshold(self, supervisor):
         """Dispatch resumes when utilization drops below resume_threshold."""
@@ -5122,7 +5121,6 @@ class TestPollCapacity:
         supervisor._poll_capacity()
 
         assert supervisor._capacity_level == "critical"
-        assert supervisor._capacity_paused is False
         assert supervisor.slot_manager.dispatch_paused is False
         events = get_events(supervisor._conn, event_type="capacity_cleared")
         assert len(events) == 1
@@ -5197,7 +5195,6 @@ class TestCapacityBlockedDispatchInteraction:
     def test_usage_resume_does_not_clear_capacity_blocked(self, supervisor):
         """Usage auto-resume should not clear a capacity_blocked pause."""
         # Set up capacity-blocked state
-        supervisor._capacity_paused = True
         supervisor._capacity_level = "blocked"
         supervisor.slot_manager.set_dispatch_paused(True, "capacity_blocked")
 
@@ -5213,7 +5210,6 @@ class TestCapacityBlockedDispatchInteraction:
 
     def test_usage_pause_when_capacity_already_blocked(self, supervisor):
         """Usage pause on top of capacity block: usage pause takes over reason."""
-        supervisor._capacity_paused = True
         supervisor._capacity_level = "blocked"
         supervisor.slot_manager.set_dispatch_paused(True, "capacity_blocked")
 

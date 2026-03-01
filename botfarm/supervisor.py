@@ -298,9 +298,7 @@ class Supervisor:
         # Linear client for capacity monitoring (uses owner API key)
         self._linear_client = LinearClient(api_key=config.linear.api_key)
 
-        # Capacity monitoring state: tracks whether dispatch is paused due to
-        # Linear issue count approaching the free-plan limit.
-        self._capacity_paused = False
+        # Capacity monitoring state
         self._capacity_level = "normal"  # normal | warning | critical | blocked
 
         # Webhook notifier
@@ -2356,7 +2354,6 @@ class Supervisor:
                 self._conn, event_type="capacity_blocked", detail=detail,
             )
             self._conn.commit()
-            self._capacity_paused = True
             self._slot_manager.set_dispatch_paused(True, "capacity_blocked")
 
         elif new_level == "critical":
@@ -2380,7 +2377,6 @@ class Supervisor:
                 self._conn, event_type="capacity_cleared", detail=detail,
             )
             self._conn.commit()
-            self._capacity_paused = False
             if self._slot_manager.dispatch_pause_reason == "capacity_blocked":
                 self._slot_manager.set_dispatch_paused(False)
 
