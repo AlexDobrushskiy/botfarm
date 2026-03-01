@@ -210,6 +210,7 @@ class TestRenderPrompt:
 
     def test_no_prompt_template_raises(self):
         stage = StageTemplate(
+            id=99,
             name="merge",
             stage_order=6,
             executor_type="internal",

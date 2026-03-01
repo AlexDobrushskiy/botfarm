@@ -1349,9 +1349,11 @@ def create_app(
 
                     stages_list = [
                         {
+                            "id": s.id,
                             "name": s.name,
                             "executor_type": s.executor_type,
                             "identity": s.identity,
+                            "prompt_template": s.prompt_template,
                             "timeout_minutes": s.timeout_minutes,
                             "max_turns": s.max_turns,
                             "result_parser": s.result_parser,
@@ -1361,9 +1363,11 @@ def create_app(
 
                     main_stages_list = [
                         {
+                            "id": s.id,
                             "name": s.name,
                             "executor_type": s.executor_type,
                             "identity": s.identity,
+                            "prompt_template": s.prompt_template,
                             "timeout_minutes": s.timeout_minutes,
                             "max_turns": s.max_turns,
                             "result_parser": s.result_parser,
@@ -1404,9 +1408,11 @@ def create_app(
                             "decision_stage": decision_stage,
                             "fix_stage_name": fix_stage_name,
                             "fix_stage": {
+                                "id": fix_stage_obj.id,
                                 "name": fix_stage_obj.name,
                                 "executor_type": fix_stage_obj.executor_type,
                                 "identity": fix_stage_obj.identity,
+                                "prompt_template": fix_stage_obj.prompt_template,
                                 "timeout_minutes": fix_stage_obj.timeout_minutes,
                                 "max_turns": fix_stage_obj.max_turns,
                                 "result_parser": fix_stage_obj.result_parser,

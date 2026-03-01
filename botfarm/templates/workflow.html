@@ -1,6 +1,53 @@
 {% extends "base.html" %}
 {% set active_page = "workflow" %}
 {% block title %}Workflow - Botfarm{% endblock %}
+
+{# ── Macro: prompt editor per stage ── #}
+{% macro prompt_editor(stage) %}
+<tr class="prompt-row">
+    <th>Prompt</th>
+    <td>
+    {% if stage.executor_type in ('shell', 'internal') and not stage.prompt_template %}
+        <span class="prompt-na">N/A</span>
+    {% else %}
+        {# View mode #}
+        <div class="prompt-view" data-stage-id="{{ stage.id }}">
+            {% if stage.prompt_template %}
+            <pre class="prompt-preview">{{ stage.prompt_template }}</pre>
+            {% else %}
+            <em class="prompt-empty">No prompt configured</em>
+            {% endif %}
+            <button class="prompt-edit-btn" type="button"
+                    onclick="enterEditMode(this, {{ stage.id }})">Edit</button>
+        </div>
+        {# Edit mode (hidden by default) #}
+        <div class="prompt-edit" data-stage-id="{{ stage.id }}" style="display:none">
+            <textarea class="prompt-textarea" rows="8"
+                      data-stage-id="{{ stage.id }}"
+                      id="prompt-textarea-{{ stage.id }}">{{ stage.prompt_template or '' }}</textarea>
+            <div class="prompt-vars">
+                <span class="prompt-vars-label">Variables:</span>
+                <button type="button" class="prompt-chip" onclick="insertVar({{ stage.id }}, 'ticket_id')">{ticket_id}</button>
+                <button type="button" class="prompt-chip" onclick="insertVar({{ stage.id }}, 'pr_url')">{pr_url}</button>
+                <button type="button" class="prompt-chip" onclick="insertVar({{ stage.id }}, 'pr_number')">{pr_number}</button>
+                <button type="button" class="prompt-chip" onclick="insertVar({{ stage.id }}, 'owner')">{owner}</button>
+                <button type="button" class="prompt-chip" onclick="insertVar({{ stage.id }}, 'repo')">{repo}</button>
+                <button type="button" class="prompt-chip" onclick="insertVar({{ stage.id }}, 'ci_failure_output')">{ci_failure_output}</button>
+            </div>
+            <div class="prompt-unknown-warn" id="prompt-warn-{{ stage.id }}" style="display:none"></div>
+            <div class="prompt-feedback" id="prompt-feedback-{{ stage.id }}"></div>
+            <div class="prompt-actions">
+                <button type="button" class="prompt-save-btn"
+                        onclick="savePrompt({{ stage.id }})">Save</button>
+                <button type="button" class="prompt-cancel-btn"
+                        onclick="cancelEdit({{ stage.id }})">Cancel</button>
+            </div>
+        </div>
+    {% endif %}
+    </td>
+</tr>
+{% endmacro %}
+
 {% block content %}
 <h1>Pipeline Workflow</h1>
 
@@ -54,6 +101,7 @@
                 {% if stage.max_turns %}<tr><th>Max turns</th><td>{{ stage.max_turns }}</td></tr>{% endif %}
                 {% if stage.timeout_minutes %}<tr><th>Timeout</th><td>{{ stage.timeout_minutes }} min</td></tr>{% endif %}
                 {% if stage.result_parser %}<tr><th>Result parser</th><td><code>{{ stage.result_parser }}</code></td></tr>{% endif %}
+                {{ prompt_editor(stage) }}
             </table>
         </div>
         <p class="workflow-note">Research only — no PR created</p>
@@ -90,6 +138,7 @@
                         {% if stage.max_turns %}<tr><th>Max turns</th><td>{{ stage.max_turns }}</td></tr>{% endif %}
                         {% if stage.timeout_minutes %}<tr><th>Timeout</th><td>{{ stage.timeout_minutes }} min</td></tr>{% endif %}
                         {% if stage.result_parser %}<tr><th>Result parser</th><td><code>{{ stage.result_parser }}</code></td></tr>{% endif %}
+                        {{ prompt_editor(stage) }}
                     </table>
                 </div>
 
@@ -126,6 +175,7 @@
                                 {% if lp.fix_stage.max_turns %}<tr><th>Max turns</th><td>{{ lp.fix_stage.max_turns }}</td></tr>{% endif %}
                                 {% if lp.fix_stage.timeout_minutes %}<tr><th>Timeout</th><td>{{ lp.fix_stage.timeout_minutes }} min</td></tr>{% endif %}
                                 {% if lp.fix_stage.result_parser %}<tr><th>Result parser</th><td><code>{{ lp.fix_stage.result_parser }}</code></td></tr>{% endif %}
+                                {{ prompt_editor(lp.fix_stage) }}
                             </table>
                         </div>
                         {% endif %}
@@ -147,6 +197,141 @@
     {% endif %}
 </div>
 {% endfor %}
+
+<style>
+/* ── Prompt editor styles ── */
+.prompt-preview {
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 0.75rem;
+    background: var(--pico-form-element-background-color);
+    padding: 0.5rem;
+    border-radius: var(--pico-border-radius);
+    margin: 0 0 0.4rem 0;
+    max-height: 8rem;
+    overflow-y: auto;
+}
+.prompt-empty {
+    color: var(--pico-muted-color);
+    font-size: 0.8rem;
+}
+.prompt-na {
+    color: var(--pico-muted-color);
+    font-style: italic;
+    font-size: 0.8rem;
+}
+.prompt-edit-btn {
+    padding: 0.2rem 0.6rem;
+    font-size: 0.72rem;
+    border-radius: var(--pico-border-radius);
+    background: transparent;
+    border: 1px solid var(--pico-primary);
+    color: var(--pico-primary);
+    cursor: pointer;
+}
+.prompt-edit-btn:hover {
+    background: var(--pico-primary);
+    color: var(--pico-primary-inverse);
+}
+.prompt-textarea {
+    width: 100%;
+    min-height: 10rem;
+    font-family: monospace;
+    font-size: 0.8rem;
+    padding: 0.5rem;
+    background: var(--pico-form-element-background-color);
+    color: var(--pico-color);
+    border: 1px solid var(--pico-form-element-border-color);
+    border-radius: var(--pico-border-radius);
+    resize: vertical;
+}
+.prompt-textarea:focus {
+    border-color: var(--pico-primary);
+    outline: none;
+}
+.prompt-vars {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.3rem;
+    margin-top: 0.4rem;
+}
+.prompt-vars-label {
+    font-size: 0.72rem;
+    color: var(--pico-muted-color);
+    font-weight: 600;
+}
+.prompt-chip {
+    display: inline-block;
+    padding: 0.15rem 0.45rem;
+    font-size: 0.7rem;
+    font-family: monospace;
+    border-radius: 0.75rem;
+    background: rgba(129, 140, 248, 0.15);
+    color: #a5b4fc;
+    border: 1px solid rgba(129, 140, 248, 0.3);
+    cursor: pointer;
+    transition: background 0.15s ease;
+}
+.prompt-chip:hover {
+    background: rgba(129, 140, 248, 0.3);
+}
+.prompt-actions {
+    display: flex;
+    gap: 0.4rem;
+    margin-top: 0.5rem;
+}
+.prompt-save-btn, .prompt-cancel-btn {
+    padding: 0.25rem 0.7rem;
+    font-size: 0.75rem;
+    border-radius: var(--pico-border-radius);
+    cursor: pointer;
+    border: none;
+    font-weight: 600;
+}
+.prompt-save-btn {
+    background: var(--pico-primary);
+    color: var(--pico-primary-inverse);
+}
+.prompt-save-btn:hover { opacity: 0.85; }
+.prompt-save-btn[aria-busy="true"] {
+    pointer-events: none;
+    opacity: 0.6;
+}
+.prompt-cancel-btn {
+    background: transparent;
+    border: 1px solid var(--pico-muted-color);
+    color: var(--pico-muted-color);
+}
+.prompt-cancel-btn:hover {
+    border-color: var(--pico-color);
+    color: var(--pico-color);
+}
+.prompt-feedback {
+    margin-top: 0.4rem;
+}
+.prompt-feedback .config-feedback {
+    padding: 0.5rem 0.75rem;
+    border-radius: var(--pico-border-radius);
+    font-size: 0.78rem;
+}
+.prompt-feedback .config-feedback.success {
+    background: rgba(34, 197, 94, 0.15);
+    color: var(--pico-ins-color);
+}
+.prompt-feedback .config-feedback.error {
+    background: rgba(239, 68, 68, 0.15);
+    color: var(--pico-del-color);
+}
+.prompt-unknown-warn {
+    margin-top: 0.3rem;
+    font-size: 0.72rem;
+    padding: 0.35rem 0.6rem;
+    border-radius: var(--pico-border-radius);
+    background: rgba(245, 158, 11, 0.15);
+    color: var(--pico-color-yellow-500, #eab308);
+}
+</style>
 
 <script>
 function switchPipeline(name) {
@@ -180,6 +365,138 @@ function toggleDetail(node) {
         detail.style.display = detail.style.display === 'none' ? 'block' : 'none';
     }
 }
+
+/* ── Prompt editor functions ── */
+var KNOWN_VARS = ['ticket_id', 'pr_url', 'pr_number', 'owner', 'repo', 'ci_failure_output'];
+
+function enterEditMode(btn, stageId) {
+    var viewEl = btn.closest('.prompt-view');
+    var editEl = viewEl.nextElementSibling;
+    viewEl.style.display = 'none';
+    editEl.style.display = 'block';
+    checkUnknownVars(stageId);
+}
+
+function cancelEdit(stageId) {
+    var editEl = document.querySelector('.prompt-edit[data-stage-id="' + stageId + '"]');
+    var viewEl = document.querySelector('.prompt-view[data-stage-id="' + stageId + '"]');
+    // Reset textarea to original value from the preview
+    var preEl = viewEl.querySelector('.prompt-preview');
+    var textarea = document.getElementById('prompt-textarea-' + stageId);
+    textarea.value = preEl ? preEl.textContent : '';
+    // Clear feedback
+    document.getElementById('prompt-feedback-' + stageId).innerHTML = '';
+    document.getElementById('prompt-warn-' + stageId).style.display = 'none';
+    editEl.style.display = 'none';
+    viewEl.style.display = 'block';
+}
+
+function savePrompt(stageId) {
+    var textarea = document.getElementById('prompt-textarea-' + stageId);
+    var feedbackEl = document.getElementById('prompt-feedback-' + stageId);
+    var saveBtn = textarea.closest('.prompt-edit').querySelector('.prompt-save-btn');
+    var newPrompt = textarea.value;
+
+    feedbackEl.innerHTML = '';
+    saveBtn.setAttribute('aria-busy', 'true');
+    saveBtn.textContent = 'Saving...';
+
+    fetch('/api/workflow/stages/' + stageId, {
+        method: 'PATCH',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({prompt_template: newPrompt})
+    })
+    .then(function(resp) {
+        return resp.json().then(function(data) { return {ok: resp.ok, data: data}; });
+    })
+    .then(function(result) {
+        saveBtn.removeAttribute('aria-busy');
+        saveBtn.textContent = 'Save';
+        if (result.ok && result.data.ok) {
+            feedbackEl.innerHTML = '<div class="config-feedback success" role="alert">Prompt saved.</div>';
+            // Update the view-mode preview
+            var viewEl = document.querySelector('.prompt-view[data-stage-id="' + stageId + '"]');
+            var preEl = viewEl.querySelector('.prompt-preview');
+            var emptyEl = viewEl.querySelector('.prompt-empty');
+            if (newPrompt) {
+                if (preEl) {
+                    preEl.textContent = newPrompt;
+                } else {
+                    if (emptyEl) emptyEl.remove();
+                    var newPre = document.createElement('pre');
+                    newPre.className = 'prompt-preview';
+                    newPre.textContent = newPrompt;
+                    viewEl.insertBefore(newPre, viewEl.querySelector('.prompt-edit-btn'));
+                }
+            } else {
+                if (preEl) preEl.remove();
+                if (!viewEl.querySelector('.prompt-empty')) {
+                    var em = document.createElement('em');
+                    em.className = 'prompt-empty';
+                    em.textContent = 'No prompt configured';
+                    viewEl.insertBefore(em, viewEl.querySelector('.prompt-edit-btn'));
+                }
+            }
+            // Auto-dismiss and return to view mode
+            setTimeout(function() {
+                feedbackEl.innerHTML = '';
+                var editEl = document.querySelector('.prompt-edit[data-stage-id="' + stageId + '"]');
+                editEl.style.display = 'none';
+                viewEl.style.display = 'block';
+            }, 1500);
+        } else {
+            var errors = result.data.errors || ['Unknown error'];
+            feedbackEl.innerHTML = '<div class="config-feedback error" role="alert">' + errors.join('; ') + '</div>';
+        }
+    })
+    .catch(function() {
+        saveBtn.removeAttribute('aria-busy');
+        saveBtn.textContent = 'Save';
+        feedbackEl.innerHTML = '<div class="config-feedback error" role="alert">Network error.</div>';
+    });
+}
+
+function insertVar(stageId, varName) {
+    var textarea = document.getElementById('prompt-textarea-' + stageId);
+    var start = textarea.selectionStart;
+    var end = textarea.selectionEnd;
+    var text = textarea.value;
+    var insertion = '{' + varName + '}';
+    textarea.value = text.substring(0, start) + insertion + text.substring(end);
+    var newPos = start + insertion.length;
+    textarea.setSelectionRange(newPos, newPos);
+    textarea.focus();
+    checkUnknownVars(stageId);
+}
+
+function checkUnknownVars(stageId) {
+    var textarea = document.getElementById('prompt-textarea-' + stageId);
+    var warnEl = document.getElementById('prompt-warn-' + stageId);
+    var text = textarea.value;
+    var re = /\{(\w+)\}/g;
+    var match;
+    var unknown = [];
+    while ((match = re.exec(text)) !== null) {
+        if (KNOWN_VARS.indexOf(match[1]) === -1) {
+            unknown.push('{' + match[1] + '}');
+        }
+    }
+    if (unknown.length > 0) {
+        var unique = unknown.filter(function(v, i, a) { return a.indexOf(v) === i; });
+        warnEl.textContent = 'Unknown variables: ' + unique.join(', ');
+        warnEl.style.display = 'block';
+    } else {
+        warnEl.style.display = 'none';
+    }
+}
+
+// Re-check unknown vars on textarea input
+document.addEventListener('input', function(e) {
+    if (e.target.classList.contains('prompt-textarea')) {
+        var stageId = e.target.getAttribute('data-stage-id');
+        checkUnknownVars(stageId);
+    }
+});
 </script>
 
 {% endif %}
