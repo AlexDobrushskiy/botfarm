@@ -4259,3 +4259,406 @@ class TestWorkflowPage:
         body = resp.text
         assert "max 5 iterations" in body
         assert "max 4 retries" in body
+
+
+# --- Workflow API ---
+
+
+class TestApiListPipelines:
+    def test_list_returns_all_pipelines(self, client):
+        resp = client.get("/api/workflow/pipelines")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert isinstance(data["data"], list)
+        assert len(data["data"]) >= 2  # implementation + investigation from seed
+
+    def test_list_includes_stages_and_loops(self, client):
+        resp = client.get("/api/workflow/pipelines")
+        pipelines = resp.json()["data"]
+        impl = next(p for p in pipelines if p["name"] == "implementation")
+        assert len(impl["stages"]) >= 1
+        assert len(impl["loops"]) >= 1
+        # Stages should have IDs
+        assert "id" in impl["stages"][0]
+
+    def test_list_pipeline_fields(self, client):
+        resp = client.get("/api/workflow/pipelines")
+        pipeline = resp.json()["data"][0]
+        for key in ("id", "name", "description", "ticket_label", "is_default", "stages", "loops"):
+            assert key in pipeline
+
+
+class TestApiGetPipeline:
+    def test_get_existing_pipeline(self, client):
+        # Get list first to find an ID
+        pipelines = client.get("/api/workflow/pipelines").json()["data"]
+        pid = pipelines[0]["id"]
+        resp = client.get(f"/api/workflow/pipelines/{pid}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["data"]["id"] == pid
+
+    def test_get_nonexistent_pipeline(self, client):
+        resp = client.get("/api/workflow/pipelines/99999")
+        assert resp.status_code == 404
+        data = resp.json()
+        assert data["ok"] is False
+        assert any("not found" in e for e in data["errors"])
+
+
+class TestApiCreatePipeline:
+    def test_create_pipeline(self, client):
+        resp = client.post(
+            "/api/workflow/pipelines",
+            json={"name": "test_pipeline", "description": "A test"},
+        )
+        # Validation is skipped on create (no stages yet), pipeline is created
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["data"]["name"] == "test_pipeline"
+        assert data["data"]["stages"] == []
+
+    def test_create_pipeline_then_add_stage(self, db_file):
+        """Create pipeline, then add a stage — full happy path."""
+        app = create_app(db_path=db_file)
+        client = TestClient(app)
+        # Create succeeds even with no stages (validation deferred)
+        resp = client.post(
+            "/api/workflow/pipelines",
+            json={"name": "custom_pipe", "description": "Custom"},
+        )
+        assert resp.status_code == 200
+        pid = resp.json()["data"]["id"]
+        # Add a stage
+        stage_resp = client.post(
+            f"/api/workflow/pipelines/{pid}/stages",
+            json={
+                "name": "build",
+                "stage_order": 1,
+                "executor_type": "claude",
+                "identity": "coder",
+                "max_turns": 50,
+                "timeout_minutes": 30,
+            },
+        )
+        assert stage_resp.status_code == 200
+        assert stage_resp.json()["data"]["name"] == "build"
+
+
+class TestApiUpdatePipeline:
+    def test_update_pipeline_metadata(self, client):
+        pipelines = client.get("/api/workflow/pipelines").json()["data"]
+        pid = pipelines[0]["id"]
+        original_name = pipelines[0]["name"]
+        resp = client.patch(
+            f"/api/workflow/pipelines/{pid}",
+            json={"description": "Updated description"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["data"]["description"] == "Updated description"
+        assert data["data"]["name"] == original_name
+
+    def test_update_nonexistent_pipeline(self, client):
+        resp = client.patch(
+            "/api/workflow/pipelines/99999",
+            json={"description": "Nope"},
+        )
+        assert resp.status_code == 404
+
+    def test_update_unknown_field(self, client):
+        pipelines = client.get("/api/workflow/pipelines").json()["data"]
+        pid = pipelines[0]["id"]
+        resp = client.patch(
+            f"/api/workflow/pipelines/{pid}",
+            json={"bogus_field": "value"},
+        )
+        assert resp.status_code == 400
+        assert resp.json()["ok"] is False
+
+
+class TestApiDeletePipeline:
+    def test_delete_non_default_pipeline(self, client):
+        # Investigation pipeline is not default
+        pipelines = client.get("/api/workflow/pipelines").json()["data"]
+        non_default = next(p for p in pipelines if not p["is_default"])
+        resp = client.delete(f"/api/workflow/pipelines/{non_default['id']}")
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        # Verify it's gone
+        resp2 = client.get(f"/api/workflow/pipelines/{non_default['id']}")
+        assert resp2.status_code == 404
+
+    def test_delete_sole_default_pipeline_rejected(self, client):
+        pipelines = client.get("/api/workflow/pipelines").json()["data"]
+        default_p = next(p for p in pipelines if p["is_default"])
+        resp = client.delete(f"/api/workflow/pipelines/{default_p['id']}")
+        assert resp.status_code == 400
+        assert resp.json()["ok"] is False
+        assert any("default" in e.lower() for e in resp.json()["errors"])
+
+    def test_delete_nonexistent_pipeline(self, client):
+        resp = client.delete("/api/workflow/pipelines/99999")
+        assert resp.status_code == 404
+
+
+class TestApiDuplicatePipeline:
+    def test_duplicate_pipeline(self, client):
+        pipelines = client.get("/api/workflow/pipelines").json()["data"]
+        pid = pipelines[0]["id"]
+        resp = client.post(
+            f"/api/workflow/pipelines/{pid}/duplicate",
+            json={"name": "implementation_copy"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["data"]["name"] == "implementation_copy"
+        # Should have same number of stages
+        assert len(data["data"]["stages"]) == len(pipelines[0]["stages"])
+
+    def test_duplicate_requires_name(self, client):
+        pipelines = client.get("/api/workflow/pipelines").json()["data"]
+        pid = pipelines[0]["id"]
+        resp = client.post(
+            f"/api/workflow/pipelines/{pid}/duplicate",
+            json={},
+        )
+        assert resp.status_code == 400
+        assert resp.json()["ok"] is False
+
+    def test_duplicate_nonexistent(self, client):
+        resp = client.post(
+            "/api/workflow/pipelines/99999/duplicate",
+            json={"name": "copy"},
+        )
+        assert resp.status_code == 404
+
+
+class TestApiCreateStage:
+    def test_create_stage(self, client):
+        pipelines = client.get("/api/workflow/pipelines").json()["data"]
+        pid = pipelines[0]["id"]
+        num_stages = len(pipelines[0]["stages"])
+        resp = client.post(
+            f"/api/workflow/pipelines/{pid}/stages",
+            json={
+                "name": "new_stage",
+                "stage_order": num_stages + 1,
+                "executor_type": "claude",
+                "identity": "coder",
+                "max_turns": 50,
+                "timeout_minutes": 30,
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["data"]["name"] == "new_stage"
+        assert data["data"]["executor_type"] == "claude"
+
+    def test_create_stage_nonexistent_pipeline(self, client):
+        resp = client.post(
+            "/api/workflow/pipelines/99999/stages",
+            json={"name": "s", "stage_order": 1, "executor_type": "claude"},
+        )
+        assert resp.status_code == 404
+
+
+class TestApiUpdateStage:
+    def test_update_stage(self, client):
+        pipelines = client.get("/api/workflow/pipelines").json()["data"]
+        stage = pipelines[0]["stages"][0]
+        resp = client.patch(
+            f"/api/workflow/stages/{stage['id']}",
+            json={"max_turns": 999},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["data"]["max_turns"] == 999
+
+    def test_update_nonexistent_stage(self, client):
+        resp = client.patch(
+            "/api/workflow/stages/99999",
+            json={"max_turns": 10},
+        )
+        assert resp.status_code == 404
+
+    def test_update_unknown_field(self, client):
+        pipelines = client.get("/api/workflow/pipelines").json()["data"]
+        stage = pipelines[0]["stages"][0]
+        resp = client.patch(
+            f"/api/workflow/stages/{stage['id']}",
+            json={"bogus": "value"},
+        )
+        assert resp.status_code == 400
+
+
+class TestApiDeleteStage:
+    def test_delete_stage(self, client):
+        # Add a stage first so we can delete it without breaking the pipeline
+        pipelines = client.get("/api/workflow/pipelines").json()["data"]
+        pid = pipelines[0]["id"]
+        num_stages = len(pipelines[0]["stages"])
+        create_resp = client.post(
+            f"/api/workflow/pipelines/{pid}/stages",
+            json={
+                "name": "disposable",
+                "stage_order": num_stages + 1,
+                "executor_type": "shell",
+            },
+        )
+        stage_id = create_resp.json()["data"]["id"]
+        resp = client.delete(f"/api/workflow/stages/{stage_id}")
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+
+    def test_delete_nonexistent_stage(self, client):
+        resp = client.delete("/api/workflow/stages/99999")
+        assert resp.status_code == 404
+
+
+class TestApiReorderStages:
+    def test_reorder_stages(self, client):
+        pipelines = client.get("/api/workflow/pipelines").json()["data"]
+        pid = pipelines[0]["id"]
+        stage_ids = [s["id"] for s in pipelines[0]["stages"]]
+        reversed_ids = list(reversed(stage_ids))
+        resp = client.put(
+            f"/api/workflow/pipelines/{pid}/stages/order",
+            json={"stage_ids": reversed_ids},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        new_order = [s["id"] for s in data["data"]["stages"]]
+        assert new_order == reversed_ids
+
+    def test_reorder_nonexistent_pipeline(self, client):
+        resp = client.put(
+            "/api/workflow/pipelines/99999/stages/order",
+            json={"stage_ids": [1, 2]},
+        )
+        assert resp.status_code == 404
+
+    def test_reorder_invalid_ids(self, client):
+        pipelines = client.get("/api/workflow/pipelines").json()["data"]
+        pid = pipelines[0]["id"]
+        resp = client.put(
+            f"/api/workflow/pipelines/{pid}/stages/order",
+            json={"stage_ids": [99998, 99999]},
+        )
+        assert resp.status_code == 400
+
+    def test_reorder_missing_stage_ids(self, client):
+        pipelines = client.get("/api/workflow/pipelines").json()["data"]
+        pid = pipelines[0]["id"]
+        resp = client.put(
+            f"/api/workflow/pipelines/{pid}/stages/order",
+            json={"not_stage_ids": [1]},
+        )
+        assert resp.status_code == 400
+
+
+class TestApiCreateLoop:
+    def test_create_loop(self, client):
+        pipelines = client.get("/api/workflow/pipelines").json()["data"]
+        pid = pipelines[0]["id"]
+        stages = pipelines[0]["stages"]
+        resp = client.post(
+            f"/api/workflow/pipelines/{pid}/loops",
+            json={
+                "name": "test_loop",
+                "start_stage": stages[0]["name"],
+                "end_stage": stages[1]["name"],
+                "max_iterations": 2,
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["data"]["name"] == "test_loop"
+        assert data["data"]["max_iterations"] == 2
+
+    def test_create_loop_nonexistent_pipeline(self, client):
+        resp = client.post(
+            "/api/workflow/pipelines/99999/loops",
+            json={
+                "name": "l",
+                "start_stage": "a",
+                "end_stage": "b",
+                "max_iterations": 1,
+            },
+        )
+        assert resp.status_code == 404
+
+    def test_create_loop_invalid_stages(self, client):
+        pipelines = client.get("/api/workflow/pipelines").json()["data"]
+        pid = pipelines[0]["id"]
+        loops_before = len(pipelines[0]["loops"])
+        resp = client.post(
+            f"/api/workflow/pipelines/{pid}/loops",
+            json={
+                "name": "bad_loop",
+                "start_stage": "nonexistent_stage",
+                "end_stage": "also_nonexistent",
+                "max_iterations": 1,
+            },
+        )
+        assert resp.status_code == 400
+        assert resp.json()["ok"] is False
+        # Verify the invalid loop was rolled back from the DB
+        updated = client.get(f"/api/workflow/pipelines/{pid}").json()["data"]
+        assert len(updated["loops"]) == loops_before
+
+
+class TestApiUpdateLoop:
+    def test_update_loop(self, client):
+        pipelines = client.get("/api/workflow/pipelines").json()["data"]
+        impl = next(p for p in pipelines if p["name"] == "implementation")
+        loop = impl["loops"][0]
+        resp = client.patch(
+            f"/api/workflow/loops/{loop['id']}",
+            json={"max_iterations": 10},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["data"]["max_iterations"] == 10
+
+    def test_update_nonexistent_loop(self, client):
+        resp = client.patch(
+            "/api/workflow/loops/99999",
+            json={"max_iterations": 5},
+        )
+        assert resp.status_code == 404
+
+    def test_update_unknown_field(self, client):
+        pipelines = client.get("/api/workflow/pipelines").json()["data"]
+        impl = next(p for p in pipelines if p["name"] == "implementation")
+        loop = impl["loops"][0]
+        resp = client.patch(
+            f"/api/workflow/loops/{loop['id']}",
+            json={"bogus_field": "value"},
+        )
+        assert resp.status_code == 400
+
+
+class TestApiDeleteLoop:
+    def test_delete_loop(self, client):
+        pipelines = client.get("/api/workflow/pipelines").json()["data"]
+        impl = next(p for p in pipelines if p["name"] == "implementation")
+        loop = impl["loops"][0]
+        resp = client.delete(f"/api/workflow/loops/{loop['id']}")
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+
+    def test_delete_nonexistent_loop(self, client):
+        resp = client.delete("/api/workflow/loops/99999")
+        assert resp.status_code == 404
+        assert resp.json()["ok"] is False

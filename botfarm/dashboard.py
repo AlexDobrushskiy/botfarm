@@ -53,7 +53,22 @@ from botfarm.db import (
 )
 from botfarm.git_update import commits_behind
 from botfarm.worker import STAGES
-from botfarm.workflow import load_all_pipelines, resolve_max_iterations
+from botfarm.workflow import (
+    create_loop,
+    create_pipeline,
+    create_stage,
+    delete_loop,
+    delete_pipeline,
+    delete_stage,
+    duplicate_pipeline,
+    load_all_pipelines,
+    reorder_stages,
+    resolve_max_iterations,
+    update_loop,
+    update_pipeline,
+    update_stage,
+    validate_pipeline,
+)
 from botfarm.usage import refresh_usage_snapshot
 
 logger = logging.getLogger(__name__)
@@ -1420,6 +1435,479 @@ def create_app(
             "active_page": "workflow",
             "supervisor": _supervisor_status(_read_state()),
         })
+
+    # --- Workflow API ---
+
+    def _pipeline_to_dict(conn: sqlite3.Connection, pipeline_id: int) -> dict | None:
+        """Build a JSON-serialisable dict for a pipeline including stage/loop IDs."""
+        row = conn.execute(
+            "SELECT * FROM pipeline_templates WHERE id = ?", (pipeline_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        stages = [
+            {
+                "id": s["id"],
+                "name": s["name"],
+                "stage_order": s["stage_order"],
+                "executor_type": s["executor_type"],
+                "identity": s["identity"],
+                "prompt_template": s["prompt_template"],
+                "max_turns": s["max_turns"],
+                "timeout_minutes": s["timeout_minutes"],
+                "shell_command": s["shell_command"],
+                "result_parser": s["result_parser"],
+            }
+            for s in conn.execute(
+                "SELECT * FROM stage_templates WHERE pipeline_id = ? ORDER BY stage_order",
+                (pipeline_id,),
+            ).fetchall()
+        ]
+        loops = [
+            {
+                "id": lp["id"],
+                "name": lp["name"],
+                "start_stage": lp["start_stage"],
+                "end_stage": lp["end_stage"],
+                "max_iterations": lp["max_iterations"],
+                "config_key": lp["config_key"],
+                "exit_condition": lp["exit_condition"],
+                "on_failure_stage": lp["on_failure_stage"],
+            }
+            for lp in conn.execute(
+                "SELECT * FROM stage_loops WHERE pipeline_id = ?", (pipeline_id,)
+            ).fetchall()
+        ]
+        return {
+            "id": row["id"],
+            "name": row["name"],
+            "description": row["description"],
+            "ticket_label": row["ticket_label"],
+            "is_default": bool(row["is_default"]),
+            "stages": stages,
+            "loops": loops,
+        }
+
+    # -- Pipeline endpoints --
+
+    @app.get("/api/workflow/pipelines")
+    def api_list_pipelines():
+        conn = None
+        try:
+            conn = init_db(app.state.db_path)
+            rows = conn.execute(
+                "SELECT id FROM pipeline_templates ORDER BY is_default DESC, name"
+            ).fetchall()
+            pipelines = []
+            for r in rows:
+                p = _pipeline_to_dict(conn, r["id"])
+                if p:
+                    pipelines.append(p)
+            return JSONResponse({"ok": True, "data": pipelines})
+        except Exception as exc:
+            logger.exception("Failed to list pipelines")
+            return JSONResponse({"ok": False, "errors": [str(exc)]}, status_code=500)
+        finally:
+            if conn is not None:
+                conn.close()
+
+    @app.get("/api/workflow/pipelines/{pipeline_id}")
+    def api_get_pipeline(pipeline_id: int):
+        conn = None
+        try:
+            conn = init_db(app.state.db_path)
+            data = _pipeline_to_dict(conn, pipeline_id)
+            if data is None:
+                return JSONResponse(
+                    {"ok": False, "errors": [f"Pipeline {pipeline_id} not found"]},
+                    status_code=404,
+                )
+            return JSONResponse({"ok": True, "data": data})
+        except Exception as exc:
+            logger.exception("Failed to get pipeline %s", pipeline_id)
+            return JSONResponse({"ok": False, "errors": [str(exc)]}, status_code=500)
+        finally:
+            if conn is not None:
+                conn.close()
+
+    @app.post("/api/workflow/pipelines")
+    async def api_create_pipeline(request: Request):
+        conn = None
+        try:
+            body = await request.json()
+            conn = init_db(app.state.db_path)
+            new_id = create_pipeline(
+                conn,
+                name=body.get("name", ""),
+                description=body.get("description"),
+                ticket_label=body.get("ticket_label"),
+                is_default=body.get("is_default", False),
+            )
+            # Skip validation on create — a new pipeline has no stages yet,
+            # so validate_pipeline() would always fail.  The user adds stages
+            # afterward; validation runs on stage/loop mutations and on use.
+            data = _pipeline_to_dict(conn, new_id)
+            return JSONResponse({"ok": True, "data": data})
+        except Exception as exc:
+            logger.exception("Failed to create pipeline")
+            return JSONResponse({"ok": False, "errors": [str(exc)]}, status_code=500)
+        finally:
+            if conn is not None:
+                conn.close()
+
+    @app.patch("/api/workflow/pipelines/{pipeline_id}")
+    async def api_update_pipeline(request: Request, pipeline_id: int):
+        conn = None
+        try:
+            body = await request.json()
+            conn = init_db(app.state.db_path)
+            # Check exists
+            row = conn.execute(
+                "SELECT id FROM pipeline_templates WHERE id = ?", (pipeline_id,)
+            ).fetchone()
+            if row is None:
+                return JSONResponse(
+                    {"ok": False, "errors": [f"Pipeline {pipeline_id} not found"]},
+                    status_code=404,
+                )
+            update_pipeline(conn, pipeline_id, **body)
+            warnings = validate_pipeline(conn, pipeline_id)
+            data = _pipeline_to_dict(conn, pipeline_id)
+            resp: dict = {"ok": True, "data": data}
+            if warnings:
+                resp["warnings"] = warnings
+            return JSONResponse(resp)
+        except ValueError as exc:
+            return JSONResponse({"ok": False, "errors": [str(exc)]}, status_code=400)
+        except Exception as exc:
+            logger.exception("Failed to update pipeline %s", pipeline_id)
+            return JSONResponse({"ok": False, "errors": [str(exc)]}, status_code=500)
+        finally:
+            if conn is not None:
+                conn.close()
+
+    @app.delete("/api/workflow/pipelines/{pipeline_id}")
+    def api_delete_pipeline(pipeline_id: int):
+        conn = None
+        try:
+            conn = init_db(app.state.db_path)
+            delete_pipeline(conn, pipeline_id)
+            return JSONResponse({"ok": True, "data": None})
+        except ValueError as exc:
+            status = 404 if "not found" in str(exc) else 400
+            return JSONResponse({"ok": False, "errors": [str(exc)]}, status_code=status)
+        except Exception as exc:
+            logger.exception("Failed to delete pipeline %s", pipeline_id)
+            return JSONResponse({"ok": False, "errors": [str(exc)]}, status_code=500)
+        finally:
+            if conn is not None:
+                conn.close()
+
+    @app.post("/api/workflow/pipelines/{pipeline_id}/duplicate")
+    async def api_duplicate_pipeline(request: Request, pipeline_id: int):
+        conn = None
+        try:
+            body = await request.json()
+            new_name = body.get("name", "")
+            if not new_name:
+                return JSONResponse(
+                    {"ok": False, "errors": ["name is required"]}, status_code=400
+                )
+            conn = init_db(app.state.db_path)
+            new_id = duplicate_pipeline(conn, pipeline_id, new_name)
+            data = _pipeline_to_dict(conn, new_id)
+            return JSONResponse({"ok": True, "data": data})
+        except ValueError as exc:
+            status = 404 if "not found" in str(exc) else 400
+            return JSONResponse({"ok": False, "errors": [str(exc)]}, status_code=status)
+        except sqlite3.IntegrityError as exc:
+            return JSONResponse({"ok": False, "errors": [str(exc)]}, status_code=400)
+        except Exception as exc:
+            logger.exception("Failed to duplicate pipeline %s", pipeline_id)
+            return JSONResponse({"ok": False, "errors": [str(exc)]}, status_code=500)
+        finally:
+            if conn is not None:
+                conn.close()
+
+    # -- Stage endpoints --
+
+    @app.post("/api/workflow/pipelines/{pipeline_id}/stages")
+    async def api_create_stage(request: Request, pipeline_id: int):
+        conn = None
+        try:
+            body = await request.json()
+            conn = init_db(app.state.db_path)
+            # Verify pipeline exists
+            row = conn.execute(
+                "SELECT id FROM pipeline_templates WHERE id = ?", (pipeline_id,)
+            ).fetchone()
+            if row is None:
+                return JSONResponse(
+                    {"ok": False, "errors": [f"Pipeline {pipeline_id} not found"]},
+                    status_code=404,
+                )
+            new_id = create_stage(
+                conn,
+                pipeline_id=pipeline_id,
+                name=body.get("name", ""),
+                stage_order=body.get("stage_order", 1),
+                executor_type=body.get("executor_type", ""),
+                identity=body.get("identity"),
+                prompt_template=body.get("prompt_template"),
+                max_turns=body.get("max_turns"),
+                timeout_minutes=body.get("timeout_minutes"),
+                shell_command=body.get("shell_command"),
+                result_parser=body.get("result_parser"),
+            )
+            errors = validate_pipeline(conn, pipeline_id)
+            if errors:
+                delete_stage(conn, new_id)
+                return JSONResponse({"ok": False, "errors": errors}, status_code=400)
+            stage_row = conn.execute(
+                "SELECT * FROM stage_templates WHERE id = ?", (new_id,)
+            ).fetchone()
+            data = {
+                "id": stage_row["id"],
+                "name": stage_row["name"],
+                "stage_order": stage_row["stage_order"],
+                "executor_type": stage_row["executor_type"],
+                "identity": stage_row["identity"],
+                "prompt_template": stage_row["prompt_template"],
+                "max_turns": stage_row["max_turns"],
+                "timeout_minutes": stage_row["timeout_minutes"],
+                "shell_command": stage_row["shell_command"],
+                "result_parser": stage_row["result_parser"],
+            }
+            return JSONResponse({"ok": True, "data": data})
+        except Exception as exc:
+            logger.exception("Failed to create stage for pipeline %s", pipeline_id)
+            return JSONResponse({"ok": False, "errors": [str(exc)]}, status_code=500)
+        finally:
+            if conn is not None:
+                conn.close()
+
+    @app.patch("/api/workflow/stages/{stage_id}")
+    async def api_update_stage(request: Request, stage_id: int):
+        conn = None
+        try:
+            body = await request.json()
+            conn = init_db(app.state.db_path)
+            # Check stage exists and get pipeline_id for validation
+            row = conn.execute(
+                "SELECT pipeline_id FROM stage_templates WHERE id = ?", (stage_id,)
+            ).fetchone()
+            if row is None:
+                return JSONResponse(
+                    {"ok": False, "errors": [f"Stage {stage_id} not found"]},
+                    status_code=404,
+                )
+            pipeline_id = row["pipeline_id"]
+            update_stage(conn, stage_id, **body)
+            warnings = validate_pipeline(conn, pipeline_id)
+            stage_row = conn.execute(
+                "SELECT * FROM stage_templates WHERE id = ?", (stage_id,)
+            ).fetchone()
+            data = {
+                "id": stage_row["id"],
+                "name": stage_row["name"],
+                "stage_order": stage_row["stage_order"],
+                "executor_type": stage_row["executor_type"],
+                "identity": stage_row["identity"],
+                "prompt_template": stage_row["prompt_template"],
+                "max_turns": stage_row["max_turns"],
+                "timeout_minutes": stage_row["timeout_minutes"],
+                "shell_command": stage_row["shell_command"],
+                "result_parser": stage_row["result_parser"],
+            }
+            resp: dict = {"ok": True, "data": data}
+            if warnings:
+                resp["warnings"] = warnings
+            return JSONResponse(resp)
+        except ValueError as exc:
+            return JSONResponse({"ok": False, "errors": [str(exc)]}, status_code=400)
+        except Exception as exc:
+            logger.exception("Failed to update stage %s", stage_id)
+            return JSONResponse({"ok": False, "errors": [str(exc)]}, status_code=500)
+        finally:
+            if conn is not None:
+                conn.close()
+
+    @app.delete("/api/workflow/stages/{stage_id}")
+    def api_delete_stage(stage_id: int):
+        conn = None
+        try:
+            conn = init_db(app.state.db_path)
+            # Get pipeline_id for validation after delete
+            row = conn.execute(
+                "SELECT pipeline_id FROM stage_templates WHERE id = ?", (stage_id,)
+            ).fetchone()
+            if row is None:
+                return JSONResponse(
+                    {"ok": False, "errors": [f"Stage {stage_id} not found"]},
+                    status_code=404,
+                )
+            delete_stage(conn, stage_id)
+            return JSONResponse({"ok": True, "data": None})
+        except ValueError as exc:
+            return JSONResponse({"ok": False, "errors": [str(exc)]}, status_code=400)
+        except Exception as exc:
+            logger.exception("Failed to delete stage %s", stage_id)
+            return JSONResponse({"ok": False, "errors": [str(exc)]}, status_code=500)
+        finally:
+            if conn is not None:
+                conn.close()
+
+    @app.put("/api/workflow/pipelines/{pipeline_id}/stages/order")
+    async def api_reorder_stages(request: Request, pipeline_id: int):
+        conn = None
+        try:
+            body = await request.json()
+            stage_ids = body.get("stage_ids")
+            if not isinstance(stage_ids, list):
+                return JSONResponse(
+                    {"ok": False, "errors": ["stage_ids must be a list"]},
+                    status_code=400,
+                )
+            conn = init_db(app.state.db_path)
+            # Check pipeline exists
+            row = conn.execute(
+                "SELECT id FROM pipeline_templates WHERE id = ?", (pipeline_id,)
+            ).fetchone()
+            if row is None:
+                return JSONResponse(
+                    {"ok": False, "errors": [f"Pipeline {pipeline_id} not found"]},
+                    status_code=404,
+                )
+            reorder_stages(conn, pipeline_id, stage_ids)
+            warnings = validate_pipeline(conn, pipeline_id)
+            data = _pipeline_to_dict(conn, pipeline_id)
+            resp: dict = {"ok": True, "data": data}
+            if warnings:
+                resp["warnings"] = warnings
+            return JSONResponse(resp)
+        except ValueError as exc:
+            return JSONResponse({"ok": False, "errors": [str(exc)]}, status_code=400)
+        except Exception as exc:
+            logger.exception("Failed to reorder stages for pipeline %s", pipeline_id)
+            return JSONResponse({"ok": False, "errors": [str(exc)]}, status_code=500)
+        finally:
+            if conn is not None:
+                conn.close()
+
+    # -- Loop endpoints --
+
+    @app.post("/api/workflow/pipelines/{pipeline_id}/loops")
+    async def api_create_loop(request: Request, pipeline_id: int):
+        conn = None
+        try:
+            body = await request.json()
+            conn = init_db(app.state.db_path)
+            # Verify pipeline exists
+            row = conn.execute(
+                "SELECT id FROM pipeline_templates WHERE id = ?", (pipeline_id,)
+            ).fetchone()
+            if row is None:
+                return JSONResponse(
+                    {"ok": False, "errors": [f"Pipeline {pipeline_id} not found"]},
+                    status_code=404,
+                )
+            new_id = create_loop(
+                conn,
+                pipeline_id=pipeline_id,
+                name=body.get("name", ""),
+                start_stage=body.get("start_stage", ""),
+                end_stage=body.get("end_stage", ""),
+                max_iterations=body.get("max_iterations", 1),
+                config_key=body.get("config_key"),
+                exit_condition=body.get("exit_condition"),
+                on_failure_stage=body.get("on_failure_stage"),
+            )
+            errors = validate_pipeline(conn, pipeline_id)
+            if errors:
+                conn.execute("DELETE FROM stage_loops WHERE id = ?", (new_id,))
+                conn.commit()
+                return JSONResponse({"ok": False, "errors": errors}, status_code=400)
+            loop_row = conn.execute(
+                "SELECT * FROM stage_loops WHERE id = ?", (new_id,)
+            ).fetchone()
+            data = {
+                "id": loop_row["id"],
+                "name": loop_row["name"],
+                "start_stage": loop_row["start_stage"],
+                "end_stage": loop_row["end_stage"],
+                "max_iterations": loop_row["max_iterations"],
+                "config_key": loop_row["config_key"],
+                "exit_condition": loop_row["exit_condition"],
+                "on_failure_stage": loop_row["on_failure_stage"],
+            }
+            return JSONResponse({"ok": True, "data": data})
+        except Exception as exc:
+            logger.exception("Failed to create loop for pipeline %s", pipeline_id)
+            return JSONResponse({"ok": False, "errors": [str(exc)]}, status_code=500)
+        finally:
+            if conn is not None:
+                conn.close()
+
+    @app.patch("/api/workflow/loops/{loop_id}")
+    async def api_update_loop(request: Request, loop_id: int):
+        conn = None
+        try:
+            body = await request.json()
+            conn = init_db(app.state.db_path)
+            # Check loop exists and get pipeline_id for validation
+            row = conn.execute(
+                "SELECT pipeline_id FROM stage_loops WHERE id = ?", (loop_id,)
+            ).fetchone()
+            if row is None:
+                return JSONResponse(
+                    {"ok": False, "errors": [f"Loop {loop_id} not found"]},
+                    status_code=404,
+                )
+            pipeline_id = row["pipeline_id"]
+            update_loop(conn, loop_id, **body)
+            warnings = validate_pipeline(conn, pipeline_id)
+            loop_row = conn.execute(
+                "SELECT * FROM stage_loops WHERE id = ?", (loop_id,)
+            ).fetchone()
+            data = {
+                "id": loop_row["id"],
+                "name": loop_row["name"],
+                "start_stage": loop_row["start_stage"],
+                "end_stage": loop_row["end_stage"],
+                "max_iterations": loop_row["max_iterations"],
+                "config_key": loop_row["config_key"],
+                "exit_condition": loop_row["exit_condition"],
+                "on_failure_stage": loop_row["on_failure_stage"],
+            }
+            resp: dict = {"ok": True, "data": data}
+            if warnings:
+                resp["warnings"] = warnings
+            return JSONResponse(resp)
+        except ValueError as exc:
+            return JSONResponse({"ok": False, "errors": [str(exc)]}, status_code=400)
+        except Exception as exc:
+            logger.exception("Failed to update loop %s", loop_id)
+            return JSONResponse({"ok": False, "errors": [str(exc)]}, status_code=500)
+        finally:
+            if conn is not None:
+                conn.close()
+
+    @app.delete("/api/workflow/loops/{loop_id}")
+    def api_delete_loop(loop_id: int):
+        conn = None
+        try:
+            conn = init_db(app.state.db_path)
+            delete_loop(conn, loop_id)
+            return JSONResponse({"ok": True, "data": None})
+        except ValueError as exc:
+            status = 404 if "not found" in str(exc).lower() else 400
+            return JSONResponse({"ok": False, "errors": [str(exc)]}, status_code=status)
+        except Exception as exc:
+            logger.exception("Failed to delete loop %s", loop_id)
+            return JSONResponse({"ok": False, "errors": [str(exc)]}, status_code=500)
+        finally:
+            if conn is not None:
+                conn.close()
 
     # --- Pause / Resume API ---
 
