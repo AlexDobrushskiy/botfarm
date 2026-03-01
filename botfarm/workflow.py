@@ -212,6 +212,9 @@ def create_pipeline(
 def update_pipeline(conn: sqlite3.Connection, pipeline_id: int, **kwargs: object) -> None:
     """Update pipeline fields. Accepted keys: name, description, ticket_label, is_default."""
     allowed = {"name", "description", "ticket_label", "is_default"}
+    unknown = set(kwargs) - allowed
+    if unknown:
+        raise ValueError(f"Unknown fields: {unknown}")
     updates = {k: v for k, v in kwargs.items() if k in allowed}
     if not updates:
         return
@@ -349,6 +352,9 @@ def update_stage(conn: sqlite3.Connection, stage_id: int, **kwargs: object) -> N
         "prompt_template", "max_turns", "timeout_minutes",
         "shell_command", "result_parser",
     }
+    unknown = set(kwargs) - allowed
+    if unknown:
+        raise ValueError(f"Unknown fields: {unknown}")
     updates = {k: v for k, v in kwargs.items() if k in allowed}
     if not updates:
         return
@@ -451,6 +457,9 @@ def update_loop(conn: sqlite3.Connection, loop_id: int, **kwargs: object) -> Non
         "name", "start_stage", "end_stage", "max_iterations",
         "config_key", "exit_condition", "on_failure_stage",
     }
+    unknown = set(kwargs) - allowed
+    if unknown:
+        raise ValueError(f"Unknown fields: {unknown}")
     updates = {k: v for k, v in kwargs.items() if k in allowed}
     if not updates:
         return
@@ -464,6 +473,9 @@ def update_loop(conn: sqlite3.Connection, loop_id: int, **kwargs: object) -> Non
 
 def delete_loop(conn: sqlite3.Connection, loop_id: int) -> None:
     """Delete a loop."""
+    row = conn.execute("SELECT id FROM stage_loops WHERE id = ?", (loop_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"Loop {loop_id} not found")
     conn.execute("DELETE FROM stage_loops WHERE id = ?", (loop_id,))
     conn.commit()
 

@@ -457,11 +457,10 @@ class TestUpdatePipeline:
         pipe = load_pipeline_by_name(conn, "implementation")
         assert pipe.is_default is False
 
-    def test_update_with_no_valid_kwargs_is_noop(self, conn):
+    def test_update_raises_on_unknown_kwargs(self, conn):
         pid = create_pipeline(conn, "noop_test")
-        update_pipeline(conn, pid, invalid_field="ignored")
-        pipeline = load_pipeline_by_name(conn, "noop_test")
-        assert pipeline.name == "noop_test"
+        with pytest.raises(ValueError, match="Unknown fields"):
+            update_pipeline(conn, pid, invalid_field="ignored")
 
     def test_update_multiple_fields(self, conn):
         pid = create_pipeline(conn, "multi")
@@ -662,12 +661,11 @@ class TestUpdateStage:
         assert stage.timeout_minutes == 60
         assert stage.identity == "coder"
 
-    def test_update_stage_noop_with_invalid_kwargs(self, conn):
+    def test_update_stage_raises_on_unknown_kwargs(self, conn):
         pid = create_pipeline(conn, "noop_stage")
         sid = create_stage(conn, pid, "step", 1, "claude")
-        update_stage(conn, sid, invalid="value")
-        pipeline = load_pipeline_by_name(conn, "noop_stage")
-        assert pipeline.stages[0].name == "step"
+        with pytest.raises(ValueError, match="Unknown fields"):
+            update_stage(conn, sid, invalid="value")
 
 
 # ---------------------------------------------------------------------------
@@ -855,14 +853,13 @@ class TestUpdateLoop:
         assert loop.start_stage == "s2"
         assert loop.end_stage == "s3"
 
-    def test_update_loop_noop_with_invalid_kwargs(self, conn):
+    def test_update_loop_raises_on_unknown_kwargs(self, conn):
         pid = create_pipeline(conn, "noop_loop")
         create_stage(conn, pid, "s1", 1, "claude")
         create_stage(conn, pid, "s2", 2, "claude")
         lid = create_loop(conn, pid, "loop", "s1", "s2", 3)
-        update_loop(conn, lid, invalid="value")
-        pipeline = load_pipeline_by_name(conn, "noop_loop")
-        assert pipeline.loops[0].name == "loop"
+        with pytest.raises(ValueError, match="Unknown fields"):
+            update_loop(conn, lid, invalid="value")
 
 
 # ---------------------------------------------------------------------------
@@ -888,6 +885,10 @@ class TestDeleteLoop:
         delete_loop(conn, lid)
         pipeline = load_pipeline_by_name(conn, "del_loop_stages")
         assert len(pipeline.stages) == 2
+
+    def test_delete_loop_nonexistent_raises(self, conn):
+        with pytest.raises(ValueError, match="Loop 99999 not found"):
+            delete_loop(conn, 99999)
 
 
 # ---------------------------------------------------------------------------
