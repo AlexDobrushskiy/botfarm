@@ -1,8 +1,8 @@
 """Systemd user service management for the botfarm supervisor.
 
 Generates, installs, and removes a ``~/.config/systemd/user/botfarm.service``
-unit that auto-restarts the supervisor on crashes and signals while leaving
-clean stops (exit code 0) alone.
+unit that auto-restarts the supervisor on crashes (non-zero exit, unclean signals)
+while leaving clean stops (exit code 0, SIGTERM, SIGINT) alone.
 """
 
 from __future__ import annotations

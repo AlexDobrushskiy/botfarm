@@ -729,8 +729,8 @@ def reset(project, reset_all, force, config_path):
 def install_service_cmd(config_path, working_dir, env_files):
     """Install and enable a systemd user service for the botfarm supervisor.
 
-    The service auto-restarts on crashes and signals (SIGTERM, SIGINT) but
-    does NOT restart on a clean stop (exit code 0).
+    The service auto-restarts on crashes (non-zero exit, SIGKILL, etc.) but
+    does NOT restart on a clean stop (exit code 0, SIGTERM, SIGINT).
 
     Requires: systemd with user session support and loginctl enable-linger
     for auto-start on boot.
