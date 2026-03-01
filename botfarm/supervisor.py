@@ -2260,9 +2260,12 @@ class Supervisor:
         # usage checks.  Other pause reasons (manual_pause, update_in_progress)
         # must be cleared by their own flow.
         if self._slot_manager.dispatch_paused:
+            if self._slot_manager.dispatch_pause_reason in (
+                "manual_pause",
+                "update_in_progress",
+            ):
+                return  # Don't auto-resume manual pause or update-in-progress
             prev_reason = self._slot_manager.dispatch_pause_reason
-            if prev_reason is None or "utilization" not in prev_reason:
-                return  # Not a usage-based pause — don't auto-resume
             logger.info("Dispatch resumed — utilization dropped below thresholds")
             self._slot_manager.set_dispatch_paused(False)
             insert_event(
