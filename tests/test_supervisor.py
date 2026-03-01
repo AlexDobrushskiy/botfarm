@@ -5209,7 +5209,7 @@ class TestCapacityBlockedDispatchInteraction:
         assert supervisor.slot_manager.dispatch_pause_reason == "capacity_blocked"
 
     def test_usage_pause_when_capacity_already_blocked(self, supervisor):
-        """Usage pause on top of capacity block: usage pause takes over reason."""
+        """Usage pause does not overwrite capacity_blocked reason when dispatch is already paused."""
         supervisor._capacity_level = "blocked"
         supervisor.slot_manager.set_dispatch_paused(True, "capacity_blocked")
 
@@ -5220,3 +5220,4 @@ class TestCapacityBlockedDispatchInteraction:
 
         # Still paused — usage doesn't overwrite because dispatch is already paused
         assert supervisor.slot_manager.dispatch_paused is True
+        assert supervisor.slot_manager.dispatch_pause_reason == "capacity_blocked"
