@@ -1835,6 +1835,13 @@ def test_capacity_cross_field_validation_with_config():
     )
     assert any("warning_threshold must be less than or equal to critical_threshold" in e for e in errors)
 
+    # Ordering: setting critical above current pause (0.95) with config
+    errors = validate_config_updates(
+        {"linear.capacity_monitoring": {"critical_threshold": 0.97}},
+        config=config,
+    )
+    assert any("critical_threshold must be less than or equal to pause_threshold" in e for e in errors)
+
 
 def test_apply_capacity_monitoring_updates():
     config = BotfarmConfig(
