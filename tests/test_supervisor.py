@@ -4223,6 +4223,42 @@ class TestManualPauseResume:
         assert sm.dispatch_paused is True
         assert sm.dispatch_pause_reason == "update_in_progress"
 
+    def test_update_dispatch_race_condition_across_ticks(self, supervisor):
+        """Update pause must survive repeated _poll_and_dispatch calls.
+
+        Regression test for SMA-269: when an update is requested and workers
+        are busy, _poll_and_dispatch must not unpause dispatch on each tick,
+        which would cause an infinite pause/unpause loop.
+        """
+        sm = supervisor.slot_manager
+
+        # Need a busy worker so the update handler waits each tick
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+
+        # Low utilization — would normally trigger resume of a usage pause
+        supervisor._usage_poller._state.utilization_5h = 0.10
+        supervisor._usage_poller._state.utilization_7d = 0.10
+
+        poller = supervisor._pollers["test-project"]
+        poller.poll.return_value = PollResult(
+            candidates=[], blocked=[], auto_close_parents=[],
+        )
+
+        # Request an update
+        supervisor.request_update()
+
+        # Simulate several ticks: _handle_update_request sets the pause,
+        # then _poll_and_dispatch must NOT undo it.
+        for _ in range(5):
+            supervisor._handle_update_request()
+            supervisor._poll_and_dispatch()
+
+        assert sm.dispatch_paused is True
+        assert sm.dispatch_pause_reason == "update_in_progress"
+
     def test_paused_result_propagates_stages_completed(self, supervisor):
         """Paused worker result syncs stages_completed to supervisor slot."""
         sm = supervisor.slot_manager
