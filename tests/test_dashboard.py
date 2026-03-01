@@ -4314,25 +4314,38 @@ class TestApiCreatePipeline:
             "/api/workflow/pipelines",
             json={"name": "test_pipeline", "description": "A test"},
         )
-        # The new pipeline has no stages so validation will fail
-        assert resp.status_code == 400
+        # Validation is skipped on create (no stages yet), pipeline is created
+        assert resp.status_code == 200
         data = resp.json()
-        assert data["ok"] is False
-        assert any("at least one stage" in e for e in data["errors"])
+        assert data["ok"] is True
+        assert data["data"]["name"] == "test_pipeline"
+        assert data["data"]["stages"] == []
 
-    def test_create_pipeline_with_stage(self, db_file):
+    def test_create_pipeline_then_add_stage(self, db_file):
         """Create pipeline, then add a stage — full happy path."""
         app = create_app(db_path=db_file)
         client = TestClient(app)
-        # First create (will fail validation since no stages)
+        # Create succeeds even with no stages (validation deferred)
         resp = client.post(
             "/api/workflow/pipelines",
             json={"name": "custom_pipe", "description": "Custom"},
         )
-        assert resp.status_code == 400
-        # Verify it was rolled back — the pipeline should not exist
-        pipelines = client.get("/api/workflow/pipelines").json()["data"]
-        assert not any(p["name"] == "custom_pipe" for p in pipelines)
+        assert resp.status_code == 200
+        pid = resp.json()["data"]["id"]
+        # Add a stage
+        stage_resp = client.post(
+            f"/api/workflow/pipelines/{pid}/stages",
+            json={
+                "name": "build",
+                "stage_order": 1,
+                "executor_type": "claude",
+                "identity": "coder",
+                "max_turns": 50,
+                "timeout_minutes": 30,
+            },
+        )
+        assert stage_resp.status_code == 200
+        assert stage_resp.json()["data"]["name"] == "build"
 
 
 class TestApiUpdatePipeline:
@@ -4587,6 +4600,7 @@ class TestApiCreateLoop:
     def test_create_loop_invalid_stages(self, client):
         pipelines = client.get("/api/workflow/pipelines").json()["data"]
         pid = pipelines[0]["id"]
+        loops_before = len(pipelines[0]["loops"])
         resp = client.post(
             f"/api/workflow/pipelines/{pid}/loops",
             json={
@@ -4598,6 +4612,9 @@ class TestApiCreateLoop:
         )
         assert resp.status_code == 400
         assert resp.json()["ok"] is False
+        # Verify the invalid loop was rolled back from the DB
+        updated = client.get(f"/api/workflow/pipelines/{pid}").json()["data"]
+        assert len(updated["loops"]) == loops_before
 
 
 class TestApiUpdateLoop:
