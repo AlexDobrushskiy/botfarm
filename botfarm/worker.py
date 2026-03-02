@@ -520,7 +520,6 @@ class StageResult:
     error: str | None = None
     review_approved: bool | None = None
     claude_review_approved: bool | None = None
-    no_pr_reason: str | None = None
 
 
 # ---------------------------------------------------------------------------

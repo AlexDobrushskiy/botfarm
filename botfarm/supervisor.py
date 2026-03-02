@@ -60,6 +60,7 @@ class _WorkerResult:
     limit_hit: bool = False
     paused: bool = False
     stages_completed: list[str] | None = None
+    no_pr_reason: str | None = None
 
 
 @dataclass
@@ -161,6 +162,7 @@ def _worker_entry(
         elif result.success:
             result_queue.put(_WorkerResult(
                 project=project_name, slot_id=slot_id, success=True,
+                no_pr_reason=result.no_pr_reason,
             ))
             logger.info(
                 "Worker %s/%d finished successfully for %s",
@@ -1157,6 +1159,10 @@ class Supervisor:
                     wr.project, wr.slot_id,
                 )
             elif wr.success:
+                if wr.no_pr_reason:
+                    slot = self._slot_manager.get_slot(wr.project, wr.slot_id)
+                    if slot:
+                        slot.no_pr_reason = wr.no_pr_reason
                 self._slot_manager.mark_completed(wr.project, wr.slot_id)
                 logger.info(
                     "Worker result: %s/%d completed", wr.project, wr.slot_id,
@@ -1399,8 +1405,9 @@ class Supervisor:
                 )
             else:
                 # Determine target status based on PR state
-                pr_status = self._check_pr_status(slot)
-                if pr_status == "merged":
+                if slot.no_pr_reason:
+                    target_status = linear_cfg.done_status
+                elif self._check_pr_status(slot) == "merged":
                     target_status = linear_cfg.done_status
                 else:
                     target_status = linear_cfg.in_review_status
