@@ -187,6 +187,13 @@ class Notifier:
         """Notify that all slots are idle (no more work)."""
         self._send("all_idle", "*All slots idle* — no more work to dispatch", rate_limited=True)
 
+    def notify_supervisor_shutdown(self, *, reason: str) -> None:
+        """Notify that the supervisor is shutting down unexpectedly."""
+        self._send(
+            "supervisor_shutdown",
+            f"*Botfarm supervisor shut down:* {reason}. Workers may still be running.",
+        )
+
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
