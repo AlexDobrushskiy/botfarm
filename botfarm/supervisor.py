@@ -1387,9 +1387,10 @@ class Supervisor:
     def _handle_completed_slot(self, slot: SlotState) -> None:
         """Update Linear for a completed slot and free it.
 
-        Checks if the PR was merged to determine the correct status:
-        - PR merged → move to done_status (e.g. "Done")
-        - PR open/other → move to in_review_status (e.g. "In Review")
+        Determines the correct target status:
+        - No PR needed (signalled by agent) → done_status ("Done")
+        - PR merged → done_status ("Done")
+        - PR open/other → in_review_status ("In Review")
         """
         project = slot.project
         linear_cfg = self._config.linear
