@@ -60,6 +60,7 @@ class SlotState:
     resume_after: str | None = None
     stages_completed: list[str] = field(default_factory=list)
     ticket_labels: list[str] = field(default_factory=list)
+    no_pr_reason: str | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)

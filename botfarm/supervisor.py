@@ -60,6 +60,7 @@ class _WorkerResult:
     limit_hit: bool = False
     paused: bool = False
     stages_completed: list[str] | None = None
+    no_pr_reason: str | None = None
 
 
 @dataclass
@@ -161,6 +162,7 @@ def _worker_entry(
         elif result.success:
             result_queue.put(_WorkerResult(
                 project=project_name, slot_id=slot_id, success=True,
+                no_pr_reason=result.no_pr_reason,
             ))
             logger.info(
                 "Worker %s/%d finished successfully for %s",
@@ -1157,6 +1159,10 @@ class Supervisor:
                     wr.project, wr.slot_id,
                 )
             elif wr.success:
+                if wr.no_pr_reason:
+                    slot = self._slot_manager.get_slot(wr.project, wr.slot_id)
+                    if slot:
+                        slot.no_pr_reason = wr.no_pr_reason
                 self._slot_manager.mark_completed(wr.project, wr.slot_id)
                 logger.info(
                     "Worker result: %s/%d completed", wr.project, wr.slot_id,
@@ -1381,9 +1387,10 @@ class Supervisor:
     def _handle_completed_slot(self, slot: SlotState) -> None:
         """Update Linear for a completed slot and free it.
 
-        Checks if the PR was merged to determine the correct status:
-        - PR merged → move to done_status (e.g. "Done")
-        - PR open/other → move to in_review_status (e.g. "In Review")
+        Determines the correct target status:
+        - No PR needed (signalled by agent) → done_status ("Done")
+        - PR merged → done_status ("Done")
+        - PR open/other → in_review_status ("In Review")
         """
         project = slot.project
         linear_cfg = self._config.linear
@@ -1398,9 +1405,21 @@ class Supervisor:
                     slot.project, slot.slot_id, slot.ticket_id,
                 )
             else:
-                # Determine target status based on PR state
-                pr_status = self._check_pr_status(slot)
-                if pr_status == "merged":
+                # Determine target status based on PR state.
+                # Recover no_pr_reason from persisted task record if
+                # the in-memory flag was lost (e.g. supervisor restart).
+                no_pr = slot.no_pr_reason
+                if not no_pr and not slot.pr_url:
+                    task_id = self._find_task_id(slot.ticket_id)
+                    if task_id is not None:
+                        from botfarm.db import get_task
+                        task = get_task(self._conn, task_id)
+                        if task and task["comments"]:
+                            from botfarm.worker import _detect_no_pr_needed
+                            no_pr = _detect_no_pr_needed(task["comments"])
+                if no_pr:
+                    target_status = linear_cfg.done_status
+                elif self._check_pr_status(slot) == "merged":
                     target_status = linear_cfg.done_status
                 else:
                     target_status = linear_cfg.in_review_status

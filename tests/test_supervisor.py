@@ -1062,6 +1062,7 @@ class TestWorkerEntry:
         mock_result = MagicMock()
         mock_result.success = True
         mock_result.paused = False
+        mock_result.no_pr_reason = None
         mock_pipeline.return_value = mock_result
 
         _worker_entry(
@@ -3390,6 +3391,62 @@ class TestCheckPrStatus:
             Supervisor, "_gh_pr_state", return_value="merged",
         ):
             supervisor._handle_finished_slots()
+
+        poller.move_issue.assert_called_once_with("TST-1", "Done")
+        assert sm.get_slot("test-project", 1).status == "free"
+
+    def test_no_pr_reason_moves_ticket_to_done(self, supervisor):
+        """_handle_completed_slot moves ticket to Done when no_pr_reason is set."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        slot = sm.get_slot("test-project", 1)
+        slot.no_pr_reason = "All criteria already met on main"
+        sm.mark_completed("test-project", 1)
+
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="completed",
+        )
+        supervisor._conn.commit()
+
+        poller = supervisor._pollers["test-project"]
+
+        supervisor._handle_finished_slots()
+
+        poller.move_issue.assert_called_once_with("TST-1", "Done")
+        assert sm.get_slot("test-project", 1).status == "free"
+
+    def test_no_pr_reason_recovered_from_task_comments(self, supervisor):
+        """Crash recovery: no_pr_reason lost in memory but recovered from task comments."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        slot = sm.get_slot("test-project", 1)
+        # Simulate crash recovery: no_pr_reason is NOT set on the slot
+        assert slot.no_pr_reason is None
+        # But the task comments have the persisted signal
+        sm.mark_completed("test-project", 1)
+
+        task_id = insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="completed",
+        )
+        update_task(
+            supervisor._conn, task_id,
+            comments="NO_PR_NEEDED: All criteria already met on main",
+        )
+        supervisor._conn.commit()
+
+        poller = supervisor._pollers["test-project"]
+
+        supervisor._handle_finished_slots()
 
         poller.move_issue.assert_called_once_with("TST-1", "Done")
         assert sm.get_slot("test-project", 1).status == "free"
