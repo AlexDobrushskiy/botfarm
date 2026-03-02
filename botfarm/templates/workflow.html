@@ -313,7 +313,8 @@
                                 <button type="button" class="prompt-save-btn" onclick="saveLoop({{ lp.id }})">Save</button>
                                 <button type="button" class="prompt-cancel-btn" onclick="toggleLoopEditor({{ lp.id }})">Cancel</button>
                                 <button type="button" class="pipeline-action-btn pipeline-action-btn-danger loop-delete-btn"
-                                        onclick="deleteLoop({{ lp.id }}, '{{ lp.name }}')">Remove Loop</button>
+                                        data-loop-id="{{ lp.id }}" data-loop-name="{{ lp.name }}"
+                                        onclick="deleteLoop(this.dataset.loopId, this.dataset.loopName)">Remove Loop</button>
                             </div>
                         </div>
                     </div>
@@ -326,7 +327,8 @@
     </div>
     {% if pipeline.stages|length > 1 %}
     <div class="loop-add-section">
-        <button class="pipeline-action-btn" onclick="showAddLoopModal({{ pipeline.id }}, '{{ pipeline.name }}')">+ Add Loop</button>
+        <button class="pipeline-action-btn" data-pipeline-id="{{ pipeline.id }}" data-pipeline-name="{{ pipeline.name }}"
+                onclick="showAddLoopModal(this.dataset.pipelineId, this.dataset.pipelineName)">+ Add Loop</button>
     </div>
     {% endif %}
     {% endif %}
@@ -1479,9 +1481,12 @@ function showAddLoopModal(pipelineId, pipelineName) {
     failSelect.innerHTML = '<option value="">(none \u2014 iteration loop)</option>';
 
     stageNames.forEach(function(name) {
-        startSelect.innerHTML += '<option value="' + name + '">' + name + '</option>';
-        endSelect.innerHTML += '<option value="' + name + '">' + name + '</option>';
-        failSelect.innerHTML += '<option value="' + name + '">' + name + '</option>';
+        [startSelect, endSelect, failSelect].forEach(function(sel) {
+            var opt = document.createElement("option");
+            opt.value = name;
+            opt.textContent = name;
+            sel.appendChild(opt);
+        });
     });
 
     // Default end_stage to second option if available
