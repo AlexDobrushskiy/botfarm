@@ -73,6 +73,16 @@ class _StallInfo:
     warned: bool = False
 
 
+_COMMENT_MAX_LEN = 2000
+
+
+def _truncate_for_comment(text: str) -> str:
+    """Truncate text for a Linear comment, adding an indicator if trimmed."""
+    if len(text) <= _COMMENT_MAX_LEN:
+        return text
+    return text[:_COMMENT_MAX_LEN] + "\n\n… *(truncated)*"
+
+
 def _worker_entry(
     *,
     ticket_id: str,
@@ -1581,11 +1591,8 @@ class Supervisor:
             (slot.project, slot.slot_id)
         )
         if result_text:
-            truncated = result_text[:2000]
-            if len(result_text) > 2000:
-                truncated += "\n\n… *(truncated)*"
             lines.append("")
-            lines.append(truncated)
+            lines.append(_truncate_for_comment(result_text))
 
         try:
             poller.add_comment(slot.ticket_id, "\n".join(lines))
@@ -1650,11 +1657,8 @@ class Supervisor:
             (slot.project, slot.slot_id)
         )
         if result_text:
-            truncated = result_text[:2000]
-            if len(result_text) > 2000:
-                truncated += "\n\n… *(truncated)*"
             lines.append("")
-            lines.append(truncated)
+            lines.append(_truncate_for_comment(result_text))
 
         try:
             poller.add_comment(slot.ticket_id, "\n".join(lines))
