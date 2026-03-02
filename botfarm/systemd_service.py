@@ -1,8 +1,11 @@
 """Systemd user service management for the botfarm supervisor.
 
 Generates, installs, and removes a ``~/.config/systemd/user/botfarm.service``
-unit that auto-restarts the supervisor on crashes (non-zero exit, unclean signals)
-while leaving clean stops (exit code 0, SIGTERM, SIGINT) alone.
+unit.  The supervisor runs with ``--auto-restart`` (the default) so that
+dashboard-triggered updates work: after pulling new code the CLI calls
+``os.execv()`` to replace the process in-place (same PID), which is
+transparent to systemd.  Systemd's ``Restart=on-failure`` still catches
+genuine crashes (non-zero exit, unclean signals).
 """
 
 from __future__ import annotations
@@ -74,7 +77,7 @@ def generate_unit(
         """Quote a path for systemd ExecStart if it contains spaces."""
         return f'"{p}"' if " " in p else p
 
-    exec_parts = [_quote(botfarm_bin), "run", "--no-auto-restart"]
+    exec_parts = [_quote(botfarm_bin), "run"]
     if config_path is not None:
         exec_parts.extend(["--config", _quote(str(config_path))])
 

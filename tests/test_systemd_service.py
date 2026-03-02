@@ -59,10 +59,10 @@ class TestGenerateUnit:
         assert "Description=Botfarm Supervisor" in unit
         assert "Restart=on-failure" in unit
         assert "RestartSec=5" in unit
-        assert "--no-auto-restart" in unit
+        assert "--no-auto-restart" not in unit
         assert "WantedBy=default.target" in unit
         assert f"WorkingDirectory={tmp_path}" in unit
-        assert "ExecStart=/opt/venv/bin/botfarm run --no-auto-restart" in unit
+        assert "ExecStart=/opt/venv/bin/botfarm run" in unit
 
     def test_with_config_path(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -334,11 +334,11 @@ class TestUnitContentSemantics:
         assert "Restart=on-failure" in unit
         assert "Restart=always" not in unit
 
-    def test_no_auto_restart_flag(self, tmp_path, monkeypatch):
-        """Systemd handles restarts, so --no-auto-restart avoids os.execv loop."""
+    def test_auto_restart_enabled(self, tmp_path, monkeypatch):
+        """Default --auto-restart lets dashboard updates use os.execv in-place."""
         monkeypatch.chdir(tmp_path)
         unit = generate_unit()
-        assert "--no-auto-restart" in unit
+        assert "--no-auto-restart" not in unit
 
     def test_user_service_target(self, tmp_path, monkeypatch):
         """User services use default.target, not multi-user.target."""
