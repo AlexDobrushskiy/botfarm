@@ -17,14 +17,15 @@ import pytest
 from botfarm.config import (
     AgentsConfig,
     BotfarmConfig,
+    CapacityConfig,
     CoderIdentity,
     DatabaseConfig,
     IdentitiesConfig,
     LinearConfig,
     ProjectConfig,
 )
-from botfarm.db import get_events, get_task, get_ticket_history_entry, init_db, insert_task, update_task
-from botfarm.linear import LinearIssue, PollResult
+from botfarm.db import get_events, get_task, get_ticket_history_entry, init_db, insert_task, load_capacity_state, update_task
+from botfarm.linear import ActiveIssuesCount, LinearIssue, PollResult
 from botfarm.supervisor import (
     DEFAULT_LOG_DIR,
     Supervisor,
@@ -4998,3 +4999,225 @@ class TestTicketHistoryCapture:
         row = get_ticket_history_entry(supervisor._conn, "TST-1")
         assert row["capture_source"] == "completion"
         assert row["pr_url"] == "https://github.com/test/pr/1"
+
+
+# ---------------------------------------------------------------------------
+# Capacity polling
+# ---------------------------------------------------------------------------
+
+
+class TestPollCapacity:
+    """Tests for _poll_capacity() — Linear issue count monitoring."""
+
+    def test_disabled_config_skips_polling(self, supervisor):
+        """When capacity_monitoring.enabled is False, nothing happens."""
+        supervisor._config.linear.capacity_monitoring = CapacityConfig(enabled=False)
+        supervisor._linear_client = MagicMock()
+
+        supervisor._poll_capacity()
+
+        supervisor._linear_client.count_active_issues.assert_not_called()
+
+    def test_api_failure_skips_tick(self, supervisor, caplog):
+        """When count_active_issues returns None, the tick is skipped."""
+        supervisor._linear_client = MagicMock()
+        supervisor._linear_client.count_active_issues.return_value = None
+
+        with caplog.at_level(logging.WARNING):
+            supervisor._poll_capacity()
+
+        assert "Capacity poll failed" in caplog.text
+        assert supervisor._capacity_level == "normal"
+
+    def test_normal_level_no_events(self, supervisor):
+        """Below warning threshold, no events are emitted."""
+        supervisor._linear_client = MagicMock()
+        supervisor._linear_client.count_active_issues.return_value = ActiveIssuesCount(
+            total=100, by_project={"proj": 100},
+        )
+
+        supervisor._poll_capacity()
+
+        assert supervisor._capacity_level == "normal"
+        events = get_events(supervisor._conn, event_type="capacity_warning")
+        assert len(events) == 0
+
+    def test_warning_threshold_emits_event(self, supervisor):
+        """Crossing the warning threshold emits a capacity_warning event."""
+        supervisor._linear_client = MagicMock()
+        supervisor._linear_client.count_active_issues.return_value = ActiveIssuesCount(
+            total=180, by_project={"proj": 180},
+        )
+
+        supervisor._poll_capacity()
+
+        assert supervisor._capacity_level == "warning"
+        events = get_events(supervisor._conn, event_type="capacity_warning")
+        assert len(events) == 1
+        assert "180/250" in events[0]["detail"]
+
+    def test_critical_threshold_emits_event(self, supervisor):
+        """Crossing the critical threshold emits a capacity_critical event."""
+        supervisor._linear_client = MagicMock()
+        supervisor._linear_client.count_active_issues.return_value = ActiveIssuesCount(
+            total=215, by_project={"proj": 215},
+        )
+
+        supervisor._poll_capacity()
+
+        assert supervisor._capacity_level == "critical"
+        events = get_events(supervisor._conn, event_type="capacity_critical")
+        assert len(events) == 1
+
+    def test_blocked_threshold_pauses_dispatch(self, supervisor):
+        """At >=95% capacity, dispatch is auto-paused with reason capacity_blocked."""
+        supervisor._linear_client = MagicMock()
+        supervisor._linear_client.count_active_issues.return_value = ActiveIssuesCount(
+            total=238, by_project={"proj": 238},
+        )
+
+        supervisor._poll_capacity()
+
+        assert supervisor._capacity_level == "blocked"
+        assert supervisor.slot_manager.dispatch_paused is True
+        assert supervisor.slot_manager.dispatch_pause_reason == "capacity_blocked"
+        events = get_events(supervisor._conn, event_type="capacity_blocked")
+        assert len(events) == 1
+
+    def test_hysteresis_stays_blocked_above_resume_threshold(self, supervisor):
+        """Once blocked, stays blocked until utilization drops below resume_threshold."""
+        supervisor._linear_client = MagicMock()
+
+        # First: enter blocked state
+        supervisor._linear_client.count_active_issues.return_value = ActiveIssuesCount(
+            total=240, by_project={"proj": 240},
+        )
+        supervisor._poll_capacity()
+        assert supervisor._capacity_level == "blocked"
+
+        # Drop to 92% — above resume_threshold (90%), should stay blocked
+        supervisor._linear_client.count_active_issues.return_value = ActiveIssuesCount(
+            total=230, by_project={"proj": 230},
+        )
+        supervisor._poll_capacity()
+        assert supervisor._capacity_level == "blocked"
+        assert supervisor.slot_manager.dispatch_paused is True
+
+    def test_resume_below_resume_threshold(self, supervisor):
+        """Dispatch resumes when utilization drops below resume_threshold."""
+        supervisor._linear_client = MagicMock()
+
+        # Enter blocked state
+        supervisor._linear_client.count_active_issues.return_value = ActiveIssuesCount(
+            total=240, by_project={"proj": 240},
+        )
+        supervisor._poll_capacity()
+        assert supervisor._capacity_level == "blocked"
+
+        # Drop below resume threshold (90% of 250 = 225)
+        supervisor._linear_client.count_active_issues.return_value = ActiveIssuesCount(
+            total=220, by_project={"proj": 220},
+        )
+        supervisor._poll_capacity()
+
+        assert supervisor._capacity_level == "critical"
+        assert supervisor.slot_manager.dispatch_paused is False
+        events = get_events(supervisor._conn, event_type="capacity_cleared")
+        assert len(events) == 1
+
+    def test_event_emitted_only_on_transition(self, supervisor):
+        """Repeated polls at same level don't produce duplicate events."""
+        supervisor._linear_client = MagicMock()
+        supervisor._linear_client.count_active_issues.return_value = ActiveIssuesCount(
+            total=180, by_project={"proj": 180},
+        )
+
+        supervisor._poll_capacity()
+        supervisor._poll_capacity()
+        supervisor._poll_capacity()
+
+        events = get_events(supervisor._conn, event_type="capacity_warning")
+        assert len(events) == 1
+
+    def test_capacity_state_saved_to_db(self, supervisor):
+        """Each poll persists the capacity snapshot to dispatch_state."""
+        supervisor._linear_client = MagicMock()
+        supervisor._linear_client.count_active_issues.return_value = ActiveIssuesCount(
+            total=150, by_project={"proj-a": 100, "proj-b": 50},
+        )
+
+        supervisor._poll_capacity()
+
+        state = load_capacity_state(supervisor._conn)
+        assert state is not None
+        assert state["issue_count"] == 150
+        assert state["limit"] == 250
+        assert state["by_project"] == {"proj-a": 100, "proj-b": 50}
+        assert state["checked_at"] is not None
+
+    def test_blocked_event_on_jump_from_normal(self, supervisor):
+        """Jumping from normal directly to blocked emits capacity_blocked."""
+        supervisor._linear_client = MagicMock()
+        supervisor._linear_client.count_active_issues.return_value = ActiveIssuesCount(
+            total=245, by_project={"proj": 245},
+        )
+
+        supervisor._poll_capacity()
+
+        assert supervisor._capacity_level == "blocked"
+        # Should have capacity_blocked event, not capacity_warning or capacity_critical
+        blocked_events = get_events(supervisor._conn, event_type="capacity_blocked")
+        assert len(blocked_events) == 1
+        warning_events = get_events(supervisor._conn, event_type="capacity_warning")
+        assert len(warning_events) == 0
+
+    def test_tick_includes_poll_capacity_phase(self, supervisor):
+        """_poll_capacity is called as part of the _tick() phase list."""
+        with (
+            patch.object(supervisor, "_reconcile_workers"),
+            patch.object(supervisor, "_handle_manual_pause_resume"),
+            patch.object(supervisor, "_handle_update_request"),
+            patch.object(supervisor, "_check_timeouts"),
+            patch.object(supervisor, "_handle_finished_slots"),
+            patch.object(supervisor, "_handle_paused_slots"),
+            patch.object(supervisor, "_poll_usage"),
+            patch.object(supervisor, "_poll_capacity") as mock_cap,
+            patch.object(supervisor, "_poll_and_dispatch"),
+            patch.object(supervisor, "_cleanup_old_ticket_logs"),
+        ):
+            supervisor._tick()
+            mock_cap.assert_called_once()
+
+
+class TestCapacityBlockedDispatchInteraction:
+    """Tests for capacity_blocked interaction with _poll_and_dispatch."""
+
+    def test_usage_resume_does_not_clear_capacity_blocked(self, supervisor):
+        """Usage auto-resume should not clear a capacity_blocked pause."""
+        # Set up capacity-blocked state
+        supervisor._capacity_level = "blocked"
+        supervisor.slot_manager.set_dispatch_paused(True, "capacity_blocked")
+
+        # Usage says all clear
+        supervisor._usage_poller._state.utilization_5h = 0.50
+        supervisor._usage_poller._state.utilization_7d = 0.50
+
+        supervisor._poll_and_dispatch()
+
+        # Dispatch should still be paused with capacity_blocked
+        assert supervisor.slot_manager.dispatch_paused is True
+        assert supervisor.slot_manager.dispatch_pause_reason == "capacity_blocked"
+
+    def test_usage_pause_when_capacity_already_blocked(self, supervisor):
+        """Usage pause does not overwrite capacity_blocked reason when dispatch is already paused."""
+        supervisor._capacity_level = "blocked"
+        supervisor.slot_manager.set_dispatch_paused(True, "capacity_blocked")
+
+        # Usage also says pause
+        supervisor._usage_poller._state.utilization_5h = 0.90
+
+        supervisor._poll_and_dispatch()
+
+        # Still paused — usage doesn't overwrite because dispatch is already paused
+        assert supervisor.slot_manager.dispatch_paused is True
+        assert supervisor.slot_manager.dispatch_pause_reason == "capacity_blocked"

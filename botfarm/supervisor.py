@@ -30,7 +30,7 @@ from pathlib import Path
 from types import FrameType
 
 from botfarm.config import BotfarmConfig, IdentitiesConfig, ProjectConfig, resolve_stage_timeout
-from botfarm.db import get_events, get_task, init_db, insert_event, insert_task, resolve_db_path, save_queue_entries, update_task, upsert_ticket_history
+from botfarm.db import get_events, get_task, init_db, insert_event, insert_task, resolve_db_path, save_capacity_state, save_queue_entries, update_task, upsert_ticket_history
 from botfarm.linear import LinearClient, LinearPoller, create_pollers
 from botfarm.notifications import Notifier
 from botfarm.preflight import CheckResult, log_preflight_summary, run_preflight_checks
@@ -294,6 +294,12 @@ class Supervisor:
 
         # Usage poller
         self._usage_poller = UsagePoller()
+
+        # Linear client for capacity monitoring (uses owner API key)
+        self._linear_client = LinearClient(api_key=config.linear.api_key)
+
+        # Capacity monitoring state
+        self._capacity_level = "normal"  # normal | warning | critical | blocked
 
         # Webhook notifier
         self._notifier = Notifier(config.notifications)
@@ -1109,6 +1115,7 @@ class Supervisor:
             self._handle_finished_slots,
             self._handle_paused_slots,
             self._poll_usage,
+            self._poll_capacity,
             self._poll_and_dispatch,
             self._cleanup_old_ticket_logs,
         ):
@@ -2284,6 +2291,98 @@ class Supervisor:
                 )
 
     # ------------------------------------------------------------------
+    # Capacity polling
+    # ------------------------------------------------------------------
+
+    def _compute_capacity_level(self, utilization: float) -> str:
+        """Map a utilization ratio to a capacity level string."""
+        cap = self._config.linear.capacity_monitoring
+        if utilization >= cap.pause_threshold:
+            return "blocked"
+        if utilization >= cap.critical_threshold:
+            return "critical"
+        if utilization >= cap.warning_threshold:
+            return "warning"
+        return "normal"
+
+    def _poll_capacity(self) -> None:
+        """Poll Linear issue count and auto-pause/resume dispatch at thresholds."""
+        cap_config = self._config.linear.capacity_monitoring
+        if not cap_config.enabled:
+            return
+
+        result = self._linear_client.count_active_issues()
+        if result is None:
+            logger.warning("Capacity poll failed — skipping this tick")
+            return
+
+        limit = self._config.linear.issue_limit
+        checked_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+        save_capacity_state(
+            self._conn,
+            issue_count=result.total,
+            limit=limit,
+            by_project=result.by_project,
+            checked_at=checked_at,
+        )
+        self._conn.commit()
+
+        utilization = result.total / limit if limit > 0 else 0.0
+
+        # Apply hysteresis: stay blocked until utilization drops below
+        # resume_threshold, preventing flapping near the pause boundary.
+        if self._capacity_level == "blocked" and utilization >= cap_config.resume_threshold:
+            new_level = "blocked"
+        else:
+            new_level = self._compute_capacity_level(utilization)
+
+        old_level = self._capacity_level
+        if new_level == old_level:
+            return
+
+        detail = (
+            f"{result.total}/{limit} issues "
+            f"({utilization * 100:.1f}%)"
+        )
+
+        if new_level == "blocked":
+            logger.warning(
+                "Linear capacity %s — auto-pausing dispatch", detail,
+            )
+            insert_event(
+                self._conn, event_type="capacity_blocked", detail=detail,
+            )
+            self._conn.commit()
+            self._slot_manager.set_dispatch_paused(True, "capacity_blocked")
+
+        elif new_level == "critical":
+            logger.warning("Linear capacity %s — critical", detail)
+            insert_event(
+                self._conn, event_type="capacity_critical", detail=detail,
+            )
+            self._conn.commit()
+
+        elif new_level == "warning":
+            logger.warning("Linear capacity %s — approaching limits", detail)
+            insert_event(
+                self._conn, event_type="capacity_warning", detail=detail,
+            )
+            self._conn.commit()
+
+        # Clearing from blocked state — resume dispatch
+        if old_level == "blocked" and new_level != "blocked":
+            logger.info("Linear capacity %s — resuming dispatch", detail)
+            insert_event(
+                self._conn, event_type="capacity_cleared", detail=detail,
+            )
+            self._conn.commit()
+            if self._slot_manager.dispatch_pause_reason == "capacity_blocked":
+                self._slot_manager.set_dispatch_paused(False)
+
+        self._capacity_level = new_level
+
+    # ------------------------------------------------------------------
     # Polling and dispatch
     # ------------------------------------------------------------------
 
@@ -2310,14 +2409,15 @@ class Supervisor:
             return
 
         # Utilization is below thresholds — resume if previously paused by
-        # usage checks.  Other pause reasons (manual_pause, update_in_progress)
-        # must be cleared by their own flow.
+        # usage checks.  Other pause reasons (manual_pause, update_in_progress,
+        # capacity_blocked) must be cleared by their own flow.
         if self._slot_manager.dispatch_paused:
             if self._slot_manager.dispatch_pause_reason in (
                 "manual_pause",
                 "update_in_progress",
+                "capacity_blocked",
             ):
-                return  # Don't auto-resume manual pause or update-in-progress
+                return  # Don't auto-resume — handled by respective flow
             prev_reason = self._slot_manager.dispatch_pause_reason
             logger.info("Dispatch resumed — utilization dropped below thresholds")
             self._slot_manager.set_dispatch_paused(False)
@@ -2675,9 +2775,13 @@ class Supervisor:
         if state.utilization_5h is not None:
             usage_str = f" | usage 5h={state.utilization_5h * 100:.0f}%"
 
+        capacity_str = ""
+        if self._capacity_level != "normal":
+            capacity_str = f" | capacity={self._capacity_level}"
+
         logger.info(
-            "Tick: %s, %s%s",
-            busy_desc, ", ".join(counts), usage_str,
+            "Tick: %s, %s%s%s",
+            busy_desc, ", ".join(counts), usage_str, capacity_str,
         )
 
     # ------------------------------------------------------------------
