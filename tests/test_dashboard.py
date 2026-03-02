@@ -4354,6 +4354,70 @@ class TestWorkflowPage:
         assert "stage-field-shell" in body
         assert "stage-field-not-internal" in body
 
+    def test_workflow_has_pipeline_id_attribute(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        assert "data-pipeline-id=" in body
+
+    def test_workflow_shows_new_pipeline_button(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        assert "+ New Pipeline" in body
+        assert "showCreatePipelineModal" in body
+
+    def test_workflow_shows_pipeline_action_buttons(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        assert "Edit Metadata" in body
+        assert "Duplicate" in body
+        assert "Delete" in body
+
+    def test_workflow_has_create_pipeline_modal(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        assert 'id="create-pipeline-modal"' in body
+        assert "Create New Pipeline" in body
+        assert 'id="new-pipe-name"' in body
+
+    def test_workflow_has_duplicate_pipeline_modal(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        assert 'id="duplicate-pipeline-modal"' in body
+        assert "Duplicate Pipeline" in body
+        assert 'id="dup-pipe-name"' in body
+
+    def test_workflow_has_pipeline_metadata_editor(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        assert "pipeline-editor" in body
+        assert "savePipelineMetadata" in body
+        assert "togglePipelineEditor" in body
+
+    def test_workflow_metadata_editor_has_fields(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        # Check for name, description, ticket_label, is_default fields
+        assert "pipe-name-" in body
+        assert "pipe-desc-" in body
+        assert "pipe-label-" in body
+        assert "pipe-default-" in body
+
+    def test_workflow_has_delete_pipeline_function(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        assert "deletePipeline" in body
+
+    def test_workflow_has_duplicate_pipeline_function(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        assert "duplicatePipeline" in body
+        assert "confirmDuplicatePipeline" in body
+
+    def test_workflow_tabs_always_shown(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        assert 'class="workflow-tabs"' in body
+
 
 # --- Workflow API ---
 

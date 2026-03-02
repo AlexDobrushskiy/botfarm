@@ -112,31 +112,70 @@
 <p>No pipeline definitions found. Run the supervisor to seed default pipelines.</p>
 {% else %}
 
-{% if pipelines|length > 1 %}
 <div class="workflow-tabs" role="tablist">
     {% for pipeline in pipelines %}
     <button class="workflow-tab{% if loop.first %} workflow-tab-active{% endif %}"
             role="tab"
             aria-selected="{{ 'true' if loop.first else 'false' }}"
-            data-pipeline="{{ pipeline.name }}"
-            onclick="switchPipeline('{{ pipeline.name }}')">
+            data-pipeline="{{ pipeline.name }}">
         {{ pipeline.name | capitalize }}
         {% if pipeline.is_default %}<small>(default)</small>{% endif %}
     </button>
     {% endfor %}
+    <button class="workflow-tab workflow-tab-add" onclick="showCreatePipelineModal()">+ New Pipeline</button>
 </div>
-{% endif %}
 
 {% for pipeline in pipelines %}
-<div class="workflow-pipeline" id="pipeline-{{ pipeline.name }}" {% if not loop.first %}style="display:none"{% endif %}>
+<div class="workflow-pipeline" id="pipeline-{{ pipeline.name }}" data-pipeline-id="{{ pipeline.id }}" {% if not loop.first %}style="display:none"{% endif %}>
 
-    {% if pipeline.description %}
-    <p class="workflow-description">{{ pipeline.description }}</p>
-    {% endif %}
+    {# Pipeline actions bar #}
+    <div class="pipeline-actions">
+        <button class="pipeline-action-btn" data-action="edit-metadata" data-pipeline-name="{{ pipeline.name }}">Edit Metadata</button>
+        <button class="pipeline-action-btn" data-action="duplicate" data-pipeline-id="{{ pipeline.id }}" data-pipeline-name="{{ pipeline.name }}">Duplicate</button>
+        <button class="pipeline-action-btn pipeline-action-btn-danger" data-action="delete" data-pipeline-id="{{ pipeline.id }}" data-pipeline-name="{{ pipeline.name }}" data-is-default="{{ 'true' if pipeline.is_default else 'false' }}">Delete</button>
+    </div>
 
-    {% if pipeline.ticket_label %}
-    <p class="workflow-label-hint">Triggered by ticket label: <code>{{ pipeline.ticket_label }}</code></p>
-    {% endif %}
+    {# Pipeline metadata editor (hidden by default) #}
+    <div class="pipeline-editor" id="pipeline-editor-{{ pipeline.name }}" style="display:none">
+        <div class="stage-props-form">
+            <div class="stage-prop-row">
+                <label class="stage-prop-label" for="pipe-name-{{ pipeline.id }}">Name</label>
+                <input type="text" class="stage-prop-input stage-prop-input-wide" id="pipe-name-{{ pipeline.id }}"
+                       value="{{ pipeline.name }}">
+            </div>
+            <div class="stage-prop-row">
+                <label class="stage-prop-label" for="pipe-desc-{{ pipeline.id }}">Description</label>
+                <input type="text" class="stage-prop-input stage-prop-input-wide" id="pipe-desc-{{ pipeline.id }}"
+                       value="{{ pipeline.description or '' }}" placeholder="Optional description">
+            </div>
+            <div class="stage-prop-row">
+                <label class="stage-prop-label" for="pipe-label-{{ pipeline.id }}">Ticket label</label>
+                <input type="text" class="stage-prop-input" id="pipe-label-{{ pipeline.id }}"
+                       value="{{ pipeline.ticket_label or '' }}" placeholder="e.g. Investigation">
+            </div>
+            <div class="stage-prop-row">
+                <label class="stage-prop-label" for="pipe-default-{{ pipeline.id }}">Default</label>
+                <input type="checkbox" class="pipeline-checkbox" id="pipe-default-{{ pipeline.id }}"
+                       {% if pipeline.is_default %}checked{% endif %}>
+            </div>
+            <div class="pipeline-editor-feedback" id="pipe-feedback-{{ pipeline.id }}"></div>
+            <div class="stage-props-actions">
+                <button type="button" class="prompt-save-btn" data-action="save-metadata" data-pipeline-id="{{ pipeline.id }}" data-pipeline-name="{{ pipeline.name }}">Save</button>
+                <button type="button" class="prompt-cancel-btn" data-action="cancel-edit" data-pipeline-name="{{ pipeline.name }}">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    {# Static metadata display (visible by default) #}
+    <div class="pipeline-meta-display" id="pipeline-meta-{{ pipeline.name }}">
+        {% if pipeline.description %}
+        <p class="workflow-description">{{ pipeline.description }}</p>
+        {% endif %}
+
+        {% if pipeline.ticket_label %}
+        <p class="workflow-label-hint">Triggered by ticket label: <code>{{ pipeline.ticket_label }}</code></p>
+        {% endif %}
+    </div>
 
     {% if pipeline.main_stages|length <= 1 %}
     {# Investigation pipeline — single stage #}
@@ -227,6 +266,64 @@
     {% endif %}
 </div>
 {% endfor %}
+
+{# Create pipeline modal #}
+<dialog id="create-pipeline-modal">
+    <article class="pipeline-modal-content">
+        <header>
+            <button aria-label="Close" rel="prev" onclick="closeCreatePipelineModal()"></button>
+            <h3>Create New Pipeline</h3>
+        </header>
+        <div class="stage-props-form">
+            <div class="stage-prop-row">
+                <label class="stage-prop-label" for="new-pipe-name">Name</label>
+                <input type="text" class="stage-prop-input stage-prop-input-wide" id="new-pipe-name"
+                       placeholder="my-pipeline (required)">
+            </div>
+            <div class="stage-prop-row">
+                <label class="stage-prop-label" for="new-pipe-desc">Description</label>
+                <input type="text" class="stage-prop-input stage-prop-input-wide" id="new-pipe-desc"
+                       placeholder="Optional description">
+            </div>
+            <div class="stage-prop-row">
+                <label class="stage-prop-label" for="new-pipe-label">Ticket label</label>
+                <input type="text" class="stage-prop-input" id="new-pipe-label"
+                       placeholder="e.g. Investigation">
+            </div>
+            <div class="stage-prop-row">
+                <label class="stage-prop-label" for="new-pipe-default">Default</label>
+                <input type="checkbox" class="pipeline-checkbox" id="new-pipe-default">
+            </div>
+            <div class="pipeline-editor-feedback" id="new-pipe-feedback"></div>
+        </div>
+        <footer>
+            <button class="prompt-cancel-btn" onclick="closeCreatePipelineModal()">Cancel</button>
+            <button class="prompt-save-btn" id="create-pipe-btn" onclick="createPipeline()">Create</button>
+        </footer>
+    </article>
+</dialog>
+
+{# Duplicate pipeline modal #}
+<dialog id="duplicate-pipeline-modal">
+    <article class="pipeline-modal-content">
+        <header>
+            <button aria-label="Close" rel="prev" onclick="closeDuplicatePipelineModal()"></button>
+            <h3>Duplicate Pipeline</h3>
+        </header>
+        <div class="stage-props-form">
+            <div class="stage-prop-row">
+                <label class="stage-prop-label" for="dup-pipe-name">New name</label>
+                <input type="text" class="stage-prop-input stage-prop-input-wide" id="dup-pipe-name"
+                       placeholder="Copy of ... (required)">
+            </div>
+            <div class="pipeline-editor-feedback" id="dup-pipe-feedback"></div>
+        </div>
+        <footer>
+            <button class="prompt-cancel-btn" onclick="closeDuplicatePipelineModal()">Cancel</button>
+            <button class="prompt-save-btn" id="dup-pipe-btn" onclick="confirmDuplicatePipeline()">Duplicate</button>
+        </footer>
+    </article>
+</dialog>
 
 <style>
 /* ── Stage properties form styles ── */
@@ -443,6 +540,84 @@ input[type="number"].stage-prop-input {
     background: rgba(245, 158, 11, 0.15);
     color: var(--pico-color-yellow-500, #eab308);
 }
+
+/* ── Pipeline management styles ── */
+.workflow-tab-add {
+    border-style: dashed;
+    font-size: 0.85rem;
+}
+.pipeline-actions {
+    display: flex;
+    gap: 0.4rem;
+    margin-bottom: 0.75rem;
+}
+.pipeline-action-btn {
+    padding: 0.25rem 0.7rem;
+    font-size: 0.75rem;
+    border-radius: var(--pico-border-radius);
+    cursor: pointer;
+    font-weight: 600;
+    background: transparent;
+    border: 1px solid var(--pico-muted-color);
+    color: var(--pico-muted-color);
+    transition: all 0.15s ease;
+}
+.pipeline-action-btn:hover {
+    border-color: var(--pico-primary);
+    color: var(--pico-primary);
+}
+.pipeline-action-btn-danger:hover {
+    border-color: var(--pico-del-color);
+    color: var(--pico-del-color);
+}
+.pipeline-editor {
+    background: var(--pico-card-background-color);
+    border: 1px solid var(--pico-muted-border-color);
+    border-radius: var(--pico-border-radius);
+    padding: 0.75rem;
+    margin-bottom: 1rem;
+}
+.pipeline-editor-feedback {
+    margin-top: 0.3rem;
+}
+.pipeline-editor-feedback .config-feedback {
+    padding: 0.4rem 0.6rem;
+    border-radius: var(--pico-border-radius);
+    font-size: 0.75rem;
+}
+.pipeline-editor-feedback .config-feedback.success {
+    background: rgba(34, 197, 94, 0.15);
+    color: var(--pico-ins-color);
+}
+.pipeline-editor-feedback .config-feedback.error {
+    background: rgba(239, 68, 68, 0.15);
+    color: var(--pico-del-color);
+}
+.pipeline-checkbox {
+    width: 1.2rem;
+    height: 1.2rem;
+    margin: 0;
+    cursor: pointer;
+}
+.pipeline-modal-content {
+    max-width: 28rem;
+}
+.pipeline-modal-content header {
+    padding: 0.75rem 1rem;
+}
+.pipeline-modal-content header h3 {
+    margin: 0;
+    font-size: 1rem;
+}
+.pipeline-modal-content .stage-props-form {
+    padding: 0 1rem;
+}
+.pipeline-modal-content footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.4rem;
+    padding: 0.75rem 1rem;
+}
 </style>
 
 <script>
@@ -461,6 +636,209 @@ function switchPipeline(name) {
         tab.classList.add('workflow-tab-active');
         tab.setAttribute('aria-selected', 'true');
     }
+}
+
+/* ── Pipeline management functions ── */
+
+function showFeedbackError(container, message) {
+    container.innerHTML = '';
+    var div = document.createElement('div');
+    div.className = 'config-feedback error';
+    div.setAttribute('role', 'alert');
+    div.textContent = message;
+    container.appendChild(div);
+}
+
+function togglePipelineEditor(pipelineName) {
+    var editor = document.getElementById('pipeline-editor-' + pipelineName);
+    var display = document.getElementById('pipeline-meta-' + pipelineName);
+    if (editor.style.display === 'none') {
+        editor.style.display = 'block';
+        if (display) display.style.display = 'none';
+    } else {
+        editor.style.display = 'none';
+        if (display) display.style.display = 'block';
+    }
+}
+
+function savePipelineMetadata(pipelineId, pipelineName) {
+    var feedbackEl = document.getElementById('pipe-feedback-' + pipelineId);
+    var saveBtn = document.querySelector('[data-action="save-metadata"][data-pipeline-id="' + pipelineId + '"]');
+    var nameVal = document.getElementById('pipe-name-' + pipelineId).value.trim();
+    if (!nameVal) {
+        showFeedbackError(feedbackEl, 'Name is required.');
+        return;
+    }
+    var body = {
+        name: nameVal,
+        description: document.getElementById('pipe-desc-' + pipelineId).value || null,
+        ticket_label: document.getElementById('pipe-label-' + pipelineId).value || null,
+        is_default: document.getElementById('pipe-default-' + pipelineId).checked
+    };
+
+    feedbackEl.innerHTML = '';
+    saveBtn.setAttribute('aria-busy', 'true');
+    saveBtn.textContent = 'Saving...';
+    fetch('/api/workflow/pipelines/' + pipelineId, {
+        method: 'PATCH',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body)
+    })
+    .then(function(resp) {
+        return resp.json().then(function(data) { return {ok: resp.ok, data: data}; });
+    })
+    .then(function(result) {
+        saveBtn.removeAttribute('aria-busy');
+        saveBtn.textContent = 'Save';
+        if (result.ok && result.data.ok) {
+            // Reload to reflect name/tab changes
+            window.location.reload();
+        } else {
+            var errors = result.data.errors || ['Unknown error'];
+            showFeedbackError(feedbackEl, errors.join('; '));
+        }
+    })
+    .catch(function() {
+        saveBtn.removeAttribute('aria-busy');
+        saveBtn.textContent = 'Save';
+        showFeedbackError(feedbackEl, 'Network error.');
+    });
+}
+
+function showCreatePipelineModal() {
+    document.getElementById('new-pipe-name').value = '';
+    document.getElementById('new-pipe-desc').value = '';
+    document.getElementById('new-pipe-label').value = '';
+    document.getElementById('new-pipe-default').checked = false;
+    document.getElementById('new-pipe-feedback').innerHTML = '';
+    document.getElementById('create-pipeline-modal').showModal();
+}
+
+function closeCreatePipelineModal() {
+    document.getElementById('create-pipeline-modal').close();
+}
+
+function createPipeline() {
+    var feedbackEl = document.getElementById('new-pipe-feedback');
+    var createBtn = document.getElementById('create-pipe-btn');
+    var name = document.getElementById('new-pipe-name').value.trim();
+    if (!name) {
+        showFeedbackError(feedbackEl, 'Name is required.');
+        return;
+    }
+    var body = {
+        name: name,
+        description: document.getElementById('new-pipe-desc').value || null,
+        ticket_label: document.getElementById('new-pipe-label').value || null,
+        is_default: document.getElementById('new-pipe-default').checked
+    };
+
+    feedbackEl.innerHTML = '';
+    createBtn.setAttribute('aria-busy', 'true');
+    createBtn.textContent = 'Creating...';
+    fetch('/api/workflow/pipelines', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body)
+    })
+    .then(function(resp) {
+        return resp.json().then(function(data) { return {ok: resp.ok, data: data}; });
+    })
+    .then(function(result) {
+        createBtn.removeAttribute('aria-busy');
+        createBtn.textContent = 'Create';
+        if (result.ok && result.data.ok) {
+            closeCreatePipelineModal();
+            window.location.reload();
+        } else {
+            var errors = result.data.errors || ['Unknown error'];
+            showFeedbackError(feedbackEl, errors.join('; '));
+        }
+    })
+    .catch(function() {
+        createBtn.removeAttribute('aria-busy');
+        createBtn.textContent = 'Create';
+        showFeedbackError(feedbackEl, 'Network error.');
+    });
+}
+
+var _duplicateSourceId = null;
+
+function duplicatePipeline(pipelineId, pipelineName) {
+    _duplicateSourceId = pipelineId;
+    document.getElementById('dup-pipe-name').value = 'Copy of ' + pipelineName;
+    document.getElementById('dup-pipe-feedback').innerHTML = '';
+    document.getElementById('duplicate-pipeline-modal').showModal();
+}
+
+function closeDuplicatePipelineModal() {
+    document.getElementById('duplicate-pipeline-modal').close();
+    _duplicateSourceId = null;
+}
+
+function confirmDuplicatePipeline() {
+    var feedbackEl = document.getElementById('dup-pipe-feedback');
+    var dupBtn = document.getElementById('dup-pipe-btn');
+    var newName = document.getElementById('dup-pipe-name').value.trim();
+    if (!newName) {
+        showFeedbackError(feedbackEl, 'Name is required.');
+        return;
+    }
+    if (_duplicateSourceId === null) return;
+
+    feedbackEl.innerHTML = '';
+    dupBtn.setAttribute('aria-busy', 'true');
+    dupBtn.textContent = 'Duplicating...';
+    fetch('/api/workflow/pipelines/' + _duplicateSourceId + '/duplicate', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({name: newName})
+    })
+    .then(function(resp) {
+        return resp.json().then(function(data) { return {ok: resp.ok, data: data}; });
+    })
+    .then(function(result) {
+        dupBtn.removeAttribute('aria-busy');
+        dupBtn.textContent = 'Duplicate';
+        if (result.ok && result.data.ok) {
+            closeDuplicatePipelineModal();
+            window.location.reload();
+        } else {
+            var errors = result.data.errors || ['Unknown error'];
+            showFeedbackError(feedbackEl, errors.join('; '));
+        }
+    })
+    .catch(function() {
+        dupBtn.removeAttribute('aria-busy');
+        dupBtn.textContent = 'Duplicate';
+        showFeedbackError(feedbackEl, 'Network error.');
+    });
+}
+
+function deletePipeline(pipelineId, pipelineName, isDefault) {
+    var msg = 'Are you sure you want to delete the "' + pipelineName + '" pipeline? This will remove all its stages and loops.';
+    if (isDefault) {
+        msg = 'Warning: "' + pipelineName + '" is the default pipeline. ' + msg;
+    }
+    if (!confirm(msg)) return;
+
+    fetch('/api/workflow/pipelines/' + pipelineId, {
+        method: 'DELETE'
+    })
+    .then(function(resp) {
+        return resp.json().then(function(data) { return {ok: resp.ok, data: data}; });
+    })
+    .then(function(result) {
+        if (result.ok && result.data.ok) {
+            window.location.reload();
+        } else {
+            var errors = result.data.errors || ['Unknown error'];
+            alert('Delete failed: ' + errors.join('; '));
+        }
+    })
+    .catch(function() {
+        alert('Network error while deleting pipeline.');
+    });
 }
 
 function toggleDetail(node) {
@@ -783,6 +1161,38 @@ document.addEventListener('input', function(e) {
         var stageId = e.target.getAttribute('data-stage-id');
         checkUnknownVars(stageId);
     }
+});
+
+/* ── Pipeline button event delegation ── */
+document.querySelectorAll('.workflow-tab[data-pipeline]').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+        switchPipeline(this.dataset.pipeline);
+    });
+});
+document.querySelectorAll('[data-action="edit-metadata"]').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+        togglePipelineEditor(this.dataset.pipelineName);
+    });
+});
+document.querySelectorAll('[data-action="duplicate"]').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+        duplicatePipeline(Number(this.dataset.pipelineId), this.dataset.pipelineName);
+    });
+});
+document.querySelectorAll('[data-action="delete"]').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+        deletePipeline(Number(this.dataset.pipelineId), this.dataset.pipelineName, this.dataset.isDefault === 'true');
+    });
+});
+document.querySelectorAll('[data-action="save-metadata"]').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+        savePipelineMetadata(Number(this.dataset.pipelineId), this.dataset.pipelineName);
+    });
+});
+document.querySelectorAll('[data-action="cancel-edit"]').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+        togglePipelineEditor(this.dataset.pipelineName);
+    });
 });
 </script>
 
