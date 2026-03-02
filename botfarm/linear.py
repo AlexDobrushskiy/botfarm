@@ -247,6 +247,21 @@ query IssueDetails($identifier: String!) {
 }
 """
 
+_COMPLETED_ISSUE_FIELDS = """
+      id
+      identifier
+      title
+      updatedAt
+      completedAt
+      labels { nodes { name } }
+      children {
+        nodes {
+          id
+          state { type }
+        }
+      }
+"""
+
 COMPLETED_ISSUES_QUERY = """
 query CompletedCanceledIssues($teamKey: String!, $first: Int!) {
   issues(
@@ -258,19 +273,7 @@ query CompletedCanceledIssues($teamKey: String!, $first: Int!) {
     orderBy: updatedAt
   ) {
     nodes {
-      id
-      identifier
-      title
-      updatedAt
-      completedAt
-      labels { nodes { name } }
-      parent { id }
-      children {
-        nodes {
-          id
-          state { type }
-        }
-      }
+""" + _COMPLETED_ISSUE_FIELDS + """
     }
   }
 }
@@ -288,19 +291,7 @@ query CompletedCanceledIssuesForProject($teamKey: String!, $projectName: String!
     orderBy: updatedAt
   ) {
     nodes {
-      id
-      identifier
-      title
-      updatedAt
-      completedAt
-      labels { nodes { name } }
-      parent { id }
-      children {
-        nodes {
-          id
-          state { type }
-        }
-      }
+""" + _COMPLETED_ISSUE_FIELDS + """
     }
   }
 }
@@ -750,7 +741,7 @@ class LinearClient:
         """Fetch completed/canceled issues sorted by updatedAt ascending.
 
         Returns raw dicts with id, identifier, title, updatedAt,
-        completedAt, labels, parent, and children info.
+        completedAt, labels, and children info.
         """
         if project_name:
             query = COMPLETED_ISSUES_WITH_PROJECT_QUERY
