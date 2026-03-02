@@ -2054,6 +2054,35 @@ class TestWorkflowDefinitionTables:
         assert "blocks" in prompt
         assert "save_issue" in prompt
 
+    def test_migration_019_preserves_custom_investigation_prompt(self, conn):
+        """Migration 019 must not overwrite a user-customized prompt."""
+        from pathlib import Path
+
+        inv_id = conn.execute(
+            "SELECT id FROM pipeline_templates WHERE name = 'investigation'"
+        ).fetchone()["id"]
+        custom = "My custom investigation prompt for {ticket_id}."
+        conn.execute(
+            "UPDATE stage_templates SET prompt_template = ? "
+            "WHERE pipeline_id = ? AND name = 'implement'",
+            (custom, inv_id),
+        )
+        # Re-run migration 019 SQL — should be a no-op on custom prompts
+        migration_path = (
+            Path(__file__).resolve().parent.parent
+            / "botfarm" / "migrations" / "019_investigation_dependency_instruction.sql"
+        )
+        sql = migration_path.read_text()
+        # Strip comment lines for execution
+        stmts = [l for l in sql.splitlines() if not l.startswith("--")]
+        conn.executescript("\n".join(stmts))
+        row = conn.execute(
+            "SELECT prompt_template FROM stage_templates "
+            "WHERE pipeline_id = ? AND name = 'implement'",
+            (inv_id,),
+        ).fetchone()
+        assert row["prompt_template"] == custom
+
     # -- stage_loops seed data --
 
     def test_implementation_loops_count(self, conn):
