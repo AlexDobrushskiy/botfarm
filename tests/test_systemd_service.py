@@ -1,5 +1,6 @@
 """Tests for botfarm.systemd_service and the install/uninstall CLI commands."""
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -91,6 +92,19 @@ class TestGenerateUnit:
         monkeypatch.chdir(tmp_path)
         unit = generate_unit()
         assert "EnvironmentFile" not in unit
+
+    def test_captures_current_path(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        fake_path = "/home/user/.local/bin:/usr/local/bin:/usr/bin:/bin"
+        monkeypatch.setenv("PATH", fake_path)
+        unit = generate_unit()
+        assert f"Environment=PATH={fake_path}" in unit
+
+    def test_path_fallback_when_unset(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("PATH", raising=False)
+        unit = generate_unit()
+        assert "Environment=PATH=/usr/local/bin:/usr/bin:/bin" in unit
 
 
 # ---------------------------------------------------------------------------
@@ -359,6 +373,14 @@ class TestUnitContentSemantics:
         unit = generate_unit(env_files=[Path("/home/user/.botfarm/.env")])
         assert "EnvironmentFile=-" in unit
 
+    def test_path_captured_from_environment(self, tmp_path, monkeypatch):
+        """Unit captures the user's PATH so child processes find binaries."""
+        monkeypatch.chdir(tmp_path)
+        unit = generate_unit()
+        assert "Environment=PATH=" in unit
+        # Should contain the current PATH value
+        assert os.environ.get("PATH", "") in unit
+
 
 # ---------------------------------------------------------------------------
 # check_installed_unit_stale
@@ -385,9 +407,21 @@ class TestCheckInstalledUnitStale:
         assert "--no-auto-restart" in msg
         assert "install-service" in msg
 
-    def test_current_unit_not_stale(self, tmp_path, monkeypatch):
+    def test_stale_unit_missing_path_directive(self, tmp_path, monkeypatch):
         unit = tmp_path / "botfarm.service"
         unit.write_text("[Service]\nExecStart=/usr/bin/botfarm run\n")
+        monkeypatch.setattr("botfarm.systemd_service.UNIT_PATH", unit)
+        is_stale, msg = check_installed_unit_stale()
+        assert is_stale
+        assert "Environment=PATH=" in msg
+        assert "install-service" in msg
+
+    def test_current_unit_not_stale(self, tmp_path, monkeypatch):
+        unit = tmp_path / "botfarm.service"
+        unit.write_text(
+            "[Service]\nExecStart=/usr/bin/botfarm run\n"
+            "Environment=PATH=/usr/local/bin:/usr/bin:/bin\n"
+        )
         monkeypatch.setattr("botfarm.systemd_service.UNIT_PATH", unit)
         is_stale, msg = check_installed_unit_stale()
         assert not is_stale

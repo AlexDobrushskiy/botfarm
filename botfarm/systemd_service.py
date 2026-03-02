@@ -10,6 +10,7 @@ genuine crashes (non-zero exit, unclean signals).
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -31,6 +32,7 @@ ExecStart={exec_start}
 WorkingDirectory={working_dir}
 Restart=on-failure
 RestartSec=5
+Environment=PATH={path}
 {env_file_lines}
 [Install]
 WantedBy=default.target
@@ -89,9 +91,12 @@ def generate_unit(
             resolved = ef.expanduser().resolve()
             env_lines += f"EnvironmentFile=-{resolved}\n"
 
+    captured_path = os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")
+
     return _UNIT_TEMPLATE.format(
         exec_start=" ".join(exec_parts),
         working_dir=wd,
+        path=captured_path,
         env_file_lines=env_lines,
     )
 
@@ -157,6 +162,12 @@ def check_installed_unit_stale() -> tuple[bool, str]:
         return True, (
             f"installed unit {UNIT_PATH} contains --no-auto-restart — "
             "dashboard updates will not work. "
+            "Run 'botfarm install-service' to regenerate the unit file."
+        )
+    if "Environment=PATH=" not in content:
+        return True, (
+            f"installed unit {UNIT_PATH} is missing Environment=PATH= directive — "
+            "child processes may not find binaries like codex, claude, or gh. "
             "Run 'botfarm install-service' to regenerate the unit file."
         )
     return False, "OK"
