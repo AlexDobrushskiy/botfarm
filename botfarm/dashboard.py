@@ -2950,7 +2950,11 @@ def create_app(
     # Cleanup (bulk archive/delete) UI
     # ------------------------------------------------------------------
 
-    def _get_cleanup_service(conn: sqlite3.Connection) -> CleanupService | None:
+    def _get_cleanup_service(
+        conn: sqlite3.Connection,
+        *,
+        min_age_days: int = 7,
+    ) -> CleanupService | None:
         """Build a CleanupService from the current config, or None."""
         cfg = app.state.botfarm_config
         if cfg is None or not cfg.linear.api_key:
@@ -2958,14 +2962,16 @@ def create_app(
         client = LinearClient(api_key=cfg.linear.api_key)
         team_key = cfg.projects[0].linear_team if cfg.projects else ""
         project_name = cfg.projects[0].linear_project if cfg.projects else ""
-        return CleanupService(client, conn, team_key=team_key, project_name=project_name)
+        return CleanupService(
+            client, conn, team_key=team_key, project_name=project_name,
+            min_age_days=min_age_days,
+        )
 
     def _cleanup_cooldown_remaining(conn: sqlite3.Connection) -> float:
         """Return seconds remaining in cooldown, or 0 if ready."""
         last_time = get_last_cleanup_batch_time(conn)
         if last_time is None:
             return 0
-        from datetime import timedelta
         last = datetime.fromisoformat(last_time.replace("Z", "+00:00"))
         elapsed = (datetime.now(timezone.utc) - last).total_seconds()
         remaining = CleanupService.COOLDOWN_SECONDS - elapsed
@@ -3006,13 +3012,12 @@ def create_app(
         conn = None
         try:
             conn = init_db(app.state.db_path)
-            svc = _get_cleanup_service(conn)
+            svc = _get_cleanup_service(conn, min_age_days=min_age_days)
             if svc is None:
                 return JSONResponse(
                     {"error": "Linear API key not configured"},
                     status_code=503,
                 )
-            svc._min_age_days = min_age_days
             candidates = svc.fetch_candidates(limit=limit)
             return JSONResponse({
                 "candidates": [
@@ -3045,6 +3050,7 @@ def create_app(
 
         action = body.get("action", "archive")
         limit = body.get("limit", 50)
+        selected_ids = body.get("selected_ids")
 
         if action not in ("archive", "delete"):
             return JSONResponse(
@@ -3061,7 +3067,11 @@ def create_app(
                     {"error": "Linear API key not configured"},
                     status_code=503,
                 )
-            result = svc.run_cleanup(action=action, limit=limit)
+            result = svc.run_cleanup(
+                action=action,
+                limit=limit,
+                issue_ids=selected_ids if isinstance(selected_ids, list) else None,
+            )
             return JSONResponse({
                 "batch_id": result.batch_id,
                 "action": result.action,

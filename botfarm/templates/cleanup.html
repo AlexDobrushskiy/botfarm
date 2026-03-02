@@ -448,7 +448,11 @@
         area.style.display = "block";
 
         if (data.error) {
-            summary.innerHTML = '<p style="color: var(--pico-del-color);">' + data.error + '</p>';
+            var p = document.createElement("p");
+            p.style.color = "var(--pico-del-color)";
+            p.textContent = data.error;
+            summary.innerHTML = "";
+            summary.appendChild(p);
             errorsDiv.style.display = "none";
             undoBtn.style.display = "none";
             return;

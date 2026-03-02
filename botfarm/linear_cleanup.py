@@ -221,6 +221,7 @@ class CleanupService:
         action: str = "archive",
         limit: int | None = None,
         dry_run: bool = False,
+        issue_ids: list[str] | None = None,
     ) -> CleanupResult:
         """Run a bulk archive or delete operation.
 
@@ -228,6 +229,8 @@ class CleanupService:
             action: "archive" or "delete"
             limit: Max issues to process (defaults to default_limit)
             dry_run: If True, fetch candidates but don't execute
+            issue_ids: If provided, only process candidates whose linear_uuid
+                is in this list (used by the UI to honour user selection).
 
         Returns:
             CleanupResult with operation summary
@@ -243,6 +246,9 @@ class CleanupService:
             self._check_cooldown()
 
         candidates = self.fetch_candidates(limit=limit)
+        if issue_ids is not None:
+            allowed = set(issue_ids)
+            candidates = [c for c in candidates if c.linear_uuid in allowed]
         batch_id = str(uuid.uuid4())
         result = CleanupResult(
             batch_id=batch_id,
