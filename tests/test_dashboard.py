@@ -30,13 +30,13 @@ from botfarm.db import (
     insert_stage_run,
     insert_task,
     insert_usage_snapshot,
-    update_task,
-    upsert_slot,
-    save_capacity_state,
-    save_dispatch_state,
     load_all_slots,
     load_dispatch_state,
+    save_capacity_state,
+    save_dispatch_state,
     save_queue_entries,
+    update_task,
+    upsert_slot,
 )
 
 
