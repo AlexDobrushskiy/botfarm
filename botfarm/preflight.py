@@ -20,6 +20,7 @@ from botfarm.config import BotfarmConfig
 from botfarm.credentials import CredentialError, _load_token
 from botfarm.db import SCHEMA_VERSION, resolve_db_path
 from botfarm.linear import LinearAPIError, LinearClient
+from botfarm.systemd_service import check_installed_unit_stale
 
 logger = logging.getLogger(__name__)
 
@@ -613,6 +614,19 @@ def check_codex_reviewer(config: BotfarmConfig) -> list[CheckResult]:
     return results
 
 
+def check_systemd_unit() -> list[CheckResult]:
+    """Warn if the installed systemd unit file has stale flags."""
+    is_stale, message = check_installed_unit_stale()
+    if is_stale:
+        return [CheckResult(
+            name="systemd_unit",
+            passed=False,
+            message=message,
+            critical=False,
+        )]
+    return []
+
+
 def check_identity_cross_validation(config: BotfarmConfig) -> list[CheckResult]:
     """Warn about potentially inconsistent identity configuration."""
     results: list[CheckResult] = []
@@ -676,6 +690,7 @@ def run_preflight_checks(
     results.extend(check_identity_linear_api_key(config))
     results.extend(check_identity_cross_validation(config))
     results.extend(check_codex_reviewer(config))
+    results.extend(check_systemd_unit())
     return results
 
 

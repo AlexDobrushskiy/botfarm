@@ -140,6 +140,28 @@ def install_service(
     return UNIT_PATH
 
 
+def check_installed_unit_stale() -> tuple[bool, str]:
+    """Check whether the installed unit file contains stale flags.
+
+    Returns ``(is_stale, message)``.  A unit is considered stale if it
+    still contains ``--no-auto-restart``, which prevents dashboard-triggered
+    updates from working.
+    """
+    if not UNIT_PATH.exists():
+        return False, "no installed unit file"
+    try:
+        content = UNIT_PATH.read_text()
+    except OSError as exc:
+        return False, f"cannot read unit file: {exc}"
+    if "--no-auto-restart" in content:
+        return True, (
+            f"installed unit {UNIT_PATH} contains --no-auto-restart — "
+            "dashboard updates will not work. "
+            "Run 'botfarm install-service' to regenerate the unit file."
+        )
+    return False, "OK"
+
+
 def uninstall_service() -> None:
     """Stop, disable, and remove the systemd service."""
     # Stop (ignore errors if not running)

@@ -10,6 +10,7 @@ from botfarm.cli import main
 from botfarm.systemd_service import (
     UNIT_NAME,
     _find_botfarm_bin,
+    check_installed_unit_stale,
     generate_unit,
     install_service,
     uninstall_service,
@@ -357,3 +358,37 @@ class TestUnitContentSemantics:
         monkeypatch.chdir(tmp_path)
         unit = generate_unit(env_files=[Path("/home/user/.botfarm/.env")])
         assert "EnvironmentFile=-" in unit
+
+
+# ---------------------------------------------------------------------------
+# check_installed_unit_stale
+# ---------------------------------------------------------------------------
+
+
+class TestCheckInstalledUnitStale:
+    def test_no_unit_file(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "botfarm.systemd_service.UNIT_PATH", tmp_path / "missing.service"
+        )
+        is_stale, msg = check_installed_unit_stale()
+        assert not is_stale
+        assert "no installed unit file" in msg
+
+    def test_stale_unit_with_no_auto_restart(self, tmp_path, monkeypatch):
+        unit = tmp_path / "botfarm.service"
+        unit.write_text(
+            "[Service]\nExecStart=/usr/bin/botfarm run --no-auto-restart\n"
+        )
+        monkeypatch.setattr("botfarm.systemd_service.UNIT_PATH", unit)
+        is_stale, msg = check_installed_unit_stale()
+        assert is_stale
+        assert "--no-auto-restart" in msg
+        assert "install-service" in msg
+
+    def test_current_unit_not_stale(self, tmp_path, monkeypatch):
+        unit = tmp_path / "botfarm.service"
+        unit.write_text("[Service]\nExecStart=/usr/bin/botfarm run\n")
+        monkeypatch.setattr("botfarm.systemd_service.UNIT_PATH", unit)
+        is_stale, msg = check_installed_unit_stale()
+        assert not is_stale
+        assert msg == "OK"
