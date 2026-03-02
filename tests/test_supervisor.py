@@ -1063,6 +1063,7 @@ class TestWorkerEntry:
         mock_result.success = True
         mock_result.paused = False
         mock_result.no_pr_reason = None
+        mock_result.result_text = None
         mock_pipeline.return_value = mock_result
 
         _worker_entry(
@@ -1106,6 +1107,7 @@ class TestWorkerEntry:
         mock_result.paused = False
         mock_result.failure_stage = "implement"
         mock_result.failure_reason = "PR not created"
+        mock_result.result_text = None
         mock_pipeline.return_value = mock_result
 
         _worker_entry(
@@ -3840,6 +3842,128 @@ class TestCommentPosting:
 
         poller = supervisor._pollers["test-project"]
         poller.add_comment.side_effect = Exception("comment API down")
+
+        supervisor._handle_finished_slots()
+
+        assert sm.get_slot("test-project", 1).status == "free"
+
+    def test_failure_comment_includes_result_text(self, supervisor):
+        """Failed task comment includes the agent's last result text."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        task_id = insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project",
+            slot=1, status="failed",
+        )
+        update_task(
+            supervisor._conn, task_id,
+            failure_reason="implement: tests failed",
+        )
+        supervisor._conn.commit()
+
+        sm.mark_failed("test-project", 1, reason="implement: tests failed")
+        slot = sm.get_slot("test-project", 1)
+        slot.stage = "implement"
+
+        # Stash result text as the supervisor would after draining the queue
+        supervisor._pending_result_texts[("test-project", 1)] = (
+            "I tried to fix the tests but they kept failing on assertion X."
+        )
+
+        poller = supervisor._pollers["test-project"]
+
+        supervisor._handle_finished_slots()
+
+        comment_body = poller.add_comment.call_args[0][1]
+        assert "Bot outcome: failed" in comment_body
+        assert "tests failed" in comment_body
+        assert "assertion X" in comment_body
+        # result_text should be cleaned up
+        assert ("test-project", 1) not in supervisor._pending_result_texts
+
+    def test_no_pr_comment_posted_on_success_without_pr(self, supervisor):
+        """Success-without-PR tasks get a comment with the agent summary."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        slot = sm.get_slot("test-project", 1)
+        slot.no_pr_reason = "All acceptance criteria already met on main"
+        sm.mark_completed("test-project", 1)
+
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project",
+            slot=1, status="completed",
+        )
+        supervisor._conn.commit()
+
+        supervisor._pending_result_texts[("test-project", 1)] = (
+            "I verified all 5 acceptance criteria against the main branch."
+        )
+
+        poller = supervisor._pollers["test-project"]
+
+        supervisor._handle_finished_slots()
+
+        comment_body = poller.add_comment.call_args[0][1]
+        assert "Bot outcome: completed_no_pr" in comment_body
+        assert "acceptance criteria" in comment_body
+        # result_text should be cleaned up
+        assert ("test-project", 1) not in supervisor._pending_result_texts
+
+    def test_no_comment_on_normal_pr_completion(self, supervisor):
+        """Normal PR-based completions do NOT get a terminal comment."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.mark_completed("test-project", 1)
+        slot = sm.get_slot("test-project", 1)
+        slot.pr_url = "https://github.com/org/repo/pull/42"
+
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project",
+            slot=1, status="completed",
+        )
+        supervisor._conn.commit()
+
+        poller = supervisor._pollers["test-project"]
+
+        with patch.object(supervisor, "_check_pr_status", return_value="open"):
+            supervisor._handle_finished_slots()
+
+        # comment_on_completion is False by default, and no no_pr_reason
+        # means no terminal comment should be posted
+        poller.add_comment.assert_not_called()
+
+    def test_no_pr_comment_error_is_non_blocking(self, supervisor):
+        """If posting the no-PR comment fails, the slot is still freed."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        slot = sm.get_slot("test-project", 1)
+        slot.no_pr_reason = "Investigation complete"
+        sm.mark_completed("test-project", 1)
+
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project",
+            slot=1, status="completed",
+        )
+        supervisor._conn.commit()
+
+        poller = supervisor._pollers["test-project"]
+        poller.add_comment.side_effect = Exception("Linear API down")
 
         supervisor._handle_finished_slots()
 

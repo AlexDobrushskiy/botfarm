@@ -1305,6 +1305,7 @@ class PipelineResult:
     failure_reason: str | None = None
     paused: bool = False
     no_pr_reason: str | None = None
+    result_text: str | None = None
 
 
 def run_pipeline(
@@ -1988,6 +1989,9 @@ class _PipelineContext:
         if result.claude_result:
             self.pipeline.total_turns += result.claude_result.num_turns
             self.pipeline.total_duration_seconds += result.claude_result.duration_seconds
+            # Track the last stage's result text for terminal comment posting.
+            if result.claude_result.result_text:
+                self.pipeline.result_text = result.claude_result.result_text
 
         if not result.success:
             logger.warning("Stage '%s' failed for %s", stage, self.ticket_id)
