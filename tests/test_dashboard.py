@@ -37,6 +37,7 @@ from botfarm.db import (
     save_queue_entries,
     update_task,
     upsert_slot,
+    upsert_ticket_history,
 )
 
 
@@ -5575,3 +5576,357 @@ class TestCleanupDBHelpers:
         batches = list_cleanup_batches(conn, limit=3)
         assert len(batches) == 3
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Ticket History Browser (/tickets)
+# ---------------------------------------------------------------------------
+
+
+def _seed_ticket_history(conn, ticket_id, title, project_name="my-project",
+                         status="Todo", priority="High", **overrides):
+    """Helper to seed a ticket_history entry."""
+    fields = {
+        "ticket_id": ticket_id,
+        "title": title,
+        "project_name": project_name,
+        "status": status,
+        "priority": priority,
+        "capture_source": "test",
+        "url": f"https://linear.app/issue/{ticket_id}",
+    }
+    fields.update(overrides)
+    upsert_ticket_history(conn, **fields)
+
+
+@pytest.fixture()
+def ticket_db(tmp_path):
+    """Create a database with ticket_history data."""
+    path = tmp_path / "tickets.db"
+    conn = init_db(path)
+    save_dispatch_state(conn, paused=False)
+    _seed_ticket_history(
+        conn, "TIK-1", "Fix login bug", project_name="my-project",
+        status="Done", priority="Urgent",
+        description="## Description\nFix the login bug",
+        assignee_name="Alice", creator_name="Bob",
+        team_name="Engineering", labels=json.dumps(["bug", "auth"]),
+        branch_name="fix-login", pr_url="https://github.com/org/repo/pull/10",
+        blocked_by=json.dumps(["TIK-3"]),
+        comments_json=json.dumps([
+            {"user": "Alice", "body": "Working on it", "created_at": "2026-02-28T10:00:00Z"},
+        ]),
+    )
+    _seed_ticket_history(
+        conn, "TIK-2", "Add dark mode", project_name="other-project",
+        status="In Progress", priority="Normal",
+        deleted_from_linear=1,
+    )
+    _seed_ticket_history(
+        conn, "TIK-3", "API refactor", project_name="my-project",
+        status="Todo", priority="High",
+        blocks=json.dumps(["TIK-1"]),
+        children_ids=json.dumps(["TIK-4"]),
+    )
+    # Also insert a task matching TIK-1 so the "View Execution History" link works
+    task_id = insert_task(conn, ticket_id="TIK-1", title="Fix login bug",
+                          project="my-project", slot=1, status="completed")
+    conn.commit()
+    conn.close()
+    return path
+
+
+@pytest.fixture()
+def ticket_client(ticket_db):
+    """FastAPI test client with ticket data."""
+    app = create_app(db_path=ticket_db)
+    return TestClient(app)
+
+
+class TestTicketsPage:
+    def test_returns_200(self, ticket_client):
+        resp = ticket_client.get("/tickets")
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers["content-type"]
+
+    def test_contains_ticket_data(self, ticket_client):
+        resp = ticket_client.get("/tickets")
+        body = resp.text
+        assert "TIK-1" in body
+        assert "TIK-2" in body
+        assert "TIK-3" in body
+
+    def test_contains_filter_form(self, ticket_client):
+        resp = ticket_client.get("/tickets")
+        body = resp.text
+        assert "ticket-filters" in body
+        assert "Search" in body
+        assert "Project" in body
+        assert "Status" in body
+        assert "Deleted" in body
+
+    def test_contains_all_columns(self, ticket_client):
+        resp = ticket_client.get("/tickets")
+        body = resp.text
+        assert "Ticket" in body
+        assert "Title" in body
+        assert "Project" in body
+        assert "Priority" in body
+        assert "Labels" in body
+        assert "Captured" in body
+        assert "In Linear" in body
+
+    def test_deleted_indicator(self, ticket_client):
+        resp = ticket_client.get("/tickets")
+        body = resp.text
+        assert "line-through" in body
+        assert "Deleted" in body
+
+    def test_project_dropdown_populated(self, ticket_client):
+        resp = ticket_client.get("/tickets")
+        body = resp.text
+        assert "my-project" in body
+        assert "other-project" in body
+
+    def test_ticket_rows_are_clickable(self, ticket_client):
+        resp = ticket_client.get("/tickets")
+        assert "/tickets/TIK-1" in resp.text
+
+    def test_tickets_no_db(self, tmp_path):
+        app = create_app(db_path=tmp_path / "nonexistent.db")
+        client = TestClient(app)
+        resp = client.get("/tickets")
+        assert resp.status_code == 200
+        assert "No tickets found" in resp.text
+
+    def test_nav_contains_tickets_link(self, ticket_client):
+        resp = ticket_client.get("/tickets")
+        body = resp.text
+        assert 'href="/tickets"' in body
+        assert "Tickets" in body
+
+
+class TestTicketsFilters:
+    def test_filter_by_project(self, ticket_client):
+        resp = ticket_client.get("/tickets?project=my-project")
+        body = resp.text
+        assert "TIK-1" in body
+        assert "TIK-3" in body
+        assert "TIK-2" not in body
+
+    def test_filter_by_status(self, ticket_client):
+        resp = ticket_client.get("/tickets?status=Done")
+        body = resp.text
+        assert "TIK-1" in body
+        assert "TIK-2" not in body
+        assert "TIK-3" not in body
+
+    def test_filter_deleted_yes(self, ticket_client):
+        resp = ticket_client.get("/tickets?deleted=yes")
+        body = resp.text
+        assert "TIK-2" in body
+        assert "TIK-1" not in body
+
+    def test_filter_deleted_no(self, ticket_client):
+        resp = ticket_client.get("/tickets?deleted=no")
+        body = resp.text
+        assert "TIK-1" in body
+        assert "TIK-3" in body
+        assert "TIK-2" not in body
+
+    def test_search_by_ticket_id(self, ticket_client):
+        resp = ticket_client.get("/tickets?search=TIK-2")
+        body = resp.text
+        assert "TIK-2" in body
+        assert "TIK-1" not in body
+
+    def test_search_by_title(self, ticket_client):
+        resp = ticket_client.get("/tickets?search=dark mode")
+        body = resp.text
+        assert "TIK-2" in body
+
+    def test_sort_by_title_asc(self, ticket_client):
+        resp = ticket_client.get("/tickets?sort_by=title&sort_dir=ASC")
+        assert resp.status_code == 200
+        body = resp.text
+        # "API refactor" < "Add dark mode" < "Fix login bug"
+        assert body.index("TIK-2") < body.index("TIK-1")
+
+    def test_invalid_sort_column_defaults_gracefully(self, ticket_client):
+        resp = ticket_client.get("/tickets?sort_by=DROP TABLE&sort_dir=ASC")
+        assert resp.status_code == 200
+
+    def test_combined_filters(self, ticket_client):
+        resp = ticket_client.get("/tickets?project=my-project&status=Done")
+        body = resp.text
+        assert "TIK-1" in body
+        assert "TIK-3" not in body
+
+
+class TestTicketsPagination:
+    def test_pagination_info_shown(self, ticket_client):
+        resp = ticket_client.get("/tickets")
+        body = resp.text
+        assert "page 1 of 1" in body
+        assert "3 tickets found" in body
+
+    def test_page_param(self, ticket_client):
+        resp = ticket_client.get("/tickets?page=1")
+        assert resp.status_code == 200
+
+    def test_invalid_page_defaults_to_1(self, ticket_client):
+        resp = ticket_client.get("/tickets?page=abc")
+        assert resp.status_code == 200
+
+    def test_pagination_with_many_tickets(self, tmp_path):
+        path = tmp_path / "big_tickets.db"
+        conn = init_db(path)
+        save_dispatch_state(conn, paused=False)
+        for i in range(30):
+            _seed_ticket_history(conn, f"BIG-{i}", f"Ticket {i}")
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=path)
+        client = TestClient(app)
+        resp = client.get("/tickets")
+        body = resp.text
+        assert "page 1 of 2" in body
+        assert "Next" in body
+
+        resp2 = client.get("/tickets?page=2")
+        body2 = resp2.text
+        assert "page 2 of 2" in body2
+        assert "Prev" in body2
+
+
+class TestPartialTickets:
+    def test_returns_200(self, ticket_client):
+        resp = ticket_client.get("/partials/tickets")
+        assert resp.status_code == 200
+
+    def test_contains_ticket_data(self, ticket_client):
+        resp = ticket_client.get("/partials/tickets")
+        body = resp.text
+        assert "TIK-1" in body
+
+    def test_respects_filters(self, ticket_client):
+        resp = ticket_client.get("/partials/tickets?project=other-project")
+        body = resp.text
+        assert "TIK-2" in body
+        assert "TIK-1" not in body
+
+
+class TestTicketDetailPage:
+    def test_returns_200(self, ticket_client):
+        resp = ticket_client.get("/tickets/TIK-1")
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers["content-type"]
+
+    def test_contains_ticket_content(self, ticket_client):
+        resp = ticket_client.get("/tickets/TIK-1")
+        body = resp.text
+        assert "Fix login bug" in body
+        assert "TIK-1" in body
+        assert "Done" in body
+        assert "Urgent" in body
+
+    def test_contains_metadata(self, ticket_client):
+        resp = ticket_client.get("/tickets/TIK-1")
+        body = resp.text
+        assert "Alice" in body
+        assert "Bob" in body
+        assert "Engineering" in body
+
+    def test_contains_description(self, ticket_client):
+        resp = ticket_client.get("/tickets/TIK-1")
+        body = resp.text
+        assert "Fix the login bug" in body
+
+    def test_contains_labels(self, ticket_client):
+        resp = ticket_client.get("/tickets/TIK-1")
+        body = resp.text
+        assert "bug" in body
+        assert "auth" in body
+
+    def test_contains_dependencies(self, ticket_client):
+        resp = ticket_client.get("/tickets/TIK-1")
+        body = resp.text
+        assert "Blocked By" in body
+        assert "TIK-3" in body
+
+    def test_contains_comments(self, ticket_client):
+        resp = ticket_client.get("/tickets/TIK-1")
+        body = resp.text
+        assert "Working on it" in body
+
+    def test_contains_pr_and_branch(self, ticket_client):
+        resp = ticket_client.get("/tickets/TIK-1")
+        body = resp.text
+        assert "github.com/org/repo/pull/10" in body
+        assert "fix-login" in body
+
+    def test_contains_execution_history_link(self, ticket_client):
+        resp = ticket_client.get("/tickets/TIK-1")
+        body = resp.text
+        assert "View Execution History" in body
+        assert "/task/TIK-1" in body
+
+    def test_deleted_ticket_shows_indicator(self, ticket_client):
+        resp = ticket_client.get("/tickets/TIK-2")
+        body = resp.text
+        assert "Deleted from Linear" in body
+        assert "line-through" in body
+
+    def test_deleted_ticket_no_view_in_linear(self, ticket_client):
+        resp = ticket_client.get("/tickets/TIK-2")
+        body = resp.text
+        assert "View in Linear" not in body
+
+    def test_nonexistent_ticket_shows_not_found(self, ticket_client):
+        resp = ticket_client.get("/tickets/NOPE-999")
+        assert resp.status_code == 200
+        body = resp.text
+        assert "Ticket not found" in body
+
+    def test_hierarchy_shown(self, ticket_client):
+        resp = ticket_client.get("/tickets/TIK-3")
+        body = resp.text
+        assert "Blocks" in body
+        assert "Children" in body
+        assert "TIK-4" in body
+
+    def test_view_in_linear_for_active_ticket(self, ticket_client):
+        resp = ticket_client.get("/tickets/TIK-1")
+        body = resp.text
+        assert "View in Linear" in body
+
+
+class TestTaskDetailTicketContent:
+    """Test the collapsible Ticket Content section on /task/{id}."""
+
+    def test_task_detail_shows_ticket_content(self, ticket_db):
+        app = create_app(db_path=ticket_db)
+        client = TestClient(app)
+        resp = client.get("/task/TIK-1")
+        body = resp.text
+        assert "Ticket Content" in body
+        assert "View full ticket" in body
+
+    def test_task_detail_no_ticket_content(self, db_file):
+        """When no ticket_history exists, the section should not appear."""
+        client_obj = TestClient(create_app(db_path=db_file))
+        resp = client_obj.get("/task/TST-1")
+        body = resp.text
+        assert "Ticket Content" not in body
+
+
+class TestHistoryTicketLink:
+    """Test that history rows have a link to /tickets/{id}."""
+
+    def test_history_has_ticket_icon_link(self, ticket_db):
+        # Seed a task so it appears in history
+        app = create_app(db_path=ticket_db)
+        client = TestClient(app)
+        resp = client.get("/history")
+        body = resp.text
+        assert "/tickets/TIK-1" in body

@@ -1,0 +1,185 @@
+{% extends "base.html" %}
+{% set active_page = "tickets" %}
+{% block title %}{% if ticket %}{{ ticket.ticket_id }} - {% endif %}Ticket Detail - Botfarm{% endblock %}
+{% block content %}
+
+{% if ticket %}
+<p><a href="/tickets">&larr; Back to Tickets</a></p>
+
+<h1>
+    {% if ticket.deleted_from_linear %}
+    <span style="color: var(--pico-del-color); text-decoration: line-through;">{{ ticket.ticket_id }}</span>
+    {% else %}
+    <a href="{{ linear_url(ticket.ticket_id) }}" target="_blank">{{ ticket.ticket_id }}</a>
+    {% endif %}
+    &mdash; {{ ticket.title }}
+</h1>
+
+<!-- Status and priority badges -->
+<div style="display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap;">
+    {% if ticket.status %}
+    <span style="background: var(--pico-muted-border-color); padding: 0.2rem 0.6rem; border-radius: 0.3rem; font-size: 0.85rem;">{{ ticket.status }}</span>
+    {% endif %}
+    {% if ticket.priority %}
+    <span style="background: var(--pico-muted-border-color); padding: 0.2rem 0.6rem; border-radius: 0.3rem; font-size: 0.85rem;">Priority: {{ ticket.priority }}</span>
+    {% endif %}
+    {% if ticket.deleted_from_linear %}
+    <span style="background: rgba(239, 68, 68, 0.2); color: var(--pico-del-color); padding: 0.2rem 0.6rem; border-radius: 0.3rem; font-size: 0.85rem;">Deleted from Linear</span>
+    {% endif %}
+    {% for label in ticket.labels %}
+    <span style="background: var(--pico-muted-border-color); padding: 0.2rem 0.6rem; border-radius: 0.3rem; font-size: 0.85rem;">{{ label }}</span>
+    {% endfor %}
+</div>
+
+<!-- Metadata card -->
+<details open>
+    <summary><strong>Metadata</strong></summary>
+    <table>
+        <tbody>
+            {% if ticket.assignee_name %}
+            <tr><td><strong>Assignee</strong></td><td>{{ ticket.assignee_name }}{% if ticket.assignee_email %} ({{ ticket.assignee_email }}){% endif %}</td></tr>
+            {% endif %}
+            {% if ticket.creator_name %}
+            <tr><td><strong>Creator</strong></td><td>{{ ticket.creator_name }}</td></tr>
+            {% endif %}
+            {% if ticket.project_name %}
+            <tr><td><strong>Project</strong></td><td>{{ ticket.project_name }}</td></tr>
+            {% endif %}
+            {% if ticket.team_name %}
+            <tr><td><strong>Team</strong></td><td>{{ ticket.team_name }}</td></tr>
+            {% endif %}
+            {% if ticket.estimate is not none and ticket.estimate %}
+            <tr><td><strong>Estimate</strong></td><td>{{ ticket.estimate }}</td></tr>
+            {% endif %}
+            {% if ticket.due_date %}
+            <tr><td><strong>Due Date</strong></td><td>{{ ticket.due_date }}</td></tr>
+            {% endif %}
+            {% if ticket.linear_created_at %}
+            <tr><td><strong>Created (Linear)</strong></td><td><time data-timestamp="{{ ticket.linear_created_at }}" title="{{ ticket.linear_created_at[:19] }}">{{ ticket.linear_created_at[:19] }}</time></td></tr>
+            {% endif %}
+            {% if ticket.linear_updated_at %}
+            <tr><td><strong>Updated (Linear)</strong></td><td><time data-timestamp="{{ ticket.linear_updated_at }}" title="{{ ticket.linear_updated_at[:19] }}">{{ ticket.linear_updated_at[:19] }}</time></td></tr>
+            {% endif %}
+            {% if ticket.linear_completed_at %}
+            <tr><td><strong>Completed (Linear)</strong></td><td><time data-timestamp="{{ ticket.linear_completed_at }}" title="{{ ticket.linear_completed_at[:19] }}">{{ ticket.linear_completed_at[:19] }}</time></td></tr>
+            {% endif %}
+            {% if ticket.captured_at %}
+            <tr><td><strong>Captured At</strong></td><td><time data-timestamp="{{ ticket.captured_at }}" title="{{ ticket.captured_at[:19] }}">{{ ticket.captured_at[:19] }}</time></td></tr>
+            {% endif %}
+            {% if ticket.capture_source %}
+            <tr><td><strong>Capture Source</strong></td><td>{{ ticket.capture_source }}</td></tr>
+            {% endif %}
+            {% if ticket.pr_url %}
+            <tr><td><strong>Pull Request</strong></td><td><a href="{{ ticket.pr_url }}" target="_blank">{{ ticket.pr_url }}</a></td></tr>
+            {% endif %}
+            {% if ticket.branch_name %}
+            <tr><td><strong>Branch</strong></td><td><code>{{ ticket.branch_name }}</code></td></tr>
+            {% endif %}
+        </tbody>
+    </table>
+</details>
+
+<!-- Description -->
+{% if ticket.description %}
+<details open>
+    <summary><strong>Description</strong></summary>
+    <div class="ticket-description" style="white-space: pre-wrap; font-size: 0.9rem; line-height: 1.6; padding: 1rem; background: var(--pico-card-background-color); border-radius: var(--pico-border-radius);">{{ ticket.description }}</div>
+</details>
+{% endif %}
+
+<!-- Dependencies -->
+{% if ticket.blocked_by or ticket.blocks %}
+<details open>
+    <summary><strong>Dependencies</strong></summary>
+    <table>
+        <tbody>
+            {% if ticket.blocked_by %}
+            <tr>
+                <td><strong>Blocked By</strong></td>
+                <td>
+                    {% for dep in ticket.blocked_by %}
+                    <a href="/tickets/{{ dep }}">{{ dep }}</a>{% if not loop.last %}, {% endif %}
+                    {% endfor %}
+                </td>
+            </tr>
+            {% endif %}
+            {% if ticket.blocks %}
+            <tr>
+                <td><strong>Blocks</strong></td>
+                <td>
+                    {% for dep in ticket.blocks %}
+                    <a href="/tickets/{{ dep }}">{{ dep }}</a>{% if not loop.last %}, {% endif %}
+                    {% endfor %}
+                </td>
+            </tr>
+            {% endif %}
+        </tbody>
+    </table>
+</details>
+{% endif %}
+
+<!-- Parent / Children -->
+{% if ticket.parent_id or ticket.children_ids %}
+<details open>
+    <summary><strong>Hierarchy</strong></summary>
+    <table>
+        <tbody>
+            {% if ticket.parent_id %}
+            <tr>
+                <td><strong>Parent</strong></td>
+                <td><a href="/tickets/{{ ticket.parent_id }}">{{ ticket.parent_id }}</a></td>
+            </tr>
+            {% endif %}
+            {% if ticket.children_ids %}
+            <tr>
+                <td><strong>Children</strong></td>
+                <td>
+                    {% for child in ticket.children_ids %}
+                    <a href="/tickets/{{ child }}">{{ child }}</a>{% if not loop.last %}, {% endif %}
+                    {% endfor %}
+                </td>
+            </tr>
+            {% endif %}
+        </tbody>
+    </table>
+</details>
+{% endif %}
+
+<!-- Comments -->
+{% if ticket.comments_json %}
+<details open>
+    <summary><strong>Comments ({{ ticket.comments_json|length }})</strong></summary>
+    {% for comment in ticket.comments_json %}
+    <article style="margin-bottom: 0.5rem; padding: 0.8rem;">
+        <header style="padding-bottom: 0.3rem; margin-bottom: 0.5rem;">
+            <strong>{{ comment.user or comment.author or "Unknown" }}</strong>
+            {% if comment.created_at or comment.createdAt %}
+            <small style="color: var(--pico-muted-color); margin-left: 0.5rem;">
+                <time data-timestamp="{{ comment.created_at or comment.createdAt }}" title="{{ (comment.created_at or comment.createdAt)[:19] }}">{{ (comment.created_at or comment.createdAt)[:19] }}</time>
+            </small>
+            {% endif %}
+        </header>
+        <div style="white-space: pre-wrap; font-size: 0.9rem;">{{ comment.body or comment.text or "" }}</div>
+    </article>
+    {% endfor %}
+</details>
+{% endif %}
+
+<!-- Action links -->
+<div style="display: flex; gap: 0.5rem; margin-top: 1.5rem; flex-wrap: wrap;">
+    {% if not ticket.deleted_from_linear and ticket.url %}
+    <a href="{{ ticket.url }}" target="_blank" role="button">View in Linear</a>
+    {% elif not ticket.deleted_from_linear %}
+    <a href="{{ linear_url(ticket.ticket_id) }}" target="_blank" role="button">View in Linear</a>
+    {% endif %}
+    {% if task %}
+    <a href="/task/{{ task.ticket_id }}" role="button" class="outline">View Execution History</a>
+    {% endif %}
+</div>
+
+{% else %}
+<p><a href="/tickets">&larr; Back to Tickets</a></p>
+<p>Ticket not found.</p>
+{% endif %}
+
+{% endblock %}

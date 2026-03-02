@@ -37,9 +37,12 @@ from botfarm.config import (
 )
 from botfarm.db import (
     count_tasks,
+    count_ticket_history,
     get_cleanup_batch,
     get_cleanup_batch_items,
     get_distinct_projects,
+    get_distinct_ticket_projects,
+    get_distinct_ticket_statuses,
     get_events,
     get_last_cleanup_batch_time,
     get_latest_context_fill_by_ticket,
@@ -48,6 +51,8 @@ from botfarm.db import (
     get_task,
     get_task_by_ticket,
     get_task_history,
+    get_ticket_history_entry,
+    get_ticket_history_list,
     init_db,
     list_cleanup_batches,
     load_all_project_pause_states,
@@ -1132,6 +1137,157 @@ def create_app(
         ctx = _history_context(request)
         return templates.TemplateResponse("partials/history.html", ctx)
 
+    # --- Ticket History Browser ---
+
+    TICKET_PAGE_SIZE = 25
+
+    ALLOWED_TICKET_SORT_COLS = {
+        "ticket_id", "title", "project_name", "status", "priority",
+        "captured_at", "linear_created_at",
+    }
+
+    def _extract_ticket_params(request: Request) -> dict:
+        """Extract filter/sort/page query params for ticket browser."""
+        params = request.query_params
+        project = params.get("project") or None
+        status = params.get("status") or None
+        search = params.get("search") or None
+        deleted = params.get("deleted") or None
+        sort_by = params.get("sort_by", "captured_at")
+        if sort_by not in ALLOWED_TICKET_SORT_COLS:
+            sort_by = "captured_at"
+        sort_dir = params.get("sort_dir", "DESC")
+        if sort_dir.upper() not in ("ASC", "DESC"):
+            sort_dir = "DESC"
+        try:
+            page = int(params.get("page", "1"))
+        except ValueError:
+            page = 1
+        deleted_from_linear: bool | None = None
+        if deleted == "yes":
+            deleted_from_linear = True
+        elif deleted == "no":
+            deleted_from_linear = False
+        return {
+            "project": project,
+            "status": status,
+            "search": search,
+            "deleted_from_linear": deleted_from_linear,
+            "sort_by": sort_by,
+            "sort_dir": sort_dir,
+            "page": page,
+            "deleted_raw": deleted or "",
+        }
+
+    def _tickets_context(request: Request) -> dict:
+        """Build the full template context for ticket browser views."""
+        tp = _extract_ticket_params(request)
+        conn = _get_db()
+        tickets: list[dict] = []
+        total = 0
+        total_pages = 1
+        projects: list[str] = []
+        statuses: list[str] = []
+        if conn:
+            try:
+                filter_kwargs = {
+                    k: tp[k] for k in ("project", "status", "search", "deleted_from_linear")
+                }
+                total = count_ticket_history(conn, **filter_kwargs)
+                total_pages = max(1, (total + TICKET_PAGE_SIZE - 1) // TICKET_PAGE_SIZE)
+                page = max(1, min(tp["page"], total_pages))
+                offset = (page - 1) * TICKET_PAGE_SIZE
+                rows = get_ticket_history_list(
+                    conn,
+                    limit=TICKET_PAGE_SIZE,
+                    offset=offset,
+                    sort_by=tp["sort_by"],
+                    sort_dir=tp["sort_dir"],
+                    **filter_kwargs,
+                )
+                tickets = [dict(r) for r in rows]
+                # Parse JSON fields for display
+                for t in tickets:
+                    for field in ("labels", "children_ids", "blocked_by", "blocks"):
+                        val = t.get(field)
+                        if isinstance(val, str):
+                            try:
+                                t[field] = json.loads(val)
+                            except (json.JSONDecodeError, ValueError):
+                                t[field] = []
+                        elif val is None:
+                            t[field] = []
+                projects = get_distinct_ticket_projects(conn)
+                statuses = get_distinct_ticket_statuses(conn)
+            except sqlite3.OperationalError:
+                pass
+            finally:
+                conn.close()
+        page = max(1, min(tp["page"], total_pages))
+        return {
+            "request": request,
+            "tickets": tickets,
+            "total": total,
+            "page": page,
+            "total_pages": total_pages,
+            "projects": projects,
+            "statuses": statuses,
+            "filter_project": tp["project"] or "",
+            "filter_status": tp["status"] or "",
+            "filter_search": tp["search"] or "",
+            "filter_deleted": tp["deleted_raw"],
+            "sort_by": tp["sort_by"],
+            "sort_dir": tp["sort_dir"],
+            "linear_url": _linear_url,
+            "supervisor": _supervisor_status(_read_state()),
+        }
+
+    @app.get("/tickets", response_class=HTMLResponse)
+    def tickets_page(request: Request):
+        ctx = _tickets_context(request)
+        return templates.TemplateResponse("tickets.html", ctx)
+
+    @app.get("/partials/tickets", response_class=HTMLResponse)
+    def partial_tickets(request: Request):
+        ctx = _tickets_context(request)
+        return templates.TemplateResponse("partials/tickets.html", ctx)
+
+    @app.get("/tickets/{ticket_id}", response_class=HTMLResponse)
+    def ticket_detail_page(request: Request, ticket_id: str):
+        ticket = None
+        task = None
+        conn = _get_db()
+        if conn:
+            try:
+                row = get_ticket_history_entry(conn, ticket_id)
+                if row:
+                    ticket = dict(row)
+                    # Parse JSON fields
+                    for field in ("labels", "children_ids", "blocked_by", "blocks", "comments_json"):
+                        val = ticket.get(field)
+                        if isinstance(val, str):
+                            try:
+                                ticket[field] = json.loads(val)
+                            except (json.JSONDecodeError, ValueError):
+                                ticket[field] = []
+                        elif val is None:
+                            ticket[field] = []
+                # Look up corresponding task for "View Execution History" link
+                task_row = get_task_by_ticket(conn, ticket_id)
+                if task_row:
+                    task = dict(task_row)
+            except sqlite3.OperationalError:
+                pass
+            finally:
+                conn.close()
+        return templates.TemplateResponse("ticket_detail.html", {
+            "request": request,
+            "ticket": ticket,
+            "task": task,
+            "linear_url": _linear_url,
+            "supervisor": _supervisor_status(_read_state()),
+        })
+
     EVENT_LOG_LIMIT = 500
 
     def _compute_task_totals(stages: list[dict]) -> dict:
@@ -1158,6 +1314,7 @@ def create_app(
         stages: list[dict] = []
         events: list[dict] = []
         pipeline: list[dict] = []
+        ticket_content = None
         conn = _get_db()
         if conn:
             try:
@@ -1182,6 +1339,13 @@ def create_app(
                     pipeline = build_pipeline_state(
                         stages, task.get("status"),
                     )
+                    # Look up ticket history content
+                    try:
+                        th_row = get_ticket_history_entry(conn, task["ticket_id"])
+                        if th_row:
+                            ticket_content = dict(th_row)
+                    except sqlite3.OperationalError:
+                        pass
             finally:
                 conn.close()
         task_totals = _compute_task_totals(stages)
@@ -1192,6 +1356,7 @@ def create_app(
             "events": events,
             "pipeline": pipeline,
             "task_totals": task_totals,
+            "ticket_content": ticket_content,
             "linear_url": _linear_url,
             "format_duration": _format_duration,
             "context_fill_class": _context_fill_class,
