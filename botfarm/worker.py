@@ -520,6 +520,7 @@ class StageResult:
     error: str | None = None
     review_approved: bool | None = None
     claude_review_approved: bool | None = None
+    no_pr_reason: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -583,7 +584,11 @@ def _build_implement_prompt(ticket_id: str, labels: list[str] | None) -> str:
     return (
         f"Work on Linear ticket {ticket_id}. "
         "Follow the Linear Tickets workflow in CLAUDE.md. "
-        "Complete all steps through PR creation. Do not stop until the PR is created."
+        "Complete all steps through PR creation. Do not stop until the PR is created. "
+        "If the work described in the ticket is already fully implemented on main "
+        "(e.g. delivered by another PR), verify all acceptance criteria are met, "
+        "then output NO_PR_NEEDED: <explanation> as your final message. "
+        "Do not create a branch or PR in that case."
     )
 
 
@@ -1300,6 +1305,7 @@ class PipelineResult:
     failure_stage: str | None = None
     failure_reason: str | None = None
     paused: bool = False
+    no_pr_reason: str | None = None
 
 
 def run_pipeline(
@@ -1607,8 +1613,28 @@ def run_pipeline(
             conn.commit()
             return pipeline
 
-        # If implement didn't produce a PR URL, we can't continue
+        # If implement didn't produce a PR URL, check for explicit no-PR signal
         if stage == "implement" and not pr_url:
+            no_pr_reason = _detect_no_pr_needed(
+                result.claude_result.result_text if result.claude_result else ""
+            )
+            if no_pr_reason:
+                logger.info(
+                    "Implement stage reported no PR needed for %s: %s",
+                    ticket_id, no_pr_reason[:200],
+                )
+                pipeline.success = True
+                pipeline.no_pr_reason = no_pr_reason
+                update_task(
+                    conn, task_id,
+                    status="completed",
+                    turns=pipeline.total_turns,
+                    completed_at=datetime.now(timezone.utc).isoformat(),
+                    comments=no_pr_reason[:500],
+                )
+                conn.commit()
+                return pipeline
+            # Otherwise, genuine failure
             pipeline.failure_stage = "implement"
             pipeline.failure_reason = "Implement stage did not produce a PR URL"
             _record_failure(conn, task_id, pipeline)
@@ -2375,6 +2401,23 @@ def _record_failure(conn, task_id: int, pipeline: PipelineResult) -> None:
         completed_at=datetime.now(timezone.utc).isoformat(),
     )
     conn.commit()
+
+
+_NO_PR_NEEDED_RE = re.compile(r"NO_PR_NEEDED:\s*(.+)", re.IGNORECASE | re.DOTALL)
+
+
+def _detect_no_pr_needed(text: str) -> str | None:
+    """Check if the agent signalled that no PR is needed.
+
+    Looks for ``NO_PR_NEEDED: <explanation>`` in *text* (case-insensitive).
+    Returns the explanation string (stripped, capped at 500 chars) or ``None``.
+    """
+    if not text:
+        return None
+    match = _NO_PR_NEEDED_RE.search(text)
+    if not match:
+        return None
+    return match.group(1).strip()[:500] or None
 
 
 _PR_URL_RE = re.compile(

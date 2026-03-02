@@ -23,6 +23,7 @@ from botfarm.worker import (
     _REVIEWER_STAGES,
     _build_implement_prompt,
     _compute_turn_context_fill,
+    _detect_no_pr_needed,
     _is_investigation,
     build_coder_env,
     build_git_env,
@@ -2777,6 +2778,10 @@ class TestBuildImplementPrompt:
         assert "PR creation" in prompt
         assert "Do not stop" in prompt
 
+    def test_standard_prompt_includes_no_pr_needed_instruction(self):
+        prompt = _build_implement_prompt("SMA-42", None)
+        assert "NO_PR_NEEDED:" in prompt
+
     def test_standard_prompt_with_non_investigation_labels(self):
         prompt = _build_implement_prompt("SMA-42", ["Bug", "Feature"])
         assert "PR creation" in prompt
@@ -3312,3 +3317,123 @@ class TestPipelineDbDriven:
         assert env_by_stage["implement"]["BOTFARM_DB_PATH"] == "/tmp/slot.db"
         # Review should also have BOTFARM_DB_PATH (reviewer env)
         assert env_by_stage["review"]["BOTFARM_DB_PATH"] == "/tmp/slot.db"
+
+
+# ---------------------------------------------------------------------------
+# _detect_no_pr_needed
+# ---------------------------------------------------------------------------
+
+
+class TestDetectNoPrNeeded:
+    def test_matching_text(self):
+        text = "NO_PR_NEEDED: All acceptance criteria already met on main."
+        assert _detect_no_pr_needed(text) == "All acceptance criteria already met on main."
+
+    def test_case_insensitive(self):
+        text = "no_pr_needed: work already done"
+        assert _detect_no_pr_needed(text) == "work already done"
+
+    def test_mixed_case(self):
+        text = "No_Pr_Needed: delivered by SMA-200"
+        assert _detect_no_pr_needed(text) == "delivered by SMA-200"
+
+    def test_embedded_in_longer_text(self):
+        text = "I verified all criteria.\nNO_PR_NEEDED: Everything is already on main."
+        assert _detect_no_pr_needed(text) == "Everything is already on main."
+
+    def test_no_match(self):
+        assert _detect_no_pr_needed("Created PR: https://github.com/o/r/pull/1") is None
+
+    def test_empty_string(self):
+        assert _detect_no_pr_needed("") is None
+
+    def test_none_input(self):
+        assert _detect_no_pr_needed("") is None
+
+    def test_prefix_only_no_explanation(self):
+        # "NO_PR_NEEDED:" with only whitespace after → None (empty explanation)
+        assert _detect_no_pr_needed("NO_PR_NEEDED:   ") is None
+
+    def test_long_explanation_truncated(self):
+        explanation = "x" * 600
+        text = f"NO_PR_NEEDED: {explanation}"
+        result = _detect_no_pr_needed(text)
+        assert result is not None
+        assert len(result) == 500
+
+
+# ---------------------------------------------------------------------------
+# run_pipeline — no_pr_needed signal tests
+# ---------------------------------------------------------------------------
+
+
+class TestRunPipelineNoPrNeeded:
+    @patch("botfarm.worker._execute_stage")
+    def test_no_pr_needed_signal_succeeds(self, mock_exec, conn, task_id, tmp_path):
+        """Implement with NO_PR_NEEDED signal → pipeline success, no failure."""
+        cr = ClaudeResult(
+            session_id="sess-impl",
+            num_turns=5,
+            duration_seconds=10.0,
+            exit_subtype="tool_use",
+            result_text="NO_PR_NEEDED: All criteria met on main via SMA-200.",
+        )
+        mock_exec.return_value = StageResult(
+            stage="implement", success=True, claude_result=cr, pr_url=None,
+        )
+        result = run_pipeline(
+            ticket_id="SMA-99",
+            task_id=task_id,
+            cwd=tmp_path,
+            conn=conn,
+        )
+        assert result.success is True
+        assert result.no_pr_reason == "All criteria met on main via SMA-200."
+        assert result.pr_url is None
+        assert result.failure_stage is None
+
+        task = get_task(conn, task_id)
+        assert task["status"] == "completed"
+        assert task["completed_at"] is not None
+        assert "criteria met" in task["comments"]
+
+    @patch("botfarm.worker._execute_stage")
+    def test_no_pr_needed_without_signal_still_fails(self, mock_exec, conn, task_id, tmp_path):
+        """Implement with no PR URL and no signal → pipeline failure (legacy behavior)."""
+        cr = ClaudeResult(
+            session_id="sess-impl",
+            num_turns=5,
+            duration_seconds=10.0,
+            exit_subtype="tool_use",
+            result_text="I verified everything looks good.",
+        )
+        mock_exec.return_value = StageResult(
+            stage="implement", success=True, claude_result=cr, pr_url=None,
+        )
+        result = run_pipeline(
+            ticket_id="SMA-99",
+            task_id=task_id,
+            cwd=tmp_path,
+            conn=conn,
+        )
+        assert result.success is False
+        assert result.failure_stage == "implement"
+        assert "PR URL" in result.failure_reason
+
+        task = get_task(conn, task_id)
+        assert task["status"] == "failed"
+
+    @patch("botfarm.worker._execute_stage")
+    def test_no_pr_needed_with_no_claude_result(self, mock_exec, conn, task_id, tmp_path):
+        """Implement with no claude_result and no PR URL → failure (no crash)."""
+        mock_exec.return_value = StageResult(
+            stage="implement", success=True, claude_result=None, pr_url=None,
+        )
+        result = run_pipeline(
+            ticket_id="SMA-99",
+            task_id=task_id,
+            cwd=tmp_path,
+            conn=conn,
+        )
+        assert result.success is False
+        assert result.failure_stage == "implement"
