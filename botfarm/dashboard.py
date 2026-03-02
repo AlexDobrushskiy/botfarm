@@ -693,6 +693,7 @@ def create_app(
             "supervisor": _supervisor_status(state),
             "pause_state": _manual_pause_state(state),
             "has_callbacks": app.state.on_pause is not None,
+            "capacity": _get_capacity_data(),
         })
 
     def _enrich_slots_with_context_fill(slots: list[dict]) -> list[dict]:
@@ -910,15 +911,11 @@ def create_app(
             "elapsed": _elapsed,
         })
 
-    @app.get("/partials/linear-capacity", response_class=HTMLResponse)
-    def partial_linear_capacity(request: Request):
+    def _get_capacity_data() -> dict | None:
+        """Load and enrich capacity data from the DB for template rendering."""
         conn = _get_db()
         if conn is None:
-            return templates.TemplateResponse("partials/linear_capacity.html", {
-                "request": request,
-                "capacity": None,
-                "elapsed": _elapsed,
-            })
+            return None
         try:
             capacity = load_capacity_state(conn)
         except sqlite3.OperationalError:
@@ -926,7 +923,6 @@ def create_app(
         finally:
             conn.close()
 
-        # Attach computed fields for the template
         if capacity is not None:
             cfg = app.state.botfarm_config
             cap_cfg = cfg.linear.capacity_monitoring if cfg else None
@@ -934,7 +930,6 @@ def create_app(
             count = capacity["issue_count"]
             ratio = count / limit if limit else 0
             capacity["pct"] = ratio * 100
-            # Determine color class based on config thresholds
             warn = cap_cfg.warning_threshold if cap_cfg else 0.70
             crit = cap_cfg.critical_threshold if cap_cfg else 0.85
             pause = cap_cfg.pause_threshold if cap_cfg else 0.95
@@ -951,9 +946,13 @@ def create_app(
                 capacity["color_class"] = "status-free"
                 capacity["severity"] = "ok"
 
+        return capacity
+
+    @app.get("/partials/linear-capacity", response_class=HTMLResponse)
+    def partial_linear_capacity(request: Request):
         return templates.TemplateResponse("partials/linear_capacity.html", {
             "request": request,
-            "capacity": capacity,
+            "capacity": _get_capacity_data(),
             "elapsed": _elapsed,
         })
 
