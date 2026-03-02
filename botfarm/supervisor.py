@@ -1445,8 +1445,9 @@ class Supervisor:
                         "Failed to move %s to '%s'", slot.ticket_id, target_status,
                     )
 
-            # Post completion comment if enabled
-            if linear_cfg.comment_on_completion:
+            # Post completion comment if enabled (skip when no_pr_reason
+            # is set — _post_no_pr_comment below provides a better summary)
+            if linear_cfg.comment_on_completion and not slot.no_pr_reason:
                 self._post_completion_comment(poller, slot)
 
             # Post terminal summary for no-PR outcomes (investigation,
@@ -1581,6 +1582,8 @@ class Supervisor:
         )
         if result_text:
             truncated = result_text[:2000]
+            if len(result_text) > 2000:
+                truncated += "\n\n… *(truncated)*"
             lines.append("")
             lines.append(truncated)
 
@@ -1648,6 +1651,8 @@ class Supervisor:
         )
         if result_text:
             truncated = result_text[:2000]
+            if len(result_text) > 2000:
+                truncated += "\n\n… *(truncated)*"
             lines.append("")
             lines.append(truncated)
 
