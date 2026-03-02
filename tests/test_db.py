@@ -13,6 +13,7 @@ from botfarm.db import (
     clear_slot_stage,
     count_tasks,
     count_ticket_history,
+    get_codex_review_stats,
     get_distinct_projects,
     get_events,
     get_latest_context_fill_by_ticket,
@@ -1286,6 +1287,74 @@ class TestStageRunAggregates:
                          input_tokens=100, output_tokens=50)
         result = get_stage_run_aggregates(conn, [tid])
         assert result[tid]["max_context_fill_pct"] is None
+
+
+class TestCodexReviewStats:
+    def test_codex_stats_single_task(self, conn):
+        tid = insert_task(conn, ticket_id="CDX-1", title="Codex", project="p", slot=1)
+        insert_stage_run(conn, task_id=tid, stage="codex_review", iteration=1,
+                         input_tokens=500_000, output_tokens=10_000,
+                         cache_read_input_tokens=200_000,
+                         duration_seconds=45.0, exit_subtype="approved")
+        insert_stage_run(conn, task_id=tid, stage="codex_review", iteration=2,
+                         input_tokens=600_000, output_tokens=12_000,
+                         cache_read_input_tokens=250_000,
+                         duration_seconds=50.0, exit_subtype="changes_requested")
+        # Non-codex stage should be excluded
+        insert_stage_run(conn, task_id=tid, stage="implement",
+                         input_tokens=100, output_tokens=50)
+        result = get_codex_review_stats(conn, [tid])
+        assert tid in result
+        assert result[tid]["codex_input_tokens"] == 1_100_000
+        assert result[tid]["codex_output_tokens"] == 22_000
+        assert result[tid]["codex_cache_read_tokens"] == 450_000
+        assert result[tid]["codex_runs"] == 2
+        assert result[tid]["codex_duration_seconds"] == pytest.approx(95.0)
+        assert result[tid]["codex_approved"] == 1
+        assert result[tid]["codex_changes_requested"] == 1
+        assert result[tid]["codex_failed"] == 0
+
+    def test_codex_stats_with_failures(self, conn):
+        tid = insert_task(conn, ticket_id="CDX-2", title="CodexFail", project="p", slot=1)
+        insert_stage_run(conn, task_id=tid, stage="codex_review",
+                         input_tokens=100, output_tokens=10,
+                         exit_subtype="failed")
+        insert_stage_run(conn, task_id=tid, stage="codex_review",
+                         input_tokens=100, output_tokens=10,
+                         exit_subtype="timeout")
+        insert_stage_run(conn, task_id=tid, stage="codex_review",
+                         input_tokens=100, output_tokens=10,
+                         exit_subtype="approved")
+        result = get_codex_review_stats(conn, [tid])
+        assert result[tid]["codex_failed"] == 2
+        assert result[tid]["codex_approved"] == 1
+        assert result[tid]["codex_runs"] == 3
+
+    def test_codex_stats_no_codex_runs(self, conn):
+        tid = insert_task(conn, ticket_id="CDX-3", title="NoCdx", project="p", slot=1)
+        insert_stage_run(conn, task_id=tid, stage="implement",
+                         input_tokens=100, output_tokens=50)
+        result = get_codex_review_stats(conn, [tid])
+        assert tid not in result
+
+    def test_codex_stats_empty_ids(self, conn):
+        result = get_codex_review_stats(conn, [])
+        assert result == {}
+
+    def test_codex_stats_multiple_tasks(self, conn):
+        t1 = insert_task(conn, ticket_id="CDX-4", title="T1", project="p", slot=1)
+        t2 = insert_task(conn, ticket_id="CDX-5", title="T2", project="p", slot=2)
+        insert_stage_run(conn, task_id=t1, stage="codex_review",
+                         input_tokens=500, output_tokens=50,
+                         exit_subtype="approved")
+        insert_stage_run(conn, task_id=t2, stage="codex_review",
+                         input_tokens=800, output_tokens=80,
+                         exit_subtype="changes_requested")
+        result = get_codex_review_stats(conn, [t1, t2])
+        assert result[t1]["codex_input_tokens"] == 500
+        assert result[t2]["codex_input_tokens"] == 800
+        assert result[t1]["codex_approved"] == 1
+        assert result[t2]["codex_changes_requested"] == 1
 
 
 class TestLatestContextFillByTicket:

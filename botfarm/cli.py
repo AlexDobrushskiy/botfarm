@@ -21,6 +21,8 @@ from botfarm.config import (
 from botfarm.db import (
     SchemaVersionError,
     clear_slot_stage,
+    get_codex_review_stats,
+    get_stage_run_aggregates,
     get_task_history,
     init_db,
     load_all_project_pause_states,
@@ -218,6 +220,9 @@ def history(config_path, limit, project, status_filter):
         rows = get_task_history(
             conn, limit=limit, project=project, status=status_filter
         )
+        task_ids = [row["id"] for row in rows]
+        agg = get_stage_run_aggregates(conn, task_ids) if task_ids else {}
+        codex_stats = get_codex_review_stats(conn, task_ids) if task_ids else {}
     except sqlite3.OperationalError as exc:
         raise click.ClickException(f"Database query failed: {exc}") from exc
     finally:
@@ -228,13 +233,23 @@ def history(config_path, limit, project, status_filter):
         return
 
     console = Console()
-    table = Table(title="Task History")
-    table.add_column("Ticket", style="bold")
-    table.add_column("Project")
-    table.add_column("Status")
-    table.add_column("Turns", justify="right")
-    table.add_column("Duration", justify="right")
-    table.add_column("Created")
+    table = Table(title="Task History", show_lines=False)
+    table.add_column("Ticket", style="bold", no_wrap=True)
+    table.add_column("Project", no_wrap=True)
+    table.add_column("Status", no_wrap=True)
+    table.add_column("Turns", justify="right", no_wrap=True)
+    table.add_column("Duration", justify="right", no_wrap=True)
+    table.add_column("Cost", justify="right", no_wrap=True)
+    table.add_column("Codex In/Out", justify="right", no_wrap=True)
+    table.add_column("Codex", justify="center", no_wrap=True)
+    table.add_column("Created", no_wrap=True)
+
+    def _format_tokens(n: int) -> str:
+        if n >= 1_000_000:
+            return f"{n / 1_000_000:.1f}M"
+        if n >= 1_000:
+            return f"{n / 1_000:.0f}K"
+        return str(n)
 
     for row in rows:
         status_val = row["status"]
@@ -262,6 +277,22 @@ def history(config_path, limit, project, status_filter):
             except (ValueError, TypeError):
                 pass
 
+        task_agg = agg.get(row["id"], {})
+        cost = task_agg.get("total_cost_usd", 0.0)
+        cost_display = f"${cost:.2f}" if cost else "-"
+
+        task_codex = codex_stats.get(row["id"])
+        if task_codex:
+            codex_in = task_codex["codex_input_tokens"]
+            codex_out = task_codex["codex_output_tokens"]
+            codex_tokens_display = f"{_format_tokens(codex_in)}/{_format_tokens(codex_out)}"
+            approved = task_codex["codex_approved"]
+            total_runs = task_codex["codex_runs"]
+            codex_verdict = f"[green]{approved}[/green]/{total_runs}"
+        else:
+            codex_tokens_display = "-"
+            codex_verdict = "-"
+
         created = row["created_at"][:16] if row["created_at"] else "-"
 
         table.add_row(
@@ -270,6 +301,9 @@ def history(config_path, limit, project, status_filter):
             status_display,
             turns,
             duration,
+            cost_display,
+            codex_tokens_display,
+            codex_verdict,
             created,
         )
 

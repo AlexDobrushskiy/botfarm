@@ -434,6 +434,49 @@ def get_latest_context_fill_by_ticket(
     return result
 
 
+def get_codex_review_stats(
+    conn: sqlite3.Connection, task_ids: list[int],
+) -> dict[int, dict]:
+    """Return aggregated Codex review stats per task for a batch of task IDs.
+
+    Returns a dict mapping task_id -> {codex_input_tokens, codex_output_tokens,
+    codex_cache_read_tokens, codex_runs, codex_duration_seconds,
+    codex_approved, codex_changes_requested, codex_failed}.
+
+    Only considers stage_runs with stage = 'codex_review'.
+    """
+    if not task_ids:
+        return {}
+    placeholders = ",".join("?" for _ in task_ids)
+    rows = conn.execute(
+        "SELECT task_id, "
+        "SUM(input_tokens) as codex_input_tokens, "
+        "SUM(output_tokens) as codex_output_tokens, "
+        "SUM(cache_read_input_tokens) as codex_cache_read_tokens, "
+        "COUNT(*) as codex_runs, "
+        "SUM(duration_seconds) as codex_duration_seconds, "
+        "SUM(CASE WHEN exit_subtype = 'approved' THEN 1 ELSE 0 END) as codex_approved, "
+        "SUM(CASE WHEN exit_subtype = 'changes_requested' THEN 1 ELSE 0 END) as codex_changes_requested, "
+        "SUM(CASE WHEN exit_subtype IN ('failed', 'error', 'timeout') THEN 1 ELSE 0 END) as codex_failed "
+        f"FROM stage_runs WHERE task_id IN ({placeholders}) AND stage = 'codex_review' "
+        "GROUP BY task_id",
+        task_ids,
+    ).fetchall()
+    return {
+        r["task_id"]: {
+            "codex_input_tokens": r["codex_input_tokens"] or 0,
+            "codex_output_tokens": r["codex_output_tokens"] or 0,
+            "codex_cache_read_tokens": r["codex_cache_read_tokens"] or 0,
+            "codex_runs": r["codex_runs"] or 0,
+            "codex_duration_seconds": r["codex_duration_seconds"] or 0.0,
+            "codex_approved": r["codex_approved"] or 0,
+            "codex_changes_requested": r["codex_changes_requested"] or 0,
+            "codex_failed": r["codex_failed"] or 0,
+        }
+        for r in rows
+    }
+
+
 def get_stage_run_aggregates(
     conn: sqlite3.Connection, task_ids: list[int],
 ) -> dict[int, dict]:
