@@ -3061,20 +3061,35 @@ def create_app(
                 status_code=400,
             )
 
-        conn = None
+        def _run_cleanup_in_thread():
+            """Run the blocking cleanup operation in a worker thread.
+
+            Creates its own DB connection so SQLite's same-thread
+            constraint is satisfied.
+            """
+            conn = None
+            try:
+                conn = init_db(app.state.db_path)
+                svc = _get_cleanup_service(conn, min_age_days=min_age_days)
+                if svc is None:
+                    return None, "no_config"
+                result = svc.run_cleanup(
+                    action=action,
+                    limit=limit,
+                    issue_ids=selected_ids if isinstance(selected_ids, list) else None,
+                )
+                return result, None
+            finally:
+                if conn is not None:
+                    conn.close()
+
         try:
-            conn = init_db(app.state.db_path)
-            svc = _get_cleanup_service(conn, min_age_days=min_age_days)
-            if svc is None:
+            result, err = await asyncio.to_thread(_run_cleanup_in_thread)
+            if err == "no_config":
                 return JSONResponse(
                     {"error": "Linear API key not configured"},
                     status_code=503,
                 )
-            result = svc.run_cleanup(
-                action=action,
-                limit=limit,
-                issue_ids=selected_ids if isinstance(selected_ids, list) else None,
-            )
             return JSONResponse({
                 "batch_id": result.batch_id,
                 "action": result.action,
@@ -3089,9 +3104,6 @@ def create_app(
         except Exception as exc:
             logger.warning("Cleanup execute failed: %s", exc)
             return JSONResponse({"error": str(exc)}, status_code=500)
-        finally:
-            if conn is not None:
-                conn.close()
 
     @app.post("/api/cleanup/undo/{batch_id}")
     def api_cleanup_undo(batch_id: str):
