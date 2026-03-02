@@ -1823,7 +1823,7 @@ function _reorderStages(pipelineId, newOrder) {
 
 function moveStageUp(pipelineId, stageId) {
     var ids = _getStageIds(pipelineId);
-    var idx = ids.indexOf(stageId);
+    var idx = ids.indexOf(Number(stageId));
     if (idx <= 0) return;
     // Swap with previous
     var tmp = ids[idx - 1];
@@ -1834,7 +1834,7 @@ function moveStageUp(pipelineId, stageId) {
 
 function moveStageDown(pipelineId, stageId) {
     var ids = _getStageIds(pipelineId);
-    var idx = ids.indexOf(stageId);
+    var idx = ids.indexOf(Number(stageId));
     if (idx < 0 || idx >= ids.length - 1) return;
     // Swap with next
     var tmp = ids[idx + 1];
