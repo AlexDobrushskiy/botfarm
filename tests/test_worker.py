@@ -2795,6 +2795,12 @@ class TestBuildImplementPrompt:
         assert "Do not create a PR" in prompt
         assert "PR creation" not in prompt
 
+    def test_investigation_prompt_includes_dependency_instruction(self):
+        prompt = _build_implement_prompt("SMA-42", ["Investigation"])
+        assert "blockedBy" in prompt
+        assert "blocks" in prompt
+        assert "save_issue" in prompt
+
     def test_investigation_prompt_case_insensitive(self):
         prompt = _build_implement_prompt("SMA-42", ["investigation"])
         assert "investigation ticket" in prompt

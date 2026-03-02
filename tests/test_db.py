@@ -2041,6 +2041,19 @@ class TestWorkflowDefinitionTables:
         assert "{ticket_id}" in row["prompt_template"]
         assert "investigation" in row["prompt_template"].lower()
 
+    def test_investigation_prompt_includes_dependency_instruction(self, conn):
+        inv_id = conn.execute(
+            "SELECT id FROM pipeline_templates WHERE name = 'investigation'"
+        ).fetchone()["id"]
+        row = conn.execute(
+            "SELECT * FROM stage_templates WHERE pipeline_id = ? AND name = 'implement'",
+            (inv_id,),
+        ).fetchone()
+        prompt = row["prompt_template"]
+        assert "blockedBy" in prompt
+        assert "blocks" in prompt
+        assert "save_issue" in prompt
+
     # -- stage_loops seed data --
 
     def test_implementation_loops_count(self, conn):
