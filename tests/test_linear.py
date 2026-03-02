@@ -1493,6 +1493,16 @@ class TestCountActiveIssues:
         assert body["query"] == ACTIVE_ISSUES_COUNT_QUERY
         assert body["variables"]["first"] == 250
 
+    def test_query_does_not_filter_by_state(self):
+        """Ensure the query counts ALL non-archived issues regardless of state.
+
+        Linear's free plan counts completed/canceled issues toward the
+        250 limit, so the capacity query must not exclude them.
+        """
+        assert "completed" not in ACTIVE_ISSUES_COUNT_QUERY
+        assert "canceled" not in ACTIVE_ISSUES_COUNT_QUERY
+        assert "state" not in ACTIVE_ISSUES_COUNT_QUERY
+
 
 class TestCountActiveIssuesForProject:
     """Tests for LinearClient.count_active_issues_for_project."""
@@ -1543,6 +1553,16 @@ class TestCountActiveIssuesForProject:
         with patch.object(httpx, "post", side_effect=httpx.HTTPError("fail")):
             count = client.count_active_issues_for_project("Alpha")
         assert count is None
+
+    def test_query_does_not_filter_by_state(self):
+        """Ensure the project query counts ALL non-archived issues.
+
+        Linear's free plan counts completed/canceled issues toward the
+        250 limit, so the capacity query must not exclude them.
+        """
+        assert "completed" not in ACTIVE_ISSUES_FOR_PROJECT_COUNT_QUERY
+        assert "canceled" not in ACTIVE_ISSUES_FOR_PROJECT_COUNT_QUERY
+        assert "state" not in ACTIVE_ISSUES_FOR_PROJECT_COUNT_QUERY
 
 
 class TestIsIssueTerminal:
