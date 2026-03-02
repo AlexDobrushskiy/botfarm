@@ -3420,6 +3420,37 @@ class TestCheckPrStatus:
         poller.move_issue.assert_called_once_with("TST-1", "Done")
         assert sm.get_slot("test-project", 1).status == "free"
 
+    def test_no_pr_reason_recovered_from_task_comments(self, supervisor):
+        """Crash recovery: no_pr_reason lost in memory but recovered from task comments."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        slot = sm.get_slot("test-project", 1)
+        # Simulate crash recovery: no_pr_reason is NOT set on the slot
+        assert slot.no_pr_reason is None
+        # But the task comments have the persisted signal
+        sm.mark_completed("test-project", 1)
+
+        task_id = insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="completed",
+        )
+        update_task(
+            supervisor._conn, task_id,
+            comments="NO_PR_NEEDED: All criteria already met on main",
+        )
+        supervisor._conn.commit()
+
+        poller = supervisor._pollers["test-project"]
+
+        supervisor._handle_finished_slots()
+
+        poller.move_issue.assert_called_once_with("TST-1", "Done")
+        assert sm.get_slot("test-project", 1).status == "free"
+
     def test_gh_pr_state_merged(self):
         """_gh_pr_state returns 'merged' for merged PRs."""
         mock_proc = MagicMock()

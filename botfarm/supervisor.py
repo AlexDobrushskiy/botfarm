@@ -1404,8 +1404,19 @@ class Supervisor:
                     slot.project, slot.slot_id, slot.ticket_id,
                 )
             else:
-                # Determine target status based on PR state
-                if slot.no_pr_reason:
+                # Determine target status based on PR state.
+                # Recover no_pr_reason from persisted task record if
+                # the in-memory flag was lost (e.g. supervisor restart).
+                no_pr = slot.no_pr_reason
+                if not no_pr and not slot.pr_url:
+                    task_id = self._find_task_id(slot.ticket_id)
+                    if task_id is not None:
+                        from botfarm.db import get_task
+                        task = get_task(self._conn, task_id)
+                        if task and task["comments"]:
+                            from botfarm.worker import _detect_no_pr_needed
+                            no_pr = _detect_no_pr_needed(task["comments"])
+                if no_pr:
                     target_status = linear_cfg.done_status
                 elif self._check_pr_status(slot) == "merged":
                     target_status = linear_cfg.done_status

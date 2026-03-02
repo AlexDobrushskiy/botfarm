@@ -1629,7 +1629,7 @@ def run_pipeline(
                     status="completed",
                     turns=pipeline.total_turns,
                     completed_at=datetime.now(timezone.utc).isoformat(),
-                    comments=no_pr_reason[:500],
+                    comments=f"NO_PR_NEEDED: {no_pr_reason}"[:500],
                 )
                 conn.commit()
                 return pipeline
