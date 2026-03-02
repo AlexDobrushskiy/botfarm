@@ -2959,9 +2959,11 @@ def create_app(
         cfg = app.state.botfarm_config
         if cfg is None or not cfg.linear.api_key:
             return None
+        if not cfg.projects:
+            return None
         client = LinearClient(api_key=cfg.linear.api_key)
-        team_key = cfg.projects[0].linear_team if cfg.projects else ""
-        project_name = cfg.projects[0].linear_project if cfg.projects else ""
+        team_key = cfg.projects[0].linear_team
+        project_name = cfg.projects[0].linear_project
         return CleanupService(
             client, conn, team_key=team_key, project_name=project_name,
             min_age_days=min_age_days,
@@ -3050,6 +3052,7 @@ def create_app(
 
         action = body.get("action", "archive")
         limit = body.get("limit", 50)
+        min_age_days = body.get("min_age_days", 7)
         selected_ids = body.get("selected_ids")
 
         if action not in ("archive", "delete"):
@@ -3061,7 +3064,7 @@ def create_app(
         conn = None
         try:
             conn = init_db(app.state.db_path)
-            svc = _get_cleanup_service(conn)
+            svc = _get_cleanup_service(conn, min_age_days=min_age_days)
             if svc is None:
                 return JSONResponse(
                     {"error": "Linear API key not configured"},

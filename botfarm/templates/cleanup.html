@@ -421,6 +421,7 @@
                 action: currentAction,
                 limit: selected.size,
                 selected_ids: Array.from(selected),
+                min_age_days: parseInt(document.getElementById("filter-min-age").value, 10),
             }),
         })
         .then(function(r) { return r.json(); })
