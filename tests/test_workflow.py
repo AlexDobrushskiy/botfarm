@@ -298,6 +298,7 @@ class TestResolveMaxIterations:
             max_review_iterations: int = 5
 
         loop = StageLoop(
+            id=0,
             name="review_loop",
             start_stage="review",
             end_stage="fix",
@@ -314,6 +315,7 @@ class TestResolveMaxIterations:
             pass  # no matching attribute
 
         loop = StageLoop(
+            id=0,
             name="review_loop",
             start_stage="review",
             end_stage="fix",
@@ -330,6 +332,7 @@ class TestResolveMaxIterations:
             max_review_iterations: int = 10
 
         loop = StageLoop(
+            id=0,
             name="some_loop",
             start_stage="a",
             end_stage="b",
@@ -345,6 +348,7 @@ class TestResolveMaxIterations:
             max_ci_retries = "4"
 
         loop = StageLoop(
+            id=0,
             name="ci_loop",
             start_stage="ci_fix",
             end_stage="pr_checks",

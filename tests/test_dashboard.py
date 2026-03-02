@@ -4418,6 +4418,68 @@ class TestWorkflowPage:
         body = resp.text
         assert 'class="workflow-tabs"' in body
 
+    def test_workflow_shows_loop_editor_elements(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        assert "loop-editor" in body
+        assert "toggleLoopEditor" in body
+
+    def test_workflow_loop_editor_has_all_fields(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        assert "loop-name-" in body
+        assert "loop-start_stage-" in body
+        assert "loop-end_stage-" in body
+        assert "loop-max_iterations-" in body
+        assert "loop-config_key-" in body
+        assert "loop-exit_condition-" in body
+        assert "loop-on_failure_stage-" in body
+
+    def test_workflow_has_add_loop_button(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        assert "Add Loop" in body
+        assert "showAddLoopModal" in body
+
+    def test_workflow_has_add_loop_modal(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        assert "add-loop-modal" in body
+        assert "add-loop-name" in body
+        assert "createLoop" in body
+
+    def test_workflow_has_delete_loop_button(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        assert "deleteLoop" in body
+        assert "Remove Loop" in body
+
+    def test_workflow_has_save_loop_function(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        assert "saveLoop" in body
+
+    def test_workflow_loop_editor_has_stage_dropdowns(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        # The loop editor should have stage options for start_stage and end_stage
+        assert "loop-start_stage-" in body
+        assert "loop-end_stage-" in body
+        # Stage names should appear as options
+        assert "implement" in body
+        assert "review" in body
+
+    def test_workflow_loop_shows_config_hint(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        # review_loop has config_key set, so it should show the config hint
+        assert "overridable via config" in body
+
+    def test_workflow_loop_data_attributes(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        assert "data-loop-id" in body
+
 
 # --- Workflow API ---
 

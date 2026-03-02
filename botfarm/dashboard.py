@@ -1453,7 +1453,12 @@ def create_app(
                             question = "Continue?"
 
                         loops_list.append({
+                            "id": loop.id,
                             "name": loop.name,
+                            "start_stage": loop.start_stage,
+                            "end_stage": loop.end_stage,
+                            "config_key": loop.config_key,
+                            "on_failure_stage": loop.on_failure_stage,
                             "decision_stage": decision_stage,
                             "fix_stage_name": fix_stage_name,
                             "fix_stage": {
@@ -1468,6 +1473,7 @@ def create_app(
                                 "result_parser": fix_stage_obj.result_parser,
                             } if fix_stage_obj else None,
                             "max_iterations": eff_max,
+                            "raw_max_iterations": loop.max_iterations,
                             "question": question,
                             "exit_condition": loop.exit_condition,
                         })
