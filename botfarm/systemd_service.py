@@ -146,11 +146,12 @@ def install_service(
 
 
 def check_installed_unit_stale() -> tuple[bool, str]:
-    """Check whether the installed unit file contains stale flags.
+    """Check whether the installed unit file is stale.
 
     Returns ``(is_stale, message)``.  A unit is considered stale if it
-    still contains ``--no-auto-restart``, which prevents dashboard-triggered
-    updates from working.
+    still contains ``--no-auto-restart`` (prevents dashboard-triggered
+    updates) or is missing an ``Environment=PATH=`` directive (child
+    processes may not find binaries like codex, claude, or gh).
     """
     if not UNIT_PATH.exists():
         return False, "no installed unit file"
