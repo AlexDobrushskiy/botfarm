@@ -1012,6 +1012,32 @@ class TestShutdown:
         assert "running_workers=1" in events[0]["detail"]
         conn.close()
 
+    def test_shutdown_sends_notification_on_signal(self, supervisor):
+        supervisor._notifier = MagicMock()
+        supervisor._shutdown_requested = True
+        supervisor._exit_code = 0
+        supervisor._shutdown()
+        supervisor._notifier.notify_supervisor_shutdown.assert_called_once_with(
+            reason="SIGTERM/SIGINT received",
+        )
+
+    def test_shutdown_sends_notification_on_unexpected_error(self, supervisor):
+        supervisor._notifier = MagicMock()
+        supervisor._shutdown_requested = False
+        supervisor._exit_code = 0
+        supervisor._shutdown()
+        supervisor._notifier.notify_supervisor_shutdown.assert_called_once_with(
+            reason="unexpected error",
+        )
+
+    def test_shutdown_skips_notification_on_update_restart(self, supervisor):
+        from botfarm.git_update import UPDATE_EXIT_CODE
+
+        supervisor._notifier = MagicMock()
+        supervisor._exit_code = UPDATE_EXIT_CODE
+        supervisor._shutdown()
+        supervisor._notifier.notify_supervisor_shutdown.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # Sleep

@@ -60,6 +60,7 @@ class TestNotifierDisabled:
         n.notify_capacity_blocked(count=950, limit=1000, percentage=95.0)
         n.notify_capacity_cleared(count=890, limit=1000, percentage=89.0)
         n.notify_all_idle()
+        n.notify_supervisor_shutdown(reason="test")
         n.close()
 
 
@@ -147,6 +148,19 @@ class TestNotifierSlack:
         notifier._client.post.assert_called_once()
         payload = notifier._client.post.call_args[1]["json"]
         assert "idle" in payload["text"].lower()
+
+    def test_supervisor_shutdown_sends_reason(self, notifier):
+        notifier.notify_supervisor_shutdown(reason="SIGTERM/SIGINT received")
+        notifier._client.post.assert_called_once()
+        payload = notifier._client.post.call_args[1]["json"]
+        assert "shut down" in payload["text"].lower()
+        assert "SIGTERM/SIGINT received" in payload["text"]
+        assert "Workers may still be running" in payload["text"]
+
+    def test_supervisor_shutdown_not_rate_limited(self, notifier):
+        notifier.notify_supervisor_shutdown(reason="unexpected error")
+        notifier.notify_supervisor_shutdown(reason="unexpected error")
+        assert notifier._client.post.call_count == 2
 
 
 # ---------------------------------------------------------------------------

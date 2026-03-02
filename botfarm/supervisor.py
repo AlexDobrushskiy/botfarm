@@ -2734,6 +2734,13 @@ class Supervisor:
         """Graceful shutdown: persist state, don't kill workers."""
         logger.info("Supervisor shutting down")
 
+        # Notify unless this is a planned update-restart
+        from botfarm.git_update import UPDATE_EXIT_CODE
+
+        if self._exit_code != UPDATE_EXIT_CODE:
+            reason = "SIGTERM/SIGINT received" if self._shutdown_requested else "unexpected error"
+            self._notifier.notify_supervisor_shutdown(reason=reason)
+
         # Persist state
         self._slot_manager.save()
         self._usage_poller.close()
