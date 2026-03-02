@@ -500,6 +500,20 @@ class Supervisor:
         # Reconcile DB task records with slot state
         self._reconcile_db_tasks()
 
+        # Clear stale update_in_progress pause — the fact that we're
+        # starting up means the update already completed (or was aborted).
+        if (
+            self._slot_manager.dispatch_paused
+            and self._slot_manager.dispatch_pause_reason == "update_in_progress"
+        ):
+            logger.info("Clearing update_in_progress pause after restart")
+            self._slot_manager.set_dispatch_paused(False)
+            insert_event(
+                self._conn,
+                event_type="dispatch_resumed",
+                detail="previous_reason=update_in_progress (post-update startup)",
+            )
+
         if recovered_count:
             logger.info(
                 "Startup recovery processed %d slot(s)", recovered_count,

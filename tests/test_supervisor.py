@@ -3023,6 +3023,29 @@ class TestRecoverOnStartup:
         events = get_events(supervisor._conn, event_type="startup_recovery")
         assert "slots_processed=2" in events[0]["detail"]
 
+    def test_update_in_progress_pause_cleared_on_startup(self, supervisor):
+        """Stale update_in_progress pause is cleared during startup recovery."""
+        sm = supervisor.slot_manager
+        sm.set_dispatch_paused(True, "update_in_progress")
+
+        supervisor._recover_on_startup()
+
+        assert sm.dispatch_paused is False
+        assert sm.dispatch_pause_reason is None
+        events = get_events(supervisor._conn, event_type="dispatch_resumed")
+        assert len(events) == 1
+        assert "update_in_progress" in events[0]["detail"]
+
+    def test_manual_pause_not_cleared_on_startup(self, supervisor):
+        """Manual pause should NOT be cleared during startup recovery."""
+        sm = supervisor.slot_manager
+        sm.set_dispatch_paused(True, "manual_pause")
+
+        supervisor._recover_on_startup()
+
+        assert sm.dispatch_paused is True
+        assert sm.dispatch_pause_reason == "manual_pause"
+
 
 class TestExternallyDoneTicket:
     """Tests for detecting tickets moved to Done/Cancelled externally."""
