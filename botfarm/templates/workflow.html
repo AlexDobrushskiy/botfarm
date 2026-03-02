@@ -663,8 +663,13 @@ function togglePipelineEditor(pipelineName) {
 
 function savePipelineMetadata(pipelineId, pipelineName) {
     var feedbackEl = document.getElementById('pipe-feedback-' + pipelineId);
+    var nameVal = document.getElementById('pipe-name-' + pipelineId).value.trim();
+    if (!nameVal) {
+        showFeedbackError(feedbackEl, 'Name is required.');
+        return;
+    }
     var body = {
-        name: document.getElementById('pipe-name-' + pipelineId).value,
+        name: nameVal,
         description: document.getElementById('pipe-desc-' + pipelineId).value || null,
         ticket_label: document.getElementById('pipe-label-' + pipelineId).value || null,
         is_default: document.getElementById('pipe-default-' + pipelineId).checked
