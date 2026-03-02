@@ -1,8 +1,11 @@
 """Systemd user service management for the botfarm supervisor.
 
 Generates, installs, and removes a ``~/.config/systemd/user/botfarm.service``
-unit that auto-restarts the supervisor on crashes (non-zero exit, unclean signals)
-while leaving clean stops (exit code 0, SIGTERM, SIGINT) alone.
+unit.  The supervisor runs with ``--auto-restart`` (the default) so that
+dashboard-triggered updates work: after pulling new code the CLI calls
+``os.execv()`` to replace the process in-place (same PID), which is
+transparent to systemd.  Systemd's ``Restart=on-failure`` still catches
+genuine crashes (non-zero exit, unclean signals).
 """
 
 from __future__ import annotations
@@ -74,7 +77,7 @@ def generate_unit(
         """Quote a path for systemd ExecStart if it contains spaces."""
         return f'"{p}"' if " " in p else p
 
-    exec_parts = [_quote(botfarm_bin), "run", "--no-auto-restart"]
+    exec_parts = [_quote(botfarm_bin), "run"]
     if config_path is not None:
         exec_parts.extend(["--config", _quote(str(config_path))])
 
@@ -135,6 +138,28 @@ def install_service(
     )
 
     return UNIT_PATH
+
+
+def check_installed_unit_stale() -> tuple[bool, str]:
+    """Check whether the installed unit file contains stale flags.
+
+    Returns ``(is_stale, message)``.  A unit is considered stale if it
+    still contains ``--no-auto-restart``, which prevents dashboard-triggered
+    updates from working.
+    """
+    if not UNIT_PATH.exists():
+        return False, "no installed unit file"
+    try:
+        content = UNIT_PATH.read_text()
+    except OSError as exc:
+        return False, f"cannot read unit file: {exc}"
+    if "--no-auto-restart" in content:
+        return True, (
+            f"installed unit {UNIT_PATH} contains --no-auto-restart — "
+            "dashboard updates will not work. "
+            "Run 'botfarm install-service' to regenerate the unit file."
+        )
+    return False, "OK"
 
 
 def uninstall_service() -> None:

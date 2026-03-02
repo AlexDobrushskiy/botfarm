@@ -37,6 +37,7 @@ from botfarm.preflight import (
     check_identity_ssh_key,
     check_linear_api,
     check_notifications_webhook,
+    check_systemd_unit,
     check_worktree_dirs,
     log_preflight_summary,
     run_preflight_checks,
@@ -992,7 +993,8 @@ class TestRunPreflightChecks:
                  "get_team_states",
                  return_value=team_states,
              ), \
-             patch("botfarm.preflight._load_token", return_value=token):
+             patch("botfarm.preflight._load_token", return_value=token), \
+             patch("botfarm.preflight.check_installed_unit_stale", return_value=(False, "OK")):
             mock_run.return_value.returncode = 0
             mock_run.return_value.stdout = "git@github.com:org/repo.git\n"
             mock_run.return_value.stderr = ""
@@ -1075,3 +1077,32 @@ class TestCheckCodexReviewer:
         auth_results = [r for r in results if r.name == "codex_reviewer:auth"]
         assert len(auth_results) == 1
         assert auth_results[0].passed
+
+
+class TestCheckSystemdUnit:
+    def test_no_unit_file(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "botfarm.preflight.check_installed_unit_stale",
+            lambda: (False, "no installed unit file"),
+        )
+        results = check_systemd_unit()
+        assert results == []
+
+    def test_stale_unit_warns(self, monkeypatch):
+        monkeypatch.setattr(
+            "botfarm.preflight.check_installed_unit_stale",
+            lambda: (True, "unit contains --no-auto-restart"),
+        )
+        results = check_systemd_unit()
+        assert len(results) == 1
+        assert not results[0].passed
+        assert not results[0].critical
+        assert results[0].name == "systemd_unit"
+
+    def test_current_unit_returns_empty(self, monkeypatch):
+        monkeypatch.setattr(
+            "botfarm.preflight.check_installed_unit_stale",
+            lambda: (False, "OK"),
+        )
+        results = check_systemd_unit()
+        assert results == []
