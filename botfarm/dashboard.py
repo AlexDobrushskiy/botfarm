@@ -932,9 +932,8 @@ def create_app(
             cap_cfg = cfg.linear.capacity_monitoring if cfg else None
             limit = capacity["limit"]
             count = capacity["issue_count"]
-            pct = (count / limit * 100) if limit else 0
             ratio = count / limit if limit else 0
-            capacity["pct"] = pct
+            capacity["pct"] = ratio * 100
             # Determine color class based on config thresholds
             warn = cap_cfg.warning_threshold if cap_cfg else 0.70
             crit = cap_cfg.critical_threshold if cap_cfg else 0.85

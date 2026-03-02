@@ -4966,7 +4966,6 @@ class TestLinearCapacityPartial:
 
     def test_capacity_with_custom_thresholds(self, tmp_path):
         """Respects custom threshold config for color classes."""
-        from botfarm.config import CapacityConfig, LinearConfig
         cfg = BotfarmConfig(
             projects=[],
             linear=LinearConfig(
