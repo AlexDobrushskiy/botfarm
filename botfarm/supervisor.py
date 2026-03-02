@@ -61,6 +61,7 @@ class _WorkerResult:
     paused: bool = False
     stages_completed: list[str] | None = None
     no_pr_reason: str | None = None
+    result_text: str | None = None
 
 
 @dataclass
@@ -163,6 +164,7 @@ def _worker_entry(
             result_queue.put(_WorkerResult(
                 project=project_name, slot_id=slot_id, success=True,
                 no_pr_reason=result.no_pr_reason,
+                result_text=result.result_text,
             ))
             logger.info(
                 "Worker %s/%d finished successfully for %s",
@@ -176,6 +178,7 @@ def _worker_entry(
                 failure_stage=result.failure_stage,
                 failure_reason=result.failure_reason,
                 limit_hit=limit_hit,
+                result_text=result.result_text,
             ))
             if limit_hit:
                 logger.warning(
@@ -335,6 +338,10 @@ class Supervisor:
 
         # Usage stall detection: (project, slot_id) -> _StallInfo
         self._stall_tracking: dict[tuple[str, int], _StallInfo] = {}
+
+        # Transient result text from workers, for posting terminal comments.
+        # Keyed by (project, slot_id), consumed during slot cleanup.
+        self._pending_result_texts: dict[tuple[str, int], str] = {}
 
         # Degraded mode: preflight checks failed, dashboard running but
         # dispatch paused.  Re-checks run periodically until all pass.
@@ -1203,6 +1210,9 @@ class Supervisor:
                         "Worker result: %s/%d failed — %s",
                         wr.project, wr.slot_id, reason,
                     )
+            # Stash result_text for terminal comment posting
+            if wr.result_text:
+                self._pending_result_texts[(wr.project, wr.slot_id)] = wr.result_text
             # Clean up pause event for this worker regardless of outcome
             self._pause_events.pop((wr.project, wr.slot_id), None)
 
@@ -1439,6 +1449,13 @@ class Supervisor:
             if linear_cfg.comment_on_completion:
                 self._post_completion_comment(poller, slot)
 
+            # Post terminal summary for no-PR outcomes (investigation,
+            # verification, etc.) so the ticket has a trail of what was done.
+            # Normal PR-based completions don't need this — the PR itself
+            # serves as the trail.
+            if slot.no_pr_reason:
+                self._post_no_pr_comment(poller, slot)
+
         # Webhook notification
         self._notify_task_completed(slot)
 
@@ -1460,6 +1477,7 @@ class Supervisor:
 
         self._slot_manager.free_slot(project, slot.slot_id)
         self._cleanup_slot_db(project, slot.slot_id)
+        self._pending_result_texts.pop((project, slot.slot_id), None)
         logger.info("Freed slot %s/%d after completion", project, slot.slot_id)
 
     def _handle_failed_slot(self, slot: SlotState) -> None:
@@ -1535,6 +1553,7 @@ class Supervisor:
 
         self._slot_manager.free_slot(project, slot.slot_id)
         self._cleanup_slot_db(project, slot.slot_id)
+        self._pending_result_texts.pop((project, slot.slot_id), None)
         logger.info("Freed slot %s/%d after failure", project, slot.slot_id)
 
     def _post_failure_comment(self, poller: LinearPoller, slot: SlotState) -> None:
@@ -1550,11 +1569,21 @@ class Supervisor:
                 reason = task["failure_reason"]
 
         lines = [
-            "**Botfarm worker failed**",
+            "**Bot outcome: failed**",
             "",
             f"- **Stage:** `{stage}`",
-            f"- **Reason:** {reason}",
+            f"- **Failure reason:** {reason}",
         ]
+
+        # Include agent's last result text if available
+        result_text = self._pending_result_texts.get(
+            (slot.project, slot.slot_id)
+        )
+        if result_text:
+            truncated = result_text[:2000]
+            lines.append("")
+            lines.append(truncated)
+
         try:
             poller.add_comment(slot.ticket_id, "\n".join(lines))
         except Exception:
@@ -1603,6 +1632,31 @@ class Supervisor:
         except Exception:
             logger.exception(
                 "Failed to post completion comment on %s", slot.ticket_id,
+            )
+
+    def _post_no_pr_comment(self, poller: LinearPoller, slot: SlotState) -> None:
+        """Post a summary comment when a task completes without a PR.
+
+        This covers investigation tickets, verification tasks, and any
+        other outcome where the agent signals NO_PR_NEEDED.  The comment
+        provides a trail of what the agent did and found.
+        """
+        lines = ["**Bot outcome: completed_no_pr**"]
+
+        result_text = self._pending_result_texts.get(
+            (slot.project, slot.slot_id)
+        )
+        if result_text:
+            truncated = result_text[:2000]
+            lines.append("")
+            lines.append(truncated)
+
+        try:
+            poller.add_comment(slot.ticket_id, "\n".join(lines))
+        except Exception:
+            logger.warning(
+                "Failed to post no-PR comment on %s", slot.ticket_id,
+                exc_info=True,
             )
 
     # ------------------------------------------------------------------
