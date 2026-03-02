@@ -121,8 +121,12 @@ def _worker_entry(
     When ``resume_from_stage`` is set, the pipeline skips stages that
     were already completed and resumes from the specified stage.
     """
-    # Ignore SIGINT so only the supervisor handles Ctrl-C
+    # Ignore SIGINT so only the supervisor handles Ctrl-C.
     signal.signal(signal.SIGINT, signal.SIG_IGN)
+    # Move worker into its own process group so process-group signals
+    # (kill, terminal close, systemd stop) don't reach it.  The
+    # supervisor can still send SIGTERM directly via os.kill(pid, ...).
+    os.setpgrp()
 
     # Set up per-ticket Python logging to a file so worker log messages
     # (info, warnings, errors) are captured alongside the subprocess logs.
