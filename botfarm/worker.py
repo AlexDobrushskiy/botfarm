@@ -578,7 +578,12 @@ def _build_implement_prompt(ticket_id: str, labels: list[str] | None) -> str:
             f"Work on Linear ticket {ticket_id}. "
             "This is an investigation ticket. Produce a summary of findings "
             "as a Linear comment on the ticket. If you identify implementation "
-            "work, create follow-up Linear tickets. Do not create a PR."
+            "work, create follow-up Linear tickets. Do not create a PR.\n\n"
+            "When creating multiple follow-up tickets where one depends on another, "
+            "set blockedBy / blocks relationships between them using the Linear MCP "
+            "save_issue tool. This ensures the supervisor dispatches them in the correct "
+            "order. Do not just mention dependencies in the description \u2014 set them as "
+            "actual Linear relations."
         )
     return (
         f"Work on Linear ticket {ticket_id}. "
