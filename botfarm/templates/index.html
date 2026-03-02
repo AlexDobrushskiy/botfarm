@@ -22,6 +22,11 @@
     {% include "partials/usage.html" %}
 </div>
 
+<h2>Linear Capacity</h2>
+<div id="linear-capacity-panel" hx-get="/partials/linear-capacity" hx-trigger="every 30s" hx-swap="innerHTML">
+    {% include "partials/linear_capacity.html" %}
+</div>
+
 <h2>Queue</h2>
 <div id="queue-panel" hx-get="/partials/queue" hx-trigger="every 5s" hx-swap="innerHTML">
     {% include "partials/queue.html" %}

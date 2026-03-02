@@ -1,0 +1,51 @@
+{% if capacity %}
+{% if capacity.severity == "blocked" %}
+<div style="padding: 0.75rem; margin-bottom: 0.75rem; border: 2px solid var(--pico-color-red-500, #e53935); border-radius: var(--pico-border-radius); background: rgba(229,57,53,0.15); animation: pulse 2s infinite;">
+    <strong class="status-failed">DISPATCH PAUSED — Linear capacity at {{ "%.0f"|format(capacity.pct) }}%</strong>
+    <br><small>Issue creation is blocked. Archive completed issues to free capacity.</small>
+</div>
+{% elif capacity.severity == "critical" %}
+<div style="padding: 0.75rem; margin-bottom: 0.75rem; border: 1px solid var(--pico-color-red-500, #e53935); border-radius: var(--pico-border-radius); background: rgba(229,57,53,0.10);">
+    <strong class="status-failed">Warning: Linear capacity at {{ "%.0f"|format(capacity.pct) }}% — approaching limit</strong>
+</div>
+{% endif %}
+
+<div>
+    <strong>Active issues:</strong>
+    <span class="{{ capacity.color_class }}">
+        {{ capacity.issue_count }} / {{ capacity.limit }} ({{ "%.0f"|format(capacity.pct) }}%)
+    </span>
+    <progress value="{{ capacity.pct|round|int }}" max="100" style="margin-bottom: 0;"></progress>
+</div>
+
+{% if capacity.by_project %}
+<table role="grid" style="margin-top: 0.75rem;">
+    <thead>
+        <tr>
+            <th>Project</th>
+            <th>Issues</th>
+            <th>Share</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for project, count in capacity.by_project.items()|sort(attribute='1', reverse=true) %}
+        {% set project_pct = (count / capacity.issue_count * 100) if capacity.issue_count else 0 %}
+        <tr>
+            <td>{{ project }}</td>
+            <td>{{ count }}</td>
+            <td>
+                <span style="display: inline-block; width: 60px;">{{ "%.0f"|format(project_pct) }}%</span>
+                <progress value="{{ project_pct|round|int }}" max="100" style="margin-bottom: 0; width: 100px; display: inline-block; vertical-align: middle;"></progress>
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+
+{% if capacity.checked_at %}
+<small style="display: block; margin-top: 0.5rem;">Last checked: {{ elapsed(capacity.checked_at) }} ago</small>
+{% endif %}
+{% else %}
+<p>No capacity data available.</p>
+{% endif %}

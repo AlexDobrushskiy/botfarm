@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from botfarm.config import (
     BotfarmConfig,
+    CapacityConfig,
     CoderIdentity,
     DashboardConfig,
     IdentitiesConfig,
@@ -29,12 +30,13 @@ from botfarm.db import (
     insert_stage_run,
     insert_task,
     insert_usage_snapshot,
-    update_task,
-    upsert_slot,
-    save_dispatch_state,
     load_all_slots,
     load_dispatch_state,
+    save_capacity_state,
+    save_dispatch_state,
     save_queue_entries,
+    update_task,
+    upsert_slot,
 )
 
 
@@ -4848,3 +4850,135 @@ class TestApiDeleteLoop:
         resp = client.delete("/api/workflow/loops/99999")
         assert resp.status_code == 404
         assert resp.json()["ok"] is False
+
+
+# --- Linear Capacity Widget (SMA-275) ---
+
+
+class TestLinearCapacityPartial:
+    """Tests for the /partials/linear-capacity endpoint and index integration."""
+
+    def _make_client(self, tmp_path, *, issue_count=None, limit=250,
+                     by_project=None, checked_at="2026-03-01T12:00:00+00:00",
+                     botfarm_config=None):
+        """Create a test client with optional capacity data seeded."""
+        db_path = tmp_path / "capacity.db"
+        conn = init_db(db_path)
+        _seed_slot(conn, "my-project", 1, status="free")
+        save_dispatch_state(conn, paused=False)
+        if issue_count is not None:
+            save_capacity_state(
+                conn,
+                issue_count=issue_count,
+                limit=limit,
+                by_project=by_project or {},
+                checked_at=checked_at,
+            )
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=db_path, botfarm_config=botfarm_config)
+        return TestClient(app)
+
+    def test_no_capacity_data(self, tmp_path):
+        """Shows fallback message when no capacity data exists."""
+        client = self._make_client(tmp_path)
+        resp = client.get("/partials/linear-capacity")
+        assert resp.status_code == 200
+        assert "No capacity data available" in resp.text
+
+    def test_capacity_green(self, tmp_path):
+        """Low utilization shows green status."""
+        client = self._make_client(tmp_path, issue_count=100, limit=250)
+        resp = client.get("/partials/linear-capacity")
+        assert resp.status_code == 200
+        assert "100 / 250" in resp.text
+        assert "status-free" in resp.text
+        assert "40%" in resp.text
+
+    def test_capacity_yellow_warning(self, tmp_path):
+        """At 70%+ utilization shows yellow/warning status."""
+        client = self._make_client(tmp_path, issue_count=180, limit=250)
+        resp = client.get("/partials/linear-capacity")
+        assert resp.status_code == 200
+        assert "status-busy" in resp.text
+        assert "180 / 250" in resp.text
+
+    def test_capacity_red_critical(self, tmp_path):
+        """At 85%+ utilization shows red/critical status with warning banner."""
+        client = self._make_client(tmp_path, issue_count=220, limit=250)
+        resp = client.get("/partials/linear-capacity")
+        assert resp.status_code == 200
+        assert "status-failed" in resp.text
+        assert "approaching limit" in resp.text
+
+    def test_capacity_blocked(self, tmp_path):
+        """At 95%+ utilization shows blocked banner with dispatch paused notice."""
+        client = self._make_client(tmp_path, issue_count=240, limit=250)
+        resp = client.get("/partials/linear-capacity")
+        assert resp.status_code == 200
+        assert "DISPATCH PAUSED" in resp.text
+        assert "Archive completed issues" in resp.text
+
+    def test_project_breakdown(self, tmp_path):
+        """Per-project breakdown table renders with counts and percentages."""
+        by_project = {"Alpha": 50, "Beta": 30, "Gamma": 20}
+        client = self._make_client(
+            tmp_path, issue_count=100, limit=250, by_project=by_project,
+        )
+        resp = client.get("/partials/linear-capacity")
+        body = resp.text
+        assert "Alpha" in body
+        assert "Beta" in body
+        assert "Gamma" in body
+        # Alpha is 50 out of 100 = 50%
+        assert "50%" in body
+
+    def test_last_checked_timestamp(self, tmp_path):
+        """Last checked timestamp is shown."""
+        client = self._make_client(
+            tmp_path, issue_count=50, limit=250,
+            checked_at="2026-03-01T12:00:00+00:00",
+        )
+        resp = client.get("/partials/linear-capacity")
+        assert "Last checked:" in resp.text
+        assert "ago" in resp.text
+
+    def test_index_contains_linear_capacity_section(self, db_file):
+        """Index page includes the Linear Capacity section with htmx polling."""
+        app = create_app(db_path=db_file)
+        client = TestClient(app)
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert "Linear Capacity" in resp.text
+        assert "linear-capacity-panel" in resp.text
+        assert "every 30s" in resp.text
+
+    def test_index_capacity_between_usage_and_queue(self, db_file):
+        """Linear Capacity section appears between Usage and Queue."""
+        app = create_app(db_path=db_file)
+        client = TestClient(app)
+        resp = client.get("/")
+        body = resp.text
+        usage_pos = body.find(">Usage<")
+        capacity_pos = body.find(">Linear Capacity<")
+        queue_pos = body.find(">Queue<")
+        assert usage_pos < capacity_pos < queue_pos
+
+    def test_capacity_with_custom_thresholds(self, tmp_path):
+        """Respects custom threshold config for color classes."""
+        cfg = BotfarmConfig(
+            projects=[],
+            linear=LinearConfig(
+                capacity_monitoring=CapacityConfig(
+                    warning_threshold=0.50,
+                    critical_threshold=0.60,
+                    pause_threshold=0.70,
+                ),
+            ),
+        )
+        # 60% would be green with defaults, but critical with custom thresholds
+        client = self._make_client(
+            tmp_path, issue_count=160, limit=250, botfarm_config=cfg,
+        )
+        resp = client.get("/partials/linear-capacity")
+        assert "status-failed" in resp.text
