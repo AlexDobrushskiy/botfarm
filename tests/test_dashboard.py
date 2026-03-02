@@ -1532,6 +1532,92 @@ class TestMetricsPage:
         assert "$0.17" in body
 
 
+class TestCodexMetrics:
+    """Tests for Codex review metrics on the metrics page and task detail."""
+
+    @pytest.fixture()
+    def codex_db(self, tmp_path):
+        path = tmp_path / "botfarm_codex.db"
+        conn = init_db(path)
+        _seed_slot(conn, "proj", 1, status="free")
+        save_dispatch_state(conn, paused=False)
+
+        tid = insert_task(
+            conn, ticket_id="CDX-1", title="Codex task",
+            project="proj", slot=1, status="completed",
+        )
+        update_task(conn, tid,
+                    started_at="2026-02-12T10:00:00+00:00",
+                    completed_at="2026-02-12T11:00:00+00:00",
+                    turns=20)
+        insert_stage_run(conn, task_id=tid, stage="implement",
+                         input_tokens=10000, output_tokens=2000,
+                         total_cost_usd=0.10)
+        insert_stage_run(conn, task_id=tid, stage="codex_review", iteration=1,
+                         input_tokens=800_000, output_tokens=15_000,
+                         cache_read_input_tokens=300_000,
+                         duration_seconds=60.0, exit_subtype="changes_requested")
+        insert_stage_run(conn, task_id=tid, stage="codex_review", iteration=2,
+                         input_tokens=900_000, output_tokens=18_000,
+                         cache_read_input_tokens=400_000,
+                         duration_seconds=55.0, exit_subtype="approved")
+        conn.commit()
+        conn.close()
+        return path
+
+    @pytest.fixture()
+    def codex_client(self, codex_db):
+        app = create_app(db_path=codex_db)
+        return TestClient(app)
+
+    def test_metrics_page_shows_codex_section(self, codex_client):
+        resp = codex_client.get("/metrics")
+        body = resp.text
+        assert resp.status_code == 200
+        assert "Codex Review" in body
+        assert "Codex Input Tokens" in body
+        assert "Codex Output Tokens" in body
+        assert "Codex Runs" in body
+        assert "Approval Rate" in body
+        assert "Error/Timeout Rate" in body
+
+    def test_metrics_page_codex_token_values(self, codex_client):
+        resp = codex_client.get("/metrics")
+        body = resp.text
+        # 800000 + 900000 = 1700000
+        assert "1,700,000" in body
+        # 15000 + 18000 = 33000
+        assert "33,000" in body
+
+    def test_metrics_page_codex_approval_rate(self, codex_client):
+        resp = codex_client.get("/metrics")
+        body = resp.text
+        # 1 approved out of 2 = 50%
+        assert "50.0%" in body
+
+    def test_task_detail_shows_codex_section(self, codex_client):
+        resp = codex_client.get("/task/CDX-1")
+        body = resp.text
+        assert resp.status_code == 200
+        assert "Codex Review" in body
+        assert "Codex Input Tokens" in body
+        assert "Codex Output Tokens" in body
+
+    def test_task_detail_codex_per_iteration(self, codex_client):
+        resp = codex_client.get("/task/CDX-1")
+        body = resp.text
+        assert "Changes Requested" in body
+        assert "Approved" in body
+        assert "800,000" in body
+        assert "900,000" in body
+
+    def test_metrics_page_no_codex_section_without_data(self, client):
+        resp = client.get("/metrics")
+        body = resp.text
+        # The main client has no codex runs
+        assert "Codex Review" not in body
+
+
 # --- start_dashboard ---
 
 

@@ -61,6 +61,16 @@
         </h2>
         <p>Max Context Fill</p>
     </article>
+    {% if task_totals.codex_runs > 0 %}
+    <article class="metric-card">
+        <h2>{{ "{:,}".format(task_totals.codex_input_tokens) }}</h2>
+        <p>Codex Input Tokens</p>
+    </article>
+    <article class="metric-card">
+        <h2>{{ "{:,}".format(task_totals.codex_output_tokens) }}</h2>
+        <p>Codex Output Tokens</p>
+    </article>
+    {% endif %}
 </div>
 
 {% if task.started_on_extra_usage %}
@@ -98,6 +108,52 @@
     </div>
     {% endfor %}
 </div>
+{% endif %}
+
+{% if task_totals.codex_runs > 0 %}
+<details open>
+    <summary><strong>Codex Review ({{ task_totals.codex_runs }} run{{ "s" if task_totals.codex_runs != 1 }})</strong></summary>
+    <figure>
+    <table>
+        <thead>
+            <tr>
+                <th>Iteration</th>
+                <th>Verdict</th>
+                <th>Duration</th>
+                <th>Input Tokens</th>
+                <th>Output Tokens</th>
+                <th>Cached Tokens</th>
+                <th>Logs</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for cs in task_totals.codex_stages %}
+            <tr>
+                <td>{{ cs.iteration }}</td>
+                <td>
+                    {% if cs.exit_subtype == "approved" %}
+                    <span class="status-free">Approved</span>
+                    {% elif cs.exit_subtype == "changes_requested" %}
+                    <span class="status-busy">Changes Requested</span>
+                    {% elif cs.exit_subtype in ["failed", "error", "timeout"] %}
+                    <span class="status-failed">{{ cs.exit_subtype | title }}</span>
+                    {% elif cs.exit_subtype == "skipped" %}
+                    Skipped
+                    {% else %}
+                    {{ cs.exit_subtype if cs.exit_subtype else "In Progress" }}
+                    {% endif %}
+                </td>
+                <td>{{ format_duration(cs.duration_seconds | int) if cs.duration_seconds is not none else "-" }}</td>
+                <td>{{ "{:,}".format(cs.input_tokens) if cs.input_tokens else "-" }}</td>
+                <td>{{ "{:,}".format(cs.output_tokens) if cs.output_tokens else "-" }}</td>
+                <td>{{ "{:,}".format(cs.cache_read_input_tokens) if cs.cache_read_input_tokens else "-" }}</td>
+                <td><a href="/task/{{ task.ticket_id }}/logs/codex_review" title="View Codex logs">view</a></td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    </figure>
+</details>
 {% endif %}
 
 <details open>

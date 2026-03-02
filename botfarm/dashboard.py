@@ -1300,12 +1300,25 @@ def create_app(
             for s in stages if s.get("on_extra_usage")
         )
         fills = [s["context_fill_pct"] for s in stages if s.get("context_fill_pct") is not None]
+
+        # Codex review aggregates
+        codex_stages = [s for s in stages if s.get("stage") == "codex_review"]
+        codex_input = sum(s.get("input_tokens") or 0 for s in codex_stages)
+        codex_output = sum(s.get("output_tokens") or 0 for s in codex_stages)
+        codex_cache_read = sum(s.get("cache_read_input_tokens") or 0 for s in codex_stages)
+        codex_runs = len(codex_stages)
+
         return {
             "total_input_tokens": total_input,
             "total_output_tokens": total_output,
             "total_cost": total_cost,
             "extra_usage_cost": extra_usage_cost,
             "max_context_fill": max(fills) if fills else None,
+            "codex_input_tokens": codex_input,
+            "codex_output_tokens": codex_output,
+            "codex_cache_read_tokens": codex_cache_read,
+            "codex_runs": codex_runs,
+            "codex_stages": codex_stages,
         }
 
     @app.get("/task/{task_id}", response_class=HTMLResponse)
@@ -1487,6 +1500,36 @@ def create_app(
         except sqlite3.OperationalError:
             pass
 
+        # Codex review aggregates
+        try:
+            codex_where = where + " AND sr.stage = 'codex_review'"
+            codex_row = conn.execute(
+                "SELECT SUM(sr.input_tokens) as codex_in, "
+                "SUM(sr.output_tokens) as codex_out, "
+                "COUNT(*) as codex_runs, "
+                "SUM(CASE WHEN sr.exit_subtype = 'approved' THEN 1 ELSE 0 END) as codex_approved, "
+                "SUM(CASE WHEN sr.exit_subtype IN ('failed', 'error', 'timeout') THEN 1 ELSE 0 END) as codex_errors "
+                "FROM stage_runs sr "
+                "JOIN tasks t ON sr.task_id = t.id" + codex_where,
+                params,
+            ).fetchone()
+            if codex_row and codex_row["codex_runs"]:
+                metrics["codex_input_tokens"] = codex_row["codex_in"] or 0
+                metrics["codex_output_tokens"] = codex_row["codex_out"] or 0
+                metrics["codex_runs"] = codex_row["codex_runs"] or 0
+                metrics["codex_approved"] = codex_row["codex_approved"] or 0
+                metrics["codex_errors"] = codex_row["codex_errors"] or 0
+                total_codex = metrics["codex_runs"]
+                if total_codex > 0:
+                    metrics["codex_approval_rate"] = round(
+                        metrics["codex_approved"] / total_codex * 100, 1,
+                    )
+                    metrics["codex_error_rate"] = round(
+                        metrics["codex_errors"] / total_codex * 100, 1,
+                    )
+        except sqlite3.OperationalError:
+            pass
+
         # Most common failure reasons
         reason_rows = conn.execute(
             "SELECT failure_reason, COUNT(*) as cnt "
@@ -1512,6 +1555,9 @@ def create_app(
         "total_cost_usd": 0.0, "extra_usage_cost_usd": 0.0,
         "avg_context_fill_pct": None,
         "tasks_over_80_pct_fill": 0,
+        "codex_input_tokens": 0, "codex_output_tokens": 0,
+        "codex_runs": 0, "codex_approved": 0, "codex_errors": 0,
+        "codex_approval_rate": 0.0, "codex_error_rate": 0.0,
     }
 
     @app.get("/metrics", response_class=HTMLResponse)

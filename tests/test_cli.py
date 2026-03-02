@@ -10,6 +10,7 @@ from click.testing import CliRunner
 from botfarm.cli import _elapsed, main
 from botfarm.db import (
     init_db,
+    insert_stage_run,
     insert_task,
     insert_usage_snapshot,
     save_dispatch_state,
@@ -297,6 +298,7 @@ class TestHistoryCommand:
         conn.close()
 
         monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
+        monkeypatch.setenv("COLUMNS", "200")
         result = runner.invoke(main, ["history"])
         assert result.exit_code == 0
         assert "SMA-10" in result.output
@@ -329,12 +331,14 @@ class TestHistoryCommand:
         conn.close()
 
         monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
+        monkeypatch.setenv("COLUMNS", "200")
         result = runner.invoke(main, ["history", "--project", "proj-a"])
         assert result.exit_code == 0
         assert "SMA-11" in result.output
         assert "SMA-12" not in result.output
 
     def test_filter_by_status(self, runner, db_file, monkeypatch):
+        monkeypatch.setenv("COLUMNS", "200")
         conn = sqlite3.connect(str(db_file))
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys=ON")
@@ -380,6 +384,7 @@ class TestHistoryCommand:
         conn.close()
 
         monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
+        monkeypatch.setenv("COLUMNS", "200")
         result = runner.invoke(main, ["history", "-n", "2"])
         assert result.exit_code == 0
         assert "Task History" in result.output
@@ -403,6 +408,7 @@ class TestHistoryCommand:
         conn.close()
 
         monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
+        monkeypatch.setenv("COLUMNS", "200")
         result = runner.invoke(main, ["history"])
         assert result.exit_code == 0
         assert "failed" in result.output
@@ -429,9 +435,52 @@ class TestHistoryCommand:
         conn.close()
 
         monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
+        monkeypatch.setenv("COLUMNS", "200")
         result = runner.invoke(main, ["history"])
         assert result.exit_code == 0
         assert "2h30m" in result.output
+
+    def test_shows_codex_columns(self, runner, db_file, monkeypatch):
+        conn = sqlite3.connect(str(db_file))
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys=ON")
+        task_id = insert_task(
+            conn, ticket_id="SMA-50", title="Codex task",
+            project="proj", slot=1, status="completed",
+        )
+        insert_stage_run(conn, task_id=task_id, stage="implement",
+                         input_tokens=10000, output_tokens=2000,
+                         total_cost_usd=0.10)
+        insert_stage_run(conn, task_id=task_id, stage="codex_review",
+                         input_tokens=800_000, output_tokens=15_000,
+                         exit_subtype="approved")
+        conn.commit()
+        conn.close()
+
+        monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
+        monkeypatch.setenv("COLUMNS", "200")
+        result = runner.invoke(main, ["history"])
+        assert result.exit_code == 0
+        assert "SMA-50" in result.output
+        assert "Codex" in result.output
+        assert "Cost" in result.output
+
+    def test_no_codex_shows_dash(self, runner, db_file, monkeypatch):
+        conn = sqlite3.connect(str(db_file))
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys=ON")
+        insert_task(
+            conn, ticket_id="SMA-51", title="No codex",
+            project="proj", slot=1, status="completed",
+        )
+        conn.commit()
+        conn.close()
+
+        monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
+        monkeypatch.setenv("COLUMNS", "200")
+        result = runner.invoke(main, ["history"])
+        assert result.exit_code == 0
+        assert "SMA-51" in result.output
 
 
 # ---------------------------------------------------------------------------

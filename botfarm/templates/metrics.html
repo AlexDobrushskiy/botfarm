@@ -100,6 +100,32 @@
     </article>
 </div>
 
+{% if metrics.codex_runs > 0 %}
+<h2>Codex Review</h2>
+<div class="grid">
+    <article class="metric-card">
+        <h2>{{ "{:,}".format(metrics.codex_input_tokens) }}</h2>
+        <p>Codex Input Tokens</p>
+    </article>
+    <article class="metric-card">
+        <h2>{{ "{:,}".format(metrics.codex_output_tokens) }}</h2>
+        <p>Codex Output Tokens</p>
+    </article>
+    <article class="metric-card">
+        <h2>{{ metrics.codex_runs }}</h2>
+        <p>Codex Runs</p>
+    </article>
+    <article class="metric-card">
+        <h2>{{ "%.1f"|format(metrics.codex_approval_rate) }}%</h2>
+        <p>Approval Rate</p>
+    </article>
+    <article class="metric-card">
+        <h2>{{ "%.1f"|format(metrics.codex_error_rate) }}%</h2>
+        <p>Error/Timeout Rate</p>
+    </article>
+</div>
+{% endif %}
+
 {% if metrics.failure_reasons %}
 <h2>Common Failure Reasons</h2>
 <figure>
