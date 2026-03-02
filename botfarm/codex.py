@@ -128,7 +128,7 @@ def run_codex_streaming(
     """Invoke Codex as a subprocess with JSONL streaming.
 
     Command:
-        codex -a never -s workspace-write [-m <model>] -C <cwd> exec --ephemeral --json -
+        codex --dangerously-bypass-approvals-and-sandbox [-m <model>] -C <cwd> exec --ephemeral --json -
 
     The prompt is fed via stdin (the ``-`` argument to ``exec``).
 
@@ -140,8 +140,7 @@ def run_codex_streaming(
     """
     cmd = [
         "codex",
-        "-a", "never",
-        "-s", "workspace-write",
+        "--dangerously-bypass-approvals-and-sandbox",
     ]
     if model:
         cmd.extend(["-m", model])

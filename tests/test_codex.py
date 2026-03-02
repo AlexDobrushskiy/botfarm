@@ -273,8 +273,7 @@ class TestRunCodexStreaming:
 
         cmd = mock_popen.call_args[0][0]
         assert cmd[0] == "codex"
-        assert cmd[1:3] == ["-a", "never"]
-        assert cmd[3:5] == ["-s", "workspace-write"]
+        assert "--dangerously-bypass-approvals-and-sandbox" in cmd
         # -C <cwd> should come before exec
         c_idx = cmd.index("-C")
         exec_idx = cmd.index("exec")

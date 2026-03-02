@@ -90,11 +90,10 @@ Review/fix loop happens via Linear comments (not GitHub).
 ## Codex CLI Quick Reference
 - `codex exec` is the Codex equivalent of Claude's non-interactive `claude -p`
 - Codex `-p` means `--profile`, not prompt mode
-- For unattended sandboxed runs: `codex -a never -s workspace-write exec "<prompt>"`
-- For unattended stdin-driven runs: `printf '%s\n' "<prompt>" | codex -a never -s workspace-write exec -`
+- For autonomous runs (default): `codex --dangerously-bypass-approvals-and-sandbox exec "<prompt>"`
+- For stdin-driven runs: `printf '%s\n' "<prompt>" | codex --dangerously-bypass-approvals-and-sandbox exec -`
+- For machine-readable output: `codex --dangerously-bypass-approvals-and-sandbox exec --json "<prompt>"`
 - `--full-auto` is not fully autonomous; it maps to `-a on-request --sandbox workspace-write`
-- For unsandboxed zero-confirmation execution: `codex --dangerously-bypass-approvals-and-sandbox exec "<prompt>"`
-- For machine-readable output: `codex -a never -s workspace-write exec --json "<prompt>"`
 - See `docs/codex-cli.md` for details and examples
 
 ## PR Process

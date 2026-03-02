@@ -17,31 +17,31 @@ Important: in Codex, `-p` means `--profile`, not "prompt mode".
 
 ## Approval And Sandbox Behavior
 
-### Fully non-interactive, sandboxed
-
-Use `-a never` to prevent approval prompts while keeping sandboxing enabled:
-
-```bash
-codex -a never -s workspace-write exec "fix the failing tests and commit the result"
-```
-
-This is the safest automation mode when you still want filesystem isolation.
-
-### Fully non-interactive, prompt from stdin
-
-```bash
-printf '%s\n' 'fix the failing tests and commit the result' | \
-  codex -a never -s workspace-write exec -
-```
-
-### Fully autonomous and unsandboxed
+### Fully autonomous and unsandboxed (default for Botfarm)
 
 ```bash
 codex --dangerously-bypass-approvals-and-sandbox exec \
   "implement this task end-to-end"
 ```
 
-This is the closest Codex equivalent to a "run without interactive input and do not stop for permissions" mode. It is broader than Claude's flag because it also disables sandboxing.
+This is the standard way to run autonomous Codex agents. It disables both approval prompts and sandboxing, matching the behavior of Claude Code's `--dangerously-skip-permissions`. Since Botfarm runs on an isolated VM, the sandbox provides no additional security benefit while blocking necessary operations like network access (required for `gh api` calls during code review).
+
+### Fully non-interactive, sandboxed
+
+Use `-a never -s workspace-write` to keep filesystem sandboxing while preventing approval prompts:
+
+```bash
+codex -a never -s workspace-write exec "fix the failing tests and commit the result"
+```
+
+Note: the `workspace-write` sandbox blocks network access by default, which prevents `gh` CLI commands from working. Enable network access with `-c 'sandbox_workspace_write.network_access=true'` if you need `gh api` calls in this mode.
+
+### Fully non-interactive, prompt from stdin
+
+```bash
+printf '%s\n' 'fix the failing tests and commit the result' | \
+  codex --dangerously-bypass-approvals-and-sandbox exec -
+```
 
 ### `--full-auto` is not the same as zero-interaction
 
@@ -51,21 +51,21 @@ This is the closest Codex equivalent to a "run without interactive input and do 
 -a on-request --sandbox workspace-write
 ```
 
-That means the agent may still choose to ask for approval. For unattended automation, prefer `-a never` or `--dangerously-bypass-approvals-and-sandbox`.
+That means the agent may still choose to ask for approval. For unattended automation, use `--dangerously-bypass-approvals-and-sandbox`.
 
 ## Recommended Invocation Patterns
 
 ### Non-interactive run with JSON event stream
 
 ```bash
-codex -a never -s workspace-write exec --json \
+codex --dangerously-bypass-approvals-and-sandbox exec --json \
   "update the docs and run the relevant tests"
 ```
 
 ### Capture the final assistant message to a file
 
 ```bash
-codex -a never -s workspace-write exec \
+codex --dangerously-bypass-approvals-and-sandbox exec \
   -o /tmp/codex-last.txt \
   "summarize the changes after tests pass"
 ```
@@ -73,7 +73,7 @@ codex -a never -s workspace-write exec \
 ### Change working directory explicitly
 
 ```bash
-codex -a never -s workspace-write -C /path/to/repo exec \
+codex --dangerously-bypass-approvals-and-sandbox -C /path/to/repo exec \
   "fix the regression and run tests"
 ```
 
