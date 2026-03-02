@@ -4479,6 +4479,10 @@ class TestWorkflowPage:
         resp = client.get("/workflow")
         body = resp.text
         assert "data-loop-id" in body
+        assert "data-decision-stage" in body
+        assert "data-start-stage" in body
+        assert "data-end-stage" in body
+        assert "data-failure-stage" in body
 
     def test_workflow_has_add_stage_button(self, client):
         resp = client.get("/workflow")

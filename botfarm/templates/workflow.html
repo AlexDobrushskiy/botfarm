@@ -1750,7 +1750,7 @@ function createStage() {
 
 function removeStage(stageId, stageName, pipelineId) {
     // Find the pipeline element to check stage count and loop references
-    var pipelineEl = document.querySelector('[data-pipeline-id="' + pipelineId + '"]');
+    var pipelineEl = document.querySelector('.workflow-pipeline[data-pipeline-id="' + pipelineId + '"]');
     var stageIds = JSON.parse(pipelineEl ? pipelineEl.dataset.stageIds || '[]' : '[]');
 
     if (stageIds.length <= 1) {
@@ -1795,7 +1795,7 @@ function removeStage(stageId, stageName, pipelineId) {
 }
 
 function _getStageIds(pipelineId) {
-    var pipelineEl = document.querySelector('[data-pipeline-id="' + pipelineId + '"]');
+    var pipelineEl = document.querySelector('.workflow-pipeline[data-pipeline-id="' + pipelineId + '"]');
     return JSON.parse(pipelineEl ? pipelineEl.dataset.stageIds || '[]' : '[]');
 }
 
