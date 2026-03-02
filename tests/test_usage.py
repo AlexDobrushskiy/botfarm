@@ -579,7 +579,7 @@ class TestUsagePollerRetry:
             return SAMPLE_USAGE_RESPONSE
 
         with patch("botfarm.usage.fetch_usage", side_effect=mock_fetch):
-            with patch("asyncio.sleep", new_callable=AsyncMock):
+            with patch("botfarm.usage.asyncio.sleep", new_callable=AsyncMock):
                 state = poller.force_poll(conn)
 
         assert call_count == 2
@@ -595,7 +595,7 @@ class TestUsagePollerRetry:
             raise httpx.ConnectTimeout("connection timed out")
 
         with patch("botfarm.usage.fetch_usage", side_effect=always_fail):
-            with patch("asyncio.sleep", new_callable=AsyncMock):
+            with patch("botfarm.usage.asyncio.sleep", new_callable=AsyncMock):
                 state = poller.force_poll(conn)
 
         # State should remain at defaults (None) since no successful poll occurred
@@ -618,7 +618,7 @@ class TestUsagePollerRetry:
             return SAMPLE_USAGE_RESPONSE
 
         with patch("botfarm.usage.fetch_usage", side_effect=mock_fetch):
-            with patch("asyncio.sleep", new_callable=AsyncMock):
+            with patch("botfarm.usage.asyncio.sleep", new_callable=AsyncMock):
                 result = await poller._fetch_with_retry("test-token")
 
         assert result == SAMPLE_USAGE_RESPONSE
@@ -641,7 +641,7 @@ class TestUsagePollerRetry:
             return SAMPLE_USAGE_RESPONSE
 
         with patch("botfarm.usage.fetch_usage", side_effect=mock_fetch):
-            with patch("asyncio.sleep", new_callable=AsyncMock):
+            with patch("botfarm.usage.asyncio.sleep", new_callable=AsyncMock):
                 result = await poller._fetch_with_retry("test-token")
 
         assert result == SAMPLE_USAGE_RESPONSE
@@ -664,7 +664,7 @@ class TestUsagePollerRetry:
             return SAMPLE_USAGE_RESPONSE
 
         with patch("botfarm.usage.fetch_usage", side_effect=mock_fetch):
-            with patch("asyncio.sleep", new_callable=AsyncMock):
+            with patch("botfarm.usage.asyncio.sleep", new_callable=AsyncMock):
                 result = await poller._fetch_with_retry("test-token")
 
         assert result == SAMPLE_USAGE_RESPONSE
@@ -699,7 +699,7 @@ class TestUsagePollerRetry:
             raise httpx.ConnectTimeout("timed out")
 
         with patch("botfarm.usage.fetch_usage", side_effect=mock_fetch):
-            with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            with patch("botfarm.usage.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
                 with pytest.raises(httpx.ConnectTimeout):
                     await poller._fetch_with_retry("test-token")
 
@@ -717,7 +717,7 @@ class TestUsagePollerRetry:
             raise httpx.ConnectTimeout("timed out")
 
         with patch("botfarm.usage.fetch_usage", side_effect=mock_fetch):
-            with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            with patch("botfarm.usage.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
                 with pytest.raises(httpx.ConnectTimeout):
                     await poller._fetch_with_retry("test-token")
 
@@ -731,41 +731,30 @@ class TestUsagePollerRetry:
 
 
 class TestUsagePollerPersistentClient:
-    def test_get_client_creates_client(self, poller):
+    async def test_get_client_creates_client(self, poller):
         """_get_client creates a new AsyncClient on first use."""
         assert poller._client is None
         client = poller._get_client()
         assert client is not None
         assert isinstance(client, httpx.AsyncClient)
-        # Clean up
-        loop = asyncio.new_event_loop()
-        loop.run_until_complete(client.aclose())
-        loop.close()
+        await client.aclose()
 
-    def test_get_client_reuses_existing(self, poller):
+    async def test_get_client_reuses_existing(self, poller):
         """_get_client returns the same client on subsequent calls."""
         client1 = poller._get_client()
         client2 = poller._get_client()
         assert client1 is client2
-        # Clean up
-        loop = asyncio.new_event_loop()
-        loop.run_until_complete(client1.aclose())
-        loop.close()
+        await client1.aclose()
 
-    def test_get_client_recreates_if_closed(self, poller):
+    async def test_get_client_recreates_if_closed(self, poller):
         """_get_client creates a new client if the existing one is closed."""
         client1 = poller._get_client()
-        loop = asyncio.new_event_loop()
-        loop.run_until_complete(client1.aclose())
-        loop.close()
+        await client1.aclose()
 
         client2 = poller._get_client()
         assert client2 is not client1
         assert not client2.is_closed
-        # Clean up
-        loop = asyncio.new_event_loop()
-        loop.run_until_complete(client2.aclose())
-        loop.close()
+        await client2.aclose()
 
     def test_close_shuts_down_client(self, poller):
         """close() closes the persistent client."""
@@ -789,7 +778,7 @@ class TestUsagePollerPersistentClient:
             return SAMPLE_USAGE_RESPONSE
 
         with patch("botfarm.usage.fetch_usage", side_effect=mock_fetch):
-            with patch("asyncio.sleep", new_callable=AsyncMock):
+            with patch("botfarm.usage.asyncio.sleep", new_callable=AsyncMock):
                 state = poller.force_poll(conn)
 
         assert state.utilization_5h == 0.42

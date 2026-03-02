@@ -1041,6 +1041,50 @@ class TestSleep:
 
 class TestWorkerEntry:
     @patch("botfarm.supervisor.run_pipeline")
+    def test_worker_ignores_sigint_and_sigterm(self, mock_pipeline, tmp_path, monkeypatch):
+        """_worker_entry must ignore both SIGINT and SIGTERM so only the
+        supervisor controls worker lifecycle."""
+        import multiprocessing
+        db_path = str(tmp_path / "test.db")
+        monkeypatch.setenv("BOTFARM_DB_PATH", db_path)
+        q = multiprocessing.Queue()
+
+        conn = init_db(db_path, allow_migration=True)
+        task_id = insert_task(
+            conn,
+            ticket_id="TST-SIG",
+            title="Test",
+            project="proj",
+            slot=1,
+            status="in_progress",
+        )
+        conn.commit()
+        conn.close()
+
+        mock_result = MagicMock()
+        mock_result.success = True
+        mock_result.paused = False
+        mock_result.no_pr_reason = None
+        mock_result.result_text = None
+        mock_pipeline.return_value = mock_result
+
+        with patch("botfarm.supervisor.signal.signal") as mock_signal:
+            _worker_entry(
+                ticket_id="TST-SIG",
+                ticket_title="Test",
+                task_id=task_id,
+                project_name="proj",
+                slot_id=1,
+                cwd=str(tmp_path),
+                result_queue=q,
+                max_turns=None,
+            )
+
+            sig_calls = {call[0][0] for call in mock_signal.call_args_list}
+            assert signal.SIGINT in sig_calls, "SIGINT must be ignored"
+            assert signal.SIGTERM in sig_calls, "SIGTERM must be ignored"
+
+    @patch("botfarm.supervisor.run_pipeline")
     def test_successful_pipeline_sends_success(self, mock_pipeline, tmp_path, monkeypatch):
         import multiprocessing
         db_path = str(tmp_path / "test.db")
