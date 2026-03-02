@@ -126,7 +126,7 @@
 </div>
 
 {% for pipeline in pipelines %}
-<div class="workflow-pipeline" id="pipeline-{{ pipeline.name }}" data-pipeline-id="{{ pipeline.id }}" {% if not loop.first %}style="display:none"{% endif %}>
+<div class="workflow-pipeline" id="pipeline-{{ pipeline.name }}" data-pipeline-id="{{ pipeline.id }}" data-stages='{{ pipeline.stages | map(attribute="name") | list | tojson }}' {% if not loop.first %}style="display:none"{% endif %}>
 
     {# Pipeline actions bar #}
     <div class="pipeline-actions">
@@ -1465,12 +1465,7 @@ function showAddLoopModal(pipelineId, pipelineName) {
 
     // Populate stage dropdowns from the pipeline's stages
     var pipelineEl = document.getElementById('pipeline-' + pipelineName);
-    var stageNodes = pipelineEl ? pipelineEl.querySelectorAll('.workflow-node-name') : [];
-    var stageNames = [];
-    stageNodes.forEach(function(node) {
-        var name = node.textContent.trim();
-        if (stageNames.indexOf(name) === -1) stageNames.push(name);
-    });
+    var stageNames = JSON.parse(pipelineEl ? pipelineEl.dataset.stages || "[]" : "[]");
 
     var startSelect = document.getElementById('add-loop-start_stage');
     var endSelect = document.getElementById('add-loop-end_stage');
