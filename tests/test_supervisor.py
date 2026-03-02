@@ -5370,6 +5370,87 @@ class TestPollCapacity:
             mock_cap.assert_called_once()
 
 
+class TestCapacityNotificationIntegration:
+    """Tests that _poll_capacity() fires webhook notifications on transitions."""
+
+    def test_warning_transition_notifies(self, supervisor):
+        """Transitioning to warning level calls notify_capacity_warning."""
+        supervisor._linear_client = MagicMock()
+        supervisor._linear_client.count_active_issues.return_value = ActiveIssuesCount(
+            total=180, by_project={"proj": 180},
+        )
+        supervisor._notifier = MagicMock()
+
+        supervisor._poll_capacity()
+
+        supervisor._notifier.notify_capacity_warning.assert_called_once_with(
+            count=180, limit=250, percentage=pytest.approx(72.0),
+        )
+
+    def test_critical_transition_notifies(self, supervisor):
+        """Transitioning to critical level calls notify_capacity_critical."""
+        supervisor._linear_client = MagicMock()
+        supervisor._linear_client.count_active_issues.return_value = ActiveIssuesCount(
+            total=215, by_project={"proj": 215},
+        )
+        supervisor._notifier = MagicMock()
+
+        supervisor._poll_capacity()
+
+        supervisor._notifier.notify_capacity_critical.assert_called_once_with(
+            count=215, limit=250, percentage=pytest.approx(86.0),
+        )
+
+    def test_blocked_transition_notifies(self, supervisor):
+        """Transitioning to blocked level calls notify_capacity_blocked."""
+        supervisor._linear_client = MagicMock()
+        supervisor._linear_client.count_active_issues.return_value = ActiveIssuesCount(
+            total=238, by_project={"proj": 238},
+        )
+        supervisor._notifier = MagicMock()
+
+        supervisor._poll_capacity()
+
+        supervisor._notifier.notify_capacity_blocked.assert_called_once_with(
+            count=238, limit=250, percentage=pytest.approx(95.2),
+        )
+
+    def test_cleared_transition_notifies(self, supervisor):
+        """Resuming from blocked calls notify_capacity_cleared."""
+        supervisor._linear_client = MagicMock()
+        supervisor._notifier = MagicMock()
+
+        # Enter blocked state
+        supervisor._linear_client.count_active_issues.return_value = ActiveIssuesCount(
+            total=240, by_project={"proj": 240},
+        )
+        supervisor._poll_capacity()
+        supervisor._notifier.reset_mock()
+
+        # Drop below resume threshold (90% of 250 = 225)
+        supervisor._linear_client.count_active_issues.return_value = ActiveIssuesCount(
+            total=220, by_project={"proj": 220},
+        )
+        supervisor._poll_capacity()
+
+        supervisor._notifier.notify_capacity_cleared.assert_called_once_with(
+            count=220, limit=250, percentage=pytest.approx(88.0),
+        )
+
+    def test_no_notification_on_same_level(self, supervisor):
+        """Repeated polls at the same level do not fire notifications."""
+        supervisor._linear_client = MagicMock()
+        supervisor._linear_client.count_active_issues.return_value = ActiveIssuesCount(
+            total=180, by_project={"proj": 180},
+        )
+        supervisor._notifier = MagicMock()
+
+        supervisor._poll_capacity()
+        supervisor._poll_capacity()
+
+        supervisor._notifier.notify_capacity_warning.assert_called_once()
+
+
 class TestCapacityBlockedDispatchInteraction:
     """Tests for capacity_blocked interaction with _poll_and_dispatch."""
 
