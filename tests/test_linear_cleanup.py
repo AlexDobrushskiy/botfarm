@@ -85,7 +85,6 @@ def _make_completed_issue_node(
     completed_at: str | None = None,
     labels: list[str] | None = None,
     child_states: list[str] | None = None,
-    has_parent: bool = False,
 ) -> dict:
     """Build a GraphQL issue node for completed/canceled issues query."""
     label_nodes = [{"name": lbl} for lbl in (labels or [])]
@@ -101,7 +100,6 @@ def _make_completed_issue_node(
         "updatedAt": updated_at or _old_iso(),
         "completedAt": completed_at or _old_iso(),
         "labels": {"nodes": label_nodes},
-        "parent": {"id": "parent-1"} if has_parent else None,
         "children": {"nodes": children_nodes},
     }
 
