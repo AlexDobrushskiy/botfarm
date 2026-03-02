@@ -96,14 +96,11 @@ class CleanupService:
         self._min_age_days = min_age_days
         self._default_limit = default_limit
 
-    def _check_cooldown(self) -> float:
-        """Check cooldown and return seconds remaining (0 if ready).
-
-        Raises CooldownError if the cooldown has not elapsed.
-        """
+    def _check_cooldown(self) -> None:
+        """Raise CooldownError if the cooldown has not elapsed."""
         last_time = get_last_cleanup_batch_time(self._conn)
         if last_time is None:
-            return 0.0
+            return
         last = datetime.fromisoformat(last_time.replace("Z", "+00:00"))
         elapsed = (datetime.now(timezone.utc) - last).total_seconds()
         remaining = self.COOLDOWN_SECONDS - elapsed
@@ -112,7 +109,6 @@ class CleanupService:
                 f"Cooldown active: {remaining:.0f}s remaining "
                 f"(minimum {self.COOLDOWN_SECONDS}s between operations)"
             )
-        return 0.0
 
     def _is_old_enough(self, updated_at: str, completed_at: str | None) -> bool:
         """Check if an issue is older than min_age_days."""
@@ -243,7 +239,8 @@ class CleanupService:
         if action not in ("archive", "delete"):
             raise ValueError(f"Invalid action: {action!r} (must be 'archive' or 'delete')")
 
-        self._check_cooldown()
+        if not dry_run:
+            self._check_cooldown()
 
         candidates = self.fetch_candidates(limit=limit)
         batch_id = str(uuid.uuid4())
@@ -255,12 +252,14 @@ class CleanupService:
 
         if not candidates:
             logger.info("No candidates found for cleanup")
+            # No batch record inserted — cooldown only starts after real operations
             return result
 
         if dry_run:
             logger.info(
                 "Dry run: would %s %d issues", action, len(candidates)
             )
+            # No batch record inserted — dry runs don't trigger cooldown
             return result
 
         # Record the batch in the DB
