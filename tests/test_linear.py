@@ -1562,6 +1562,7 @@ class TestCountActiveIssuesForProject:
         """
         assert "completed" not in ACTIVE_ISSUES_FOR_PROJECT_COUNT_QUERY
         assert "canceled" not in ACTIVE_ISSUES_FOR_PROJECT_COUNT_QUERY
+        assert "state" not in ACTIVE_ISSUES_FOR_PROJECT_COUNT_QUERY
 
 
 class TestIsIssueTerminal:
