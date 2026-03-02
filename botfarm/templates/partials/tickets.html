@@ -1,0 +1,94 @@
+{% macro sort_header(label, col) %}
+{% set next_dir = "ASC" if (sort_by == col and sort_dir == "DESC") else "DESC" %}
+<th>
+    <a href="/tickets?sort_by={{ col }}&sort_dir={{ next_dir }}&project={{ filter_project | urlencode }}&status={{ filter_status | urlencode }}&search={{ filter_search | urlencode }}&deleted={{ filter_deleted | urlencode }}"
+       style="text-decoration: none; color: inherit;">
+        {{ label }}
+        {% if sort_by == col %}
+            {% if sort_dir == "DESC" %}&darr;{% else %}&uarr;{% endif %}
+        {% endif %}
+    </a>
+</th>
+{% endmacro %}
+
+{% if tickets %}
+<p style="color: var(--pico-muted-color); margin-bottom: 0.5rem;">
+    {{ total }} ticket{{ "s" if total != 1 else "" }} found &middot; page {{ page }} of {{ total_pages }}
+</p>
+<figure>
+<table>
+    <thead>
+        <tr>
+            {{ sort_header("Ticket", "ticket_id") }}
+            {{ sort_header("Title", "title") }}
+            {{ sort_header("Project", "project_name") }}
+            {{ sort_header("Status", "status") }}
+            {{ sort_header("Priority", "priority") }}
+            <th>Labels</th>
+            {{ sort_header("Captured", "captured_at") }}
+            <th>In Linear</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for ticket in tickets %}
+        <tr style="cursor: pointer;" onclick="window.location='/tickets/{{ ticket.ticket_id }}'">
+            <td>
+                {% if ticket.deleted_from_linear %}
+                <span style="color: var(--pico-del-color); text-decoration: line-through;">{{ ticket.ticket_id }}</span>
+                {% else %}
+                <a href="{{ linear_url(ticket.ticket_id) }}" target="_blank" onclick="event.stopPropagation()" style="color: var(--pico-ins-color);">{{ ticket.ticket_id }}</a>
+                {% endif %}
+            </td>
+            <td>
+                {% if ticket.deleted_from_linear %}<span style="text-decoration: line-through;">{% endif %}
+                {{ ticket.title[:60] }}{% if ticket.title|length > 60 %}&hellip;{% endif %}
+                {% if ticket.deleted_from_linear %}</span>{% endif %}
+            </td>
+            <td>{{ ticket.project_name or "-" }}</td>
+            <td>{{ ticket.status or "-" }}</td>
+            <td>{{ ticket.priority or "-" }}</td>
+            <td>
+                {% if ticket.labels %}
+                    {% for label in ticket.labels[:3] %}
+                    <small style="background: var(--pico-muted-border-color); padding: 0.1rem 0.3rem; border-radius: 0.2rem; margin-right: 0.2rem;">{{ label }}</small>
+                    {% endfor %}
+                    {% if ticket.labels|length > 3 %}<small>+{{ ticket.labels|length - 3 }}</small>{% endif %}
+                {% else %}-{% endif %}
+            </td>
+            <td>{% if ticket.captured_at %}<time data-timestamp="{{ ticket.captured_at }}" title="{{ ticket.captured_at[:19] }}">{{ ticket.captured_at[:16] }}</time>{% else %}-{% endif %}</td>
+            <td>
+                {% if ticket.deleted_from_linear %}
+                <span style="color: var(--pico-del-color);">Deleted</span>
+                {% else %}
+                <span style="color: var(--pico-ins-color);">Yes</span>
+                {% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+</figure>
+
+{% if total_pages > 1 %}
+<nav aria-label="Pagination" style="display: flex; justify-content: center; gap: 0.5rem;">
+    {% if page > 1 %}
+    <a href="/tickets?page={{ page - 1 }}&sort_by={{ sort_by }}&sort_dir={{ sort_dir }}&project={{ filter_project | urlencode }}&status={{ filter_status | urlencode }}&search={{ filter_search | urlencode }}&deleted={{ filter_deleted | urlencode }}" role="button" class="outline">&laquo; Prev</a>
+    {% endif %}
+    {% for p in range(1, total_pages + 1) %}
+        {% if p == page %}
+        <a role="button" aria-current="page">{{ p }}</a>
+        {% elif p <= 3 or p > total_pages - 3 or (p >= page - 1 and p <= page + 1) %}
+        <a href="/tickets?page={{ p }}&sort_by={{ sort_by }}&sort_dir={{ sort_dir }}&project={{ filter_project | urlencode }}&status={{ filter_status | urlencode }}&search={{ filter_search | urlencode }}&deleted={{ filter_deleted | urlencode }}" role="button" class="outline">{{ p }}</a>
+        {% elif p == 4 or p == total_pages - 3 %}
+        <span style="align-self: center;">&hellip;</span>
+        {% endif %}
+    {% endfor %}
+    {% if page < total_pages %}
+    <a href="/tickets?page={{ page + 1 }}&sort_by={{ sort_by }}&sort_dir={{ sort_dir }}&project={{ filter_project | urlencode }}&status={{ filter_status | urlencode }}&search={{ filter_search | urlencode }}&deleted={{ filter_deleted | urlencode }}" role="button" class="outline">Next &raquo;</a>
+    {% endif %}
+</nav>
+{% endif %}
+
+{% else %}
+<p>No tickets found.</p>
+{% endif %}

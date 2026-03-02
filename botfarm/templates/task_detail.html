@@ -204,6 +204,17 @@
     {% endif %}
 </details>
 
+{% if ticket_content %}
+<details>
+    <summary><strong>Ticket Content</strong> <a href="/tickets/{{ task.ticket_id }}" style="font-size: 0.85rem; margin-left: 0.5rem;">View full ticket</a></summary>
+    {% if ticket_content.description %}
+    <div style="white-space: pre-wrap; font-size: 0.9rem; line-height: 1.6; padding: 1rem; background: var(--pico-card-background-color); border-radius: var(--pico-border-radius);">{{ ticket_content.description }}</div>
+    {% else %}
+    <p>No description available.</p>
+    {% endif %}
+</details>
+{% endif %}
+
 {% else %}
 <p><a href="/history">&larr; Back to Task History</a></p>
 <p>Task not found.</p>

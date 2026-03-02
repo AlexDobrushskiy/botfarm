@@ -876,6 +876,7 @@ def get_ticket_history_list(
     project: str | None = None,
     status: str | None = None,
     search: str | None = None,
+    deleted_from_linear: bool | None = None,
     sort_by: str = "captured_at",
     sort_dir: str = "DESC",
 ) -> list[sqlite3.Row]:
@@ -901,6 +902,9 @@ def get_ticket_history_list(
         query += " AND (ticket_id LIKE ? OR title LIKE ?)"
         like = f"%{search}%"
         params.extend([like, like])
+    if deleted_from_linear is not None:
+        query += " AND deleted_from_linear = ?"
+        params.append(int(deleted_from_linear))
     query += f" ORDER BY {sort_by} {sort_dir.upper()} LIMIT ? OFFSET ?"  # noqa: S608
     params.extend([limit, offset])
     return conn.execute(query, params).fetchall()
@@ -912,6 +916,7 @@ def count_ticket_history(
     project: str | None = None,
     status: str | None = None,
     search: str | None = None,
+    deleted_from_linear: bool | None = None,
 ) -> int:
     """Count ticket history entries matching the given filters."""
     query = "SELECT COUNT(*) FROM ticket_history WHERE 1=1"
@@ -926,7 +931,28 @@ def count_ticket_history(
         query += " AND (ticket_id LIKE ? OR title LIKE ?)"
         like = f"%{search}%"
         params.extend([like, like])
+    if deleted_from_linear is not None:
+        query += " AND deleted_from_linear = ?"
+        params.append(int(deleted_from_linear))
     return conn.execute(query, params).fetchone()[0]
+
+
+def get_distinct_ticket_projects(conn: sqlite3.Connection) -> list[str]:
+    """Return distinct project names from ticket_history table."""
+    rows = conn.execute(
+        "SELECT DISTINCT project_name FROM ticket_history "
+        "WHERE project_name IS NOT NULL ORDER BY project_name"
+    ).fetchall()
+    return [r[0] for r in rows]
+
+
+def get_distinct_ticket_statuses(conn: sqlite3.Connection) -> list[str]:
+    """Return distinct statuses from ticket_history table."""
+    rows = conn.execute(
+        "SELECT DISTINCT status FROM ticket_history "
+        "WHERE status IS NOT NULL ORDER BY status"
+    ).fetchall()
+    return [r[0] for r in rows]
 
 
 def mark_deleted_from_linear(conn: sqlite3.Connection, ticket_id: str) -> None:

@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% set active_page = "tickets" %}
+{% block title %}Tickets - Botfarm{% endblock %}
+{% block content %}
+<h1>Tickets</h1>
+
+<form id="ticket-filters" hx-get="/partials/tickets" hx-target="#tickets-panel" hx-trigger="submit" hx-swap="innerHTML" hx-push-url="false">
+    <div class="grid" style="align-items: end;">
+        <label>
+            Search
+            <input type="search" name="search" value="{{ filter_search }}" placeholder="Ticket ID or title...">
+        </label>
+        <label>
+            Project
+            <select name="project">
+                <option value="">All projects</option>
+                {% for p in projects %}
+                <option value="{{ p }}"{% if filter_project == p %} selected{% endif %}>{{ p }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        <label>
+            Status
+            <select name="status">
+                <option value="">All statuses</option>
+                {% for s in statuses %}
+                <option value="{{ s }}"{% if filter_status == s %} selected{% endif %}>{{ s }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        <label>
+            Deleted
+            <select name="deleted">
+                <option value="">All</option>
+                <option value="no"{% if filter_deleted == "no" %} selected{% endif %}>In Linear</option>
+                <option value="yes"{% if filter_deleted == "yes" %} selected{% endif %}>Deleted</option>
+            </select>
+        </label>
+    </div>
+    <div style="margin-top: 0.5rem;">
+        <button type="submit">Filter</button>
+    </div>
+    <input type="hidden" name="sort_by" value="{{ sort_by }}">
+    <input type="hidden" name="sort_dir" value="{{ sort_dir }}">
+</form>
+
+<div id="tickets-panel" hx-get="/partials/tickets?project={{ filter_project | urlencode }}&status={{ filter_status | urlencode }}&search={{ filter_search | urlencode }}&deleted={{ filter_deleted | urlencode }}&sort_by={{ sort_by }}&sort_dir={{ sort_dir }}" hx-trigger="every 30s" hx-swap="innerHTML">
+    {% include "partials/tickets.html" %}
+</div>
+{% endblock %}
