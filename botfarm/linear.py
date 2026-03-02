@@ -184,9 +184,6 @@ query ActiveIssuesCount($first: Int!, $after: String) {
     first: $first
     after: $after
     includeArchived: false
-    filter: {
-      state: { type: { nin: ["completed", "canceled"] } }
-    }
   ) {
     nodes {
       id
@@ -328,7 +325,6 @@ query ActiveIssuesForProjectCount($first: Int!, $after: String, $projectName: St
     after: $after
     includeArchived: false
     filter: {
-      state: { type: { nin: ["completed", "canceled"] } }
       project: { name: { eq: $projectName } }
     }
   ) {
@@ -346,7 +342,7 @@ query ActiveIssuesForProjectCount($first: Int!, $after: String, $projectName: St
 
 @dataclass
 class ActiveIssuesCount:
-    """Result of counting active (non-archived) issues."""
+    """Result of counting all non-archived issues (matches Linear's free plan usage)."""
 
     total: int
     by_project: dict[str, int]
@@ -608,11 +604,14 @@ class LinearClient:
         return state.get("type")
 
     def count_active_issues(self) -> ActiveIssuesCount | None:
-        """Count active issues (excluding completed/canceled) with per-project breakdown.
+        """Count all non-archived issues with per-project breakdown.
 
-        Paginates through all non-archived, non-completed/canceled issues
-        requesting only ``id`` and ``project.name`` to minimise API
-        complexity cost.
+        Linear's free plan counts ALL non-archived issues (including
+        completed and canceled) toward the 250 issue limit, so this
+        query omits state filters to match that behavior.
+
+        Paginates through all non-archived issues requesting only
+        ``id`` and ``project.name`` to minimise API complexity cost.
 
         Returns an ``ActiveIssuesCount`` with total count and a dict
         mapping project names to their issue counts, or ``None`` on failure.
@@ -773,7 +772,7 @@ class LinearClient:
         return data.get("issueUnarchive", {}).get("success", False)
 
     def count_active_issues_for_project(self, project_name: str) -> int | None:
-        """Count active issues for a specific project.
+        """Count all non-archived issues for a specific project.
 
         Uses a dedicated query filtered by project name to avoid
         fetching unrelated issues.  Returns the count, or ``None``
