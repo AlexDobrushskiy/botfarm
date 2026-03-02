@@ -117,8 +117,7 @@
     <button class="workflow-tab{% if loop.first %} workflow-tab-active{% endif %}"
             role="tab"
             aria-selected="{{ 'true' if loop.first else 'false' }}"
-            data-pipeline="{{ pipeline.name }}"
-            onclick="switchPipeline('{{ pipeline.name }}')">
+            data-pipeline="{{ pipeline.name }}">
         {{ pipeline.name | capitalize }}
         {% if pipeline.is_default %}<small>(default)</small>{% endif %}
     </button>
@@ -131,9 +130,9 @@
 
     {# Pipeline actions bar #}
     <div class="pipeline-actions">
-        <button class="pipeline-action-btn" onclick="togglePipelineEditor('{{ pipeline.name }}')">Edit Metadata</button>
-        <button class="pipeline-action-btn" onclick="duplicatePipeline({{ pipeline.id }}, '{{ pipeline.name }}')">Duplicate</button>
-        <button class="pipeline-action-btn pipeline-action-btn-danger" onclick="deletePipeline({{ pipeline.id }}, '{{ pipeline.name }}', {{ 'true' if pipeline.is_default else 'false' }})">Delete</button>
+        <button class="pipeline-action-btn" data-action="edit-metadata" data-pipeline-name="{{ pipeline.name }}">Edit Metadata</button>
+        <button class="pipeline-action-btn" data-action="duplicate" data-pipeline-id="{{ pipeline.id }}" data-pipeline-name="{{ pipeline.name }}">Duplicate</button>
+        <button class="pipeline-action-btn pipeline-action-btn-danger" data-action="delete" data-pipeline-id="{{ pipeline.id }}" data-pipeline-name="{{ pipeline.name }}" data-is-default="{{ 'true' if pipeline.is_default else 'false' }}">Delete</button>
     </div>
 
     {# Pipeline metadata editor (hidden by default) #}
@@ -161,8 +160,8 @@
             </div>
             <div class="pipeline-editor-feedback" id="pipe-feedback-{{ pipeline.id }}"></div>
             <div class="stage-props-actions">
-                <button type="button" class="prompt-save-btn" onclick="savePipelineMetadata({{ pipeline.id }}, '{{ pipeline.name }}')">Save</button>
-                <button type="button" class="prompt-cancel-btn" onclick="togglePipelineEditor('{{ pipeline.name }}')">Cancel</button>
+                <button type="button" class="prompt-save-btn" data-action="save-metadata" data-pipeline-id="{{ pipeline.id }}" data-pipeline-name="{{ pipeline.name }}">Save</button>
+                <button type="button" class="prompt-cancel-btn" data-action="cancel-edit" data-pipeline-name="{{ pipeline.name }}">Cancel</button>
             </div>
         </div>
     </div>
@@ -641,6 +640,15 @@ function switchPipeline(name) {
 
 /* ── Pipeline management functions ── */
 
+function showFeedbackError(container, message) {
+    container.innerHTML = '';
+    var div = document.createElement('div');
+    div.className = 'config-feedback error';
+    div.setAttribute('role', 'alert');
+    div.textContent = message;
+    container.appendChild(div);
+}
+
 function togglePipelineEditor(pipelineName) {
     var editor = document.getElementById('pipeline-editor-' + pipelineName);
     var display = document.getElementById('pipeline-meta-' + pipelineName);
@@ -677,11 +685,11 @@ function savePipelineMetadata(pipelineId, pipelineName) {
             window.location.reload();
         } else {
             var errors = result.data.errors || ['Unknown error'];
-            feedbackEl.innerHTML = '<div class="config-feedback error" role="alert">' + errors.join('; ') + '</div>';
+            showFeedbackError(feedbackEl, errors.join('; '));
         }
     })
     .catch(function() {
-        feedbackEl.innerHTML = '<div class="config-feedback error" role="alert">Network error.</div>';
+        showFeedbackError(feedbackEl, 'Network error.');
     });
 }
 
@@ -702,7 +710,7 @@ function createPipeline() {
     var feedbackEl = document.getElementById('new-pipe-feedback');
     var name = document.getElementById('new-pipe-name').value.trim();
     if (!name) {
-        feedbackEl.innerHTML = '<div class="config-feedback error" role="alert">Name is required.</div>';
+        showFeedbackError(feedbackEl, 'Name is required.');
         return;
     }
     var body = {
@@ -727,11 +735,11 @@ function createPipeline() {
             window.location.reload();
         } else {
             var errors = result.data.errors || ['Unknown error'];
-            feedbackEl.innerHTML = '<div class="config-feedback error" role="alert">' + errors.join('; ') + '</div>';
+            showFeedbackError(feedbackEl, errors.join('; '));
         }
     })
     .catch(function() {
-        feedbackEl.innerHTML = '<div class="config-feedback error" role="alert">Network error.</div>';
+        showFeedbackError(feedbackEl, 'Network error.');
     });
 }
 
@@ -753,7 +761,7 @@ function confirmDuplicatePipeline() {
     var feedbackEl = document.getElementById('dup-pipe-feedback');
     var newName = document.getElementById('dup-pipe-name').value.trim();
     if (!newName) {
-        feedbackEl.innerHTML = '<div class="config-feedback error" role="alert">Name is required.</div>';
+        showFeedbackError(feedbackEl, 'Name is required.');
         return;
     }
     if (_duplicateSourceId === null) return;
@@ -773,16 +781,19 @@ function confirmDuplicatePipeline() {
             window.location.reload();
         } else {
             var errors = result.data.errors || ['Unknown error'];
-            feedbackEl.innerHTML = '<div class="config-feedback error" role="alert">' + errors.join('; ') + '</div>';
+            showFeedbackError(feedbackEl, errors.join('; '));
         }
     })
     .catch(function() {
-        feedbackEl.innerHTML = '<div class="config-feedback error" role="alert">Network error.</div>';
+        showFeedbackError(feedbackEl, 'Network error.');
     });
 }
 
 function deletePipeline(pipelineId, pipelineName, isDefault) {
     var msg = 'Are you sure you want to delete the "' + pipelineName + '" pipeline? This will remove all its stages and loops.';
+    if (isDefault) {
+        msg = 'Warning: "' + pipelineName + '" is the default pipeline. ' + msg;
+    }
     if (!confirm(msg)) return;
 
     fetch('/api/workflow/pipelines/' + pipelineId, {
@@ -1124,6 +1135,38 @@ document.addEventListener('input', function(e) {
         var stageId = e.target.getAttribute('data-stage-id');
         checkUnknownVars(stageId);
     }
+});
+
+/* ── Pipeline button event delegation ── */
+document.querySelectorAll('.workflow-tab[data-pipeline]').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+        switchPipeline(this.dataset.pipeline);
+    });
+});
+document.querySelectorAll('[data-action="edit-metadata"]').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+        togglePipelineEditor(this.dataset.pipelineName);
+    });
+});
+document.querySelectorAll('[data-action="duplicate"]').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+        duplicatePipeline(Number(this.dataset.pipelineId), this.dataset.pipelineName);
+    });
+});
+document.querySelectorAll('[data-action="delete"]').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+        deletePipeline(Number(this.dataset.pipelineId), this.dataset.pipelineName, this.dataset.isDefault === 'true');
+    });
+});
+document.querySelectorAll('[data-action="save-metadata"]').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+        savePipelineMetadata(Number(this.dataset.pipelineId), this.dataset.pipelineName);
+    });
+});
+document.querySelectorAll('[data-action="cancel-edit"]').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+        togglePipelineEditor(this.dataset.pipelineName);
+    });
 });
 </script>
 
