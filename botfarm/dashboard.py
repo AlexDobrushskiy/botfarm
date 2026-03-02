@@ -1473,6 +1473,7 @@ def create_app(
                         })
 
                     pipelines_data.append({
+                        "id": pipeline.id,
                         "name": pipeline.name,
                         "description": pipeline.description,
                         "is_default": pipeline.is_default,
