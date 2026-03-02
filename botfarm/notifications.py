@@ -5,11 +5,16 @@ Sends formatted messages to Slack or Discord webhooks on:
 - Task failed
 - Usage limit hit (dispatch paused)
 - Usage limit cleared (dispatch resumed)
+- Capacity warning (configurable warning threshold, default 70%)
+- Capacity critical (configurable critical threshold, default 85%)
+- Capacity blocked (configurable pause threshold, default 95% — dispatch paused)
+- Capacity cleared (dropped below resume threshold — dispatch resumed)
 - All slots idle
 
 Notifications are non-blocking and fire-and-forget — failures never
-affect supervisor operation.  Repeated limit_hit events are
-rate-limited to avoid spam during frequent polling.
+affect supervisor operation.  Repeated limit_hit, capacity_warning,
+and capacity_critical events are rate-limited to avoid spam during
+frequent polling.
 """
 
 from __future__ import annotations
@@ -122,6 +127,61 @@ class Notifier:
     def notify_limit_cleared(self) -> None:
         """Notify that usage limits have cleared and dispatch resumed."""
         self._send("limit_cleared", "*Usage limit cleared* — dispatch resumed")
+
+    def notify_capacity_warning(
+        self,
+        *,
+        count: int,
+        limit: int,
+        percentage: float,
+    ) -> None:
+        """Notify that Linear issue count crossed the warning threshold (default 70%)."""
+        lines = [
+            f"*Capacity warning* — {percentage:.0f}% used ({count}/{limit})",
+            "Archive completed issues to free capacity",
+        ]
+        self._send("capacity_warning", "\n".join(lines), rate_limited=True)
+
+    def notify_capacity_critical(
+        self,
+        *,
+        count: int,
+        limit: int,
+        percentage: float,
+    ) -> None:
+        """Notify that Linear issue count crossed the critical threshold (default 85%)."""
+        lines = [
+            f"*Capacity critical* — {percentage:.0f}% used ({count}/{limit})",
+            "Archive completed issues to free capacity",
+        ]
+        self._send("capacity_critical", "\n".join(lines), rate_limited=True)
+
+    def notify_capacity_blocked(
+        self,
+        *,
+        count: int,
+        limit: int,
+        percentage: float,
+    ) -> None:
+        """Notify that Linear issue count crossed the pause threshold (default 95%) — dispatch paused."""
+        lines = [
+            f"*Capacity blocked* — {percentage:.0f}% used ({count}/{limit}), dispatch paused",
+            "Archive completed issues to free capacity",
+        ]
+        self._send("capacity_blocked", "\n".join(lines))
+
+    def notify_capacity_cleared(
+        self,
+        *,
+        count: int,
+        limit: int,
+        percentage: float,
+    ) -> None:
+        """Notify that Linear issue count dropped below resume threshold — dispatch resumed."""
+        lines = [
+            f"*Capacity cleared* — {percentage:.0f}% used ({count}/{limit}), dispatch resumed",
+        ]
+        self._send("capacity_cleared", "\n".join(lines))
 
     def notify_all_idle(self) -> None:
         """Notify that all slots are idle (no more work)."""

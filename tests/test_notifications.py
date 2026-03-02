@@ -55,6 +55,10 @@ class TestNotifierDisabled:
         n.notify_task_failed(ticket_id="X-1", title="t")
         n.notify_limit_hit(reason="test")
         n.notify_limit_cleared()
+        n.notify_capacity_warning(count=700, limit=1000, percentage=70.0)
+        n.notify_capacity_critical(count=850, limit=1000, percentage=85.0)
+        n.notify_capacity_blocked(count=950, limit=1000, percentage=95.0)
+        n.notify_capacity_cleared(count=890, limit=1000, percentage=89.0)
         n.notify_all_idle()
         n.close()
 
@@ -143,6 +147,118 @@ class TestNotifierSlack:
         notifier._client.post.assert_called_once()
         payload = notifier._client.post.call_args[1]["json"]
         assert "idle" in payload["text"].lower()
+
+
+# ---------------------------------------------------------------------------
+# Notifier — capacity threshold notifications
+# ---------------------------------------------------------------------------
+
+
+class TestCapacityNotifications:
+    @pytest.fixture()
+    def notifier(self):
+        n = Notifier(NotificationsConfig(
+            webhook_url="https://hooks.slack.com/services/xxx",
+            webhook_format="slack",
+            rate_limit_seconds=300,
+        ))
+        n._client = MagicMock()
+        response = MagicMock()
+        response.raise_for_status = MagicMock()
+        n._client.post.return_value = response
+        yield n
+        n.close()
+
+    def test_capacity_warning_sends_percentage_and_counts(self, notifier):
+        notifier.notify_capacity_warning(count=700, limit=1000, percentage=70.0)
+        notifier._client.post.assert_called_once()
+        payload = notifier._client.post.call_args[1]["json"]
+        assert "70%" in payload["text"]
+        assert "700/1000" in payload["text"]
+        assert "warning" in payload["text"].lower()
+
+    def test_capacity_warning_includes_actionable_text(self, notifier):
+        notifier.notify_capacity_warning(count=700, limit=1000, percentage=70.0)
+        payload = notifier._client.post.call_args[1]["json"]
+        assert "Archive completed issues" in payload["text"]
+
+    def test_capacity_warning_is_rate_limited(self, notifier):
+        notifier.notify_capacity_warning(count=700, limit=1000, percentage=70.0)
+        assert notifier._client.post.call_count == 1
+        notifier.notify_capacity_warning(count=720, limit=1000, percentage=72.0)
+        assert notifier._client.post.call_count == 1  # rate-limited
+
+    def test_capacity_critical_sends_percentage_and_counts(self, notifier):
+        notifier.notify_capacity_critical(count=850, limit=1000, percentage=85.0)
+        notifier._client.post.assert_called_once()
+        payload = notifier._client.post.call_args[1]["json"]
+        assert "85%" in payload["text"]
+        assert "850/1000" in payload["text"]
+        assert "critical" in payload["text"].lower()
+
+    def test_capacity_critical_includes_actionable_text(self, notifier):
+        notifier.notify_capacity_critical(count=850, limit=1000, percentage=85.0)
+        payload = notifier._client.post.call_args[1]["json"]
+        assert "Archive completed issues" in payload["text"]
+
+    def test_capacity_critical_is_rate_limited(self, notifier):
+        notifier.notify_capacity_critical(count=850, limit=1000, percentage=85.0)
+        assert notifier._client.post.call_count == 1
+        notifier.notify_capacity_critical(count=860, limit=1000, percentage=86.0)
+        assert notifier._client.post.call_count == 1  # rate-limited
+
+    def test_capacity_blocked_sends_percentage_and_counts(self, notifier):
+        notifier.notify_capacity_blocked(count=950, limit=1000, percentage=95.0)
+        notifier._client.post.assert_called_once()
+        payload = notifier._client.post.call_args[1]["json"]
+        assert "95%" in payload["text"]
+        assert "950/1000" in payload["text"]
+        assert "blocked" in payload["text"].lower()
+        assert "dispatch paused" in payload["text"]
+
+    def test_capacity_blocked_includes_actionable_text(self, notifier):
+        notifier.notify_capacity_blocked(count=950, limit=1000, percentage=95.0)
+        payload = notifier._client.post.call_args[1]["json"]
+        assert "Archive completed issues" in payload["text"]
+
+    def test_capacity_blocked_not_rate_limited(self, notifier):
+        """Blocked is critical — always sent."""
+        notifier.notify_capacity_blocked(count=950, limit=1000, percentage=95.0)
+        notifier.notify_capacity_blocked(count=955, limit=1000, percentage=95.5)
+        assert notifier._client.post.call_count == 2
+
+    def test_capacity_cleared_sends_percentage_and_counts(self, notifier):
+        notifier.notify_capacity_cleared(count=890, limit=1000, percentage=89.0)
+        notifier._client.post.assert_called_once()
+        payload = notifier._client.post.call_args[1]["json"]
+        assert "89%" in payload["text"]
+        assert "890/1000" in payload["text"]
+        assert "cleared" in payload["text"].lower()
+        assert "dispatch resumed" in payload["text"]
+
+    def test_capacity_cleared_not_rate_limited(self, notifier):
+        """Cleared is a state change — always sent."""
+        notifier.notify_capacity_cleared(count=890, limit=1000, percentage=89.0)
+        notifier.notify_capacity_cleared(count=880, limit=1000, percentage=88.0)
+        assert notifier._client.post.call_count == 2
+
+    def test_capacity_notifications_discord_format(self):
+        n = Notifier(NotificationsConfig(
+            webhook_url="https://discord.com/api/webhooks/xxx",
+            webhook_format="discord",
+        ))
+        n._client = MagicMock()
+        response = MagicMock()
+        response.raise_for_status = MagicMock()
+        n._client.post.return_value = response
+
+        n.notify_capacity_warning(count=700, limit=1000, percentage=70.0)
+        payload = n._client.post.call_args[1]["json"]
+        assert "content" in payload
+        assert "text" not in payload
+        assert "700/1000" in payload["content"]
+
+        n.close()
 
 
 class TestNotifierDiscord:

@@ -2428,6 +2428,8 @@ class Supervisor:
             f"({utilization * 100:.1f}%)"
         )
 
+        percentage = utilization * 100
+
         if new_level == "blocked":
             logger.warning(
                 "Linear capacity %s — auto-pausing dispatch", detail,
@@ -2437,6 +2439,9 @@ class Supervisor:
             )
             self._conn.commit()
             self._slot_manager.set_dispatch_paused(True, "capacity_blocked")
+            self._notifier.notify_capacity_blocked(
+                count=result.total, limit=limit, percentage=percentage,
+            )
 
         elif new_level == "critical":
             logger.warning("Linear capacity %s — critical", detail)
@@ -2444,6 +2449,9 @@ class Supervisor:
                 self._conn, event_type="capacity_critical", detail=detail,
             )
             self._conn.commit()
+            self._notifier.notify_capacity_critical(
+                count=result.total, limit=limit, percentage=percentage,
+            )
 
         elif new_level == "warning":
             logger.warning("Linear capacity %s — approaching limits", detail)
@@ -2451,6 +2459,9 @@ class Supervisor:
                 self._conn, event_type="capacity_warning", detail=detail,
             )
             self._conn.commit()
+            self._notifier.notify_capacity_warning(
+                count=result.total, limit=limit, percentage=percentage,
+            )
 
         # Clearing from blocked state — resume dispatch
         if old_level == "blocked" and new_level != "blocked":
@@ -2461,6 +2472,9 @@ class Supervisor:
             self._conn.commit()
             if self._slot_manager.dispatch_pause_reason == "capacity_blocked":
                 self._slot_manager.set_dispatch_paused(False)
+            self._notifier.notify_capacity_cleared(
+                count=result.total, limit=limit, percentage=percentage,
+            )
 
         self._capacity_level = new_level
 
