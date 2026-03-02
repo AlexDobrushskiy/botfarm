@@ -1024,3 +1024,13 @@ def get_last_cleanup_batch_time(conn: sqlite3.Connection) -> str | None:
         "SELECT created_at FROM cleanup_batches ORDER BY created_at DESC LIMIT 1"
     ).fetchone()
     return row["created_at"] if row else None
+
+
+def list_cleanup_batches(
+    conn: sqlite3.Connection, *, limit: int = 10,
+) -> list[sqlite3.Row]:
+    """Return the most recent cleanup batches, newest first."""
+    return conn.execute(
+        "SELECT * FROM cleanup_batches ORDER BY created_at DESC LIMIT ?",
+        (limit,),
+    ).fetchall()

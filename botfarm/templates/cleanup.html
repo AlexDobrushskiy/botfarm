@@ -1,0 +1,526 @@
+{% extends "base.html" %}
+{% set active_page = "cleanup" %}
+{% block title %}Cleanup - Botfarm{% endblock %}
+{% block content %}
+<h1>Bulk Archive / Delete</h1>
+
+{% if not has_config %}
+<article style="border-color: var(--pico-color-yellow-500);">
+    <p><strong>Linear API key not configured.</strong> Set <code>linear.api_key</code> in the configuration to enable cleanup operations.</p>
+</article>
+{% else %}
+
+{# Capacity summary #}
+{% if capacity %}
+<article>
+    <header><strong>Linear Capacity</strong></header>
+    <div>
+        <strong>{{ capacity.issue_count }} / {{ capacity.limit }}</strong>
+        ({{ "%.0f"|format(capacity.pct) }}%)
+        <progress value="{{ capacity.pct|round|int }}" max="100" style="margin-bottom: 0; margin-top: 0.25rem;"></progress>
+    </div>
+</article>
+{% endif %}
+
+{# Cooldown warning #}
+<div id="cooldown-banner">
+{% if cooldown_seconds > 0 %}
+<article style="border-color: var(--pico-color-yellow-500); background: rgba(234,179,8,0.08);">
+    <strong>Cooldown active:</strong> <span id="cooldown-timer" data-remaining="{{ cooldown_seconds|round|int }}"></span> remaining before next operation.
+</article>
+{% endif %}
+</div>
+
+{# Filters #}
+<article>
+    <header><strong>Preview Candidates</strong></header>
+    <div class="grid" style="align-items: end;">
+        <label>
+            Minimum age (days)
+            <input type="number" id="filter-min-age" value="7" min="1" max="365">
+        </label>
+        <label>
+            Max issues
+            <select id="filter-limit">
+                <option value="25">25</option>
+                <option value="50" selected>50</option>
+                <option value="100">100</option>
+            </select>
+        </label>
+        <div>
+            <button id="btn-load-preview" class="contrast">Load Preview</button>
+        </div>
+    </div>
+</article>
+
+{# Preview table #}
+<div id="preview-area" style="display: none;">
+    <article>
+        <header style="display: flex; justify-content: space-between; align-items: center;">
+            <strong>Candidate Issues (<span id="candidate-count">0</span>)</strong>
+            <div>
+                <button id="btn-select-all" class="outline" style="padding: 0.3rem 0.8rem; font-size: 0.85rem;">Select All</button>
+                <button id="btn-deselect-all" class="outline" style="padding: 0.3rem 0.8rem; font-size: 0.85rem;">Deselect All</button>
+            </div>
+        </header>
+        <div style="overflow-x: auto;">
+            <table role="grid">
+                <thead>
+                    <tr>
+                        <th style="width: 2rem;"><input type="checkbox" id="check-all" checked></th>
+                        <th>ID</th>
+                        <th>Title</th>
+                        <th>Completed</th>
+                        <th>Age</th>
+                        <th>Labels</th>
+                    </tr>
+                </thead>
+                <tbody id="preview-tbody">
+                </tbody>
+            </table>
+        </div>
+        <div id="no-candidates" style="display: none; padding: 1rem; text-align: center; color: var(--pico-muted-color);">
+            No issues eligible for archiving. All completed issues are newer than the minimum age.
+        </div>
+
+        {# Action controls #}
+        <footer style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;">
+            <div style="display: flex; align-items: center; gap: 1rem;">
+                <fieldset role="group" style="margin-bottom: 0;">
+                    <button id="btn-action-archive" class="cleanup-action-btn cleanup-action-active" style="background: var(--pico-ins-color); color: #fff; border: 2px solid var(--pico-ins-color);">Archive</button>
+                    <button id="btn-action-delete" class="cleanup-action-btn" style="background: transparent; color: var(--pico-del-color); border: 2px solid var(--pico-del-color);">Delete</button>
+                </fieldset>
+            </div>
+            <div>
+                <button id="btn-execute" style="background: var(--pico-ins-color); color: #fff;">
+                    Archive <span id="selected-count">0</span> issues
+                </button>
+            </div>
+        </footer>
+    </article>
+</div>
+
+{# Confirmation dialog #}
+<dialog id="confirm-dialog">
+    <article>
+        <header><strong>Confirm Operation</strong></header>
+        <p id="confirm-message"></p>
+        <div id="confirm-delete-warning" style="display: none; padding: 0.5rem; margin-bottom: 0.5rem; border: 1px solid var(--pico-del-color); border-radius: var(--pico-border-radius); background: rgba(239,68,68,0.1);">
+            <strong>Warning:</strong> Deleting issues is permanent and cannot be undone.
+        </div>
+        <footer style="display: flex; gap: 0.5rem; justify-content: flex-end;">
+            <button id="btn-confirm-cancel" class="outline">Cancel</button>
+            <button id="btn-confirm-ok"></button>
+        </footer>
+    </article>
+</dialog>
+
+{# Progress area #}
+<div id="progress-area" style="display: none;">
+    <article>
+        <header><strong>Operation in progress...</strong></header>
+        <progress id="progress-bar"></progress>
+        <p id="progress-text" style="text-align: center; color: var(--pico-muted-color);"></p>
+    </article>
+</div>
+
+{# Result summary #}
+<div id="result-area" style="display: none;">
+    <article id="result-card">
+        <header><strong>Result</strong></header>
+        <div id="result-summary"></div>
+        <div id="result-errors" style="display: none; margin-top: 0.75rem;">
+            <details>
+                <summary style="color: var(--pico-del-color); cursor: pointer;">Show error details</summary>
+                <pre id="result-errors-list" style="font-size: 0.8rem; margin-top: 0.5rem; white-space: pre-wrap;"></pre>
+            </details>
+        </div>
+        <footer style="display: flex; gap: 0.5rem;">
+            <button id="btn-result-close" class="outline">Close</button>
+            <button id="btn-undo" style="display: none;">Undo Archive</button>
+        </footer>
+    </article>
+</div>
+
+{# Recent batches #}
+{% if batches %}
+<h2>Recent Operations</h2>
+<table role="grid">
+    <thead>
+        <tr>
+            <th>Time</th>
+            <th>Action</th>
+            <th>Total</th>
+            <th>Succeeded</th>
+            <th>Failed</th>
+            <th>Skipped</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for batch in batches %}
+        <tr>
+            <td><span data-timestamp="{{ batch.created_at }}">{{ batch.created_at }}</span></td>
+            <td>
+                {% if batch.action == "archive" %}
+                <span style="color: var(--pico-ins-color);">Archive</span>
+                {% else %}
+                <span style="color: var(--pico-del-color);">Delete</span>
+                {% endif %}
+            </td>
+            <td>{{ batch.total }}</td>
+            <td style="color: var(--pico-ins-color);">{{ batch.succeeded }}</td>
+            <td style="color: var(--pico-del-color);">{{ batch.failed }}</td>
+            <td>{{ batch.skipped }}</td>
+            <td>
+                {% if batch.action == "archive" and batch.succeeded > 0 %}
+                <button class="outline btn-undo-batch" data-batch-id="{{ batch.batch_id }}" style="padding: 0.2rem 0.6rem; font-size: 0.8rem;">Undo</button>
+                {% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+
+{% endif %}
+
+<script>
+(function() {
+    var currentAction = "archive";
+    var candidates = [];
+    var selected = new Set();
+
+    // Cooldown timer
+    var timerEl = document.getElementById("cooldown-timer");
+    if (timerEl) {
+        var remaining = parseInt(timerEl.dataset.remaining, 10);
+        function updateTimer() {
+            if (remaining <= 0) {
+                document.getElementById("cooldown-banner").innerHTML = "";
+                return;
+            }
+            var mins = Math.floor(remaining / 60);
+            var secs = remaining % 60;
+            timerEl.textContent = (mins > 0 ? mins + "m " : "") + secs + "s";
+            remaining--;
+            setTimeout(updateTimer, 1000);
+        }
+        updateTimer();
+    }
+
+    // Load preview
+    document.getElementById("btn-load-preview").addEventListener("click", function() {
+        var btn = this;
+        btn.setAttribute("aria-busy", "true");
+        btn.disabled = true;
+        var minAge = document.getElementById("filter-min-age").value;
+        var limit = document.getElementById("filter-limit").value;
+        fetch("/api/cleanup/preview?limit=" + limit + "&min_age_days=" + minAge)
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                btn.removeAttribute("aria-busy");
+                btn.disabled = false;
+                if (data.error) {
+                    alert("Error: " + data.error);
+                    return;
+                }
+                candidates = data.candidates || [];
+                renderPreview();
+            })
+            .catch(function(err) {
+                btn.removeAttribute("aria-busy");
+                btn.disabled = false;
+                alert("Request failed: " + err);
+            });
+    });
+
+    function renderPreview() {
+        var area = document.getElementById("preview-area");
+        var tbody = document.getElementById("preview-tbody");
+        var noResults = document.getElementById("no-candidates");
+        var countEl = document.getElementById("candidate-count");
+
+        area.style.display = "block";
+        tbody.innerHTML = "";
+        countEl.textContent = candidates.length;
+
+        if (candidates.length === 0) {
+            noResults.style.display = "block";
+            updateSelectedCount();
+            return;
+        }
+        noResults.style.display = "none";
+
+        selected = new Set(candidates.map(function(c) { return c.linear_uuid; }));
+
+        candidates.forEach(function(c) {
+            var tr = document.createElement("tr");
+
+            // Checkbox
+            var tdCheck = document.createElement("td");
+            var cb = document.createElement("input");
+            cb.type = "checkbox";
+            cb.checked = true;
+            cb.dataset.uuid = c.linear_uuid;
+            cb.addEventListener("change", function() {
+                if (this.checked) selected.add(c.linear_uuid);
+                else selected.delete(c.linear_uuid);
+                updateSelectedCount();
+            });
+            tdCheck.appendChild(cb);
+            tr.appendChild(tdCheck);
+
+            // ID
+            var tdId = document.createElement("td");
+            tdId.textContent = c.identifier;
+            tdId.style.fontFamily = "var(--pico-font-family-monospace, monospace)";
+            tdId.style.fontSize = "0.85rem";
+            tr.appendChild(tdId);
+
+            // Title
+            var tdTitle = document.createElement("td");
+            tdTitle.textContent = c.title;
+            tdTitle.style.maxWidth = "400px";
+            tdTitle.style.overflow = "hidden";
+            tdTitle.style.textOverflow = "ellipsis";
+            tdTitle.style.whiteSpace = "nowrap";
+            tr.appendChild(tdTitle);
+
+            // Completed date
+            var tdCompleted = document.createElement("td");
+            var dateStr = c.completed_at || c.updated_at;
+            tdCompleted.textContent = dateStr ? new Date(dateStr).toLocaleDateString() : "—";
+            tr.appendChild(tdCompleted);
+
+            // Age
+            var tdAge = document.createElement("td");
+            if (dateStr) {
+                var ageDays = Math.floor((Date.now() - new Date(dateStr).getTime()) / 86400000);
+                tdAge.textContent = ageDays + "d";
+            } else {
+                tdAge.textContent = "—";
+            }
+            tr.appendChild(tdAge);
+
+            // Labels
+            var tdLabels = document.createElement("td");
+            tdLabels.textContent = (c.labels || []).join(", ");
+            tdLabels.style.fontSize = "0.8rem";
+            tdLabels.style.color = "var(--pico-muted-color)";
+            tr.appendChild(tdLabels);
+
+            tbody.appendChild(tr);
+        });
+
+        updateSelectedCount();
+    }
+
+    function updateSelectedCount() {
+        document.getElementById("selected-count").textContent = selected.size;
+        var btn = document.getElementById("btn-execute");
+        btn.disabled = selected.size === 0;
+        btn.textContent = (currentAction === "archive" ? "Archive " : "Delete ") + selected.size + " issues";
+    }
+
+    // Select all / deselect all
+    document.getElementById("btn-select-all").addEventListener("click", function() {
+        selected = new Set(candidates.map(function(c) { return c.linear_uuid; }));
+        document.querySelectorAll("#preview-tbody input[type=checkbox]").forEach(function(cb) { cb.checked = true; });
+        document.getElementById("check-all").checked = true;
+        updateSelectedCount();
+    });
+
+    document.getElementById("btn-deselect-all").addEventListener("click", function() {
+        selected.clear();
+        document.querySelectorAll("#preview-tbody input[type=checkbox]").forEach(function(cb) { cb.checked = false; });
+        document.getElementById("check-all").checked = false;
+        updateSelectedCount();
+    });
+
+    document.getElementById("check-all").addEventListener("change", function() {
+        if (this.checked) {
+            document.getElementById("btn-select-all").click();
+        } else {
+            document.getElementById("btn-deselect-all").click();
+        }
+    });
+
+    // Action toggle
+    document.getElementById("btn-action-archive").addEventListener("click", function() {
+        currentAction = "archive";
+        this.style.background = "var(--pico-ins-color)";
+        this.style.color = "#fff";
+        var delBtn = document.getElementById("btn-action-delete");
+        delBtn.style.background = "transparent";
+        delBtn.style.color = "var(--pico-del-color)";
+        var execBtn = document.getElementById("btn-execute");
+        execBtn.style.background = "var(--pico-ins-color)";
+        updateSelectedCount();
+    });
+
+    document.getElementById("btn-action-delete").addEventListener("click", function() {
+        currentAction = "delete";
+        this.style.background = "var(--pico-del-color)";
+        this.style.color = "#fff";
+        var archBtn = document.getElementById("btn-action-archive");
+        archBtn.style.background = "transparent";
+        archBtn.style.color = "var(--pico-ins-color)";
+        var execBtn = document.getElementById("btn-execute");
+        execBtn.style.background = "var(--pico-del-color)";
+        updateSelectedCount();
+    });
+
+    // Execute button -> show confirmation
+    document.getElementById("btn-execute").addEventListener("click", function() {
+        if (selected.size === 0) return;
+        var dialog = document.getElementById("confirm-dialog");
+        var msg = document.getElementById("confirm-message");
+        var warn = document.getElementById("confirm-delete-warning");
+        var okBtn = document.getElementById("btn-confirm-ok");
+
+        msg.textContent = (currentAction === "archive" ? "Archive " : "Delete ") +
+            selected.size + " issues — this frees approximately " +
+            selected.size + " capacity slots.";
+
+        if (currentAction === "delete") {
+            warn.style.display = "block";
+            okBtn.style.background = "var(--pico-del-color)";
+            okBtn.style.color = "#fff";
+            okBtn.textContent = "Delete " + selected.size + " issues";
+        } else {
+            warn.style.display = "none";
+            okBtn.style.background = "var(--pico-ins-color)";
+            okBtn.style.color = "#fff";
+            okBtn.textContent = "Archive " + selected.size + " issues";
+        }
+
+        dialog.setAttribute("open", "");
+    });
+
+    // Confirm dialog buttons
+    document.getElementById("btn-confirm-cancel").addEventListener("click", function() {
+        document.getElementById("confirm-dialog").removeAttribute("open");
+    });
+
+    document.getElementById("btn-confirm-ok").addEventListener("click", function() {
+        document.getElementById("confirm-dialog").removeAttribute("open");
+        executeCleanup();
+    });
+
+    function executeCleanup() {
+        var progressArea = document.getElementById("progress-area");
+        var progressText = document.getElementById("progress-text");
+        progressArea.style.display = "block";
+        progressText.textContent = "Starting " + currentAction + " operation...";
+
+        fetch("/api/cleanup/execute", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({
+                action: currentAction,
+                limit: selected.size,
+                selected_ids: Array.from(selected),
+            }),
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            progressArea.style.display = "none";
+            if (data.error) {
+                showResult({error: data.error});
+                return;
+            }
+            showResult(data);
+        })
+        .catch(function(err) {
+            progressArea.style.display = "none";
+            showResult({error: "Request failed: " + err});
+        });
+    }
+
+    function showResult(data) {
+        var area = document.getElementById("result-area");
+        var summary = document.getElementById("result-summary");
+        var errorsDiv = document.getElementById("result-errors");
+        var errorsList = document.getElementById("result-errors-list");
+        var undoBtn = document.getElementById("btn-undo");
+
+        area.style.display = "block";
+
+        if (data.error) {
+            summary.innerHTML = '<p style="color: var(--pico-del-color);">' + data.error + '</p>';
+            errorsDiv.style.display = "none";
+            undoBtn.style.display = "none";
+            return;
+        }
+
+        var html = '<div class="grid" style="text-align: center;">' +
+            '<div><strong style="font-size: 1.5rem; color: var(--pico-ins-color);">' + data.succeeded + '</strong><br>Succeeded</div>' +
+            '<div><strong style="font-size: 1.5rem; color: var(--pico-del-color);">' + data.failed + '</strong><br>Failed</div>' +
+            '<div><strong style="font-size: 1.5rem;">' + data.skipped + '</strong><br>Skipped</div>' +
+            '</div>';
+
+        if (data.failed > 0 && data.succeeded > 0) {
+            html += '<p style="margin-top: 0.5rem;">' +
+                (data.action === "archive" ? "Archived " : "Deleted ") +
+                data.succeeded + ' of ' + data.total + ' issues. ' +
+                data.failed + ' failed.</p>';
+        }
+
+        summary.innerHTML = html;
+
+        if (data.errors && data.errors.length > 0) {
+            errorsDiv.style.display = "block";
+            errorsList.textContent = data.errors.join("\n");
+        } else {
+            errorsDiv.style.display = "none";
+        }
+
+        if (data.action === "archive" && data.succeeded > 0 && data.batch_id) {
+            undoBtn.style.display = "inline-block";
+            undoBtn.onclick = function() { undoBatch(data.batch_id); };
+        } else {
+            undoBtn.style.display = "none";
+        }
+    }
+
+    function undoBatch(batchId) {
+        if (!confirm("Undo this archive batch? All successfully archived issues will be unarchived.")) return;
+
+        var undoBtn = document.getElementById("btn-undo");
+        undoBtn.setAttribute("aria-busy", "true");
+        undoBtn.disabled = true;
+
+        fetch("/api/cleanup/undo/" + batchId, { method: "POST" })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                undoBtn.removeAttribute("aria-busy");
+                undoBtn.disabled = false;
+                if (data.error) {
+                    alert("Undo failed: " + data.error);
+                    return;
+                }
+                alert("Undo complete: " + data.succeeded + " of " + data.total + " issues unarchived.");
+                undoBtn.style.display = "none";
+            })
+            .catch(function(err) {
+                undoBtn.removeAttribute("aria-busy");
+                undoBtn.disabled = false;
+                alert("Undo request failed: " + err);
+            });
+    }
+
+    // Undo buttons on batch history table
+    document.querySelectorAll(".btn-undo-batch").forEach(function(btn) {
+        btn.addEventListener("click", function() {
+            undoBatch(this.dataset.batchId);
+        });
+    });
+
+    // Close result
+    document.getElementById("btn-result-close").addEventListener("click", function() {
+        document.getElementById("result-area").style.display = "none";
+    });
+})();
+</script>
+{% endblock %}

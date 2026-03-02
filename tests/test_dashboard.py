@@ -5108,3 +5108,400 @@ class TestLinearCapacityPartial:
         )
         resp = client.get("/partials/linear-capacity")
         assert "status-failed" in resp.text
+
+    def test_capacity_widget_free_up_space_button(self, tmp_path):
+        """Capacity widget should include a 'Free Up Space' link."""
+        client = self._make_client(tmp_path, issue_count=200, limit=250)
+        resp = client.get("/partials/linear-capacity")
+        assert "Free Up Space" in resp.text
+        assert 'href="/cleanup"' in resp.text
+
+
+# ---------------------------------------------------------------------------
+# Cleanup page
+# ---------------------------------------------------------------------------
+
+
+class TestCleanupPage:
+    def _make_client(self, tmp_path, *, with_config=True):
+        db_path = tmp_path / "cleanup.db"
+        conn = init_db(db_path)
+        conn.close()
+        kwargs = {"db_path": db_path}
+        if with_config:
+            cfg = BotfarmConfig(
+                projects=[
+                    ProjectConfig(
+                        name="proj",
+                        linear_team="SMA",
+                        base_dir="/tmp",
+                        worktree_prefix="w",
+                        slots=[1],
+                    ),
+                ],
+                linear=LinearConfig(api_key="test-key"),
+            )
+            kwargs["botfarm_config"] = cfg
+        app = create_app(**kwargs)
+        return TestClient(app)
+
+    def test_cleanup_page_returns_200(self, tmp_path):
+        client = self._make_client(tmp_path)
+        resp = client.get("/cleanup")
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers["content-type"]
+
+    def test_cleanup_page_contains_title(self, tmp_path):
+        client = self._make_client(tmp_path)
+        resp = client.get("/cleanup")
+        assert "Bulk Archive" in resp.text
+
+    def test_cleanup_page_contains_filter_controls(self, tmp_path):
+        client = self._make_client(tmp_path)
+        resp = client.get("/cleanup")
+        assert "filter-min-age" in resp.text
+        assert "filter-limit" in resp.text
+        assert "Load Preview" in resp.text
+
+    def test_cleanup_page_contains_action_buttons(self, tmp_path):
+        client = self._make_client(tmp_path)
+        resp = client.get("/cleanup")
+        assert "btn-action-archive" in resp.text
+        assert "btn-action-delete" in resp.text
+
+    def test_cleanup_page_no_config_shows_warning(self, tmp_path):
+        client = self._make_client(tmp_path, with_config=False)
+        resp = client.get("/cleanup")
+        assert "Linear API key not configured" in resp.text
+
+    def test_cleanup_page_shows_recent_batches(self, tmp_path):
+        from botfarm.db import insert_cleanup_batch
+        db_path = tmp_path / "cleanup_batches.db"
+        conn = init_db(db_path)
+        insert_cleanup_batch(
+            conn,
+            batch_id="test-batch-1",
+            action="archive",
+            team_key="SMA",
+            total=10,
+            succeeded=8,
+            failed=2,
+        )
+        conn.commit()
+        conn.close()
+        cfg = BotfarmConfig(
+            projects=[
+                ProjectConfig(
+                    name="proj", linear_team="SMA",
+                    base_dir="/tmp", worktree_prefix="w", slots=[1],
+                ),
+            ],
+            linear=LinearConfig(api_key="test-key"),
+        )
+        app = create_app(db_path=db_path, botfarm_config=cfg)
+        client = TestClient(app)
+        resp = client.get("/cleanup")
+        assert "Recent Operations" in resp.text
+        assert "test-batch-1" in resp.text
+
+    def test_cleanup_page_in_navigation(self, tmp_path):
+        client = self._make_client(tmp_path)
+        resp = client.get("/cleanup")
+        assert 'aria-current="page"' in resp.text
+        assert "Cleanup" in resp.text
+
+
+class TestCleanupPreviewAPI:
+    def _make_client(self, tmp_path):
+        db_path = tmp_path / "cleanup_api.db"
+        conn = init_db(db_path)
+        conn.close()
+        cfg = BotfarmConfig(
+            projects=[
+                ProjectConfig(
+                    name="proj", linear_team="SMA",
+                    base_dir="/tmp", worktree_prefix="w", slots=[1],
+                ),
+            ],
+            linear=LinearConfig(api_key="test-key"),
+        )
+        app = create_app(db_path=db_path, botfarm_config=cfg)
+        return TestClient(app)
+
+    def test_preview_no_config(self, tmp_path):
+        db_path = tmp_path / "no_cfg.db"
+        conn = init_db(db_path)
+        conn.close()
+        app = create_app(db_path=db_path)
+        client = TestClient(app)
+        resp = client.get("/api/cleanup/preview")
+        assert resp.status_code == 503
+
+    def test_preview_returns_candidates(self, tmp_path):
+        from datetime import datetime, timedelta, timezone
+        client = self._make_client(tmp_path)
+        old_iso = (datetime.now(timezone.utc) - timedelta(days=30)).strftime(
+            "%Y-%m-%dT%H:%M:%S.%fZ"
+        )
+        mock_nodes = [{
+            "id": "uuid-1",
+            "identifier": "SMA-100",
+            "title": "Old issue",
+            "updatedAt": old_iso,
+            "completedAt": old_iso,
+            "labels": {"nodes": []},
+            "children": {"nodes": []},
+        }]
+        import httpx
+        from botfarm.linear import LINEAR_API_URL
+        resp_data = httpx.Response(
+            status_code=200,
+            json={"data": {"issues": {"nodes": mock_nodes}}},
+            request=httpx.Request("POST", LINEAR_API_URL),
+        )
+        with patch.object(httpx, "post", return_value=resp_data):
+            resp = client.get("/api/cleanup/preview?limit=25&min_age_days=7")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] == 1
+        assert data["candidates"][0]["identifier"] == "SMA-100"
+
+    def test_preview_empty_result(self, tmp_path):
+        client = self._make_client(tmp_path)
+        import httpx
+        from botfarm.linear import LINEAR_API_URL
+        resp_data = httpx.Response(
+            status_code=200,
+            json={"data": {"issues": {"nodes": []}}},
+            request=httpx.Request("POST", LINEAR_API_URL),
+        )
+        with patch.object(httpx, "post", return_value=resp_data):
+            resp = client.get("/api/cleanup/preview")
+        assert resp.status_code == 200
+        assert resp.json()["total"] == 0
+
+
+class TestCleanupExecuteAPI:
+    def _make_client(self, tmp_path):
+        db_path = tmp_path / "cleanup_exec.db"
+        conn = init_db(db_path)
+        conn.close()
+        cfg = BotfarmConfig(
+            projects=[
+                ProjectConfig(
+                    name="proj", linear_team="SMA",
+                    base_dir="/tmp", worktree_prefix="w", slots=[1],
+                ),
+            ],
+            linear=LinearConfig(api_key="test-key"),
+        )
+        app = create_app(db_path=db_path, botfarm_config=cfg)
+        return TestClient(app)
+
+    def test_execute_invalid_action(self, tmp_path):
+        client = self._make_client(tmp_path)
+        resp = client.post(
+            "/api/cleanup/execute",
+            json={"action": "purge"},
+        )
+        assert resp.status_code == 400
+
+    def test_execute_no_config(self, tmp_path):
+        db_path = tmp_path / "no_cfg.db"
+        conn = init_db(db_path)
+        conn.close()
+        app = create_app(db_path=db_path)
+        client = TestClient(app)
+        resp = client.post(
+            "/api/cleanup/execute",
+            json={"action": "archive"},
+        )
+        assert resp.status_code == 503
+
+    @patch("botfarm.linear_cleanup.time.sleep")
+    def test_execute_archive_success(self, mock_sleep, tmp_path):
+        from datetime import datetime, timedelta, timezone
+        client = self._make_client(tmp_path)
+        old_iso = (datetime.now(timezone.utc) - timedelta(days=30)).strftime(
+            "%Y-%m-%dT%H:%M:%S.%fZ"
+        )
+        mock_nodes = [{
+            "id": "uuid-1",
+            "identifier": "SMA-100",
+            "title": "Old issue",
+            "updatedAt": old_iso,
+            "completedAt": old_iso,
+            "labels": {"nodes": []},
+            "children": {"nodes": []},
+        }]
+        import httpx
+        from botfarm.linear import LINEAR_API_URL
+
+        fetch_resp = httpx.Response(
+            status_code=200,
+            json={"data": {"issues": {"nodes": mock_nodes}}},
+            request=httpx.Request("POST", LINEAR_API_URL),
+        )
+        detail_resp = httpx.Response(
+            status_code=200,
+            json={"data": {"issue": {
+                "id": "uuid-1", "identifier": "SMA-100", "title": "Old issue",
+                "description": None, "priority": 3,
+                "url": "https://linear.app/test/SMA-100",
+                "estimate": None, "dueDate": None,
+                "createdAt": old_iso, "updatedAt": old_iso,
+                "completedAt": old_iso,
+                "state": {"name": "Done"},
+                "creator": {"name": "User"},
+                "assignee": {"name": "Bot", "email": "bot@test.com"},
+                "project": {"name": "TestProj"},
+                "team": {"name": "SMA", "key": "SMA"},
+                "parent": None, "children": {"nodes": []},
+                "labels": {"nodes": []},
+                "relations": {"nodes": []},
+                "inverseRelations": {"nodes": []},
+                "comments": {"nodes": []},
+            }}},
+            request=httpx.Request("POST", LINEAR_API_URL),
+        )
+        archive_resp = httpx.Response(
+            status_code=200,
+            json={"data": {"issueArchive": {"success": True}}},
+            request=httpx.Request("POST", LINEAR_API_URL),
+        )
+
+        with patch.object(httpx, "post", side_effect=[fetch_resp, detail_resp, archive_resp]):
+            resp = client.post(
+                "/api/cleanup/execute",
+                json={"action": "archive", "limit": 50},
+            )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["succeeded"] == 1
+        assert data["batch_id"]
+
+    def test_execute_cooldown_returns_429(self, tmp_path):
+        from botfarm.db import insert_cleanup_batch
+        db_path = tmp_path / "cooldown.db"
+        conn = init_db(db_path)
+        insert_cleanup_batch(conn, batch_id="recent", action="archive")
+        conn.commit()
+        conn.close()
+        cfg = BotfarmConfig(
+            projects=[
+                ProjectConfig(
+                    name="proj", linear_team="SMA",
+                    base_dir="/tmp", worktree_prefix="w", slots=[1],
+                ),
+            ],
+            linear=LinearConfig(api_key="test-key"),
+        )
+        app = create_app(db_path=db_path, botfarm_config=cfg)
+        client = TestClient(app)
+        resp = client.post(
+            "/api/cleanup/execute",
+            json={"action": "archive"},
+        )
+        assert resp.status_code == 429
+        assert "Cooldown" in resp.json()["error"]
+
+
+class TestCleanupUndoAPI:
+    def test_undo_nonexistent_batch(self, tmp_path):
+        db_path = tmp_path / "undo.db"
+        conn = init_db(db_path)
+        conn.close()
+        cfg = BotfarmConfig(
+            projects=[
+                ProjectConfig(
+                    name="proj", linear_team="SMA",
+                    base_dir="/tmp", worktree_prefix="w", slots=[1],
+                ),
+            ],
+            linear=LinearConfig(api_key="test-key"),
+        )
+        app = create_app(db_path=db_path, botfarm_config=cfg)
+        client = TestClient(app)
+        resp = client.post("/api/cleanup/undo/nonexistent")
+        assert resp.status_code == 400
+        assert "not found" in resp.json()["error"]
+
+    def test_undo_no_config(self, tmp_path):
+        db_path = tmp_path / "undo_no_cfg.db"
+        conn = init_db(db_path)
+        conn.close()
+        app = create_app(db_path=db_path)
+        client = TestClient(app)
+        resp = client.post("/api/cleanup/undo/some-batch")
+        assert resp.status_code == 503
+
+
+class TestCleanupBatchDetailAPI:
+    def test_batch_detail_returns_data(self, tmp_path):
+        from botfarm.db import insert_cleanup_batch, insert_cleanup_batch_item
+        db_path = tmp_path / "batch_detail.db"
+        conn = init_db(db_path)
+        insert_cleanup_batch(
+            conn, batch_id="detail-batch", action="archive", total=1,
+        )
+        insert_cleanup_batch_item(
+            conn,
+            batch_id="detail-batch",
+            linear_uuid="uuid-1",
+            identifier="SMA-100",
+            action="archive",
+            success=True,
+        )
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=db_path)
+        client = TestClient(app)
+        resp = client.get("/api/cleanup/batch/detail-batch")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["batch"]["action"] == "archive"
+        assert len(data["items"]) == 1
+
+    def test_batch_detail_not_found(self, tmp_path):
+        db_path = tmp_path / "batch_404.db"
+        conn = init_db(db_path)
+        conn.close()
+        app = create_app(db_path=db_path)
+        client = TestClient(app)
+        resp = client.get("/api/cleanup/batch/nonexistent")
+        assert resp.status_code == 404
+
+
+class TestCleanupDBHelpers:
+    def test_list_cleanup_batches(self, tmp_path):
+        from botfarm.db import insert_cleanup_batch, list_cleanup_batches
+        db_path = tmp_path / "list.db"
+        conn = init_db(db_path)
+        insert_cleanup_batch(conn, batch_id="b1", action="archive", total=5)
+        insert_cleanup_batch(conn, batch_id="b2", action="delete", total=3)
+        conn.commit()
+        batches = list_cleanup_batches(conn)
+        assert len(batches) == 2
+        # Most recent first
+        assert batches[0]["batch_id"] == "b2"
+        conn.close()
+
+    def test_list_cleanup_batches_empty(self, tmp_path):
+        from botfarm.db import list_cleanup_batches
+        db_path = tmp_path / "empty.db"
+        conn = init_db(db_path)
+        batches = list_cleanup_batches(conn)
+        assert batches == []
+        conn.close()
+
+    def test_list_cleanup_batches_respects_limit(self, tmp_path):
+        from botfarm.db import insert_cleanup_batch, list_cleanup_batches
+        db_path = tmp_path / "limit.db"
+        conn = init_db(db_path)
+        for i in range(5):
+            insert_cleanup_batch(conn, batch_id=f"b{i}", action="archive")
+        conn.commit()
+        batches = list_cleanup_batches(conn, limit=3)
+        assert len(batches) == 3
+        conn.close()
