@@ -223,8 +223,8 @@
                 {# Decision diamond + loop branch after this stage if it has a loop #}
                 {% for lp in pipeline.loops %}
                 {% if lp.decision_stage == stage.name %}
-                <div class="workflow-loop-branch">
-                    <div class="workflow-decision">
+                <div class="workflow-loop-branch" data-loop-id="{{ lp.id }}">
+                    <div class="workflow-decision" onclick="toggleLoopEditor({{ lp.id }})" title="Click to edit loop">
                         <svg class="workflow-diamond-svg" width="80" height="50" viewBox="0 0 80 50">
                             <polygon points="40,2 78,25 40,48 2,25" fill="none" stroke="var(--pico-color-yellow-500, #eab308)" stroke-width="2"/>
                             <text x="40" y="29" text-anchor="middle" fill="var(--pico-color-yellow-500, #eab308)" font-size="10" font-weight="600">{{ lp.question }}</text>
@@ -253,7 +253,68 @@
                                 <path d="M50,2 C20,2 8,18 8,30 L8,34" fill="none" stroke="var(--pico-del-color)" stroke-width="2" stroke-dasharray="4,3"/>
                                 <polygon points="4,28 8,36 12,28" fill="var(--pico-del-color)"/>
                             </svg>
-                            <span class="workflow-loop-label">max {{ lp.max_iterations }} {{ "iterations" if "review" in lp.name else "retries" }}</span>
+                            <span class="workflow-loop-label" data-loop-id="{{ lp.id }}">max {{ lp.max_iterations }} {{ "iterations" if "review" in lp.name else "retries" }}</span>
+                            {% if lp.config_key %}
+                            <span class="workflow-loop-config-hint">(overridable via config)</span>
+                            {% endif %}
+                        </div>
+                    </div>
+
+                    {# Inline loop editor (hidden by default) #}
+                    <div class="loop-editor" id="loop-editor-{{ lp.id }}" style="display:none">
+                        <div class="stage-props-form" data-loop-id="{{ lp.id }}">
+                            <div class="stage-prop-row">
+                                <label class="stage-prop-label" for="loop-name-{{ lp.id }}">Name</label>
+                                <input type="text" class="stage-prop-input stage-prop-input-wide" id="loop-name-{{ lp.id }}"
+                                       value="{{ lp.name }}">
+                            </div>
+                            <div class="stage-prop-row">
+                                <label class="stage-prop-label" for="loop-start_stage-{{ lp.id }}">Start stage</label>
+                                <select class="stage-prop-input" id="loop-start_stage-{{ lp.id }}">
+                                    {% for s in pipeline.stages %}
+                                    <option value="{{ s.name }}" {% if s.name == lp.start_stage %}selected{% endif %}>{{ s.name }}</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                            <div class="stage-prop-row">
+                                <label class="stage-prop-label" for="loop-end_stage-{{ lp.id }}">End stage</label>
+                                <select class="stage-prop-input" id="loop-end_stage-{{ lp.id }}">
+                                    {% for s in pipeline.stages %}
+                                    <option value="{{ s.name }}" {% if s.name == lp.end_stage %}selected{% endif %}>{{ s.name }}</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                            <div class="stage-prop-row">
+                                <label class="stage-prop-label" for="loop-max_iterations-{{ lp.id }}">Max iterations</label>
+                                <input type="number" class="stage-prop-input" id="loop-max_iterations-{{ lp.id }}"
+                                       value="{{ lp.max_iterations }}" min="1">
+                            </div>
+                            <div class="stage-prop-row">
+                                <label class="stage-prop-label" for="loop-config_key-{{ lp.id }}">Config key</label>
+                                <input type="text" class="stage-prop-input stage-prop-input-wide" id="loop-config_key-{{ lp.id }}"
+                                       value="{{ lp.config_key or '' }}" placeholder="e.g. max_review_iterations">
+                            </div>
+                            <div class="stage-prop-row">
+                                <label class="stage-prop-label" for="loop-exit_condition-{{ lp.id }}">Exit condition</label>
+                                <input type="text" class="stage-prop-input stage-prop-input-wide" id="loop-exit_condition-{{ lp.id }}"
+                                       value="{{ lp.exit_condition or '' }}" placeholder="e.g. review_approved">
+                            </div>
+                            <div class="stage-prop-row">
+                                <label class="stage-prop-label" for="loop-on_failure_stage-{{ lp.id }}">On failure stage</label>
+                                <select class="stage-prop-input" id="loop-on_failure_stage-{{ lp.id }}">
+                                    <option value="" {% if not lp.on_failure_stage %}selected{% endif %}>(none — iteration loop)</option>
+                                    {% for s in pipeline.stages %}
+                                    <option value="{{ s.name }}" {% if s.name == lp.on_failure_stage %}selected{% endif %}>{{ s.name }}</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                            <div class="loop-editor-feedback" id="loop-feedback-{{ lp.id }}"></div>
+                            <div class="stage-props-actions loop-editor-actions">
+                                <button type="button" class="prompt-save-btn" onclick="saveLoop({{ lp.id }})">Save</button>
+                                <button type="button" class="prompt-cancel-btn" onclick="toggleLoopEditor({{ lp.id }})">Cancel</button>
+                                <button type="button" class="pipeline-action-btn pipeline-action-btn-danger loop-delete-btn"
+                                        onclick="deleteLoop({{ lp.id }}, '{{ lp.name }}')">Remove Loop</button>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -263,9 +324,67 @@
             {% endfor %}
         </div>
     </div>
+    {% if pipeline.stages|length > 1 %}
+    <div class="loop-add-section">
+        <button class="pipeline-action-btn" onclick="showAddLoopModal({{ pipeline.id }}, '{{ pipeline.name }}')">+ Add Loop</button>
+    </div>
+    {% endif %}
     {% endif %}
 </div>
 {% endfor %}
+
+{# Add loop modal #}
+<dialog id="add-loop-modal">
+    <article class="pipeline-modal-content">
+        <header>
+            <button aria-label="Close" rel="prev" onclick="closeAddLoopModal()"></button>
+            <h3>Add Loop</h3>
+        </header>
+        <div class="stage-props-form">
+            <input type="hidden" id="add-loop-pipeline-id" value="">
+            <input type="hidden" id="add-loop-pipeline-name" value="">
+            <div class="stage-prop-row">
+                <label class="stage-prop-label" for="add-loop-name">Name</label>
+                <input type="text" class="stage-prop-input stage-prop-input-wide" id="add-loop-name"
+                       placeholder="e.g. review_loop (required)">
+            </div>
+            <div class="stage-prop-row">
+                <label class="stage-prop-label" for="add-loop-start_stage">Start stage</label>
+                <select class="stage-prop-input" id="add-loop-start_stage"></select>
+            </div>
+            <div class="stage-prop-row">
+                <label class="stage-prop-label" for="add-loop-end_stage">End stage</label>
+                <select class="stage-prop-input" id="add-loop-end_stage"></select>
+            </div>
+            <div class="stage-prop-row">
+                <label class="stage-prop-label" for="add-loop-max_iterations">Max iterations</label>
+                <input type="number" class="stage-prop-input" id="add-loop-max_iterations"
+                       value="3" min="1">
+            </div>
+            <div class="stage-prop-row">
+                <label class="stage-prop-label" for="add-loop-config_key">Config key</label>
+                <input type="text" class="stage-prop-input stage-prop-input-wide" id="add-loop-config_key"
+                       placeholder="e.g. max_review_iterations">
+            </div>
+            <div class="stage-prop-row">
+                <label class="stage-prop-label" for="add-loop-exit_condition">Exit condition</label>
+                <input type="text" class="stage-prop-input stage-prop-input-wide" id="add-loop-exit_condition"
+                       placeholder="e.g. review_approved">
+            </div>
+            <div class="stage-prop-row">
+                <label class="stage-prop-label" for="add-loop-on_failure_stage">On failure stage</label>
+                <select class="stage-prop-input" id="add-loop-on_failure_stage">
+                    <option value="">(none — iteration loop)</option>
+                </select>
+            </div>
+            <div class="pipeline-editor-feedback" id="add-loop-feedback"></div>
+        </div>
+        <footer>
+            <button class="prompt-cancel-btn" onclick="closeAddLoopModal()">Cancel</button>
+            <button class="prompt-save-btn" id="add-loop-btn" onclick="createLoop()">Add Loop</button>
+        </footer>
+    </article>
+</dialog>
 
 {# Create pipeline modal #}
 <dialog id="create-pipeline-modal">
@@ -617,6 +736,61 @@ input[type="number"].stage-prop-input {
     justify-content: flex-end;
     gap: 0.4rem;
     padding: 0.75rem 1rem;
+}
+
+/* ── Loop editor styles ── */
+.loop-editor {
+    background: var(--pico-card-background-color);
+    border: 1px solid var(--pico-color-yellow-500, #eab308);
+    border-radius: var(--pico-border-radius);
+    padding: 0.75rem;
+    margin-top: 0.5rem;
+    max-width: 22rem;
+}
+.loop-editor-feedback {
+    margin-top: 0.3rem;
+}
+.loop-editor-feedback .config-feedback {
+    padding: 0.4rem 0.6rem;
+    border-radius: var(--pico-border-radius);
+    font-size: 0.75rem;
+}
+.loop-editor-feedback .config-feedback.success {
+    background: rgba(34, 197, 94, 0.15);
+    color: var(--pico-ins-color);
+}
+.loop-editor-feedback .config-feedback.error {
+    background: rgba(239, 68, 68, 0.15);
+    color: var(--pico-del-color);
+}
+.loop-editor-feedback .config-feedback.warning {
+    background: rgba(245, 158, 11, 0.15);
+    color: var(--pico-color-yellow-500, #eab308);
+    margin-top: 0.3rem;
+}
+.loop-editor-actions {
+    display: flex;
+    gap: 0.4rem;
+    align-items: center;
+}
+.loop-delete-btn {
+    margin-left: auto;
+}
+.loop-add-section {
+    margin-top: 0.75rem;
+}
+.workflow-decision {
+    cursor: pointer;
+}
+.workflow-decision:hover .workflow-diamond-svg polygon {
+    stroke-width: 3;
+}
+.workflow-loop-config-hint {
+    font-size: 0.65rem;
+    color: var(--pico-muted-color);
+    font-style: italic;
+    display: block;
+    text-align: center;
 }
 </style>
 
@@ -1153,6 +1327,224 @@ function checkUnknownVars(stageId) {
     } else {
         warnEl.style.display = 'none';
     }
+}
+
+/* ── Loop editor functions ── */
+
+function toggleLoopEditor(loopId) {
+    var editor = document.getElementById('loop-editor-' + loopId);
+    if (editor) {
+        editor.style.display = editor.style.display === 'none' ? 'block' : 'none';
+    }
+}
+
+function saveLoop(loopId) {
+    var feedbackEl = document.getElementById('loop-feedback-' + loopId);
+    var saveBtn = feedbackEl.closest('.stage-props-form').querySelector('.prompt-save-btn');
+    var body = {
+        name: document.getElementById('loop-name-' + loopId).value.trim(),
+        start_stage: document.getElementById('loop-start_stage-' + loopId).value,
+        end_stage: document.getElementById('loop-end_stage-' + loopId).value,
+        max_iterations: parseInt(document.getElementById('loop-max_iterations-' + loopId).value, 10) || 1,
+        config_key: document.getElementById('loop-config_key-' + loopId).value || null,
+        exit_condition: document.getElementById('loop-exit_condition-' + loopId).value || null,
+        on_failure_stage: document.getElementById('loop-on_failure_stage-' + loopId).value || null
+    };
+
+    if (!body.name) {
+        showFeedbackError(feedbackEl, 'Name is required.');
+        return;
+    }
+
+    feedbackEl.innerHTML = '';
+    saveBtn.setAttribute('aria-busy', 'true');
+    saveBtn.textContent = 'Saving...';
+
+    fetch('/api/workflow/loops/' + loopId, {
+        method: 'PATCH',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body)
+    })
+    .then(function(resp) {
+        return resp.json().then(function(data) { return {ok: resp.ok, data: data}; });
+    })
+    .then(function(result) {
+        saveBtn.removeAttribute('aria-busy');
+        saveBtn.textContent = 'Save';
+        if (result.ok && result.data.ok) {
+            var successDiv = document.createElement('div');
+            successDiv.className = 'config-feedback success';
+            successDiv.setAttribute('role', 'alert');
+            successDiv.textContent = 'Loop saved.';
+            feedbackEl.innerHTML = '';
+            feedbackEl.appendChild(successDiv);
+            // Surface validation warnings
+            var warnings = result.data.warnings;
+            if (warnings && warnings.length > 0) {
+                var warnDiv = document.createElement('div');
+                warnDiv.className = 'config-feedback warning';
+                warnDiv.setAttribute('role', 'alert');
+                warnDiv.textContent = warnings.join('; ');
+                feedbackEl.appendChild(warnDiv);
+            }
+            // Update diamond label and loop-arc label dynamically
+            var data = result.data.data;
+            var branch = document.querySelector('.workflow-loop-branch[data-loop-id="' + loopId + '"]');
+            if (branch) {
+                var diamondText = branch.querySelector('.workflow-diamond-svg text');
+                if (diamondText) {
+                    var cond = data.exit_condition || '';
+                    var question = cond.indexOf('review') !== -1 ? 'Approved?' : (cond.indexOf('ci') !== -1 ? 'CI passed?' : 'Continue?');
+                    diamondText.textContent = question;
+                }
+                var loopLabel = branch.querySelector('.workflow-loop-label');
+                if (loopLabel) {
+                    var labelText = 'max ' + data.max_iterations + ' ' + (data.name.indexOf('review') !== -1 ? 'iterations' : 'retries');
+                    loopLabel.textContent = labelText;
+                }
+                // Update or add config hint
+                var hint = branch.querySelector('.workflow-loop-config-hint');
+                if (data.config_key) {
+                    if (!hint) {
+                        hint = document.createElement('span');
+                        hint.className = 'workflow-loop-config-hint';
+                        var arcDiv = branch.querySelector('.workflow-loop-arc');
+                        if (arcDiv) arcDiv.appendChild(hint);
+                    }
+                    hint.textContent = '(overridable via config)';
+                } else if (hint) {
+                    hint.remove();
+                }
+            }
+            // Reload after delay to reflect structural changes (stage reassignment)
+            setTimeout(function() { window.location.reload(); }, warnings && warnings.length ? 3000 : 1500);
+        } else {
+            var errors = result.data.errors || ['Unknown error'];
+            showFeedbackError(feedbackEl, errors.join('; '));
+        }
+    })
+    .catch(function() {
+        saveBtn.removeAttribute('aria-busy');
+        saveBtn.textContent = 'Save';
+        showFeedbackError(feedbackEl, 'Network error.');
+    });
+}
+
+function deleteLoop(loopId, loopName) {
+    if (!confirm('Remove the "' + loopName + '" loop? This cannot be undone.')) return;
+
+    fetch('/api/workflow/loops/' + loopId, {
+        method: 'DELETE'
+    })
+    .then(function(resp) {
+        return resp.json().then(function(data) { return {ok: resp.ok, data: data}; });
+    })
+    .then(function(result) {
+        if (result.ok && result.data.ok) {
+            window.location.reload();
+        } else {
+            var errors = result.data.errors || ['Unknown error'];
+            alert('Delete failed: ' + errors.join('; '));
+        }
+    })
+    .catch(function() {
+        alert('Network error while deleting loop.');
+    });
+}
+
+function showAddLoopModal(pipelineId, pipelineName) {
+    document.getElementById('add-loop-pipeline-id').value = pipelineId;
+    document.getElementById('add-loop-pipeline-name').value = pipelineName;
+    document.getElementById('add-loop-name').value = '';
+    document.getElementById('add-loop-max_iterations').value = '3';
+    document.getElementById('add-loop-config_key').value = '';
+    document.getElementById('add-loop-exit_condition').value = '';
+    document.getElementById('add-loop-feedback').innerHTML = '';
+
+    // Populate stage dropdowns from the pipeline's stages
+    var pipelineEl = document.getElementById('pipeline-' + pipelineName);
+    var stageNodes = pipelineEl ? pipelineEl.querySelectorAll('.workflow-node-name') : [];
+    var stageNames = [];
+    stageNodes.forEach(function(node) {
+        var name = node.textContent.trim();
+        if (stageNames.indexOf(name) === -1) stageNames.push(name);
+    });
+
+    var startSelect = document.getElementById('add-loop-start_stage');
+    var endSelect = document.getElementById('add-loop-end_stage');
+    var failSelect = document.getElementById('add-loop-on_failure_stage');
+
+    startSelect.innerHTML = '';
+    endSelect.innerHTML = '';
+    failSelect.innerHTML = '<option value="">(none \u2014 iteration loop)</option>';
+
+    stageNames.forEach(function(name) {
+        startSelect.innerHTML += '<option value="' + name + '">' + name + '</option>';
+        endSelect.innerHTML += '<option value="' + name + '">' + name + '</option>';
+        failSelect.innerHTML += '<option value="' + name + '">' + name + '</option>';
+    });
+
+    // Default end_stage to second option if available
+    if (endSelect.options.length > 1) {
+        endSelect.selectedIndex = 1;
+    }
+
+    document.getElementById('add-loop-modal').showModal();
+}
+
+function closeAddLoopModal() {
+    document.getElementById('add-loop-modal').close();
+}
+
+function createLoop() {
+    var feedbackEl = document.getElementById('add-loop-feedback');
+    var createBtn = document.getElementById('add-loop-btn');
+    var pipelineId = document.getElementById('add-loop-pipeline-id').value;
+    var name = document.getElementById('add-loop-name').value.trim();
+
+    if (!name) {
+        showFeedbackError(feedbackEl, 'Name is required.');
+        return;
+    }
+
+    var body = {
+        name: name,
+        start_stage: document.getElementById('add-loop-start_stage').value,
+        end_stage: document.getElementById('add-loop-end_stage').value,
+        max_iterations: parseInt(document.getElementById('add-loop-max_iterations').value, 10) || 3,
+        config_key: document.getElementById('add-loop-config_key').value || null,
+        exit_condition: document.getElementById('add-loop-exit_condition').value || null,
+        on_failure_stage: document.getElementById('add-loop-on_failure_stage').value || null
+    };
+
+    feedbackEl.innerHTML = '';
+    createBtn.setAttribute('aria-busy', 'true');
+    createBtn.textContent = 'Adding...';
+
+    fetch('/api/workflow/pipelines/' + pipelineId + '/loops', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body)
+    })
+    .then(function(resp) {
+        return resp.json().then(function(data) { return {ok: resp.ok, data: data}; });
+    })
+    .then(function(result) {
+        createBtn.removeAttribute('aria-busy');
+        createBtn.textContent = 'Add Loop';
+        if (result.ok && result.data.ok) {
+            closeAddLoopModal();
+            window.location.reload();
+        } else {
+            var errors = result.data.errors || ['Unknown error'];
+            showFeedbackError(feedbackEl, errors.join('; '));
+        }
+    })
+    .catch(function() {
+        createBtn.removeAttribute('aria-busy');
+        createBtn.textContent = 'Add Loop';
+        showFeedbackError(feedbackEl, 'Network error.');
+    });
 }
 
 // Re-check unknown vars on textarea input

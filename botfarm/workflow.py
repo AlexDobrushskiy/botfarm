@@ -22,6 +22,7 @@ class StageTemplate:
 
 @dataclass
 class StageLoop:
+    id: int
     name: str
     start_stage: str
     end_stage: str
@@ -162,6 +163,7 @@ def _build_pipeline(conn: sqlite3.Connection, row: sqlite3.Row) -> PipelineTempl
 
     loops = [
         StageLoop(
+            id=lp["id"],
             name=lp["name"],
             start_stage=lp["start_stage"],
             end_stage=lp["end_stage"],

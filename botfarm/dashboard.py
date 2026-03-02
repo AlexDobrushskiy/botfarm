@@ -1453,7 +1453,12 @@ def create_app(
                             question = "Continue?"
 
                         loops_list.append({
+                            "id": loop.id,
                             "name": loop.name,
+                            "start_stage": loop.start_stage,
+                            "end_stage": loop.end_stage,
+                            "config_key": loop.config_key,
+                            "on_failure_stage": loop.on_failure_stage,
                             "decision_stage": decision_stage,
                             "fix_stage_name": fix_stage_name,
                             "fix_stage": {
