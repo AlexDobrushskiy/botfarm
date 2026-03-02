@@ -1473,6 +1473,7 @@ def create_app(
                                 "result_parser": fix_stage_obj.result_parser,
                             } if fix_stage_obj else None,
                             "max_iterations": eff_max,
+                            "raw_max_iterations": loop.max_iterations,
                             "question": question,
                             "exit_condition": loop.exit_condition,
                         })
