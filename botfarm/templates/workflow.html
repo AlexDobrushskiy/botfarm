@@ -298,7 +298,7 @@
         </div>
         <footer>
             <button class="prompt-cancel-btn" onclick="closeCreatePipelineModal()">Cancel</button>
-            <button class="prompt-save-btn" onclick="createPipeline()">Create</button>
+            <button class="prompt-save-btn" id="create-pipe-btn" onclick="createPipeline()">Create</button>
         </footer>
     </article>
 </dialog>
@@ -320,7 +320,7 @@
         </div>
         <footer>
             <button class="prompt-cancel-btn" onclick="closeDuplicatePipelineModal()">Cancel</button>
-            <button class="prompt-save-btn" onclick="confirmDuplicatePipeline()">Duplicate</button>
+            <button class="prompt-save-btn" id="dup-pipe-btn" onclick="confirmDuplicatePipeline()">Duplicate</button>
         </footer>
     </article>
 </dialog>
@@ -663,6 +663,7 @@ function togglePipelineEditor(pipelineName) {
 
 function savePipelineMetadata(pipelineId, pipelineName) {
     var feedbackEl = document.getElementById('pipe-feedback-' + pipelineId);
+    var saveBtn = document.querySelector('[data-action="save-metadata"][data-pipeline-id="' + pipelineId + '"]');
     var nameVal = document.getElementById('pipe-name-' + pipelineId).value.trim();
     if (!nameVal) {
         showFeedbackError(feedbackEl, 'Name is required.');
@@ -676,6 +677,8 @@ function savePipelineMetadata(pipelineId, pipelineName) {
     };
 
     feedbackEl.innerHTML = '';
+    saveBtn.setAttribute('aria-busy', 'true');
+    saveBtn.textContent = 'Saving...';
     fetch('/api/workflow/pipelines/' + pipelineId, {
         method: 'PATCH',
         headers: {'Content-Type': 'application/json'},
@@ -685,6 +688,8 @@ function savePipelineMetadata(pipelineId, pipelineName) {
         return resp.json().then(function(data) { return {ok: resp.ok, data: data}; });
     })
     .then(function(result) {
+        saveBtn.removeAttribute('aria-busy');
+        saveBtn.textContent = 'Save';
         if (result.ok && result.data.ok) {
             // Reload to reflect name/tab changes
             window.location.reload();
@@ -694,6 +699,8 @@ function savePipelineMetadata(pipelineId, pipelineName) {
         }
     })
     .catch(function() {
+        saveBtn.removeAttribute('aria-busy');
+        saveBtn.textContent = 'Save';
         showFeedbackError(feedbackEl, 'Network error.');
     });
 }
@@ -713,6 +720,7 @@ function closeCreatePipelineModal() {
 
 function createPipeline() {
     var feedbackEl = document.getElementById('new-pipe-feedback');
+    var createBtn = document.getElementById('create-pipe-btn');
     var name = document.getElementById('new-pipe-name').value.trim();
     if (!name) {
         showFeedbackError(feedbackEl, 'Name is required.');
@@ -726,6 +734,8 @@ function createPipeline() {
     };
 
     feedbackEl.innerHTML = '';
+    createBtn.setAttribute('aria-busy', 'true');
+    createBtn.textContent = 'Creating...';
     fetch('/api/workflow/pipelines', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
@@ -735,6 +745,8 @@ function createPipeline() {
         return resp.json().then(function(data) { return {ok: resp.ok, data: data}; });
     })
     .then(function(result) {
+        createBtn.removeAttribute('aria-busy');
+        createBtn.textContent = 'Create';
         if (result.ok && result.data.ok) {
             closeCreatePipelineModal();
             window.location.reload();
@@ -744,6 +756,8 @@ function createPipeline() {
         }
     })
     .catch(function() {
+        createBtn.removeAttribute('aria-busy');
+        createBtn.textContent = 'Create';
         showFeedbackError(feedbackEl, 'Network error.');
     });
 }
@@ -764,6 +778,7 @@ function closeDuplicatePipelineModal() {
 
 function confirmDuplicatePipeline() {
     var feedbackEl = document.getElementById('dup-pipe-feedback');
+    var dupBtn = document.getElementById('dup-pipe-btn');
     var newName = document.getElementById('dup-pipe-name').value.trim();
     if (!newName) {
         showFeedbackError(feedbackEl, 'Name is required.');
@@ -772,6 +787,8 @@ function confirmDuplicatePipeline() {
     if (_duplicateSourceId === null) return;
 
     feedbackEl.innerHTML = '';
+    dupBtn.setAttribute('aria-busy', 'true');
+    dupBtn.textContent = 'Duplicating...';
     fetch('/api/workflow/pipelines/' + _duplicateSourceId + '/duplicate', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
@@ -781,6 +798,8 @@ function confirmDuplicatePipeline() {
         return resp.json().then(function(data) { return {ok: resp.ok, data: data}; });
     })
     .then(function(result) {
+        dupBtn.removeAttribute('aria-busy');
+        dupBtn.textContent = 'Duplicate';
         if (result.ok && result.data.ok) {
             closeDuplicatePipelineModal();
             window.location.reload();
@@ -790,6 +809,8 @@ function confirmDuplicatePipeline() {
         }
     })
     .catch(function() {
+        dupBtn.removeAttribute('aria-busy');
+        dupBtn.textContent = 'Duplicate';
         showFeedbackError(feedbackEl, 'Network error.');
     });
 }
