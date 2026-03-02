@@ -247,6 +247,89 @@ query IssueDetails($identifier: String!) {
 }
 """
 
+COMPLETED_ISSUES_QUERY = """
+query CompletedCanceledIssues($teamKey: String!, $first: Int!) {
+  issues(
+    filter: {
+      team: { key: { eq: $teamKey } }
+      state: { type: { in: ["completed", "canceled"] } }
+    }
+    first: $first
+    orderBy: updatedAt
+  ) {
+    nodes {
+      id
+      identifier
+      title
+      updatedAt
+      completedAt
+      labels { nodes { name } }
+      parent { id }
+      children {
+        nodes {
+          id
+          state { type }
+        }
+      }
+    }
+  }
+}
+"""
+
+COMPLETED_ISSUES_WITH_PROJECT_QUERY = """
+query CompletedCanceledIssuesForProject($teamKey: String!, $projectName: String!, $first: Int!) {
+  issues(
+    filter: {
+      team: { key: { eq: $teamKey } }
+      project: { name: { eq: $projectName } }
+      state: { type: { in: ["completed", "canceled"] } }
+    }
+    first: $first
+    orderBy: updatedAt
+  ) {
+    nodes {
+      id
+      identifier
+      title
+      updatedAt
+      completedAt
+      labels { nodes { name } }
+      parent { id }
+      children {
+        nodes {
+          id
+          state { type }
+        }
+      }
+    }
+  }
+}
+"""
+
+ISSUE_ARCHIVE_MUTATION = """
+mutation IssueArchive($id: String!) {
+  issueArchive(id: $id) {
+    success
+  }
+}
+"""
+
+ISSUE_DELETE_MUTATION = """
+mutation IssueDelete($id: String!) {
+  issueDelete(id: $id) {
+    success
+  }
+}
+"""
+
+ISSUE_UNARCHIVE_MUTATION = """
+mutation IssueUnarchive($id: String!) {
+  issueUnarchive(id: $id) {
+    success
+  }
+}
+"""
+
 ACTIVE_ISSUES_FOR_PROJECT_COUNT_QUERY = """
 query ActiveIssuesForProjectCount($first: Int!, $after: String, $projectName: String!) {
   issues(
@@ -321,6 +404,12 @@ class LinearClient:
 
     def __init__(self, api_key: str) -> None:
         self._api_key = api_key
+        self._rate_limit_remaining: int | None = None
+
+    @property
+    def rate_limit_remaining(self) -> int | None:
+        """Most recent ``X-RateLimit-Requests-Remaining`` value, or None."""
+        return self._rate_limit_remaining
 
     def _execute(self, query: str, variables: dict | None = None) -> dict:
         """Execute a GraphQL query/mutation and return the data dict.
@@ -348,6 +437,14 @@ class LinearClient:
             ) from exc
         except httpx.HTTPError as exc:
             raise LinearAPIError(f"HTTP request failed: {exc}") from exc
+
+        # Track rate limit headers
+        rl_remaining = response.headers.get("X-RateLimit-Requests-Remaining")
+        if rl_remaining is not None:
+            try:
+                self._rate_limit_remaining = int(rl_remaining)
+            except ValueError:
+                pass
 
         try:
             body = response.json()
@@ -643,6 +740,46 @@ class LinearClient:
             "linear_completed_at": issue.get("completedAt"),
             "raw_json": json.dumps(issue),
         }
+
+    def fetch_completed_issues(
+        self,
+        team_key: str,
+        first: int = 50,
+        project_name: str = "",
+    ) -> list[dict]:
+        """Fetch completed/canceled issues sorted by updatedAt ascending.
+
+        Returns raw dicts with id, identifier, title, updatedAt,
+        completedAt, labels, parent, and children info.
+        """
+        if project_name:
+            query = COMPLETED_ISSUES_WITH_PROJECT_QUERY
+            variables: dict = {
+                "teamKey": team_key,
+                "projectName": project_name,
+                "first": first,
+            }
+        else:
+            query = COMPLETED_ISSUES_QUERY
+            variables = {"teamKey": team_key, "first": first}
+
+        data = self._execute(query, variables)
+        return data.get("issues", {}).get("nodes", [])
+
+    def archive_issue(self, issue_id: str) -> bool:
+        """Archive an issue. Returns True on success."""
+        data = self._execute(ISSUE_ARCHIVE_MUTATION, {"id": issue_id})
+        return data.get("issueArchive", {}).get("success", False)
+
+    def delete_issue(self, issue_id: str) -> bool:
+        """Delete an issue. Returns True on success."""
+        data = self._execute(ISSUE_DELETE_MUTATION, {"id": issue_id})
+        return data.get("issueDelete", {}).get("success", False)
+
+    def unarchive_issue(self, issue_id: str) -> bool:
+        """Unarchive an issue. Returns True on success."""
+        data = self._execute(ISSUE_UNARCHIVE_MUTATION, {"id": issue_id})
+        return data.get("issueUnarchive", {}).get("success", False)
 
     def count_active_issues_for_project(self, project_name: str) -> int | None:
         """Count active issues for a specific project.
