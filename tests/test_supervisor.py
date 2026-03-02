@@ -1041,9 +1041,10 @@ class TestSleep:
 
 class TestWorkerEntry:
     @patch("botfarm.supervisor.run_pipeline")
-    def test_worker_ignores_sigint_and_sigterm(self, mock_pipeline, tmp_path, monkeypatch):
-        """_worker_entry must ignore both SIGINT and SIGTERM so only the
-        supervisor controls worker lifecycle."""
+    def test_worker_ignores_sigint_and_isolates_process_group(self, mock_pipeline, tmp_path, monkeypatch):
+        """_worker_entry must ignore SIGINT and call os.setpgrp() to isolate
+        from the parent process group (so group SIGTERM doesn't reach it,
+        but the supervisor can still send SIGTERM directly)."""
         import multiprocessing
         db_path = str(tmp_path / "test.db")
         monkeypatch.setenv("BOTFARM_DB_PATH", db_path)
@@ -1068,7 +1069,8 @@ class TestWorkerEntry:
         mock_result.result_text = None
         mock_pipeline.return_value = mock_result
 
-        with patch("botfarm.supervisor.signal.signal") as mock_signal:
+        with patch("botfarm.supervisor.signal.signal") as mock_signal, \
+             patch("botfarm.supervisor.os.setpgrp") as mock_setpgrp:
             _worker_entry(
                 ticket_id="TST-SIG",
                 ticket_title="Test",
@@ -1080,9 +1082,8 @@ class TestWorkerEntry:
                 max_turns=None,
             )
 
-            sig_calls = {call[0][0] for call in mock_signal.call_args_list}
-            assert signal.SIGINT in sig_calls, "SIGINT must be ignored"
-            assert signal.SIGTERM in sig_calls, "SIGTERM must be ignored"
+            mock_signal.assert_any_call(signal.SIGINT, signal.SIG_IGN)
+            mock_setpgrp.assert_called_once()
 
     @patch("botfarm.supervisor.run_pipeline")
     def test_successful_pipeline_sends_success(self, mock_pipeline, tmp_path, monkeypatch):
