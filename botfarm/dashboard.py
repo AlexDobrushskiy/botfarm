@@ -37,8 +37,11 @@ from botfarm.config import (
 )
 from botfarm.db import (
     count_tasks,
+    get_cleanup_batch,
+    get_cleanup_batch_items,
     get_distinct_projects,
     get_events,
+    get_last_cleanup_batch_time,
     get_latest_context_fill_by_ticket,
     get_stage_run_aggregates,
     get_stage_runs,
@@ -46,6 +49,7 @@ from botfarm.db import (
     get_task_by_ticket,
     get_task_history,
     init_db,
+    list_cleanup_batches,
     load_all_project_pause_states,
     load_all_slots,
     load_capacity_state,
@@ -53,6 +57,8 @@ from botfarm.db import (
     save_project_pause_state,
 )
 from botfarm.git_update import commits_behind
+from botfarm.linear import LinearClient
+from botfarm.linear_cleanup import CleanupService, CooldownError
 from botfarm.worker import STAGES
 from botfarm.workflow import (
     create_loop,
@@ -2939,6 +2945,214 @@ def create_app(
         if not content:
             return PlainTextResponse("Failed to read log file", status_code=500)
         return PlainTextResponse(content)
+
+    # ------------------------------------------------------------------
+    # Cleanup (bulk archive/delete) UI
+    # ------------------------------------------------------------------
+
+    def _get_cleanup_service(
+        conn: sqlite3.Connection,
+        *,
+        min_age_days: int = 7,
+    ) -> CleanupService | None:
+        """Build a CleanupService from the current config, or None."""
+        cfg = app.state.botfarm_config
+        if cfg is None or not cfg.linear.api_key:
+            return None
+        if not cfg.projects:
+            return None
+        client = LinearClient(api_key=cfg.linear.api_key)
+        team_key = cfg.projects[0].linear_team
+        project_name = cfg.projects[0].linear_project
+        return CleanupService(
+            client, conn, team_key=team_key, project_name=project_name,
+            min_age_days=min_age_days,
+        )
+
+    def _cleanup_cooldown_remaining(conn: sqlite3.Connection) -> float:
+        """Return seconds remaining in cooldown, or 0 if ready."""
+        last_time = get_last_cleanup_batch_time(conn)
+        if last_time is None:
+            return 0
+        last = datetime.fromisoformat(last_time.replace("Z", "+00:00"))
+        elapsed = (datetime.now(timezone.utc) - last).total_seconds()
+        remaining = CleanupService.COOLDOWN_SECONDS - elapsed
+        return max(0, remaining)
+
+    @app.get("/cleanup", response_class=HTMLResponse)
+    def cleanup_page(request: Request):
+        conn = _get_db()
+        batches = []
+        cooldown = 0.0
+        has_config = False
+        if conn is not None:
+            try:
+                batches = [dict(row) for row in list_cleanup_batches(conn)]
+                cooldown = _cleanup_cooldown_remaining(conn)
+            except sqlite3.OperationalError:
+                pass
+            finally:
+                conn.close()
+        cfg = app.state.botfarm_config
+        if cfg and cfg.linear.api_key:
+            has_config = True
+        return templates.TemplateResponse("cleanup.html", {
+            "request": request,
+            "batches": batches,
+            "cooldown_seconds": cooldown,
+            "has_config": has_config,
+            "capacity": _get_capacity_data(),
+            "elapsed": _elapsed,
+        })
+
+    @app.get("/api/cleanup/preview")
+    def api_cleanup_preview(
+        limit: int = 50,
+        min_age_days: int = 7,
+    ):
+        """Fetch candidate issues for cleanup preview."""
+        conn = None
+        try:
+            conn = init_db(app.state.db_path)
+            svc = _get_cleanup_service(conn, min_age_days=min_age_days)
+            if svc is None:
+                return JSONResponse(
+                    {"error": "Linear API key not configured"},
+                    status_code=503,
+                )
+            candidates = svc.fetch_candidates(limit=limit)
+            return JSONResponse({
+                "candidates": [
+                    {
+                        "linear_uuid": c.linear_uuid,
+                        "identifier": c.identifier,
+                        "title": c.title,
+                        "updated_at": c.updated_at,
+                        "completed_at": c.completed_at,
+                        "labels": c.labels,
+                    }
+                    for c in candidates
+                ],
+                "total": len(candidates),
+            })
+        except Exception as exc:
+            logger.warning("Cleanup preview failed: %s", exc)
+            return JSONResponse({"error": str(exc)}, status_code=500)
+        finally:
+            if conn is not None:
+                conn.close()
+
+    @app.post("/api/cleanup/execute")
+    async def api_cleanup_execute(request: Request):
+        """Execute a bulk cleanup operation."""
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+
+        action = body.get("action", "archive")
+        limit = body.get("limit", 50)
+        min_age_days = body.get("min_age_days", 7)
+        selected_ids = body.get("selected_ids")
+
+        if action not in ("archive", "delete"):
+            return JSONResponse(
+                {"error": "Invalid action (must be 'archive' or 'delete')"},
+                status_code=400,
+            )
+
+        def _run_cleanup_in_thread():
+            """Run the blocking cleanup operation in a worker thread.
+
+            Creates its own DB connection so SQLite's same-thread
+            constraint is satisfied.
+            """
+            conn = None
+            try:
+                conn = init_db(app.state.db_path)
+                svc = _get_cleanup_service(conn, min_age_days=min_age_days)
+                if svc is None:
+                    return None, "no_config"
+                result = svc.run_cleanup(
+                    action=action,
+                    limit=limit,
+                    issue_ids=selected_ids if isinstance(selected_ids, list) else None,
+                )
+                return result, None
+            finally:
+                if conn is not None:
+                    conn.close()
+
+        try:
+            result, err = await asyncio.to_thread(_run_cleanup_in_thread)
+            if err == "no_config":
+                return JSONResponse(
+                    {"error": "Linear API key not configured"},
+                    status_code=503,
+                )
+            return JSONResponse({
+                "batch_id": result.batch_id,
+                "action": result.action,
+                "total": result.total_candidates,
+                "succeeded": result.succeeded,
+                "failed": result.failed,
+                "skipped": result.skipped,
+                "errors": result.errors,
+            })
+        except CooldownError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=429)
+        except Exception as exc:
+            logger.warning("Cleanup execute failed: %s", exc)
+            return JSONResponse({"error": str(exc)}, status_code=500)
+
+    @app.post("/api/cleanup/undo/{batch_id}")
+    def api_cleanup_undo(batch_id: str):
+        """Undo an archive batch."""
+        conn = None
+        try:
+            conn = init_db(app.state.db_path)
+            svc = _get_cleanup_service(conn)
+            if svc is None:
+                return JSONResponse(
+                    {"error": "Linear API key not configured"},
+                    status_code=503,
+                )
+            result = svc.undo_batch(batch_id)
+            return JSONResponse({
+                "batch_id": result.batch_id,
+                "total": result.total,
+                "succeeded": result.succeeded,
+                "failed": result.failed,
+                "errors": result.errors,
+            })
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        except Exception as exc:
+            logger.warning("Cleanup undo failed: %s", exc)
+            return JSONResponse({"error": str(exc)}, status_code=500)
+        finally:
+            if conn is not None:
+                conn.close()
+
+    @app.get("/api/cleanup/batch/{batch_id}")
+    def api_cleanup_batch_detail(batch_id: str):
+        """Get details of a specific cleanup batch."""
+        conn = _get_db()
+        if conn is None:
+            return JSONResponse({"error": "Database not available"}, status_code=503)
+        try:
+            batch = get_cleanup_batch(conn, batch_id)
+            if batch is None:
+                return JSONResponse({"error": "Batch not found"}, status_code=404)
+            items = get_cleanup_batch_items(conn, batch_id)
+            return JSONResponse({
+                "batch": dict(batch),
+                "items": [dict(item) for item in items],
+            })
+        except sqlite3.OperationalError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=500)
+        finally:
+            conn.close()
 
     return app
 

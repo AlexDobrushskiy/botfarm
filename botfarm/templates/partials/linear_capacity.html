@@ -10,12 +10,15 @@
 </div>
 {% endif %}
 
-<div>
-    <strong>Total issues (non-archived):</strong>
-    <span class="{{ capacity.color_class }}">
-        {{ capacity.issue_count }} / {{ capacity.limit }} ({{ "%.0f"|format(capacity.pct) }}%)
-    </span>
-    <progress value="{{ capacity.pct|round|int }}" max="100" style="margin-bottom: 0;"></progress>
+<div style="display: flex; justify-content: space-between; align-items: flex-start;">
+    <div>
+        <strong>Total issues (non-archived):</strong>
+        <span class="{{ capacity.color_class }}">
+            {{ capacity.issue_count }} / {{ capacity.limit }} ({{ "%.0f"|format(capacity.pct) }}%)
+        </span>
+        <progress value="{{ capacity.pct|round|int }}" max="100" style="margin-bottom: 0;"></progress>
+    </div>
+    <a href="/cleanup" role="button" class="outline" style="padding: 0.3rem 0.8rem; font-size: 0.8rem; white-space: nowrap; flex-shrink: 0;">Free Up Space</a>
 </div>
 
 {% if capacity.by_project %}
