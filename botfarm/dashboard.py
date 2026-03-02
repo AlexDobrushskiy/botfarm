@@ -48,6 +48,7 @@ from botfarm.db import (
     init_db,
     load_all_project_pause_states,
     load_all_slots,
+    load_capacity_state,
     load_dispatch_state,
     save_project_pause_state,
 )
@@ -906,6 +907,54 @@ def create_app(
             "dispatch_pause_reason": dispatch_pause_reason,
             "last_usage_check": last_usage_check,
             "usage_stale": stale,
+            "elapsed": _elapsed,
+        })
+
+    @app.get("/partials/linear-capacity", response_class=HTMLResponse)
+    def partial_linear_capacity(request: Request):
+        conn = _get_db()
+        if conn is None:
+            return templates.TemplateResponse("partials/linear_capacity.html", {
+                "request": request,
+                "capacity": None,
+                "elapsed": _elapsed,
+            })
+        try:
+            capacity = load_capacity_state(conn)
+        except sqlite3.OperationalError:
+            capacity = None
+        finally:
+            conn.close()
+
+        # Attach computed fields for the template
+        if capacity is not None:
+            cfg = app.state.botfarm_config
+            cap_cfg = cfg.linear.capacity_monitoring if cfg else None
+            limit = capacity["limit"]
+            count = capacity["issue_count"]
+            pct = (count / limit * 100) if limit else 0
+            ratio = count / limit if limit else 0
+            capacity["pct"] = pct
+            # Determine color class based on config thresholds
+            warn = cap_cfg.warning_threshold if cap_cfg else 0.70
+            crit = cap_cfg.critical_threshold if cap_cfg else 0.85
+            pause = cap_cfg.pause_threshold if cap_cfg else 0.95
+            if ratio >= pause:
+                capacity["color_class"] = "status-failed"
+                capacity["severity"] = "blocked"
+            elif ratio >= crit:
+                capacity["color_class"] = "status-failed"
+                capacity["severity"] = "critical"
+            elif ratio >= warn:
+                capacity["color_class"] = "status-busy"
+                capacity["severity"] = "warning"
+            else:
+                capacity["color_class"] = "status-free"
+                capacity["severity"] = "ok"
+
+        return templates.TemplateResponse("partials/linear_capacity.html", {
+            "request": request,
+            "capacity": capacity,
             "elapsed": _elapsed,
         })
 
