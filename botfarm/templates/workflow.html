@@ -126,7 +126,7 @@
 </div>
 
 {% for pipeline in pipelines %}
-<div class="workflow-pipeline" id="pipeline-{{ pipeline.name }}" data-pipeline-id="{{ pipeline.id }}" data-stages='{{ pipeline.stages | map(attribute="name") | list | tojson }}' {% if not loop.first %}style="display:none"{% endif %}>
+<div class="workflow-pipeline" id="pipeline-{{ pipeline.name }}" data-pipeline-id="{{ pipeline.id }}" data-stages='{{ pipeline.stages | map(attribute="name") | list | tojson }}' data-stage-ids='{{ pipeline.stages | map(attribute="id") | list | tojson }}' {% if not loop.first %}style="display:none"{% endif %}>
 
     {# Pipeline actions bar #}
     <div class="pipeline-actions">
@@ -193,6 +193,10 @@
         {{ stage_detail(stage) }}
         <p class="workflow-note">Research only — no PR created</p>
     </div>
+    <div class="stage-add-section">
+        <button class="pipeline-action-btn" data-pipeline-id="{{ pipeline.id }}" data-pipeline-name="{{ pipeline.name }}"
+                onclick="showAddStageModal(this.dataset.pipelineId, this.dataset.pipelineName)">+ Add Stage</button>
+    </div>
     {% else %}
     {# Full pipeline flowchart #}
     <div class="workflow-flowchart">
@@ -208,7 +212,7 @@
             </div>
             {% endif %}
 
-            <div class="workflow-stage-col">
+            <div class="workflow-stage-col" data-stage-id="{{ stage.id }}" data-stage-name="{{ stage.name }}">
                 <div class="workflow-node workflow-node-{{ stage.executor_type }}" onclick="toggleDetail(this)">
                     <div class="workflow-node-name">{{ stage.name }}</div>
                     {% if stage.identity %}
@@ -218,12 +222,25 @@
                     <span class="workflow-timeout">{{ stage.timeout_minutes }}min</span>
                     {% endif %}
                 </div>
+                <div class="stage-node-actions">
+                    <button type="button" class="stage-action-btn stage-move-up-btn" title="Move up"
+                            data-pipeline-id="{{ pipeline.id }}" data-stage-id="{{ stage.id }}"
+                            onclick="moveStageUp(this.dataset.pipelineId, this.dataset.stageId)"
+                            {% if loop.first %}disabled{% endif %}>&#x25B2;</button>
+                    <button type="button" class="stage-action-btn stage-move-down-btn" title="Move down"
+                            data-pipeline-id="{{ pipeline.id }}" data-stage-id="{{ stage.id }}"
+                            onclick="moveStageDown(this.dataset.pipelineId, this.dataset.stageId)"
+                            {% if loop.last %}disabled{% endif %}>&#x25BC;</button>
+                    <button type="button" class="stage-action-btn stage-remove-btn" title="Remove stage"
+                            data-stage-id="{{ stage.id }}" data-stage-name="{{ stage.name }}" data-pipeline-id="{{ pipeline.id }}"
+                            onclick="removeStage(this.dataset.stageId, this.dataset.stageName, this.dataset.pipelineId)">&#x2715;</button>
+                </div>
                 {{ stage_detail(stage) }}
 
                 {# Decision diamond + loop branch after this stage if it has a loop #}
                 {% for lp in pipeline.loops %}
                 {% if lp.decision_stage == stage.name %}
-                <div class="workflow-loop-branch" data-loop-id="{{ lp.id }}">
+                <div class="workflow-loop-branch" data-loop-id="{{ lp.id }}" data-decision-stage="{{ lp.decision_stage }}" data-start-stage="{{ lp.start_stage }}" data-end-stage="{{ lp.end_stage }}" data-failure-stage="{{ lp.on_failure_stage or '' }}">
                     <div class="workflow-decision" onclick="toggleLoopEditor({{ lp.id }})" title="Click to edit loop">
                         <svg class="workflow-diamond-svg" width="80" height="50" viewBox="0 0 80 50">
                             <polygon points="40,2 78,25 40,48 2,25" fill="none" stroke="var(--pico-color-yellow-500, #eab308)" stroke-width="2"/>
@@ -324,6 +341,10 @@
             </div>
             {% endfor %}
         </div>
+    </div>
+    <div class="stage-add-section">
+        <button class="pipeline-action-btn" data-pipeline-id="{{ pipeline.id }}" data-pipeline-name="{{ pipeline.name }}"
+                onclick="showAddStageModal(this.dataset.pipelineId, this.dataset.pipelineName)">+ Add Stage</button>
     </div>
     {% if pipeline.stages|length > 1 %}
     <div class="loop-add-section">
@@ -442,6 +463,51 @@
         <footer>
             <button class="prompt-cancel-btn" onclick="closeDuplicatePipelineModal()">Cancel</button>
             <button class="prompt-save-btn" id="dup-pipe-btn" onclick="confirmDuplicatePipeline()">Duplicate</button>
+        </footer>
+    </article>
+</dialog>
+
+{# Add stage modal #}
+<dialog id="add-stage-modal">
+    <article class="pipeline-modal-content">
+        <header>
+            <button aria-label="Close" rel="prev" onclick="closeAddStageModal()"></button>
+            <h3>Add Stage</h3>
+        </header>
+        <div class="stage-props-form">
+            <input type="hidden" id="add-stage-pipeline-id" value="">
+            <input type="hidden" id="add-stage-pipeline-name" value="">
+            <div class="stage-prop-row">
+                <label class="stage-prop-label" for="add-stage-name">Name</label>
+                <input type="text" class="stage-prop-input stage-prop-input-wide" id="add-stage-name"
+                       placeholder="e.g. my_stage (required)">
+            </div>
+            <div class="stage-prop-row">
+                <label class="stage-prop-label" for="add-stage-executor_type">Executor</label>
+                <select class="stage-prop-input" id="add-stage-executor_type" onchange="onAddStageExecutorChange()">
+                    <option value="claude" selected>claude</option>
+                    <option value="shell">shell</option>
+                    <option value="internal">internal</option>
+                </select>
+            </div>
+            <div class="stage-prop-row" id="add-stage-identity-row">
+                <label class="stage-prop-label" for="add-stage-identity">Identity</label>
+                <select class="stage-prop-input" id="add-stage-identity">
+                    <option value="" selected>(none)</option>
+                    <option value="coder">coder</option>
+                    <option value="reviewer">reviewer</option>
+                </select>
+            </div>
+            <div class="stage-prop-row">
+                <label class="stage-prop-label" for="add-stage-prompt_template">Prompt</label>
+                <textarea class="stage-prop-input stage-prop-input-wide" id="add-stage-prompt_template"
+                          rows="3" placeholder="Optional prompt template"></textarea>
+            </div>
+            <div class="pipeline-editor-feedback" id="add-stage-feedback"></div>
+        </div>
+        <footer>
+            <button class="prompt-cancel-btn" onclick="closeAddStageModal()">Cancel</button>
+            <button class="prompt-save-btn" id="add-stage-btn" onclick="createStage()">Add Stage</button>
         </footer>
     </article>
 </dialog>
@@ -793,6 +859,50 @@ input[type="number"].stage-prop-input {
     font-style: italic;
     display: block;
     text-align: center;
+}
+
+/* ── Stage action buttons (reorder + remove) ── */
+.stage-node-actions {
+    display: flex;
+    justify-content: center;
+    gap: 0.25rem;
+    margin-top: 0.3rem;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+}
+.workflow-stage-col:hover .stage-node-actions {
+    opacity: 1;
+}
+.stage-action-btn {
+    width: 1.5rem;
+    height: 1.5rem;
+    padding: 0;
+    font-size: 0.65rem;
+    line-height: 1;
+    border-radius: var(--pico-border-radius);
+    cursor: pointer;
+    background: var(--pico-card-background-color);
+    border: 1px solid var(--pico-muted-color);
+    color: var(--pico-muted-color);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s ease;
+}
+.stage-action-btn:hover:not([disabled]) {
+    border-color: var(--pico-primary);
+    color: var(--pico-primary);
+}
+.stage-action-btn[disabled] {
+    opacity: 0.3;
+    cursor: default;
+}
+.stage-remove-btn:hover:not([disabled]) {
+    border-color: var(--pico-del-color);
+    color: var(--pico-del-color);
+}
+.stage-add-section {
+    margin-top: 0.75rem;
 }
 </style>
 
@@ -1545,6 +1655,192 @@ function createLoop() {
         createBtn.textContent = 'Add Loop';
         showFeedbackError(feedbackEl, 'Network error.');
     });
+}
+
+/* ── Stage add / remove / reorder functions ── */
+
+function showAddStageModal(pipelineId, pipelineName) {
+    document.getElementById('add-stage-pipeline-id').value = pipelineId;
+    document.getElementById('add-stage-pipeline-name').value = pipelineName;
+    document.getElementById('add-stage-name').value = '';
+    document.getElementById('add-stage-executor_type').value = 'claude';
+    document.getElementById('add-stage-identity').value = '';
+    document.getElementById('add-stage-prompt_template').value = '';
+    document.getElementById('add-stage-feedback').innerHTML = '';
+    document.getElementById('add-stage-identity-row').style.display = '';
+    document.getElementById('add-stage-modal').showModal();
+}
+
+function closeAddStageModal() {
+    document.getElementById('add-stage-modal').close();
+}
+
+function onAddStageExecutorChange() {
+    var execType = document.getElementById('add-stage-executor_type').value;
+    document.getElementById('add-stage-identity-row').style.display = execType === 'claude' ? '' : 'none';
+}
+
+function createStage() {
+    var feedbackEl = document.getElementById('add-stage-feedback');
+    var createBtn = document.getElementById('add-stage-btn');
+    var pipelineId = document.getElementById('add-stage-pipeline-id').value;
+    var name = document.getElementById('add-stage-name').value.trim();
+
+    if (!name) {
+        showFeedbackError(feedbackEl, 'Name is required.');
+        return;
+    }
+
+    // Check for duplicate stage names
+    var pipelineName = document.getElementById('add-stage-pipeline-name').value;
+    var pipelineEl = document.getElementById('pipeline-' + pipelineName);
+    var existingNames = JSON.parse(pipelineEl ? pipelineEl.dataset.stages || '[]' : '[]');
+    if (existingNames.indexOf(name) !== -1) {
+        showFeedbackError(feedbackEl, 'Stage name must be unique within the pipeline.');
+        return;
+    }
+
+    var execType = document.getElementById('add-stage-executor_type').value;
+    var body = {
+        name: name,
+        executor_type: execType
+    };
+
+    if (execType === 'claude') {
+        var identity = document.getElementById('add-stage-identity').value;
+        if (identity) body.identity = identity;
+    }
+
+    var prompt = document.getElementById('add-stage-prompt_template').value;
+    if (prompt) body.prompt_template = prompt;
+
+    // Append at end: stage_order = number of existing stages + 1
+    var existingIds = JSON.parse(pipelineEl ? pipelineEl.dataset.stageIds || '[]' : '[]');
+    body.stage_order = existingIds.length + 1;
+
+    feedbackEl.innerHTML = '';
+    createBtn.setAttribute('aria-busy', 'true');
+    createBtn.textContent = 'Adding...';
+
+    fetch('/api/workflow/pipelines/' + pipelineId + '/stages', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body)
+    })
+    .then(function(resp) {
+        return resp.json().then(function(data) { return {ok: resp.ok, data: data}; });
+    })
+    .then(function(result) {
+        createBtn.removeAttribute('aria-busy');
+        createBtn.textContent = 'Add Stage';
+        if (result.ok && result.data.ok) {
+            closeAddStageModal();
+            window.location.reload();
+        } else {
+            var errors = result.data.errors || ['Unknown error'];
+            showFeedbackError(feedbackEl, errors.join('; '));
+        }
+    })
+    .catch(function() {
+        createBtn.removeAttribute('aria-busy');
+        createBtn.textContent = 'Add Stage';
+        showFeedbackError(feedbackEl, 'Network error.');
+    });
+}
+
+function removeStage(stageId, stageName, pipelineId) {
+    // Find the pipeline element to check stage count and loop references
+    var pipelineEl = document.querySelector('.workflow-pipeline[data-pipeline-id="' + pipelineId + '"]');
+    var stageIds = JSON.parse(pipelineEl ? pipelineEl.dataset.stageIds || '[]' : '[]');
+
+    if (stageIds.length <= 1) {
+        alert('Cannot remove the last stage in a pipeline.');
+        return;
+    }
+
+    // Check if any loops reference this stage via data attributes
+    var loopBranches = pipelineEl ? pipelineEl.querySelectorAll('.workflow-loop-branch') : [];
+    var referencedByLoop = false;
+    loopBranches.forEach(function(branch) {
+        var ds = branch.dataset;
+        if (ds.decisionStage === stageName || ds.startStage === stageName ||
+            ds.endStage === stageName || ds.failureStage === stageName) {
+            referencedByLoop = true;
+        }
+    });
+
+    var msg = 'Remove stage \u201c' + stageName + '\u201d?';
+    if (referencedByLoop) {
+        msg += ' This stage is referenced by a loop \u2014 the loop will also be removed.';
+    }
+    if (!confirm(msg)) return;
+
+    fetch('/api/workflow/stages/' + stageId, {
+        method: 'DELETE'
+    })
+    .then(function(resp) {
+        return resp.json().then(function(data) { return {ok: resp.ok, data: data}; });
+    })
+    .then(function(result) {
+        if (result.ok && result.data.ok) {
+            window.location.reload();
+        } else {
+            var errors = result.data.errors || ['Unknown error'];
+            alert('Remove failed: ' + errors.join('; '));
+        }
+    })
+    .catch(function() {
+        alert('Network error while removing stage.');
+    });
+}
+
+function _getStageIds(pipelineId) {
+    var pipelineEl = document.querySelector('.workflow-pipeline[data-pipeline-id="' + pipelineId + '"]');
+    return JSON.parse(pipelineEl ? pipelineEl.dataset.stageIds || '[]' : '[]');
+}
+
+function _reorderStages(pipelineId, newOrder) {
+    fetch('/api/workflow/pipelines/' + pipelineId + '/stages/order', {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({stage_ids: newOrder})
+    })
+    .then(function(resp) {
+        return resp.json().then(function(data) { return {ok: resp.ok, data: data}; });
+    })
+    .then(function(result) {
+        if (result.ok && result.data.ok) {
+            window.location.reload();
+        } else {
+            var errors = result.data.errors || ['Unknown error'];
+            alert('Reorder failed: ' + errors.join('; '));
+        }
+    })
+    .catch(function() {
+        alert('Network error while reordering stages.');
+    });
+}
+
+function moveStageUp(pipelineId, stageId) {
+    var ids = _getStageIds(pipelineId);
+    var idx = ids.indexOf(Number(stageId));
+    if (idx <= 0) return;
+    // Swap with previous
+    var tmp = ids[idx - 1];
+    ids[idx - 1] = ids[idx];
+    ids[idx] = tmp;
+    _reorderStages(pipelineId, ids);
+}
+
+function moveStageDown(pipelineId, stageId) {
+    var ids = _getStageIds(pipelineId);
+    var idx = ids.indexOf(Number(stageId));
+    if (idx < 0 || idx >= ids.length - 1) return;
+    // Swap with next
+    var tmp = ids[idx + 1];
+    ids[idx + 1] = ids[idx];
+    ids[idx] = tmp;
+    _reorderStages(pipelineId, ids);
 }
 
 // Re-check unknown vars on textarea input

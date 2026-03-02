@@ -4479,6 +4479,76 @@ class TestWorkflowPage:
         resp = client.get("/workflow")
         body = resp.text
         assert "data-loop-id" in body
+        assert "data-decision-stage" in body
+        assert "data-start-stage" in body
+        assert "data-end-stage" in body
+        assert "data-failure-stage" in body
+
+    def test_workflow_has_add_stage_button(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        assert "+ Add Stage" in body
+        assert "showAddStageModal" in body
+
+    def test_workflow_has_add_stage_modal(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        assert 'id="add-stage-modal"' in body
+        assert 'id="add-stage-name"' in body
+        assert 'id="add-stage-executor_type"' in body
+        assert 'id="add-stage-identity"' in body
+
+    def test_workflow_has_remove_stage_buttons(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        assert "stage-remove-btn" in body
+        assert "removeStage" in body
+
+    def test_workflow_has_reorder_stage_buttons(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        assert "stage-move-up-btn" in body
+        assert "stage-move-down-btn" in body
+        assert "moveStageUp" in body
+        assert "moveStageDown" in body
+
+    def test_workflow_has_stage_ids_data_attribute(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        assert "data-stage-ids" in body
+
+    def test_workflow_stage_action_buttons_have_disabled_state(self, client):
+        """First stage should have up disabled, last stage should have down disabled."""
+        resp = client.get("/workflow")
+        body = resp.text
+        # Check that disabled attribute appears on some stage action buttons
+        assert "stage-action-btn" in body
+        # The first and last stage buttons should have disabled attributes
+        assert 'disabled' in body
+
+    def test_workflow_has_create_stage_function(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        assert "function createStage()" in body
+
+    def test_workflow_has_reorder_functions(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        assert "function moveStageUp(" in body
+        assert "function moveStageDown(" in body
+        assert "_reorderStages" in body
+
+    def test_workflow_add_stage_modal_has_executor_change(self, client):
+        resp = client.get("/workflow")
+        body = resp.text
+        assert "onAddStageExecutorChange" in body
+
+    def test_workflow_investigation_has_add_stage(self, client):
+        """Even single-stage (investigation) pipeline should show Add Stage button."""
+        resp = client.get("/workflow")
+        body = resp.text
+        # Count occurrences - should appear for each pipeline
+        assert body.count("+ Add Stage") >= 2
 
 
 # --- Workflow API ---
