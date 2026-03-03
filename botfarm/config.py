@@ -519,17 +519,16 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
     timeout_overrides: dict[str, dict[str, int]] = {}
     if isinstance(raw_overrides, dict):
         for label, stages in raw_overrides.items():
-            if not isinstance(stages, dict):
-                raise ConfigError(
-                    f"agents.timeout_overrides.{label}: value must be a mapping "
-                    f"of stage names to minutes, got {type(stages).__name__}"
-                )
-            try:
-                timeout_overrides[str(label)] = {
-                    k: int(v) for k, v in stages.items()
-                }
-            except (ValueError, TypeError) as exc:
-                raise ConfigError(f"agents.timeout_overrides.{label}: {exc}")
+            if isinstance(stages, dict):
+                try:
+                    timeout_overrides[str(label)] = {
+                        k: int(v) for k, v in stages.items()
+                    }
+                except (ValueError, TypeError) as exc:
+                    raise ConfigError(f"agents.timeout_overrides.{label}: {exc}")
+            else:
+                # Pass through for _validate_config() to report the error
+                timeout_overrides[str(label)] = stages
     elif raw_overrides:
         raise ConfigError(
             "agents.timeout_overrides must be a mapping of label names to "
@@ -739,6 +738,13 @@ def _validate_field(
             if "max" in spec and fval > spec["max"]:
                 errors.append(f"'{field_name}' must be at most {spec['max']}")
 
+    elif spec["type"] == "choice":
+        if value not in spec["choices"]:
+            errors.append(
+                f"'{field_name}' must be one of {spec['choices']}, "
+                f"got {value!r}"
+            )
+
     elif spec["type"] == "timeout_dict":
         if not isinstance(value, dict):
             errors.append(f"'{field_name}' must be a mapping of stage → minutes")
@@ -872,42 +878,11 @@ def validate_structural_config_updates(
                     )
                     continue
                 errors.extend(
-                    _validate_structural_field("notifications", key, value, spec)
+                    _validate_field("notifications", key, value, spec)
                 )
 
     if "projects" in updates:
         errors.extend(_validate_project_updates(updates["projects"], config))
-
-    return errors
-
-
-def _validate_structural_field(
-    section: str, key: str, value: object, spec: dict,
-) -> list[str]:
-    """Validate a single structural field value against its spec."""
-    errors: list[str] = []
-    field_name = f"{section}.{key}"
-
-    if spec["type"] == "str":
-        if not isinstance(value, str):
-            errors.append(
-                f"'{field_name}' must be a string, got {type(value).__name__}"
-            )
-
-    elif spec["type"] == "int":
-        if not isinstance(value, int) or isinstance(value, bool):
-            errors.append(
-                f"'{field_name}' must be an integer, got {type(value).__name__}"
-            )
-        elif "min" in spec and value < spec["min"]:
-            errors.append(f"'{field_name}' must be at least {spec['min']}")
-
-    elif spec["type"] == "choice":
-        if value not in spec["choices"]:
-            errors.append(
-                f"'{field_name}' must be one of {spec['choices']}, "
-                f"got {value!r}"
-            )
 
     return errors
 

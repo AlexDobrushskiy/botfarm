@@ -560,6 +560,23 @@ def test_load_config_timeout_overrides_valid(tmp_path):
     }
 
 
+def test_load_config_timeout_overrides_string_values_coerced(tmp_path):
+    """Regression: env-expanded or quoted YAML values arrive as strings and must be coerced to int."""
+    data = {
+        **MINIMAL_CONFIG,
+        "agents": {
+            "timeout_overrides": {
+                "Investigation": {"implement": "30", "review": "10"},
+            },
+        },
+    }
+    config_path = _write_config(tmp_path, data)
+    config = load_config(config_path)
+    assert config.agents.timeout_overrides == {
+        "Investigation": {"implement": 30, "review": 10},
+    }
+
+
 def test_load_config_timeout_overrides_unknown_stage_rejected(tmp_path):
     data = {
         **MINIMAL_CONFIG,
