@@ -6511,3 +6511,23 @@ class TestStaleResultRejection:
 
         assert checkout_ok is False
         # Should not raise; branch -D and push --delete should not be called
+
+    def test_stop_slot_marks_failed_on_checkout_failure(self, supervisor):
+        """stop_slot marks slot as failed (not freed) when checkout to placeholder fails."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="feat-1",
+        )
+
+        with (
+            patch.object(supervisor, "_stop_slot_kill_worker"),
+            patch.object(supervisor, "_check_pr_status", return_value=(None, None)),
+            patch.object(supervisor, "_stop_slot_git_cleanup", return_value=False),
+        ):
+            result = supervisor.stop_slot("test-project", 1)
+
+        assert result.success is False
+        assert "dirty" in result.message.lower() or "checkout" in result.message.lower()
+        slot = sm.get_slot("test-project", 1)
+        assert slot.status == "failed"
