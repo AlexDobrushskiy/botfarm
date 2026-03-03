@@ -20,6 +20,7 @@ from botfarm.worker import (
     ClaudeResult,
     PipelineResult,
     StageResult,
+    _CodexReviewerConfig,
     _PipelineContext,
     _make_stage_log_path,
     _parse_review_approved,
@@ -110,9 +111,9 @@ class TestPipelineContextCodexFields:
             pr_checks_timeout=600,
             pipeline=PipelineResult(ticket_id="SMA-1", success=False, stages_completed=[]),
         )
-        assert ctx.codex_reviewer_enabled is False
-        assert ctx.codex_reviewer_model == ""
-        assert ctx.codex_reviewer_timeout_minutes == 15
+        assert ctx.codex_config.enabled is False
+        assert ctx.codex_config.model == ""
+        assert ctx.codex_config.timeout_minutes == 15
 
     def test_populated_from_kwargs(self):
         ctx = _PipelineContext(
@@ -124,13 +125,15 @@ class TestPipelineContextCodexFields:
             turns_cfg={},
             pr_checks_timeout=600,
             pipeline=PipelineResult(ticket_id="SMA-1", success=False, stages_completed=[]),
-            codex_reviewer_enabled=True,
-            codex_reviewer_model="o3",
-            codex_reviewer_timeout_minutes=30,
+            codex_config=_CodexReviewerConfig(
+                enabled=True,
+                model="o3",
+                timeout_minutes=30,
+            ),
         )
-        assert ctx.codex_reviewer_enabled is True
-        assert ctx.codex_reviewer_model == "o3"
-        assert ctx.codex_reviewer_timeout_minutes == 30
+        assert ctx.codex_config.enabled is True
+        assert ctx.codex_config.model == "o3"
+        assert ctx.codex_config.timeout_minutes == 30
 
     @patch("botfarm.worker._execute_stage")
     def test_run_pipeline_passes_codex_to_context(self, mock_exec, conn, task_id, tmp_path):
