@@ -1910,7 +1910,7 @@ class _PipelineContext:
                 ticket_labels=self.ticket_labels,
                 pr_url=pr_url,
                 cwd=self.cwd,
-                max_turns=self.turns_cfg.get(stage, DEFAULT_REVIEW_MAX_TURNS),
+                max_turns=self.turns_cfg.get(stage, DEFAULT_FIX_MAX_TURNS),
                 pr_checks_timeout=self.pr_checks_timeout,
                 log_file=log_file,
                 placeholder_branch=self.placeholder_branch,
@@ -2165,7 +2165,7 @@ def _run_ci_retry_loop(
         try:
             fix_result = _run_ci_fix(
                 pr_url, ci_failure_output=ci_failure_output,
-                cwd=ctx.cwd, max_turns=ctx.turns_cfg.get("ci_fix", ctx.turns_cfg.get("fix", DEFAULT_REVIEW_MAX_TURNS)),
+                cwd=ctx.cwd, max_turns=ctx.turns_cfg.get("ci_fix", ctx.turns_cfg.get("fix", DEFAULT_FIX_MAX_TURNS)),
                 log_file=log_file, env=ctx._env_for_stage("ci_fix") or ctx._env_for_stage("fix"),
                 on_context_fill=_ci_fix_on_fill,
                 stage_tpl=ci_fix_tpl,
