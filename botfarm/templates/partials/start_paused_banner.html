@@ -1,0 +1,9 @@
+{% if pause_state == "start_paused" %}
+<div class="banner-start-paused" id="start-paused-banner">
+    {% if has_callbacks %}
+    Dispatch is paused. Review the queue below and click &#9654; to start dispatching.
+    {% else %}
+    Dispatch is paused. New tickets will not be dispatched until the supervisor is resumed.
+    {% endif %}
+</div>
+{% endif %}
