@@ -2785,7 +2785,7 @@ class TestManualPauseState:
         assert "Cancel" not in resp.text
 
     def test_start_paused_badge_shows_amber(self, tmp_path):
-        """Supervisor badge shows amber 'Supervisor Paused' when start_paused."""
+        """Supervisor badge shows amber 'Dispatch Paused' when start_paused."""
         from datetime import datetime, timezone
         now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         path = tmp_path / "badge.db"
@@ -2800,7 +2800,7 @@ class TestManualPauseState:
         client = TestClient(app)
         resp = client.get("/partials/supervisor-badge")
         assert resp.status_code == 200
-        assert "Supervisor Paused" in resp.text
+        assert "Dispatch Paused" in resp.text
         assert "supervisor-badge-paused" in resp.text
 
     def test_start_paused_banner_on_index(self, tmp_path):
