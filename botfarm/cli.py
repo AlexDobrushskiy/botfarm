@@ -24,21 +24,25 @@ from botfarm.db import (
     clear_slot_stage,
     get_codex_review_stats,
     get_stage_run_aggregates,
+    get_task_by_ticket,
     get_task_history,
     get_ticket_history_entry,
     init_db,
+    insert_event,
     load_all_project_pause_states,
     load_all_slots,
     load_dispatch_state,
     resolve_db_path,
     save_dispatch_state,
     save_project_pause_state,
+    update_task,
     upsert_slot,
     upsert_ticket_history,
 )
 from botfarm.linear import LinearAPIError, LinearClient
 from botfarm.linear_cleanup import CleanupService, CooldownError
 from botfarm.slots import SlotState, _is_pid_alive
+from botfarm.worker import is_protected_branch
 from botfarm.systemd_service import UNIT_PATH, generate_unit, install_service, uninstall_service
 from botfarm.usage import refresh_usage_snapshot
 
@@ -1131,6 +1135,407 @@ def backfill_history(config_path, project, force, dry_run):
                 time.sleep(0.2)
 
         click.echo(f"Backfill complete: {fetched} fetched, {failed} failed.")
+    except sqlite3.Error as exc:
+        raise click.ClickException(f"Database error: {exc}") from exc
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Stop command helpers
+# ---------------------------------------------------------------------------
+
+_ACTIVE_STATUSES = frozenset({"busy", "paused_limit", "paused_manual"})
+_STOP_GRACE_SECONDS = 5
+
+
+def _slot_worktree_cwd(project_cfg, slot_id: int) -> str:
+    """Compute the working directory for a slot's worktree."""
+    base = Path(project_cfg.base_dir).expanduser()
+    return str(base.parent / f"{project_cfg.worktree_prefix}{slot_id}")
+
+
+def _slot_placeholder_branch(slot_id: int) -> str:
+    return f"slot-{slot_id}-placeholder"
+
+
+def _stop_kill_worker(pid: int) -> bool:
+    """Kill a worker PID. Returns True if the process was signalled."""
+    if not _is_pid_alive(pid):
+        return False
+
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except (OSError, ProcessLookupError):
+        return False
+
+    # Wait for graceful exit
+    deadline = time.time() + _STOP_GRACE_SECONDS
+    while _is_pid_alive(pid) and time.time() < deadline:
+        time.sleep(0.5)
+
+    # Escalate to SIGKILL if still alive
+    if _is_pid_alive(pid):
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            pass
+
+    return True
+
+
+def _stop_pr_cleanup(pr_url: str | None, cwd: str | None) -> tuple[bool, bool]:
+    """Close PR if open, detect if merged. Returns (pr_was_merged, pr_closed)."""
+    if not pr_url:
+        return False, False
+
+    # Check PR status via gh
+    try:
+        result = subprocess.run(
+            ["gh", "pr", "view", pr_url, "--json", "state"],
+            capture_output=True, text=True, cwd=cwd, timeout=30,
+        )
+        if result.returncode != 0:
+            return False, False
+
+        import json as json_mod
+        pr_data = json_mod.loads(result.stdout)
+        state = pr_data.get("state", "").upper()
+    except Exception:
+        return False, False
+
+    if state == "MERGED":
+        return True, False
+
+    if state == "OPEN":
+        try:
+            close_result = subprocess.run(
+                ["gh", "pr", "close", pr_url],
+                capture_output=True, text=True, cwd=cwd, timeout=30,
+            )
+            return False, close_result.returncode == 0
+        except Exception:
+            return False, False
+
+    return False, False
+
+
+def _stop_git_cleanup(
+    cwd: str, slot_id: int, branch: str | None,
+) -> bool:
+    """Reset worktree to placeholder branch and delete feature branch.
+
+    Returns True if the worktree was successfully switched to the placeholder
+    branch.
+    """
+    placeholder = _slot_placeholder_branch(slot_id)
+
+    # Remove stale index.lock
+    lock_file = Path(cwd) / ".git" / "index.lock"
+    if lock_file.exists():
+        lock_file.unlink(missing_ok=True)
+
+    # Reset and clean before checkout
+    try:
+        subprocess.run(
+            ["git", "reset", "--hard"],
+            capture_output=True, text=True, cwd=cwd, timeout=15,
+        )
+    except Exception:
+        pass
+
+    try:
+        subprocess.run(
+            ["git", "clean", "-fd"],
+            capture_output=True, text=True, cwd=cwd, timeout=15,
+        )
+    except Exception:
+        pass
+
+    # Switch to placeholder branch
+    checkout_ok = False
+    try:
+        result = subprocess.run(
+            ["git", "checkout", placeholder],
+            capture_output=True, text=True, cwd=cwd, timeout=15,
+        )
+        checkout_ok = result.returncode == 0
+    except Exception:
+        pass
+
+    # Delete feature branch only after successful checkout
+    if branch and not is_protected_branch(branch) and checkout_ok:
+        try:
+            subprocess.run(
+                ["git", "branch", "-D", branch],
+                capture_output=True, text=True, cwd=cwd, timeout=15,
+            )
+        except Exception:
+            pass
+
+        # Delete remote branch (ignore errors)
+        try:
+            subprocess.run(
+                ["git", "push", "origin", "--delete", branch],
+                capture_output=True, text=True, cwd=cwd, timeout=30,
+            )
+        except Exception:
+            pass
+
+    return checkout_ok
+
+
+def _stop_linear_cleanup(
+    config, ticket_id: str | None, project_name: str, pr_was_merged: bool,
+) -> None:
+    """Move ticket back to todo (or done if merged) and post a comment."""
+    if not ticket_id or not config or not config.linear.api_key:
+        return
+
+    # Find the project config to get team key
+    project_cfg = None
+    for p in config.projects:
+        if p.name == project_name:
+            project_cfg = p
+            break
+    if not project_cfg:
+        return
+
+    try:
+        client = LinearClient(api_key=config.linear.api_key)
+        states = client.get_team_states(project_cfg.linear_team)
+
+        if pr_was_merged:
+            target = config.linear.done_status
+        else:
+            target = config.linear.todo_status
+
+        state_id = states.get(target)
+        if state_id:
+            client.update_issue_state(ticket_id, state_id)
+
+        if not pr_was_merged:
+            client.add_comment(ticket_id, "**Stopped by user** — work discarded")
+    except Exception:
+        pass  # Best-effort; don't fail the stop command
+
+
+@main.command(name="stop")
+@click.argument("project", required=False, default=None)
+@click.argument("slot_id", required=False, default=None, type=int)
+@click.option("--force", is_flag=True, default=False, help="Skip confirmation prompt.")
+@click.option("--yes", "-y", is_flag=True, default=False, help="Skip confirmation prompt.")
+@click.option(
+    "--config",
+    "config_path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help="Path to config file.",
+)
+def stop(project, slot_id, force, yes, config_path):
+    """Stop a running or paused slot, killing the worker and cleaning up.
+
+    If PROJECT and SLOT_ID are not provided, shows an interactive selection
+    of active slots.
+    """
+    skip_confirm = force or yes
+    db_path, config = _resolve_paths(config_path)
+
+    if not db_path.exists():
+        click.echo("No database found. Is the supervisor running?")
+        return
+
+    try:
+        conn = init_db(db_path)
+    except SchemaVersionError as exc:
+        raise click.ClickException(str(exc)) from exc
+    except sqlite3.Error as exc:
+        raise click.ClickException(f"Failed to open database: {exc}") from exc
+
+    try:
+        rows = load_all_slots(conn)
+        active_slots = [
+            dict(r) for r in rows if r["status"] in _ACTIVE_STATUSES
+        ]
+
+        if not active_slots:
+            click.echo("No active slots to stop.")
+            return
+
+        # --- Resolve project ---
+        if project is None:
+            projects_with_active = sorted({s["project"] for s in active_slots})
+            if len(projects_with_active) == 1:
+                project = projects_with_active[0]
+            else:
+                # Interactive project selection
+                click.echo("Active projects:")
+                for i, p in enumerate(projects_with_active, 1):
+                    count = sum(1 for s in active_slots if s["project"] == p)
+                    click.echo(f"  [{i}] {p} ({count} active slot(s))")
+                choice = click.prompt(
+                    f"Select project [1-{len(projects_with_active)}]",
+                    type=click.IntRange(1, len(projects_with_active)),
+                )
+                project = projects_with_active[choice - 1]
+
+        # Filter to chosen project
+        project_slots = [s for s in active_slots if s["project"] == project]
+        if not project_slots:
+            click.echo(f"No active slots for project '{project}'.")
+            return
+
+        # --- Resolve slot_id ---
+        if slot_id is None:
+            if len(project_slots) == 1:
+                slot_id = project_slots[0]["slot_id"]
+            else:
+                # Interactive slot selection
+                console = Console()
+                click.echo("\nActive slots:")
+                for i, s in enumerate(project_slots, 1):
+                    ticket = s.get("ticket_id") or "?"
+                    title = s.get("ticket_title") or ""
+                    stage = s.get("stage") or "?"
+                    elapsed = _elapsed(s.get("started_at"))
+                    title_display = f' "{title}"' if title else ""
+                    click.echo(
+                        f"  [{i}] {project} / slot {s['slot_id']} "
+                        f"— {ticket}{title_display} "
+                        f"(stage: {stage}, {elapsed} elapsed)"
+                    )
+                choice = click.prompt(
+                    f"\nSelect slot to stop [1-{len(project_slots)}]",
+                    type=click.IntRange(1, len(project_slots)),
+                )
+                slot_id = project_slots[choice - 1]["slot_id"]
+
+        # Find the target slot
+        target = None
+        for s in active_slots:
+            if s["project"] == project and s["slot_id"] == slot_id:
+                target = s
+                break
+
+        if target is None:
+            click.echo(f"Slot {project}/{slot_id} is not active.")
+            return
+
+        ticket_id = target.get("ticket_id")
+        ticket_title = target.get("ticket_title") or ""
+        branch = target.get("branch")
+        stage = target.get("stage") or "?"
+        pr_url = target.get("pr_url")
+        pid = target.get("pid")
+        elapsed = _elapsed(target.get("started_at"))
+
+        # --- Confirmation prompt ---
+        if not skip_confirm:
+            title_display = f' "{ticket_title}"' if ticket_title else ""
+            click.echo(f"\nStop slot {project}/{slot_id}?\n")
+            click.echo(f"  Ticket: {ticket_id or '-'}{title_display}")
+            click.echo(f"  Stage:  {stage} ({elapsed} elapsed)")
+            if branch:
+                click.echo(f"  Branch: {branch}")
+            click.echo("\nThis will:")
+            click.echo("  - Kill the running worker process")
+            click.echo("  - Discard any uncommitted/unpushed work")
+            if pr_url:
+                click.echo("  - Close the PR without merging (if still open)")
+            click.echo('  - Move the ticket back to "Todo"')
+            if not click.confirm("\nContinue?", default=False):
+                click.echo("Aborted.")
+                return
+
+        console = Console()
+
+        # --- Kill worker process ---
+        pid_killed = False
+        if pid is not None:
+            pid_killed = _stop_kill_worker(pid)
+
+        # --- PR cleanup ---
+        # Resolve worktree cwd from config
+        cwd = None
+        if config:
+            for p in config.projects:
+                if p.name == project:
+                    cwd = _slot_worktree_cwd(p, slot_id)
+                    break
+
+        pr_was_merged, pr_closed = _stop_pr_cleanup(pr_url, cwd)
+
+        # --- Git cleanup ---
+        checkout_ok = False
+        if cwd and Path(cwd).is_dir():
+            checkout_ok = _stop_git_cleanup(cwd, slot_id, branch)
+
+        # --- Linear cleanup ---
+        _stop_linear_cleanup(config, ticket_id, project, pr_was_merged)
+
+        # --- DB cleanup ---
+        task_row = get_task_by_ticket(conn, ticket_id) if ticket_id else None
+        task_id = task_row["id"] if task_row else None
+
+        if task_id is not None:
+            if pr_was_merged:
+                update_task(
+                    conn, task_id,
+                    status="completed",
+                    completed_at=datetime.now(timezone.utc).isoformat(),
+                )
+            else:
+                update_task(
+                    conn, task_id,
+                    status="failed",
+                    failure_reason="stopped by user",
+                )
+
+        insert_event(
+            conn,
+            task_id=task_id,
+            event_type="slot_stopped",
+            detail=f"project={project}, slot={slot_id}, "
+            f"ticket={ticket_id}, branch={branch}, "
+            f"pr_merged={pr_was_merged}, pr_closed={pr_closed}, "
+            f"checkout_ok={checkout_ok}",
+        )
+        conn.commit()
+
+        # Free the slot in DB
+        _free = SlotState(project="", slot_id=0)
+        free_fields = {
+            k: v for k, v in _free.to_dict().items()
+            if k not in ("project", "slot_id")
+        }
+        slot_data = dict(target)
+        slot_data.update(free_fields)
+        upsert_slot(conn, slot_data)
+        clear_slot_stage(conn, project, slot_id)
+        conn.commit()
+
+        # --- Post-stop output ---
+        console.print(f"\n[bold green]Stopped slot {project}/{slot_id}[/bold green]")
+        if pid_killed:
+            console.print(f"  - Worker PID {pid} killed")
+        if branch:
+            console.print(f"  - Branch {branch} deleted")
+        if pr_closed:
+            console.print(f"  - PR closed")
+        if pr_was_merged:
+            console.print(
+                f"  - [yellow]PR was already merged — you may need to manually revert[/yellow]"
+            )
+        if ticket_id:
+            if pr_was_merged:
+                console.print(f"  - Ticket {ticket_id} left as-is (PR merged)")
+            else:
+                console.print(f'  - Ticket {ticket_id} moved to "Todo"')
+        if not checkout_ok and cwd and Path(cwd).is_dir():
+            console.print(
+                f"  - [yellow]Warning: checkout to placeholder failed — "
+                f"slot marked as failed[/yellow]"
+            )
     except sqlite3.Error as exc:
         raise click.ClickException(f"Database error: {exc}") from exc
     finally:
