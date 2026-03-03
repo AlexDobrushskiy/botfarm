@@ -5,6 +5,12 @@
 <div id="update-banner" hx-get="/partials/update-banner" hx-trigger="load, every 60s" hx-swap="innerHTML">
 </div>
 
+{% if pause_state == "start_paused" %}
+<div class="banner-start-paused" id="start-paused-banner">
+    Botfarm is paused. Review the queue below and click &#9654; to start dispatching.
+</div>
+{% endif %}
+
 <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem;">
     <h1 style="margin-bottom: 0;">Live Status</h1>
     <div id="supervisor-controls" hx-get="/partials/supervisor-controls" hx-trigger="every 5s" hx-swap="innerHTML">

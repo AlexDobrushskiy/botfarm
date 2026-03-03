@@ -63,6 +63,7 @@ def partial_supervisor_badge(request: Request):
     return templates.TemplateResponse("partials/supervisor_badge.html", {
         "request": request,
         "supervisor": supervisor_status(app, state),
+        "pause_state": manual_pause_state(state),
     })
 
 

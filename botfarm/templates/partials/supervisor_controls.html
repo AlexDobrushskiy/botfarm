@@ -9,6 +9,16 @@
     </button>
     <span class="pause-hint">Stops new dispatches; running stages finish gracefully</span>
 </div>
+{% elif pause_state == "start_paused" %}
+<div class="pause-controls">
+    <button class="pause-btn pause-btn-play"
+            hx-post="/api/resume"
+            hx-swap="none"
+            hx-on::after-request="this.closest('[hx-get]') && htmx.trigger(this.closest('[hx-get]'), 'htmx:load')">
+        &#9654; Start
+    </button>
+    <span class="pause-hint">Botfarm is ready. Click to start dispatching tickets.</span>
+</div>
 {% elif pause_state.startswith("pausing") %}
 {% set busy_count = pause_state.split(":")[1] if ":" in pause_state else "?" %}
 <div class="pause-controls">

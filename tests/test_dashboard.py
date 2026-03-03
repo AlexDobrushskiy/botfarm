@@ -2751,8 +2751,8 @@ class TestManualPauseState:
         assert "Pausing" in resp.text
         assert "Cancel" in resp.text
 
-    def test_start_paused_shows_resume(self, tmp_path):
-        """When dispatch_paused=start_paused → state is 'paused', Resume button shown."""
+    def test_start_paused_shows_play_button(self, tmp_path):
+        """When dispatch_paused=start_paused → state is 'start_paused', play button shown."""
         path = tmp_path / "test.db"
         conn = init_db(path)
         _seed_slot(conn, "proj", 1, status="free")
@@ -2764,10 +2764,11 @@ class TestManualPauseState:
         client = TestClient(app)
         resp = client.get("/partials/supervisor-controls")
         assert resp.status_code == 200
-        assert "Resume" in resp.text
+        assert "Start" in resp.text
+        assert "start dispatching" in resp.text
 
-    def test_start_paused_with_busy_slot_shows_resume_not_pausing(self, tmp_path):
-        """start_paused with busy slots shows Resume, not Pausing/Cancel."""
+    def test_start_paused_with_busy_slot_shows_play_not_pausing(self, tmp_path):
+        """start_paused with busy slots shows play button, not Pausing/Cancel."""
         path = tmp_path / "test.db"
         conn = init_db(path)
         _seed_slot(conn, "proj", 1, status="busy", ticket_id="T-1", pid=12345)
@@ -2779,9 +2780,55 @@ class TestManualPauseState:
         client = TestClient(app)
         resp = client.get("/partials/supervisor-controls")
         assert resp.status_code == 200
-        assert "Resume" in resp.text
+        assert "Start" in resp.text
         assert "Pausing" not in resp.text
         assert "Cancel" not in resp.text
+
+    def test_start_paused_badge_shows_amber(self, tmp_path):
+        """Supervisor badge shows amber 'Supervisor Paused' when start_paused."""
+        from datetime import datetime, timezone
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        path = tmp_path / "badge.db"
+        conn = init_db(path)
+        _seed_slot(conn, "proj", 1, status="free")
+        save_dispatch_state(conn, paused=True, reason="start_paused",
+                            supervisor_heartbeat=now_iso)
+        conn.commit()
+        conn.close()
+
+        app = create_app(db_path=path, on_pause=lambda: None, on_resume=lambda: None)
+        client = TestClient(app)
+        resp = client.get("/partials/supervisor-badge")
+        assert resp.status_code == 200
+        assert "Supervisor Paused" in resp.text
+        assert "supervisor-badge-paused" in resp.text
+
+    def test_start_paused_banner_on_index(self, tmp_path):
+        """Index page shows a start_paused banner when in that state."""
+        from datetime import datetime, timezone
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        path = tmp_path / "banner.db"
+        conn = init_db(path)
+        _seed_slot(conn, "proj", 1, status="free")
+        save_dispatch_state(conn, paused=True, reason="start_paused",
+                            supervisor_heartbeat=now_iso)
+        conn.commit()
+        conn.close()
+
+        app = create_app(db_path=path, on_pause=lambda: None, on_resume=lambda: None)
+        client = TestClient(app)
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert "start dispatching" in resp.text
+        assert "banner-start-paused" in resp.text
+
+    def test_no_start_paused_banner_when_running(self, db_file):
+        """Index page should NOT show the start_paused banner when running."""
+        app = create_app(db_path=db_file, on_pause=lambda: None, on_resume=lambda: None)
+        client = TestClient(app)
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert "start-paused-banner" not in resp.text
 
 
 class TestPauseHints:
