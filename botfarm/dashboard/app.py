@@ -7,7 +7,7 @@ import threading
 from collections.abc import Callable
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.templating import Jinja2Templates
 
 from botfarm.config import BotfarmConfig, DashboardConfig
@@ -17,7 +17,7 @@ from .routes_config import router as config_router
 from .routes_logs import router as logs_router
 from .routes_main import router as main_router
 from .routes_partials import router as partials_router
-from .state import TEMPLATES_DIR, elapsed, format_duration, reset_caches
+from .state import TEMPLATES_DIR, reset_caches
 
 logger = logging.getLogger(__name__)
 
@@ -99,13 +99,6 @@ def create_app(
     app.state.logs_dir = Path(logs_dir).expanduser() if logs_dir else None
     app.state.git_env = git_env
     app.state.templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
-
-    # Make helpers available to templates via middleware
-    @app.middleware("http")
-    async def add_template_globals(request: Request, call_next):
-        request.state.elapsed = elapsed
-        request.state.format_duration = format_duration
-        return await call_next(request)
 
     # Include all route modules
     app.include_router(main_router)
