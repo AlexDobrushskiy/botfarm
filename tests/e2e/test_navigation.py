@@ -84,7 +84,7 @@ class TestResponsive:
         table = page.locator("#slots-panel table")
         assert table.is_visible()
         headers = table.locator("thead th").all_text_contents()
-        assert len(headers) == 8
+        assert len(headers) == 9
 
     def test_desktop_layout(self, live_server, page):
         """P0: At 1024px, full layout renders correctly."""
