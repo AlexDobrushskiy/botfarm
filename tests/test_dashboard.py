@@ -6249,6 +6249,20 @@ class TestStopSlotAPI:
         assert resp.status_code == 400
         assert "slot_id must be an integer" in resp.json()["error"]
 
+    def test_stop_non_string_project_returns_400(self, db_file):
+        """POST /api/slot/stop rejects non-string project values."""
+        app = create_app(
+            db_path=db_file,
+            on_stop_slot=lambda p, s: None,
+        )
+        client = TestClient(app)
+        for payload in [1, ["a"], {"x": 1}, True]:
+            resp = client.post(
+                "/api/slot/stop", json={"project": payload, "slot_id": 1},
+            )
+            assert resp.status_code == 400, f"Expected 400 for project={payload!r}"
+            assert "project must be a string" in resp.json()["error"]
+
 
 class TestStopSlotButton:
     """Tests for the stop button in the slots partial."""

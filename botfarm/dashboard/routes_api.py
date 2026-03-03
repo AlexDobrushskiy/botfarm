@@ -116,6 +116,10 @@ async def api_stop_slot(request: Request):
         return JSONResponse(
             {"error": "project and slot_id are required"}, status_code=400,
         )
+    if not isinstance(project, str):
+        return JSONResponse(
+            {"error": "project must be a string"}, status_code=400,
+        )
     # Reject non-integral types (bool is a subclass of int, float silently truncates)
     if isinstance(slot_id, bool) or not isinstance(slot_id, (int, str)):
         return JSONResponse(
