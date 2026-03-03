@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from botfarm.db import get_stage_runs, get_task, init_db, insert_stage_run, insert_task
+from botfarm.db import get_stage_runs, get_task, insert_stage_run, insert_task
 from botfarm.slots import SlotManager
 from botfarm.config import CoderIdentity, IdentitiesConfig, ReviewerIdentity
 from botfarm.worker import (
@@ -48,19 +48,12 @@ from botfarm.worker import (
     _run_merge,
     _write_subprocess_log,
 )
+from tests.helpers import make_claude_json
 
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture()
-def conn(tmp_path):
-    db_file = tmp_path / "test.db"
-    connection = init_db(db_file)
-    yield connection
-    connection.close()
 
 
 @pytest.fixture()
@@ -90,26 +83,6 @@ def slot_manager(tmp_path):
     return mgr
 
 
-def _make_claude_json(
-    session_id="sess-abc",
-    num_turns=5,
-    duration_ms=12000,
-    subtype="tool_use",
-    result="Done",
-    is_error=False,
-) -> str:
-    return json.dumps(
-        {
-            "session_id": session_id,
-            "num_turns": num_turns,
-            "duration_ms": duration_ms,
-            "subtype": subtype,
-            "result": result,
-            "is_error": is_error,
-        }
-    )
-
-
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -131,7 +104,7 @@ class TestConstants:
 
 class TestParseClaudeOutput:
     def test_basic_parse(self):
-        raw = _make_claude_json()
+        raw = make_claude_json()
         result = parse_claude_output(raw)
         assert result.session_id == "sess-abc"
         assert result.num_turns == 5
@@ -141,12 +114,12 @@ class TestParseClaudeOutput:
         assert result.is_error is False
 
     def test_is_error_true(self):
-        raw = _make_claude_json(is_error=True)
+        raw = make_claude_json(is_error=True)
         result = parse_claude_output(raw)
         assert result.is_error is True
 
     def test_duration_conversion(self):
-        raw = _make_claude_json(duration_ms=60000)
+        raw = make_claude_json(duration_ms=60000)
         result = parse_claude_output(raw)
         assert result.duration_seconds == 60.0
 
@@ -203,7 +176,7 @@ class TestParseClaudeOutput:
         assert "claude-sonnet-4-6" in parsed
 
     def test_token_usage_defaults_when_absent(self):
-        raw = _make_claude_json()
+        raw = make_claude_json()
         result = parse_claude_output(raw)
         assert result.input_tokens == 0
         assert result.output_tokens == 0

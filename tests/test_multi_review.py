@@ -30,6 +30,7 @@ from botfarm.worker import (
     _run_review,
     _submit_aggregate_review,
 )
+from tests.helpers import make_claude_result as _make_claude_result, make_codex_result as _make_codex_result
 
 
 PR_URL = "https://github.com/owner/repo/pull/42"
@@ -53,27 +54,6 @@ def _make_review_stage_tpl() -> StageTemplate:
         timeout_minutes=30,
         shell_command=None,
         result_parser="review_verdict",
-    )
-
-
-def _make_claude_result(text: str = "done", is_error: bool = False) -> ClaudeResult:
-    return ClaudeResult(
-        session_id="s-test",
-        num_turns=5,
-        duration_seconds=15.0,
-        exit_subtype="tool_use",
-        result_text=text,
-        is_error=is_error,
-    )
-
-
-def _make_codex_result(text: str = "done", is_error: bool = False) -> CodexResult:
-    return CodexResult(
-        thread_id="t-test",
-        num_turns=3,
-        duration_seconds=10.0,
-        result_text=text,
-        is_error=is_error,
     )
 
 

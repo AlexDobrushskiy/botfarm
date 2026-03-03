@@ -28,9 +28,7 @@ def db_file(tmp_path):
     return db_path
 
 
-def _mock_resolve(db_path, config=None):
-    """Return a monkeypatch-compatible _resolve_paths replacement."""
-    return lambda _: (db_path, config)
+from tests.helpers import mock_resolve as _mock_resolve
 
 
 def _seed_tasks(db_path, tasks):

@@ -6,7 +6,6 @@ from dataclasses import dataclass
 
 import pytest
 
-from botfarm.db import init_db
 from botfarm.workflow import (
     PipelineTemplate,
     StageLoop,
@@ -33,13 +32,7 @@ from botfarm.workflow import (
 )
 
 
-@pytest.fixture()
-def conn(tmp_path):
-    """Yield a fresh DB with seed data."""
-    db_file = tmp_path / "test.db"
-    connection = init_db(db_file, allow_migration=True)
-    yield connection
-    connection.close()
+# conn fixture provided by tests/conftest.py
 
 
 # ---------------------------------------------------------------------------

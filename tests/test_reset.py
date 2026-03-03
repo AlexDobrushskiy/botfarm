@@ -11,7 +11,8 @@ import pytest
 from click.testing import CliRunner
 
 from botfarm.cli import main
-from botfarm.db import init_db, load_all_slots, save_dispatch_state, upsert_slot
+from botfarm.db import init_db, load_all_slots
+from tests.helpers import make_slot as _make_slot, mock_resolve as _mock_resolve, seed_slots as _seed_slots
 
 
 @pytest.fixture()
@@ -28,27 +29,6 @@ def db_file(tmp_path):
     return path
 
 
-def _mock_resolve(db_path):
-    """Return a monkeypatch-compatible _resolve_paths replacement."""
-    return lambda _: (db_path, None)
-
-
-def _seed_slots(db_path, slots, *, dispatch_paused=False, dispatch_pause_reason=None):
-    """Seed the database with slot rows and optional dispatch state."""
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")
-    for slot in slots:
-        upsert_slot(conn, slot)
-    save_dispatch_state(
-        conn,
-        paused=dispatch_paused,
-        reason=dispatch_pause_reason,
-    )
-    conn.commit()
-    conn.close()
-
-
 def _read_slots(db_path):
     """Read all slots from DB as a list of dicts."""
     conn = sqlite3.connect(str(db_path))
@@ -57,31 +37,6 @@ def _read_slots(db_path):
     result = [dict(r) for r in rows]
     conn.close()
     return result
-
-
-def _make_slot(project, slot_id, status="free", **overrides):
-    """Create a slot dict with sensible defaults."""
-    slot = {
-        "project": project,
-        "slot_id": slot_id,
-        "status": status,
-        "ticket_id": None,
-        "ticket_title": None,
-        "branch": None,
-        "pr_url": None,
-        "stage": None,
-        "stage_iteration": 0,
-        "current_session_id": None,
-        "started_at": None,
-        "stage_started_at": None,
-        "sigterm_sent_at": None,
-        "pid": None,
-        "interrupted_by_limit": False,
-        "resume_after": None,
-        "stages_completed": [],
-    }
-    slot.update(overrides)
-    return slot
 
 
 # ---------------------------------------------------------------------------
