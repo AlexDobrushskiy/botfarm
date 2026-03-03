@@ -5670,6 +5670,33 @@ class TestStartPaused:
         assert sm.dispatch_pause_reason == "start_paused"
         assert sup._startup_paused is True
 
+    def test_restart_with_start_paused_false_clears_persisted_pause(
+        self, tmp_config, tmp_path, monkeypatch,
+    ):
+        """Restarting with start_paused=false clears a persisted start_paused pause."""
+        tmp_config.start_paused = False
+        monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "test.db"))
+
+        mock_poller = MagicMock()
+        mock_poller.project_name = "test-project"
+        mock_poller.poll.return_value = PollResult(candidates=[], blocked=[], auto_close_parents=[])
+        mock_poller.is_issue_terminal.return_value = False
+
+        with patch("botfarm.supervisor.create_pollers", return_value=[mock_poller]):
+            sup = Supervisor(tmp_config, log_dir=tmp_path / "logs")
+
+        sm = sup.slot_manager
+        # Simulate persisted start_paused from a previous run
+        sm.set_dispatch_paused(True, "start_paused")
+        assert sm.dispatch_paused is True
+
+        sup._apply_start_paused()
+
+        # Config says false — persisted pause should be cleared
+        assert sm.dispatch_paused is False
+        assert sm.dispatch_pause_reason is None
+        assert sup._startup_paused is False
+
     def test_capacity_blocked_restores_start_paused(self, supervisor):
         """When capacity_blocked clears and _startup_paused is set, restore start_paused."""
         sm = supervisor.slot_manager

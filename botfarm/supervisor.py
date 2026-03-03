@@ -1293,13 +1293,30 @@ class Supervisor:
     def _apply_start_paused(self) -> None:
         """Pause dispatch on startup if configured and not already paused."""
         if not self._config.start_paused:
+            # Clear a persisted start_paused from a previous run so that
+            # flipping the config to false actually dispatches immediately.
+            if (
+                self._slot_manager.dispatch_paused
+                and self._slot_manager.dispatch_pause_reason == "start_paused"
+            ):
+                logger.info(
+                    "start_paused disabled in config — clearing persisted "
+                    "startup pause"
+                )
+                self._slot_manager.set_dispatch_paused(False)
+                insert_event(
+                    self._conn,
+                    event_type="start_paused_cleared",
+                    detail="config changed to start_paused=false",
+                )
+                self._conn.commit()
             return
         if not self._slot_manager.dispatch_paused:
             self._slot_manager.set_dispatch_paused(True, "start_paused")
             self._startup_paused = True
             logger.info(
                 "Supervisor started in paused mode "
-                "— use dashboard or CLI to start dispatching"
+                "— use the dashboard to start dispatching"
             )
             insert_event(
                 self._conn,

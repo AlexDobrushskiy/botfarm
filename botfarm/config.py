@@ -91,7 +91,7 @@ agents:
 #     github_token: ${REVIEWER_GITHUB_TOKEN}
 #     linear_api_key: ${REVIEWER_LINEAR_API_KEY}
 
-# Start with dispatch paused — use dashboard or CLI to begin dispatching.
+# Start with dispatch paused — use the dashboard to begin dispatching.
 # Set to false to dispatch immediately on startup.
 start_paused: true
 
