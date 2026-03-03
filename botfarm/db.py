@@ -209,6 +209,7 @@ def update_task(
         "pipeline_stage",
         "review_state",
         "started_on_extra_usage",
+        "merge_conflict_retries",
     }
     bad = set(fields) - allowed
     if bad:

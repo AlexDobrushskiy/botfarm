@@ -164,6 +164,7 @@ class DashboardConfig:
 class AgentsConfig:
     max_review_iterations: int = 3
     max_ci_retries: int = 2
+    max_merge_conflict_retries: int = 2
     timeout_minutes: dict[str, int] = field(default_factory=lambda: {
         "implement": 120,
         "review": 30,

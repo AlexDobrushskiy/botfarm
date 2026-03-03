@@ -74,7 +74,7 @@ STAGES = ("implement", "review", "fix", "pr_checks", "merge")
 
 # Backward-compatible identity sets — kept for tests and external callers.
 # New code should use StageTemplate.identity from the pipeline template.
-_CODER_STAGES = frozenset({"implement", "fix", "ci_fix", "pr_checks", "merge"})
+_CODER_STAGES = frozenset({"implement", "fix", "ci_fix", "pr_checks", "merge", "resolve_conflict"})
 _REVIEWER_STAGES = frozenset({"review"})
 
 # Default max-turns per stage — kept for backward compatibility.
@@ -1247,6 +1247,98 @@ def _run_ci_fix(
     )
 
 
+# ---------------------------------------------------------------------------
+# Merge conflict detection + resolution
+# ---------------------------------------------------------------------------
+
+_CONFLICT_RE = re.compile(r"conflict|isn't mergeable|not mergeable", re.IGNORECASE)
+
+
+def _is_merge_conflict(
+    error_text: str,
+    pr_url: str,
+    cwd: str | Path,
+    *,
+    env: dict[str, str] | None = None,
+) -> bool:
+    """Return True if *error_text* indicates a merge conflict.
+
+    Two-tier approach:
+    1. Fast regex check on the ``gh pr merge`` stderr.
+    2. Authoritative confirmation via ``gh pr view --json mergeable``.
+
+    Both must agree to avoid false positives from unrelated failures.
+    """
+    if not _CONFLICT_RE.search(error_text):
+        return False
+
+    # Authoritative check via GitHub API
+    try:
+        proc = subprocess.run(
+            ["gh", "pr", "view", pr_url, "--json", "mergeable", "--jq", ".mergeable"],
+            capture_output=True,
+            text=True,
+            cwd=str(cwd),
+            timeout=30,
+            env=env,
+        )
+        mergeable = proc.stdout.strip().upper()
+        return mergeable == "CONFLICTING"
+    except (subprocess.TimeoutExpired, OSError):
+        # If we can't confirm, fall back to the regex match alone
+        logger.warning("Could not confirm merge conflict via gh pr view")
+        return True
+
+
+def _run_resolve_conflict(
+    pr_url: str,
+    *,
+    cwd: str | Path,
+    max_turns: int,
+    log_file: Path | None = None,
+    env: dict[str, str] | None = None,
+    on_context_fill: ContextFillCallback | None = None,
+    stage_tpl: StageTemplate | None = None,
+) -> StageResult:
+    """RESOLVE_CONFLICT stage — Claude merges main into feature branch."""
+    if stage_tpl is not None:
+        return _run_claude_stage(
+            stage_tpl, cwd=cwd, max_turns=max_turns,
+            prompt_vars={"pr_url": pr_url},
+            log_file=log_file, env=env, on_context_fill=on_context_fill,
+        )
+    # Legacy fallback
+    prompt = (
+        "The feature branch has merge conflicts with main. Resolve them by running:\n\n"
+        "1. git fetch origin main\n"
+        "2. git merge origin/main\n"
+        "3. Resolve any merge conflicts — keep the intent of both the feature "
+        "branch and main changes\n"
+        "4. Run the full test suite and fix any test failures\n"
+        "5. git add the resolved files and commit\n"
+        "6. git push\n\n"
+        "Do NOT force push. Do NOT rebase. Use a merge commit."
+    )
+    result = _invoke_claude(
+        prompt, cwd=cwd, max_turns=max_turns, log_file=log_file,
+        env=env, on_context_fill=on_context_fill,
+    )
+
+    if result.is_error:
+        return StageResult(
+            stage="resolve_conflict",
+            success=False,
+            claude_result=result,
+            error=f"Claude reported error: {result.result_text[:RESULT_TRUNCATE_CHARS]}",
+        )
+
+    return StageResult(
+        stage="resolve_conflict",
+        success=True,
+        claude_result=result,
+    )
+
+
 def is_protected_branch(branch: str) -> bool:
     """Return True if the branch must never be deleted."""
     if branch == "main":
@@ -1392,6 +1484,7 @@ def run_pipeline(
     pr_checks_timeout: int = DEFAULT_PR_CHECKS_TIMEOUT,
     max_review_iterations: int = 3,
     max_ci_retries: int = 2,
+    max_merge_conflict_retries: int = 2,
     resume_from_stage: str | None = None,
     resume_session_id: str | None = None,  # TODO: wire through to run_claude_streaming --resume
     slot_db_path: str | Path | None = None,
@@ -1449,9 +1542,10 @@ def run_pipeline(
 
     # Load pipeline template and derive configuration
     (stages, turns_cfg, eff_max_review_iterations, eff_max_ci_retries,
-     loop_managed_stages, pipeline_tpl) = _load_pipeline_config(
+     eff_max_merge_conflict_retries, loop_managed_stages,
+     pipeline_tpl) = _load_pipeline_config(
         conn, ticket_id, ticket_labels or [], max_turns,
-        max_review_iterations, max_ci_retries,
+        max_review_iterations, max_ci_retries, max_merge_conflict_retries,
     )
 
     # Validate resume_from_stage upfront — check against all pipeline stages
@@ -1531,6 +1625,7 @@ def run_pipeline(
             pr_url=pr_url,
             eff_max_review_iterations=eff_max_review_iterations,
             eff_max_ci_retries=eff_max_ci_retries,
+            eff_max_merge_conflict_retries=eff_max_merge_conflict_retries,
         )
         if should_stop:
             return pipeline
@@ -1561,9 +1656,11 @@ def _load_pipeline_config(
     max_turns: dict[str, int] | None,
     max_review_iterations: int,
     max_ci_retries: int,
+    max_merge_conflict_retries: int = 2,
 ) -> tuple[
     tuple[str, ...],
     dict[str, int],
+    int,
     int,
     int,
     set[str],
@@ -1572,7 +1669,8 @@ def _load_pipeline_config(
     """Load pipeline template from DB and derive all configuration.
 
     Returns ``(stages, turns_cfg, eff_max_review_iterations,
-    eff_max_ci_retries, loop_managed_stages, pipeline_tpl)``.
+    eff_max_ci_retries, eff_max_merge_conflict_retries,
+    loop_managed_stages, pipeline_tpl)``.
     """
     pipeline_tpl: PipelineTemplate | None = None
     try:
@@ -1627,6 +1725,22 @@ def _load_pipeline_config(
         )
         eff_max_ci_retries = resolve_max_iterations(ci_retry_loop, _agents_cfg)
 
+    merge_conflict_loop: StageLoop | None = None
+    if pipeline_tpl is not None:
+        merge_conflict_loop = get_loop_for_stage(pipeline_tpl, "resolve_conflict")
+
+    eff_max_merge_conflict_retries = max_merge_conflict_retries
+    if merge_conflict_loop is not None:
+        from botfarm.config import AgentsConfig
+        _agents_cfg = AgentsConfig(
+            max_review_iterations=max_review_iterations,
+            max_ci_retries=max_ci_retries,
+            max_merge_conflict_retries=max_merge_conflict_retries,
+        )
+        eff_max_merge_conflict_retries = resolve_max_iterations(
+            merge_conflict_loop, _agents_cfg,
+        )
+
     # Determine loop-managed stages: skipped in main iteration because
     # they're handled inside their respective loops.
     loop_managed_stages: set[str] = set()
@@ -1637,7 +1751,8 @@ def _load_pipeline_config(
             else:
                 loop_managed_stages.add(loop.end_stage)
 
-    return stages, turns_cfg, eff_max_review_iterations, eff_max_ci_retries, loop_managed_stages, pipeline_tpl
+    return (stages, turns_cfg, eff_max_review_iterations, eff_max_ci_retries,
+            eff_max_merge_conflict_retries, loop_managed_stages, pipeline_tpl)
 
 
 def _dispatch_pipeline_stage(
@@ -1647,6 +1762,7 @@ def _dispatch_pipeline_stage(
     pr_url: str | None,
     eff_max_review_iterations: int,
     eff_max_ci_retries: int,
+    eff_max_merge_conflict_retries: int = 2,
 ) -> tuple[bool, str | None]:
     """Dispatch a single stage in the pipeline main loop.
 
@@ -1682,7 +1798,17 @@ def _dispatch_pipeline_stage(
             ctx, pr_url=pr_url, max_ci_retries=eff_max_ci_retries,
         )
 
-    # ----- Normal stages (implement, merge, etc.) -----
+    # ----- Merge with conflict retry loop -----
+    if stage == "merge":
+        return _handle_merge_stage(
+            ctx,
+            pr_url=pr_url,
+            max_merge_conflict_retries=eff_max_merge_conflict_retries,
+            eff_max_review_iterations=eff_max_review_iterations,
+            eff_max_ci_retries=eff_max_ci_retries,
+        )
+
+    # ----- Normal stages (implement, etc.) -----
     result = ctx.run_and_record(stage, pr_url=pr_url)
     if result is None:
         return True, pr_url
@@ -1769,6 +1895,147 @@ def _handle_pr_checks_stage(
 
     # No retries configured — fail
     return True, pr_url
+
+
+def _handle_merge_stage(
+    ctx: "_PipelineContext",
+    *,
+    pr_url: str | None,
+    max_merge_conflict_retries: int,
+    eff_max_review_iterations: int,
+    eff_max_ci_retries: int,
+) -> tuple[bool, str | None]:
+    """Handle the merge stage with conflict retry loop.
+
+    Returns ``(should_stop, pr_url)``.
+    """
+    result = ctx.run_and_record("merge", pr_url=pr_url)
+    if result is not None:
+        return False, pr_url  # merge succeeded
+
+    merge_error = ctx.pipeline.failure_reason or "merge failed"
+    if max_merge_conflict_retries > 0 and _is_merge_conflict(
+        merge_error, pr_url or "", ctx.cwd,
+        env={**os.environ, **(ctx.coder_env or {})},
+    ):
+        _reset_for_retry(ctx)
+        success = _run_merge_conflict_loop(
+            ctx,
+            pr_url=pr_url,
+            max_retries=max_merge_conflict_retries,
+            eff_max_review_iterations=eff_max_review_iterations,
+            eff_max_ci_retries=eff_max_ci_retries,
+        )
+        if not success:
+            return True, pr_url
+        if "merge" not in ctx.pipeline.stages_completed:
+            ctx.pipeline.stages_completed.append("merge")
+        return False, pr_url
+
+    # Non-conflict failure — bail
+    return True, pr_url
+
+
+def _run_merge_conflict_loop(
+    ctx: "_PipelineContext",
+    *,
+    pr_url: str | None,
+    max_retries: int,
+    eff_max_review_iterations: int,
+    eff_max_ci_retries: int,
+) -> bool:
+    """Resolve merge conflicts and re-run review→fix→pr_checks→merge.
+
+    Returns ``True`` on success (merge completed) and ``False`` if
+    retries are exhausted or a non-conflict error occurs.
+    """
+    for retry in range(1, max_retries + 1):
+        insert_event(
+            ctx.conn,
+            task_id=ctx.task_id,
+            event_type="merge_conflict_retry_started",
+            detail=f"retry={retry}",
+        )
+        update_task(ctx.conn, ctx.task_id, merge_conflict_retries=retry)
+        ctx.conn.commit()
+
+        # --- RESOLVE CONFLICT (Claude merges main into feature branch) ---
+        resolve_result = ctx.run_and_record(
+            "resolve_conflict", pr_url=pr_url, iteration=retry,
+        )
+        if resolve_result is None:
+            return False  # failure recorded by run_and_record
+
+        # --- RE-RUN REVIEW→FIX LOOP (code diff changed) ---
+        success = _run_review_fix_loop(
+            ctx, pr_url=pr_url, max_iterations=eff_max_review_iterations,
+        )
+        if not success:
+            return False
+
+        # --- RE-RUN PR_CHECKS ---
+        checks_result = ctx.run_and_record("pr_checks", pr_url=pr_url, iteration=retry)
+        if checks_result is None:
+            # CI failed — attempt CI retries within this conflict retry
+            if eff_max_ci_retries > 0:
+                ci_failure_output = ctx.pipeline.failure_reason or "CI checks failed"
+                _reset_for_retry(ctx)
+                ci_success = _run_ci_retry_loop(
+                    ctx,
+                    pr_url=pr_url,
+                    ci_failure_output=ci_failure_output,
+                    max_retries=eff_max_ci_retries,
+                )
+                if not ci_success:
+                    return False
+            else:
+                return False
+
+        # --- RE-ATTEMPT MERGE ---
+        merge_result = ctx.run_and_record("merge", pr_url=pr_url, iteration=retry)
+        if merge_result is not None:
+            insert_event(
+                ctx.conn,
+                task_id=ctx.task_id,
+                event_type="merge_succeeded_after_conflict_retry",
+                detail=f"retry={retry}",
+            )
+            ctx.conn.commit()
+            logger.info(
+                "Merge succeeded on conflict retry %d for %s",
+                retry, ctx.ticket_id,
+            )
+            return True
+
+        # Merge failed again — check if it's still a conflict
+        merge_error = ctx.pipeline.failure_reason or "merge failed"
+        if not _is_merge_conflict(
+            merge_error, pr_url or "", ctx.cwd,
+            env={**os.environ, **(ctx.coder_env or {})},
+        ):
+            # Non-conflict failure — bail out
+            return False
+
+        _reset_for_retry(ctx)
+
+    # Max retries exhausted
+    insert_event(
+        ctx.conn,
+        task_id=ctx.task_id,
+        event_type="max_merge_conflict_retries_reached",
+        detail=f"retries={max_retries}",
+    )
+    ctx.conn.commit()
+    logger.warning(
+        "Max merge conflict retries (%d) reached for %s — marking as failed",
+        max_retries, ctx.ticket_id,
+    )
+    ctx.pipeline.failure_stage = "merge"
+    ctx.pipeline.failure_reason = (
+        f"Merge conflicts could not be resolved after {max_retries} retries"
+    )
+    _record_failure(ctx.conn, ctx.task_id, ctx.pipeline)
+    return False
 
 
 def _handle_implement_result(
@@ -2507,6 +2774,11 @@ def _execute_stage(
         return _run_merge(
             pr_url, cwd=cwd, log_file=log_file,
             placeholder_branch=placeholder_branch, env=env,
+        )
+    elif stage == "resolve_conflict":
+        return _run_resolve_conflict(
+            pr_url or "", cwd=cwd, max_turns=max_turns, log_file=log_file,
+            env=env, on_context_fill=on_context_fill, stage_tpl=stage_tpl,
         )
     else:
         raise ValueError(f"Unknown stage: {stage}")
