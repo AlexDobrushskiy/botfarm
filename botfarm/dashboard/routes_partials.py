@@ -63,6 +63,19 @@ def partial_supervisor_badge(request: Request):
     return templates.TemplateResponse("partials/supervisor_badge.html", {
         "request": request,
         "supervisor": supervisor_status(app, state),
+        "pause_state": manual_pause_state(state),
+    })
+
+
+@router.get("/partials/start-paused-banner", response_class=HTMLResponse)
+def partial_start_paused_banner(request: Request):
+    app = request.app
+    templates = app.state.templates
+    state = read_state(app)
+    return templates.TemplateResponse("partials/start_paused_banner.html", {
+        "request": request,
+        "pause_state": manual_pause_state(state),
+        "has_callbacks": app.state.on_pause is not None,
     })
 
 

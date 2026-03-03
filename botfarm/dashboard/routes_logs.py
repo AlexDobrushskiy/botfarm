@@ -15,7 +15,7 @@ from botfarm.db import get_task, get_task_by_ticket, load_all_slots
 from botfarm.worker import STAGES
 
 from .formatters import format_codex_ndjson_line, format_ndjson_line
-from .state import get_db, linear_url, read_state, supervisor_status
+from .state import get_db, linear_url, manual_pause_state, read_state, supervisor_status
 
 logger = logging.getLogger(__name__)
 
@@ -140,6 +140,7 @@ def log_viewer_page(request: Request, task_id: str):
     task, ticket_id = _resolve_task(app, task_id)
 
     available = _available_stages_with_logs(app, ticket_id)
+    state = read_state(app)
     if not available:
         return templates.TemplateResponse("log_viewer.html", {
             "request": request,
@@ -150,7 +151,8 @@ def log_viewer_page(request: Request, task_id: str):
             "log_content": None,
             "is_live": False,
             "linear_url": lambda tid: linear_url(app, tid),
-            "supervisor": supervisor_status(app, read_state(app)),
+            "supervisor": supervisor_status(app, state),
+            "pause_state": manual_pause_state(state),
         })
 
     # Default to the most recent active stage, or the last available
@@ -178,7 +180,8 @@ def log_viewer_page(request: Request, task_id: str):
         "log_content": log_content,
         "is_live": is_live,
         "linear_url": lambda tid: linear_url(app, tid),
-        "supervisor": supervisor_status(app, read_state(app)),
+        "supervisor": supervisor_status(app, state),
+        "pause_state": manual_pause_state(state),
     })
 
 
@@ -198,6 +201,7 @@ def log_viewer_stage_page(request: Request, task_id: str, stage: str):
         if log_file:
             log_content = _read_log_file(log_file) or None
 
+    state = read_state(app)
     return templates.TemplateResponse("log_viewer.html", {
         "request": request,
         "task": task,
@@ -207,7 +211,8 @@ def log_viewer_stage_page(request: Request, task_id: str, stage: str):
         "log_content": log_content,
         "is_live": is_live,
         "linear_url": lambda tid: linear_url(app, tid),
-        "supervisor": supervisor_status(app, read_state(app)),
+        "supervisor": supervisor_status(app, state),
+        "pause_state": manual_pause_state(state),
     })
 
 

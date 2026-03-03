@@ -228,7 +228,7 @@ def supervisor_status(app: FastAPI, state: dict) -> dict:
 def manual_pause_state(state: dict) -> str:
     """Determine the manual pause UI state from current state.
 
-    Returns one of: "running", "pausing", "paused".
+    Returns one of: "running", "start_paused", "pausing", "paused".
     """
     dispatch_paused = state.get("dispatch_paused", False)
     pause_reason = state.get("dispatch_pause_reason")
@@ -239,9 +239,9 @@ def manual_pause_state(state: dict) -> str:
             return "paused"
         return "running"
     # start_paused only blocks new dispatches; recovered busy slots keep running
-    # normally, so show "paused" (Resume button) rather than "pausing" UI.
+    # normally, so show distinct "start_paused" state with a play button.
     if pause_reason == "start_paused":
-        return "paused"
+        return "start_paused"
     # Dispatch is paused for manual_pause — check if workers are still busy
     slots = state.get("slots", [])
     has_busy = any(s["status"] == "busy" for s in slots)

@@ -20,7 +20,7 @@ from botfarm.config import (
     write_yaml_atomic,
 )
 
-from .state import read_state, supervisor_status
+from .state import manual_pause_state, read_state, supervisor_status
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +153,7 @@ def config_page(request: Request):
     templates = request.app.state.templates
     cfg = app.state.botfarm_config
     enabled = cfg is not None
+    state = read_state(app)
     return templates.TemplateResponse("config.html", {
         "request": request,
         "config_enabled": enabled,
@@ -160,7 +161,8 @@ def config_page(request: Request):
         "full_config_values": _full_config_values(app),
         "editable_fields": EDITABLE_FIELDS,
         "restart_required": app.state.restart_required,
-        "supervisor": supervisor_status(app, read_state(app)),
+        "supervisor": supervisor_status(app, state),
+        "pause_state": manual_pause_state(state),
     })
 
 
@@ -380,10 +382,12 @@ def _write_env_file(env_path: Path, data: dict[str, str]) -> None:
 def identities_page(request: Request):
     app = request.app
     templates = request.app.state.templates
+    state = read_state(app)
     return templates.TemplateResponse("identities.html", {
         "request": request,
         "identity": _identity_status(app),
-        "supervisor": supervisor_status(app, read_state(app)),
+        "supervisor": supervisor_status(app, state),
+        "pause_state": manual_pause_state(state),
     })
 
 

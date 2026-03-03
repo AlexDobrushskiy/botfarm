@@ -289,6 +289,7 @@ def _history_context(request: Request) -> dict:
         finally:
             conn.close()
     page = max(1, min(hp["page"], total_pages))
+    state = read_state(app)
     return {
         "request": request,
         "tasks": tasks,
@@ -303,7 +304,8 @@ def _history_context(request: Request) -> dict:
         "sort_dir": hp["sort_dir"],
         "linear_url": lambda tid: linear_url(app, tid),
         "context_fill_class": context_fill_class,
-        "supervisor": supervisor_status(app, read_state(app)),
+        "supervisor": supervisor_status(app, state),
+        "pause_state": manual_pause_state(state),
     }
 
 
@@ -397,6 +399,7 @@ def _tickets_context(request: Request) -> dict:
         finally:
             conn.close()
     page = max(1, min(tp["page"], total_pages))
+    state = read_state(app)
     return {
         "request": request,
         "tickets": tickets,
@@ -412,7 +415,8 @@ def _tickets_context(request: Request) -> dict:
         "sort_by": tp["sort_by"],
         "sort_dir": tp["sort_dir"],
         "linear_url": lambda tid: linear_url(app, tid),
-        "supervisor": supervisor_status(app, read_state(app)),
+        "supervisor": supervisor_status(app, state),
+        "pause_state": manual_pause_state(state),
     }
 
 
@@ -684,12 +688,14 @@ def ticket_detail_page(request: Request, ticket_id: str):
             pass
         finally:
             conn.close()
+    state = read_state(app)
     return templates.TemplateResponse("ticket_detail.html", {
         "request": request,
         "ticket": ticket,
         "task": task,
         "linear_url": lambda tid: linear_url(app, tid),
-        "supervisor": supervisor_status(app, read_state(app)),
+        "supervisor": supervisor_status(app, state),
+        "pause_state": manual_pause_state(state),
     })
 
 
@@ -733,6 +739,7 @@ def task_detail_page(request: Request, task_id: str):
         finally:
             conn.close()
     task_totals = _compute_task_totals(stages)
+    state = read_state(app)
     return templates.TemplateResponse("task_detail.html", {
         "request": request,
         "task": task,
@@ -744,7 +751,8 @@ def task_detail_page(request: Request, task_id: str):
         "linear_url": lambda tid: linear_url(app, tid),
         "format_duration": format_duration,
         "context_fill_class": context_fill_class,
-        "supervisor": supervisor_status(app, read_state(app)),
+        "supervisor": supervisor_status(app, state),
+        "pause_state": manual_pause_state(state),
     })
 
 
@@ -780,6 +788,7 @@ def usage_page(request: Request):
         "snapshots": snapshots,
         "time_range": time_range,
         "supervisor": supervisor_status(app, state),
+        "pause_state": manual_pause_state(state),
     })
 
 
@@ -799,13 +808,15 @@ def metrics_page(request: Request):
             pass
         finally:
             conn.close()
+    state = read_state(app)
     return templates.TemplateResponse("metrics.html", {
         "request": request,
         "metrics": metrics,
         "projects": projects,
         "filter_project": filter_project,
         "format_duration": format_duration,
-        "supervisor": supervisor_status(app, read_state(app)),
+        "supervisor": supervisor_status(app, state),
+        "pause_state": manual_pause_state(state),
     })
 
 
@@ -933,9 +944,11 @@ def workflow_page(request: Request):
             pass
         finally:
             conn.close()
+    state = read_state(app)
     return templates.TemplateResponse("workflow.html", {
         "request": request,
         "pipelines": pipelines_data,
         "active_page": "workflow",
-        "supervisor": supervisor_status(app, read_state(app)),
+        "supervisor": supervisor_status(app, state),
+        "pause_state": manual_pause_state(state),
     })

@@ -39,6 +39,7 @@ from .state import (
     elapsed,
     get_capacity_data,
     get_db,
+    manual_pause_state,
     read_state,
     supervisor_status,
 )
@@ -181,11 +182,15 @@ def api_update(request: Request):
 
 @router.get("/health", response_class=HTMLResponse)
 def health_page(request: Request):
-    templates = request.app.state.templates
-    data = _get_preflight_data(request.app)
+    app = request.app
+    templates = app.state.templates
+    data = _get_preflight_data(app)
+    state = read_state(app)
     return templates.TemplateResponse("health.html", {
         "request": request,
         "active_page": "health",
+        "supervisor": supervisor_status(app, state),
+        "pause_state": manual_pause_state(state),
         **data,
     })
 
@@ -730,6 +735,7 @@ def cleanup_page(request: Request):
     cfg = app.state.botfarm_config
     if cfg and cfg.linear.api_key:
         has_config = True
+    state = read_state(app)
     return templates.TemplateResponse("cleanup.html", {
         "request": request,
         "batches": batches,
@@ -737,6 +743,8 @@ def cleanup_page(request: Request):
         "has_config": has_config,
         "capacity": get_capacity_data(app),
         "elapsed": elapsed,
+        "supervisor": supervisor_status(app, state),
+        "pause_state": manual_pause_state(state),
     })
 
 
