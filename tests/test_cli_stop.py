@@ -350,11 +350,14 @@ class TestStopExecution:
 
 
 class TestStopDbState:
-    def test_slot_freed_in_db(self, runner, db_file, monkeypatch):
+    def test_slot_freed_in_db(self, runner, db_file, tmp_path, monkeypatch):
         _seed_slots(db_file, [
             _make_slot("proj", 1, "busy", ticket_id="T-1"),
         ])
-        monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
+        config = _make_config(tmp_path)
+        monkeypatch.setattr(
+            "botfarm.cli._resolve_paths", _mock_resolve(db_file, config),
+        )
         with patch("botfarm.cli._stop_kill_worker", return_value=False), \
              patch("botfarm.cli._stop_pr_cleanup", return_value=(False, False)), \
              patch("botfarm.cli._stop_git_cleanup", return_value=(True, False)), \

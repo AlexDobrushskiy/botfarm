@@ -1405,7 +1405,6 @@ def stop(project, slot_id, force, yes, config_path):
                 slot_id = project_slots[0]["slot_id"]
             else:
                 # Interactive slot selection
-                console = Console()
                 click.echo("\nActive slots:")
                 for i, s in enumerate(project_slots, 1):
                     ticket = s.get("ticket_id") or "?"
@@ -1484,9 +1483,10 @@ def stop(project, slot_id, force, yes, config_path):
         pr_was_merged, pr_closed = _stop_pr_cleanup(pr_url, cwd, env=subprocess_env)
 
         # --- Git cleanup ---
-        # When there is no worktree (config missing), there is nothing to
-        # clean up — treat as success so the slot gets freed.
-        checkout_ok = True
+        # When the worktree cannot be resolved (config missing or directory
+        # gone), treat as failure so the slot is NOT freed — mirrors the
+        # supervisor which returns False and marks the slot as failed.
+        checkout_ok = False
         branch_deleted = False
         if cwd and Path(cwd).is_dir():
             checkout_ok, branch_deleted = _stop_git_cleanup(
@@ -1539,9 +1539,15 @@ def stop(project, slot_id, force, yes, config_path):
         else:
             # Don't free — worktree is still on the feature branch and
             # reusing it could cause the next ticket to inherit dirty state.
+            # Clear stale process metadata (mirrors mark_failed() which
+            # sets pid=None).
             slot_data = dict(target)
             slot_data["status"] = "failed"
             slot_data["ticket_id"] = None
+            slot_data["pid"] = None
+            slot_data["sigterm_sent_at"] = None
+            slot_data["stage"] = None
+            slot_data["stage_started_at"] = None
             upsert_slot(conn, slot_data)
         conn.commit()
 
