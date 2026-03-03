@@ -6211,6 +6211,44 @@ class TestStopSlotAPI:
         assert resp.status_code == 200
         assert called == [("proj", 2)]
 
+    def test_stop_non_dict_body_returns_400(self, db_file):
+        """POST /api/slot/stop returns 400 when body is not a JSON object."""
+        app = create_app(
+            db_path=db_file,
+            on_stop_slot=lambda p, s: None,
+        )
+        client = TestClient(app)
+        for payload in ["[]", '"string"', "123", "null"]:
+            resp = client.post(
+                "/api/slot/stop",
+                content=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            assert resp.status_code == 400, f"Expected 400 for body={payload!r}"
+            assert "Expected a JSON object" in resp.json()["error"]
+
+    def test_stop_boolean_slot_id_returns_400(self, db_file):
+        """POST /api/slot/stop rejects boolean slot_id (true/false)."""
+        app = create_app(
+            db_path=db_file,
+            on_stop_slot=lambda p, s: None,
+        )
+        client = TestClient(app)
+        resp = client.post("/api/slot/stop", json={"project": "proj", "slot_id": True})
+        assert resp.status_code == 400
+        assert "slot_id must be an integer" in resp.json()["error"]
+
+    def test_stop_float_slot_id_returns_400(self, db_file):
+        """POST /api/slot/stop rejects float slot_id."""
+        app = create_app(
+            db_path=db_file,
+            on_stop_slot=lambda p, s: None,
+        )
+        client = TestClient(app)
+        resp = client.post("/api/slot/stop", json={"project": "proj", "slot_id": 1.5})
+        assert resp.status_code == 400
+        assert "slot_id must be an integer" in resp.json()["error"]
+
 
 class TestStopSlotButton:
     """Tests for the stop button in the slots partial."""
@@ -6288,8 +6326,28 @@ class TestStopSlotButton:
         assert resp.status_code == 200
         assert "stop-slot-btn" in resp.text
 
-    def test_stop_modal_present(self, tmp_path):
-        """The stop confirmation modal dialog should be present when slots exist."""
+    def test_stop_modal_present_on_full_page(self, tmp_path):
+        """The stop modal lives in index.html (outside htmx-refreshed partial)."""
+        path = tmp_path / "test.db"
+        conn = init_db(path)
+        _seed_slot(
+            conn, "my-project", 1, status="busy",
+            ticket_id="TST-1", ticket_title="Fix bug",
+            stage="implement", stage_iteration=1,
+            started_at="2026-02-12T10:00:00+00:00", pid=1234,
+        )
+        save_dispatch_state(conn, paused=False)
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=path)
+        client = TestClient(app)
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert 'id="stop-slot-modal"' in resp.text
+        assert "Kill the running worker process" in resp.text
+
+    def test_stop_modal_not_in_partial(self, tmp_path):
+        """The modal should NOT be in the slots partial (to survive htmx refresh)."""
         path = tmp_path / "test.db"
         conn = init_db(path)
         _seed_slot(
@@ -6305,5 +6363,4 @@ class TestStopSlotButton:
         client = TestClient(app)
         resp = client.get("/partials/slots")
         assert resp.status_code == 200
-        assert 'id="stop-slot-modal"' in resp.text
-        assert "Kill the running worker process" in resp.text
+        assert 'id="stop-slot-modal"' not in resp.text

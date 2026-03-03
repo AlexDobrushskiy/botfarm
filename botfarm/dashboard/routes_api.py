@@ -108,18 +108,26 @@ async def api_stop_slot(request: Request):
         body = await request.json()
     except Exception:
         return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "Expected a JSON object"}, status_code=400)
     project = body.get("project", "")
     slot_id = body.get("slot_id")
     if not project or slot_id is None:
         return JSONResponse(
             {"error": "project and slot_id are required"}, status_code=400,
         )
-    try:
-        slot_id = int(slot_id)
-    except (TypeError, ValueError):
+    # Reject non-integral types (bool is a subclass of int, float silently truncates)
+    if isinstance(slot_id, bool) or not isinstance(slot_id, (int, str)):
         return JSONResponse(
             {"error": "slot_id must be an integer"}, status_code=400,
         )
+    if isinstance(slot_id, str):
+        try:
+            slot_id = int(slot_id)
+        except ValueError:
+            return JSONResponse(
+                {"error": "slot_id must be an integer"}, status_code=400,
+            )
     cb(project, slot_id)
     return JSONResponse({
         "status": "requested",

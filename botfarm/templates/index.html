@@ -21,6 +21,87 @@
     {% include "partials/slots.html" %}
 </div>
 
+<!-- Stop slot confirmation modal (outside htmx-refreshed region) -->
+<dialog id="stop-slot-modal">
+    <article class="stop-modal-article">
+        <header>
+            <button aria-label="Close" rel="prev" onclick="document.getElementById('stop-slot-modal').close()"></button>
+            <h3 id="stop-modal-title">Stop slot?</h3>
+        </header>
+        <div class="stop-modal-body">
+            <table class="stop-modal-info">
+                <tr><th>Ticket</th><td id="stop-modal-ticket">-</td></tr>
+                <tr><th>Title</th><td id="stop-modal-ticket-title">-</td></tr>
+                <tr><th>Stage</th><td id="stop-modal-stage">-</td></tr>
+                <tr><th>Elapsed</th><td id="stop-modal-elapsed">-</td></tr>
+            </table>
+            <div class="stop-modal-warnings">
+                <strong>Warning:</strong> This will:
+                <ul>
+                    <li>Kill the running worker process</li>
+                    <li>Discard any uncommitted work</li>
+                    <li>Close the PR if one exists</li>
+                    <li>Move the ticket back to Todo</li>
+                </ul>
+            </div>
+        </div>
+        <footer>
+            <button class="secondary" onclick="document.getElementById('stop-slot-modal').close()">Cancel</button>
+            <button class="stop-slot-confirm-btn" id="stop-modal-confirm" onclick="confirmStopSlot()">Stop</button>
+        </footer>
+    </article>
+</dialog>
+
+<script>
+var _stopSlotProject = "";
+var _stopSlotId = 0;
+
+function openStopModal(el) {
+    _stopSlotProject = el.dataset.project;
+    _stopSlotId = parseInt(el.dataset.slotId, 10);
+    var ticketId = el.dataset.ticketId;
+    var ticketTitle = el.dataset.ticketTitle;
+    var stage = el.dataset.stage;
+    var elapsedStr = el.dataset.elapsed;
+    document.getElementById("stop-modal-title").textContent = "Stop slot " + _stopSlotProject + "/" + _stopSlotId + "?";
+    document.getElementById("stop-modal-ticket").textContent = ticketId || "-";
+    document.getElementById("stop-modal-ticket-title").textContent = ticketTitle || "-";
+    document.getElementById("stop-modal-stage").textContent = stage ? stage.replace(/_/g, " ") : "-";
+    document.getElementById("stop-modal-elapsed").textContent = elapsedStr || "-";
+    document.getElementById("stop-slot-modal").showModal();
+}
+
+function confirmStopSlot() {
+    var btn = document.getElementById("stop-modal-confirm");
+    btn.disabled = true;
+    btn.textContent = "Stopping...";
+    fetch("/api/slot/stop", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({project: _stopSlotProject, slot_id: _stopSlotId})
+    }).then(function(resp) {
+        if (!resp.ok) return resp.json().then(function(d) { throw new Error(d.error || "Request failed"); });
+        return resp.json();
+    }).then(function(data) {
+        document.getElementById("stop-slot-modal").close();
+        btn.disabled = false;
+        btn.textContent = "Stop";
+    }).catch(function(err) {
+        btn.disabled = false;
+        btn.textContent = "Stop";
+        alert("Failed to stop slot: " + err.message);
+    });
+}
+
+/* Suspend htmx polling on #slots-panel while the stop modal is open */
+document.body.addEventListener("htmx:beforeRequest", function(evt) {
+    var panel = document.getElementById("slots-panel");
+    if (panel && panel.contains(evt.detail.elt) && document.getElementById("stop-slot-modal").open) {
+        evt.preventDefault();
+    }
+});
+</script>
+
 <h2>Usage</h2>
 <div id="usage-panel" hx-get="/partials/usage" hx-trigger="every 5s" hx-swap="innerHTML">
     {% include "partials/usage.html" %}
