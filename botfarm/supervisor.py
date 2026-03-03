@@ -100,14 +100,13 @@ def _collect_descendant_pids(pid: int) -> list[int]:
     return []
 
 
-def _kill_descendant_sessions(pid: int, sig: int = signal.SIGKILL) -> None:
-    """Send *sig* to every descendant session/process-group of *pid*.
+def _kill_pids(pids: list[int], sig: int = signal.SIGKILL) -> None:
+    """Send *sig* to each PID's process group (falling back to the PID itself).
 
-    Stage subprocesses use ``start_new_session=True``, so they live in
-    their own session groups that survive the death of the worker.  This
-    helper signals each child's process group to clean them up.
+    Used with a pre-collected list of descendant PIDs so that cleanup works
+    even after the parent process has already exited (making /proc unavailable).
     """
-    for cpid in _collect_descendant_pids(pid):
+    for cpid in pids:
         try:
             os.killpg(os.getpgid(cpid), sig)
         except (OSError, ProcessLookupError):
@@ -115,6 +114,16 @@ def _kill_descendant_sessions(pid: int, sig: int = signal.SIGKILL) -> None:
                 os.kill(cpid, sig)
             except (OSError, ProcessLookupError):
                 pass
+
+
+def _kill_descendant_sessions(pid: int, sig: int = signal.SIGKILL) -> None:
+    """Send *sig* to every descendant session/process-group of *pid*.
+
+    Stage subprocesses use ``start_new_session=True``, so they live in
+    their own session groups that survive the death of the worker.  This
+    helper signals each child's process group to clean them up.
+    """
+    _kill_pids(_collect_descendant_pids(pid), sig)
 
 
 def _kill_process_tree(pid: int) -> None:
@@ -1164,8 +1173,10 @@ class Supervisor:
         # Wake event — set by interactive requests to break out of _sleep() early
         self._wake_event = threading.Event()
 
-        # Stop-slot requests from the dashboard thread
-        self._stop_slot_requests: list[tuple[str, int]] = []
+        # Stop-slot requests from the dashboard thread.
+        # Each entry is (project, slot_id, ticket_id) — ticket_id is captured
+        # at request time so we can verify the slot hasn't been reassigned.
+        self._stop_slot_requests: list[tuple[str, int, str | None]] = []
         self._stop_slot_lock = threading.Lock()
 
         # Queue for worker results — workers send _WorkerResult here
@@ -1468,7 +1479,7 @@ class Supervisor:
         slot_id = slot.slot_id
         ticket_id = slot.ticket_id
         old_pid = slot.pid
-        pr_status = self._check_pr_status(slot)
+        pr_status, _pr_url = self._check_pr_status(slot)
 
         # --- Stage-aware recovery ---
         if slot.stages_completed:
@@ -1632,11 +1643,14 @@ class Supervisor:
             project, slot_id, old_pid, slot.stage,
         )
 
-    def _check_pr_status(self, slot: SlotState) -> str | None:
+    def _check_pr_status(
+        self, slot: SlotState,
+    ) -> tuple[str | None, str | None]:
         """Check whether a PR exists for the slot's branch.
 
-        Returns ``"merged"``, ``"open"``, ``"closed"``, or ``None``
-        (no PR found).
+        Returns ``(state, pr_url)`` where *state* is ``"merged"``,
+        ``"open"``, ``"closed"``, or ``None`` (no PR found), and *pr_url*
+        is the resolved PR URL (or ``None``).
 
         PR URL resolution order:
         1. Tasks DB record (persisted by worker cross-process)
@@ -1674,14 +1688,14 @@ class Supervisor:
                 "No PR URL found for %s/%d (ticket %s)",
                 slot.project, slot.slot_id, slot.ticket_id,
             )
-            return None
+            return None, None
 
         state = self._gh_pr_state(pr_ref, env=self._git_env)
         logger.info(
             "PR status for %s/%d: url=%s, source=%s, state=%s",
             slot.project, slot.slot_id, pr_ref, source, state,
         )
-        return state
+        return state, pr_ref
 
     @staticmethod
     def _gh_pr_url_for_branch(
@@ -2118,7 +2132,7 @@ class Supervisor:
                             no_pr = _detect_no_pr_needed(task["comments"])
                 if no_pr:
                     target_status = linear_cfg.done_status
-                elif self._check_pr_status(slot) == "merged":
+                elif self._check_pr_status(slot)[0] == "merged":
                     target_status = linear_cfg.done_status
                 else:
                     target_status = linear_cfg.in_review_status
@@ -2179,7 +2193,7 @@ class Supervisor:
         # Check if the PR was actually merged despite the reported failure.
         # This prevents infinite retry loops when merge reports failure
         # but the PR is already merged (e.g. post-merge checkout fails).
-        pr_status = self._check_pr_status(slot)
+        pr_status, _pr_url = self._check_pr_status(slot)
         if pr_status == "merged":
             logger.info(
                 "Failed slot %s/%d has a merged PR — treating as completed",
@@ -2521,9 +2535,16 @@ class Supervisor:
     # ------------------------------------------------------------------
 
     def request_stop_slot(self, project: str, slot_id: int) -> None:
-        """Thread-safe request to stop a slot (called from dashboard)."""
+        """Thread-safe request to stop a slot (called from dashboard).
+
+        Captures the current ``ticket_id`` at request time so that
+        ``_handle_stop_requests`` can verify the slot hasn't been
+        reassigned to a different ticket before the request is processed.
+        """
+        slot = self._slot_manager.get_slot(project, slot_id)
+        ticket_id = slot.ticket_id if slot else None
         with self._stop_slot_lock:
-            self._stop_slot_requests.append((project, slot_id))
+            self._stop_slot_requests.append((project, slot_id, ticket_id))
         self._wake_event.set()
 
     def _handle_stop_requests(self) -> None:
@@ -2531,7 +2552,21 @@ class Supervisor:
         with self._stop_slot_lock:
             requests = list(self._stop_slot_requests)
             self._stop_slot_requests.clear()
-        for project, slot_id in requests:
+        for project, slot_id, expected_ticket in requests:
+            # Verify the slot still has the same ticket — if it was
+            # reassigned between the request and this tick, skip the stop.
+            slot = self._slot_manager.get_slot(project, slot_id)
+            if (
+                expected_ticket is not None
+                and slot is not None
+                and slot.ticket_id != expected_ticket
+            ):
+                logger.warning(
+                    "Skipping stale stop request for %s/%d: expected "
+                    "ticket=%s, current ticket=%s",
+                    project, slot_id, expected_ticket, slot.ticket_id,
+                )
+                continue
             try:
                 result = self.stop_slot(project, slot_id)
                 logger.info(
@@ -2581,44 +2616,66 @@ class Supervisor:
         pr_was_merged, pr_closed = self._stop_slot_pr_cleanup(slot)
 
         # --- Git cleanup ---
-        self._stop_slot_git_cleanup(project, slot_id, branch)
+        checkout_ok = self._stop_slot_git_cleanup(project, slot_id, branch)
 
-        # --- Linear cleanup (skip if PR was already merged) ---
-        if not pr_was_merged:
-            self._stop_slot_linear_cleanup(slot)
-
-        # --- State cleanup ---
+        # --- Linear + DB cleanup ---
         task_id = self._find_task_id(ticket_id)
-        if task_id is not None and not pr_was_merged:
-            update_task(
-                self._conn, task_id,
-                status="failed",
-                failure_reason="stopped by user",
-            )
+        if pr_was_merged:
+            # Treat as completion: move Linear to done, mark task completed.
+            # This prevents leaving the ticket stuck in "In Progress" when
+            # the stop lands after the PR was merged but before the worker
+            # result was reconciled.
+            self._stop_slot_linear_done(slot)
+            if task_id is not None:
+                update_task(self._conn, task_id, status="completed")
+        else:
+            self._stop_slot_linear_cleanup(slot)
+            if task_id is not None:
+                update_task(
+                    self._conn, task_id,
+                    status="failed",
+                    failure_reason="stopped by user",
+                )
         insert_event(
             self._conn,
             task_id=task_id,
             event_type="slot_stopped",
             detail=f"project={project}, slot={slot_id}, "
             f"ticket={ticket_id}, branch={branch}, "
-            f"pr_merged={pr_was_merged}, pr_closed={pr_closed}",
+            f"pr_merged={pr_was_merged}, pr_closed={pr_closed}, "
+            f"checkout_ok={checkout_ok}",
         )
         self._conn.commit()
 
-        self._slot_manager.free_slot(project, slot_id)
-        self._cleanup_slot_db(project, slot_id)
-        self._pending_result_texts.pop((project, slot_id), None)
+        if checkout_ok:
+            self._slot_manager.free_slot(project, slot_id)
+            self._cleanup_slot_db(project, slot_id)
+            self._pending_result_texts.pop((project, slot_id), None)
+        else:
+            # Don't free the slot — the worktree is still on the feature
+            # branch and reusing it could cause the next ticket to inherit
+            # or collide with the stopped work.
+            self._slot_manager.mark_failed(
+                project, slot_id,
+                reason="stopped but checkout to placeholder failed",
+            )
+            logger.warning(
+                "Slot %s/%d not freed after stop — checkout to placeholder "
+                "branch failed, worktree may be dirty",
+                project, slot_id,
+            )
 
         merged_note = " (PR was already merged)" if pr_was_merged else ""
         closed_note = " (PR closed)" if pr_closed else ""
+        checkout_note = " (worktree dirty — slot not freed)" if not checkout_ok else ""
         message = (
             f"Stopped slot {project}/{slot_id} "
-            f"(ticket {ticket_id}){merged_note}{closed_note}"
+            f"(ticket {ticket_id}){merged_note}{closed_note}{checkout_note}"
         )
         logger.info(message)
 
         return StopSlotResult(
-            success=True,
+            success=checkout_ok,
             pr_was_merged=pr_was_merged,
             pr_closed=pr_closed,
             ticket_id=ticket_id,
@@ -2650,6 +2707,11 @@ class Supervisor:
             self._drain_results_for_slot(slot.project, slot.slot_id)
             return
 
+        # Snapshot descendant PIDs *before* sending SIGTERM — once the
+        # worker exits, /proc/<pid>/... disappears and we lose visibility
+        # into child sessions (stage subprocesses with start_new_session=True).
+        descendant_pids = _collect_descendant_pids(pid)
+
         # Send SIGTERM to the worker's process group (worker + direct children)
         try:
             os.killpg(pid, signal.SIGTERM)
@@ -2670,8 +2732,9 @@ class Supervisor:
                 proc.join(timeout=2)
             else:
                 # Worker exited but stage subprocesses (start_new_session=True)
-                # may still be running in their own sessions — reap them.
-                _kill_descendant_sessions(pid, signal.SIGKILL)
+                # may still be running in their own sessions — reap them
+                # using the pre-snapshot PIDs.
+                _kill_pids(descendant_pids, signal.SIGKILL)
             self._workers.pop(key, None)
         else:
             # Process not tracked (e.g. reattached after restart) — wait
@@ -2680,7 +2743,7 @@ class Supervisor:
             if _is_pid_alive(pid):
                 _kill_process_tree(pid)
             else:
-                _kill_descendant_sessions(pid, signal.SIGKILL)
+                _kill_pids(descendant_pids, signal.SIGKILL)
 
         # Drain any pending results for this slot
         self._drain_results_for_slot(slot.project, slot.slot_id)
@@ -2702,7 +2765,7 @@ class Supervisor:
 
     def _stop_slot_pr_cleanup(self, slot: SlotState) -> tuple[bool, bool]:
         """Close PR if open, detect if merged. Returns (pr_was_merged, pr_closed)."""
-        pr_status = self._check_pr_status(slot)
+        pr_status, resolved_pr_url = self._check_pr_status(slot)
         if pr_status is None:
             return False, False
 
@@ -2710,14 +2773,10 @@ class Supervisor:
             return True, False
 
         if pr_status == "open":
-            # Close the PR (without --delete-branch; git cleanup handles branches)
-            pr_url = slot.pr_url
-            if not pr_url:
-                task_id = self._find_task_id(slot.ticket_id)
-                if task_id is not None:
-                    task = get_task(self._conn, task_id)
-                    if task:
-                        pr_url = task["pr_url"]
+            # Close the PR (without --delete-branch; git cleanup handles branches).
+            # Use the URL resolved by _check_pr_status (which also tries
+            # gh branch lookup) so we don't miss PRs found only by branch.
+            pr_url = resolved_pr_url
             closed = False
             if pr_url:
                 project_cfg = self._projects.get(slot.project)
@@ -2750,11 +2809,16 @@ class Supervisor:
 
     def _stop_slot_git_cleanup(
         self, project: str, slot_id: int, branch: str | None,
-    ) -> None:
-        """Reset worktree to placeholder branch and delete feature branch."""
+    ) -> bool:
+        """Reset worktree to placeholder branch and delete feature branch.
+
+        Returns ``True`` if the worktree was successfully switched to the
+        placeholder branch, ``False`` otherwise.  When ``False``, the
+        caller should not free the slot for reuse.
+        """
         project_cfg = self._projects.get(project)
         if not project_cfg:
-            return
+            return False
         cwd = self._slot_worktree_cwd(project_cfg, slot_id)
         placeholder = self._slot_placeholder_branch(slot_id)
         subprocess_env = self._subprocess_env()
@@ -2824,6 +2888,8 @@ class Supervisor:
                 branch, placeholder,
             )
 
+        return checkout_ok
+
     def _stop_slot_linear_cleanup(self, slot: SlotState) -> None:
         """Move ticket back to todo status and post a comment."""
         if not slot.ticket_id:
@@ -2856,6 +2922,28 @@ class Supervisor:
             logger.warning(
                 "Failed to post stop comment on %s", slot.ticket_id,
                 exc_info=True,
+            )
+
+    def _stop_slot_linear_done(self, slot: SlotState) -> None:
+        """Move ticket to done status (used when PR was already merged)."""
+        if not slot.ticket_id:
+            return
+
+        poller = self._pollers.get(slot.project)
+        if not poller:
+            return
+
+        target_status = self._config.linear.done_status
+        try:
+            poller.move_issue(slot.ticket_id, target_status)
+            logger.info(
+                "Moved %s to '%s' (PR already merged, stop treated as completion)",
+                slot.ticket_id, target_status,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to move %s to '%s' after stop (merged PR)",
+                slot.ticket_id, target_status,
             )
 
     def _find_task_id(self, ticket_id: str | None) -> int | None:

@@ -186,7 +186,7 @@ class TestHandleFinishedSlots:
 
         poller = supervisor._pollers["test-project"]
 
-        with patch.object(supervisor, "_check_pr_status", return_value=None):
+        with patch.object(supervisor, "_check_pr_status", return_value=(None, None)):
             supervisor._handle_finished_slots()
 
         poller.move_issue.assert_called_once_with("TST-1", "In Review")
@@ -202,7 +202,7 @@ class TestHandleFinishedSlots:
 
         poller = supervisor._pollers["test-project"]
 
-        with patch.object(supervisor, "_check_pr_status", return_value="merged"):
+        with patch.object(supervisor, "_check_pr_status", return_value=("merged", "https://github.com/test/repo/pull/1")):
             supervisor._handle_finished_slots()
 
         poller.move_issue.assert_called_once_with("TST-1", "Done")
@@ -235,7 +235,7 @@ class TestHandleFinishedSlots:
         poller = supervisor._pollers["test-project"]
         poller.move_issue.side_effect = Exception("API down")
 
-        with patch.object(supervisor, "_check_pr_status", return_value=None):
+        with patch.object(supervisor, "_check_pr_status", return_value=(None, None)):
             supervisor._handle_finished_slots()
 
         assert sm.get_slot("test-project", 1).status == "free"
@@ -266,7 +266,7 @@ class TestHandleFinishedSlots:
 
         poller = supervisor._pollers["test-project"]
 
-        with patch.object(supervisor, "_check_pr_status", return_value="merged"):
+        with patch.object(supervisor, "_check_pr_status", return_value=("merged", "https://github.com/test/repo/pull/1")):
             supervisor._handle_finished_slots()
 
         # Should move to Done (not Todo/failed_status)
@@ -284,7 +284,7 @@ class TestHandleFinishedSlots:
 
         poller = supervisor._pollers["test-project"]
 
-        with patch.object(supervisor, "_check_pr_status", return_value=None):
+        with patch.object(supervisor, "_check_pr_status", return_value=(None, None)):
             supervisor._handle_finished_slots()
 
         poller.move_issue.assert_called_once_with("TST-1", "Todo")
@@ -310,7 +310,7 @@ class TestHandleFinishedSlots:
         )
         supervisor._conn.commit()
 
-        with patch.object(supervisor, "_check_pr_status", return_value="merged"):
+        with patch.object(supervisor, "_check_pr_status", return_value=("merged", "https://github.com/test/repo/pull/1")):
             supervisor._handle_finished_slots()
 
         task = get_task(supervisor._conn, task_id)
@@ -324,7 +324,7 @@ class TestHandleFinishedSlots:
         )
         sm.mark_completed("test-project", 1)
 
-        with patch.object(supervisor, "_check_pr_status", return_value=None):
+        with patch.object(supervisor, "_check_pr_status", return_value=(None, None)):
             supervisor._handle_finished_slots()
 
         events = get_events(supervisor._conn, event_type="slot_completed")
@@ -2437,7 +2437,7 @@ class TestRecoverOnStartup:
 
         with (
             patch("botfarm.supervisor._is_pid_alive", return_value=False),
-            patch.object(supervisor, "_check_pr_status", return_value=None),
+            patch.object(supervisor, "_check_pr_status", return_value=(None, None)),
         ):
             supervisor._recover_on_startup()
 
@@ -2465,7 +2465,7 @@ class TestRecoverOnStartup:
 
         with (
             patch("botfarm.supervisor._is_pid_alive", return_value=False),
-            patch.object(supervisor, "_check_pr_status", return_value="merged"),
+            patch.object(supervisor, "_check_pr_status", return_value=("merged", "https://github.com/test/repo/pull/1")),
         ):
             supervisor._recover_on_startup()
 
@@ -2493,7 +2493,7 @@ class TestRecoverOnStartup:
 
         with (
             patch("botfarm.supervisor._is_pid_alive", return_value=False),
-            patch.object(supervisor, "_check_pr_status", return_value="open"),
+            patch.object(supervisor, "_check_pr_status", return_value=("open", "https://github.com/test/repo/pull/1")),
             patch.object(supervisor, "_resume_recovered_worker") as mock_resume,
         ):
             supervisor._recover_on_startup()
@@ -2522,7 +2522,7 @@ class TestRecoverOnStartup:
 
         with (
             patch("botfarm.supervisor._is_pid_alive", return_value=False),
-            patch.object(supervisor, "_check_pr_status", return_value="closed"),
+            patch.object(supervisor, "_check_pr_status", return_value=("closed", "https://github.com/test/repo/pull/1")),
         ):
             supervisor._recover_on_startup()
 
@@ -2646,7 +2646,7 @@ class TestRecoverOnStartup:
 
         with (
             patch("botfarm.supervisor._is_pid_alive", return_value=False),
-            patch.object(supervisor, "_check_pr_status", return_value=None),
+            patch.object(supervisor, "_check_pr_status", return_value=(None, None)),
         ):
             supervisor._recover_on_startup()
 
@@ -2670,7 +2670,7 @@ class TestRecoverOnStartup:
 
         with (
             patch("botfarm.supervisor._is_pid_alive", return_value=False),
-            patch.object(supervisor, "_check_pr_status", return_value=None),
+            patch.object(supervisor, "_check_pr_status", return_value=(None, None)),
         ):
             supervisor._recover_on_startup()
 
@@ -2715,7 +2715,7 @@ class TestRecoverOnStartup:
 
         with (
             patch("botfarm.supervisor._is_pid_alive", return_value=False),
-            patch.object(supervisor, "_check_pr_status", return_value="open"),
+            patch.object(supervisor, "_check_pr_status", return_value=("open", "https://github.com/test/repo/pull/1")),
             patch.object(supervisor, "_resume_recovered_worker") as mock_resume,
         ):
             supervisor._recover_on_startup()
@@ -2742,7 +2742,7 @@ class TestRecoverOnStartup:
 
         with (
             patch("botfarm.supervisor._is_pid_alive", return_value=False),
-            patch.object(supervisor, "_check_pr_status", return_value="open"),
+            patch.object(supervisor, "_check_pr_status", return_value=("open", "https://github.com/test/repo/pull/1")),
             patch.object(supervisor, "_resume_recovered_worker") as mock_resume,
         ):
             supervisor._recover_on_startup()
@@ -2769,7 +2769,7 @@ class TestRecoverOnStartup:
 
         with (
             patch("botfarm.supervisor._is_pid_alive", return_value=False),
-            patch.object(supervisor, "_check_pr_status", return_value="open"),
+            patch.object(supervisor, "_check_pr_status", return_value=("open", "https://github.com/test/repo/pull/1")),
             patch.object(supervisor, "_resume_recovered_worker") as mock_resume,
         ):
             supervisor._recover_on_startup()
@@ -2796,7 +2796,7 @@ class TestRecoverOnStartup:
 
         with (
             patch("botfarm.supervisor._is_pid_alive", return_value=False),
-            patch.object(supervisor, "_check_pr_status", return_value="merged"),
+            patch.object(supervisor, "_check_pr_status", return_value=("merged", "https://github.com/test/repo/pull/1")),
         ):
             supervisor._recover_on_startup()
 
@@ -2825,7 +2825,7 @@ class TestRecoverOnStartup:
 
         with (
             patch("botfarm.supervisor._is_pid_alive", return_value=False),
-            patch.object(supervisor, "_check_pr_status", return_value="merged"),
+            patch.object(supervisor, "_check_pr_status", return_value=("merged", "https://github.com/test/repo/pull/1")),
         ):
             supervisor._recover_on_startup()
 
@@ -2854,7 +2854,7 @@ class TestRecoverOnStartup:
 
         with (
             patch("botfarm.supervisor._is_pid_alive", return_value=False),
-            patch.object(supervisor, "_check_pr_status", return_value="open"),
+            patch.object(supervisor, "_check_pr_status", return_value=("open", "https://github.com/test/repo/pull/1")),
             patch.object(supervisor, "_resume_recovered_worker") as mock_resume,
         ):
             supervisor._recover_on_startup()
@@ -3113,7 +3113,7 @@ class TestExternallyDoneTicket:
 
         with (
             patch("botfarm.supervisor._is_pid_alive", return_value=False),
-            patch.object(supervisor, "_check_pr_status", return_value=None),
+            patch.object(supervisor, "_check_pr_status", return_value=(None, None)),
         ):
             supervisor._recover_on_startup()
 
@@ -3140,7 +3140,7 @@ class TestExternallyDoneTicket:
         poller.is_issue_terminal.return_value = True
 
         slot = sm.get_slot("test-project", 1)
-        with patch.object(supervisor, "_check_pr_status", return_value=None):
+        with patch.object(supervisor, "_check_pr_status", return_value=(None, None)):
             supervisor._handle_failed_slot(slot)
 
         # move_issue should NOT have been called
@@ -3328,7 +3328,7 @@ class TestCheckPrStatus:
         ):
             result = supervisor._check_pr_status(slot)
 
-        assert result == "merged"
+        assert result[0] == "merged"
 
     def test_falls_back_to_branch_lookup(self, supervisor):
         """When no pr_url stored, looks up PR by branch."""
@@ -3349,7 +3349,7 @@ class TestCheckPrStatus:
         ):
             result = supervisor._check_pr_status(slot)
 
-        assert result == "open"
+        assert result[0] == "open"
 
     def test_returns_none_when_no_pr(self, supervisor):
         """When no PR found by any method, returns None."""
@@ -3365,7 +3365,7 @@ class TestCheckPrStatus:
         ):
             result = supervisor._check_pr_status(slot)
 
-        assert result is None
+        assert result == (None, None)
 
     def test_prefers_db_pr_url_over_slot_state(self, supervisor):
         """PR URL from tasks DB takes priority over slot.pr_url."""
@@ -3392,7 +3392,7 @@ class TestCheckPrStatus:
         ) as mock_state:
             result = supervisor._check_pr_status(slot)
 
-        assert result == "merged"
+        assert result[0] == "merged"
         # Verify it used the DB URL, not the slot URL
         mock_state.assert_called_once_with(db_pr_url, env=supervisor._git_env)
 
@@ -3419,7 +3419,7 @@ class TestCheckPrStatus:
         ) as mock_state:
             result = supervisor._check_pr_status(slot)
 
-        assert result == "open"
+        assert result[0] == "open"
         mock_state.assert_called_once_with(slot_url, env=supervisor._git_env)
 
     def test_db_pr_url_used_for_merged_detection(self, supervisor):
@@ -3657,7 +3657,7 @@ class TestConfigurableStatusNames:
 
         poller = sup._pollers["test-project"]
 
-        with patch.object(sup, "_check_pr_status", return_value=None):
+        with patch.object(sup, "_check_pr_status", return_value=(None, None)):
             sup._handle_finished_slots()
 
         poller.move_issue.assert_called_once_with("TST-1", "Review")
@@ -3673,7 +3673,7 @@ class TestConfigurableStatusNames:
 
         poller = sup._pollers["test-project"]
 
-        with patch.object(sup, "_check_pr_status", return_value="merged"):
+        with patch.object(sup, "_check_pr_status", return_value=("merged", "https://github.com/test/repo/pull/1")):
             sup._handle_finished_slots()
 
         poller.move_issue.assert_called_once_with("TST-1", "Shipped")
@@ -3799,7 +3799,7 @@ class TestCommentPosting:
 
         poller = sup._pollers["test-project"]
 
-        with patch.object(sup, "_check_pr_status", return_value=None):
+        with patch.object(sup, "_check_pr_status", return_value=(None, None)):
             sup._handle_finished_slots()
 
         # Should have two calls: move_issue and add_comment
@@ -3818,7 +3818,7 @@ class TestCommentPosting:
 
         poller = supervisor._pollers["test-project"]
 
-        with patch.object(supervisor, "_check_pr_status", return_value=None):
+        with patch.object(supervisor, "_check_pr_status", return_value=(None, None)):
             supervisor._handle_finished_slots()
 
         poller.add_comment.assert_not_called()
@@ -3836,7 +3836,7 @@ class TestCommentPosting:
 
         poller = sup._pollers["test-project"]
 
-        with patch.object(sup, "_check_pr_status", return_value=None):
+        with patch.object(sup, "_check_pr_status", return_value=(None, None)):
             sup._handle_finished_slots()
 
         comment_body = poller.add_comment.call_args[0][1]
@@ -3989,7 +3989,7 @@ class TestCommentPosting:
 
         poller = supervisor._pollers["test-project"]
 
-        with patch.object(supervisor, "_check_pr_status", return_value="open"):
+        with patch.object(supervisor, "_check_pr_status", return_value=("open", "https://github.com/test/repo/pull/1")):
             supervisor._handle_finished_slots()
 
         # comment_on_completion is False by default, and no no_pr_reason
@@ -5126,7 +5126,7 @@ class TestTicketHistoryCapture:
         poller = supervisor._pollers["test-project"]
         poller._client.fetch_issue_details.side_effect = self._mock_fetch_issue_details
 
-        with patch.object(supervisor, "_check_pr_status", return_value=None):
+        with patch.object(supervisor, "_check_pr_status", return_value=(None, None)):
             supervisor._handle_finished_slots()
 
         row = get_ticket_history_entry(supervisor._conn, "TST-1")
@@ -5187,7 +5187,7 @@ class TestTicketHistoryCapture:
         poller = supervisor._pollers["test-project"]
         poller._client.fetch_issue_details.side_effect = Exception("API down")
 
-        with patch.object(supervisor, "_check_pr_status", return_value=None):
+        with patch.object(supervisor, "_check_pr_status", return_value=(None, None)):
             supervisor._handle_finished_slots()
 
         assert sm.get_slot("test-project", 1).status == "free"
@@ -5766,8 +5766,8 @@ class TestStopSlot:
         # Mock out external calls
         with (
             patch.object(supervisor, "_stop_slot_kill_worker") as mock_kill,
-            patch.object(supervisor, "_check_pr_status", return_value=None),
-            patch.object(supervisor, "_stop_slot_git_cleanup") as mock_git,
+            patch.object(supervisor, "_check_pr_status", return_value=(None, None)),
+            patch.object(supervisor, "_stop_slot_git_cleanup", return_value=True) as mock_git,
             patch.object(supervisor, "_stop_slot_linear_cleanup") as mock_linear,
         ):
             result = supervisor.stop_slot("test-project", 1)
@@ -5795,9 +5795,9 @@ class TestStopSlot:
 
         with (
             patch.object(supervisor, "_stop_slot_kill_worker"),
-            patch.object(supervisor, "_check_pr_status", return_value="open"),
+            patch.object(supervisor, "_check_pr_status", return_value=("open", "https://github.com/test/repo/pull/1")),
             patch("subprocess.run") as mock_run,
-            patch.object(supervisor, "_stop_slot_git_cleanup"),
+            patch.object(supervisor, "_stop_slot_git_cleanup", return_value=True),
             patch.object(supervisor, "_stop_slot_linear_cleanup"),
         ):
             mock_run.return_value = MagicMock(returncode=0)
@@ -5808,7 +5808,7 @@ class TestStopSlot:
         assert result.pr_was_merged is False
 
     def test_stop_busy_slot_with_merged_pr(self, supervisor):
-        """Stopping a slot with a merged PR does not close the PR."""
+        """Stopping a slot with a merged PR runs completion cleanup, not failure cleanup."""
         sm = supervisor.slot_manager
         sm.assign_ticket(
             "test-project", 1,
@@ -5817,20 +5817,22 @@ class TestStopSlot:
 
         with (
             patch.object(supervisor, "_stop_slot_kill_worker"),
-            patch.object(supervisor, "_check_pr_status", return_value="merged"),
-            patch.object(supervisor, "_stop_slot_git_cleanup"),
+            patch.object(supervisor, "_check_pr_status", return_value=("merged", "https://github.com/test/repo/pull/1")),
+            patch.object(supervisor, "_stop_slot_git_cleanup", return_value=True),
             patch.object(supervisor, "_stop_slot_linear_cleanup") as mock_linear,
+            patch.object(supervisor, "_stop_slot_linear_done") as mock_done,
         ):
             result = supervisor.stop_slot("test-project", 1)
 
-        assert result.success is True
         assert result.pr_was_merged is True
         assert result.pr_closed is False
-        # Linear cleanup should be skipped for merged PRs
+        # Failure cleanup should be skipped for merged PRs
         mock_linear.assert_not_called()
+        # Completion cleanup should run instead
+        mock_done.assert_called_once()
 
-    def test_stop_merged_pr_does_not_mark_task_failed(self, supervisor):
-        """Stopping a slot with merged PR does not overwrite task as failed."""
+    def test_stop_merged_pr_marks_task_completed(self, supervisor):
+        """Stopping a slot with merged PR marks task as completed, not failed."""
         sm = supervisor.slot_manager
         sm.assign_ticket(
             "test-project", 1,
@@ -5840,19 +5842,19 @@ class TestStopSlot:
             supervisor._conn,
             ticket_id="TST-1", title="Test", project="test-project", slot=1,
         )
-        update_task(supervisor._conn, task_id, status="completed")
         supervisor._conn.commit()
 
         with (
             patch.object(supervisor, "_stop_slot_kill_worker"),
-            patch.object(supervisor, "_check_pr_status", return_value="merged"),
-            patch.object(supervisor, "_stop_slot_git_cleanup"),
+            patch.object(supervisor, "_check_pr_status", return_value=("merged", "https://github.com/test/repo/pull/1")),
+            patch.object(supervisor, "_stop_slot_git_cleanup", return_value=True),
+            patch.object(supervisor, "_stop_slot_linear_done"),
         ):
             result = supervisor.stop_slot("test-project", 1)
 
         assert result.pr_was_merged is True
         task = get_task(supervisor._conn, task_id)
-        assert task["status"] == "completed"  # not overwritten to "failed"
+        assert task["status"] == "completed"  # marked completed, not failed
 
     def test_stop_slot_updates_db_task(self, supervisor):
         """Stopping a slot marks the DB task as failed with 'stopped by user'."""
@@ -5871,8 +5873,8 @@ class TestStopSlot:
 
         with (
             patch.object(supervisor, "_stop_slot_kill_worker"),
-            patch.object(supervisor, "_check_pr_status", return_value=None),
-            patch.object(supervisor, "_stop_slot_git_cleanup"),
+            patch.object(supervisor, "_check_pr_status", return_value=(None, None)),
+            patch.object(supervisor, "_stop_slot_git_cleanup", return_value=True),
             patch.object(supervisor, "_stop_slot_linear_cleanup"),
         ):
             supervisor.stop_slot("test-project", 1)
@@ -5891,8 +5893,8 @@ class TestStopSlot:
 
         with (
             patch.object(supervisor, "_stop_slot_kill_worker"),
-            patch.object(supervisor, "_check_pr_status", return_value=None),
-            patch.object(supervisor, "_stop_slot_git_cleanup"),
+            patch.object(supervisor, "_check_pr_status", return_value=(None, None)),
+            patch.object(supervisor, "_stop_slot_git_cleanup", return_value=True),
             patch.object(supervisor, "_stop_slot_linear_cleanup"),
         ):
             supervisor.stop_slot("test-project", 1)
@@ -5912,8 +5914,8 @@ class TestStopSlot:
 
         with (
             patch.object(supervisor, "_stop_slot_kill_worker"),
-            patch.object(supervisor, "_check_pr_status", return_value=None),
-            patch.object(supervisor, "_stop_slot_git_cleanup"),
+            patch.object(supervisor, "_check_pr_status", return_value=(None, None)),
+            patch.object(supervisor, "_stop_slot_git_cleanup", return_value=True),
             patch.object(supervisor, "_stop_slot_linear_cleanup"),
         ):
             result = supervisor.stop_slot("test-project", 1)
@@ -5933,8 +5935,8 @@ class TestStopSlot:
 
         with (
             patch.object(supervisor, "_stop_slot_kill_worker"),
-            patch.object(supervisor, "_check_pr_status", return_value=None),
-            patch.object(supervisor, "_stop_slot_git_cleanup"),
+            patch.object(supervisor, "_check_pr_status", return_value=(None, None)),
+            patch.object(supervisor, "_stop_slot_git_cleanup", return_value=True),
             patch.object(supervisor, "_stop_slot_linear_cleanup"),
         ):
             result = supervisor.stop_slot("test-project", 1)
@@ -5954,8 +5956,8 @@ class TestStopSlot:
 
         with (
             patch.object(supervisor, "_stop_slot_kill_worker"),
-            patch.object(supervisor, "_check_pr_status", return_value=None),
-            patch.object(supervisor, "_stop_slot_git_cleanup"),
+            patch.object(supervisor, "_check_pr_status", return_value=(None, None)),
+            patch.object(supervisor, "_stop_slot_git_cleanup", return_value=True),
             patch.object(supervisor, "_stop_slot_linear_cleanup"),
         ):
             supervisor.stop_slot("test-project", 1)
@@ -5970,8 +5972,9 @@ class TestStopSlotGitCleanup:
         """Git cleanup runs reset, clean, checkout, branch -D, push --delete."""
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
-            supervisor._stop_slot_git_cleanup("test-project", 1, "feat-1")
+            result = supervisor._stop_slot_git_cleanup("test-project", 1, "feat-1")
 
+        assert result is True
         commands = [c[0][0] for c in mock_run.call_args_list]
         assert commands[0] == ["git", "reset", "--hard"]
         assert commands[1] == ["git", "clean", "-fd"]
@@ -6182,7 +6185,7 @@ class TestStopSlotPrCleanup:
         )
         slot = sm.get_slot("test-project", 1)
 
-        with patch.object(supervisor, "_check_pr_status", return_value=None):
+        with patch.object(supervisor, "_check_pr_status", return_value=(None, None)):
             merged, closed = supervisor._stop_slot_pr_cleanup(slot)
 
         assert merged is False
@@ -6197,7 +6200,7 @@ class TestStopSlotPrCleanup:
         )
         slot = sm.get_slot("test-project", 1)
 
-        with patch.object(supervisor, "_check_pr_status", return_value="merged"):
+        with patch.object(supervisor, "_check_pr_status", return_value=("merged", "https://github.com/test/repo/pull/1")):
             merged, closed = supervisor._stop_slot_pr_cleanup(slot)
 
         assert merged is True
@@ -6214,7 +6217,7 @@ class TestStopSlotPrCleanup:
         slot = sm.get_slot("test-project", 1)
 
         with (
-            patch.object(supervisor, "_check_pr_status", return_value="open"),
+            patch.object(supervisor, "_check_pr_status", return_value=("open", "https://github.com/test/repo/pull/1")),
             patch("subprocess.run") as mock_run,
         ):
             mock_run.return_value = MagicMock(returncode=0)
@@ -6239,7 +6242,7 @@ class TestStopSlotPrCleanup:
         slot = sm.get_slot("test-project", 1)
 
         with (
-            patch.object(supervisor, "_check_pr_status", return_value="open"),
+            patch.object(supervisor, "_check_pr_status", return_value=("open", "https://github.com/test/repo/pull/1")),
             patch("subprocess.run") as mock_run,
         ):
             mock_run.return_value = MagicMock(returncode=1, stderr="error")
@@ -6259,7 +6262,7 @@ class TestStopSlotPrCleanup:
         slot = sm.get_slot("test-project", 1)
 
         with (
-            patch.object(supervisor, "_check_pr_status", return_value="open"),
+            patch.object(supervisor, "_check_pr_status", return_value=("open", "https://github.com/test/repo/pull/1")),
             patch("subprocess.run", side_effect=OSError("timeout")),
         ):
             merged, closed = supervisor._stop_slot_pr_cleanup(slot)
@@ -6276,7 +6279,7 @@ class TestStopSlotPrCleanup:
         )
         slot = sm.get_slot("test-project", 1)
 
-        with patch.object(supervisor, "_check_pr_status", return_value="closed"):
+        with patch.object(supervisor, "_check_pr_status", return_value=("closed", "https://github.com/test/repo/pull/1")):
             merged, closed = supervisor._stop_slot_pr_cleanup(slot)
 
         assert merged is False
@@ -6288,10 +6291,20 @@ class TestRequestStopSlot:
 
     def test_request_stop_slot_appends_and_wakes(self, supervisor):
         """request_stop_slot adds to the list and sets wake event."""
+        # Assign a ticket so the request captures ticket_id
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="feat-1",
+        )
         supervisor.request_stop_slot("test-project", 1)
 
         with supervisor._stop_slot_lock:
-            assert ("test-project", 1) in supervisor._stop_slot_requests
+            assert len(supervisor._stop_slot_requests) == 1
+            proj, sid, tid = supervisor._stop_slot_requests[0]
+            assert proj == "test-project"
+            assert sid == 1
+            assert tid == "TST-1"
         assert supervisor._wake_event.is_set()
 
     def test_handle_stop_requests_drains_list(self, supervisor):
@@ -6452,6 +6465,7 @@ class TestStaleResultRejection:
             return result
 
         with patch("subprocess.run", side_effect=side_effect):
-            supervisor._stop_slot_git_cleanup("test-project", 1, "feat-1")
+            checkout_ok = supervisor._stop_slot_git_cleanup("test-project", 1, "feat-1")
 
+        assert checkout_ok is False
         # Should not raise; branch -D and push --delete should not be called
