@@ -238,7 +238,11 @@ def manual_pause_state(state: dict) -> str:
         if has_manual_paused:
             return "paused"
         return "running"
-    # Dispatch is paused for manual/start_paused reason — check if workers are still busy
+    # start_paused only blocks new dispatches; recovered busy slots keep running
+    # normally, so show "paused" (Resume button) rather than "pausing" UI.
+    if pause_reason == "start_paused":
+        return "paused"
+    # Dispatch is paused for manual_pause — check if workers are still busy
     slots = state.get("slots", [])
     has_busy = any(s["status"] == "busy" for s in slots)
     if has_busy:

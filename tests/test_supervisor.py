@@ -5645,6 +5645,31 @@ class TestStartPaused:
         assert sm.dispatch_paused is True
         assert sm.dispatch_pause_reason == "manual_pause"
 
+    def test_start_paused_resyncs_flag_from_persisted_state(self, tmp_config, tmp_path, monkeypatch):
+        """_startup_paused flag is set when persisted reason is already start_paused."""
+        tmp_config.start_paused = True
+        monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "test.db"))
+
+        mock_poller = MagicMock()
+        mock_poller.project_name = "test-project"
+        mock_poller.poll.return_value = PollResult(candidates=[], blocked=[], auto_close_parents=[])
+        mock_poller.is_issue_terminal.return_value = False
+
+        with patch("botfarm.supervisor.create_pollers", return_value=[mock_poller]):
+            sup = Supervisor(tmp_config, log_dir=tmp_path / "logs")
+
+        sm = sup.slot_manager
+        # Simulate persisted start_paused from a previous run
+        sm.set_dispatch_paused(True, "start_paused")
+        assert sup._startup_paused is False  # Not yet synced
+
+        sup._apply_start_paused()
+
+        # Flag should be synced from persisted state
+        assert sm.dispatch_paused is True
+        assert sm.dispatch_pause_reason == "start_paused"
+        assert sup._startup_paused is True
+
     def test_capacity_blocked_restores_start_paused(self, supervisor):
         """When capacity_blocked clears and _startup_paused is set, restore start_paused."""
         sm = supervisor.slot_manager

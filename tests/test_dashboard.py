@@ -2766,6 +2766,23 @@ class TestManualPauseState:
         assert resp.status_code == 200
         assert "Resume" in resp.text
 
+    def test_start_paused_with_busy_slot_shows_resume_not_pausing(self, tmp_path):
+        """start_paused with busy slots shows Resume, not Pausing/Cancel."""
+        path = tmp_path / "test.db"
+        conn = init_db(path)
+        _seed_slot(conn, "proj", 1, status="busy", ticket_id="T-1", pid=12345)
+        save_dispatch_state(conn, paused=True, reason="start_paused")
+        conn.commit()
+        conn.close()
+
+        app = create_app(db_path=path, on_pause=lambda: None, on_resume=lambda: None)
+        client = TestClient(app)
+        resp = client.get("/partials/supervisor-controls")
+        assert resp.status_code == 200
+        assert "Resume" in resp.text
+        assert "Pausing" not in resp.text
+        assert "Cancel" not in resp.text
+
 
 class TestPauseHints:
     """Verify informational hints shown in each pause state."""

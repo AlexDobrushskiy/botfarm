@@ -1292,7 +1292,9 @@ class Supervisor:
 
     def _apply_start_paused(self) -> None:
         """Pause dispatch on startup if configured and not already paused."""
-        if self._config.start_paused and not self._slot_manager.dispatch_paused:
+        if not self._config.start_paused:
+            return
+        if not self._slot_manager.dispatch_paused:
             self._slot_manager.set_dispatch_paused(True, "start_paused")
             self._startup_paused = True
             logger.info(
@@ -1304,6 +1306,9 @@ class Supervisor:
                 event_type="start_paused",
             )
             self._conn.commit()
+        elif self._slot_manager.dispatch_pause_reason == "start_paused":
+            # Persisted from previous run — keep the in-memory flag in sync
+            self._startup_paused = True
 
     def _is_ticket_externally_done(self, slot: SlotState) -> bool:
         """Check if a ticket was moved to Done/Cancelled in Linear externally.
