@@ -28,6 +28,7 @@ from botfarm.db import get_events, get_task, get_ticket_history_entry, init_db, 
 from botfarm.linear import ActiveIssuesCount, LinearIssue, PollResult
 from botfarm.supervisor import (
     DEFAULT_LOG_DIR,
+    StopSlotResult,
     Supervisor,
     _StallInfo,
     _WorkerResult,
@@ -5732,3 +5733,583 @@ class TestStartPaused:
 
         assert sm.dispatch_paused is True
         assert sm.dispatch_pause_reason == "start_paused"
+
+
+# ---------------------------------------------------------------------------
+# Stop slot
+# ---------------------------------------------------------------------------
+
+
+class TestStopSlot:
+    """Tests for Supervisor.stop_slot() and related helpers."""
+
+    def test_stop_free_slot_returns_error(self, supervisor):
+        """Stopping a free slot returns an error result."""
+        result = supervisor.stop_slot("test-project", 1)
+        assert result.success is False
+        assert "not busy" in result.message
+
+    def test_stop_nonexistent_slot_returns_error(self, supervisor):
+        """Stopping a slot that doesn't exist returns an error result."""
+        result = supervisor.stop_slot("test-project", 99)
+        assert result.success is False
+        assert "not found" in result.message
+
+    def test_stop_busy_slot_no_pr(self, supervisor):
+        """Stopping a busy slot with no PR: kills worker, cleans git, moves ticket."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="feat-1",
+        )
+
+        # Mock out external calls
+        with (
+            patch.object(supervisor, "_stop_slot_kill_worker") as mock_kill,
+            patch.object(supervisor, "_check_pr_status", return_value=None),
+            patch.object(supervisor, "_stop_slot_git_cleanup") as mock_git,
+            patch.object(supervisor, "_stop_slot_linear_cleanup") as mock_linear,
+        ):
+            result = supervisor.stop_slot("test-project", 1)
+
+        assert result.success is True
+        assert result.pr_was_merged is False
+        assert result.pr_closed is False
+        assert result.ticket_id == "TST-1"
+        mock_kill.assert_called_once()
+        mock_git.assert_called_once_with("test-project", 1, "feat-1")
+        mock_linear.assert_called_once()
+
+        # Slot should be freed
+        slot = sm.get_slot("test-project", 1)
+        assert slot.status == "free"
+
+    def test_stop_busy_slot_with_open_pr(self, supervisor):
+        """Stopping a busy slot with an open PR closes the PR."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="feat-1",
+        )
+        sm.set_pr_url("test-project", 1, "https://github.com/org/repo/pull/1")
+
+        with (
+            patch.object(supervisor, "_stop_slot_kill_worker"),
+            patch.object(supervisor, "_check_pr_status", return_value="open"),
+            patch("subprocess.run") as mock_run,
+            patch.object(supervisor, "_stop_slot_git_cleanup"),
+            patch.object(supervisor, "_stop_slot_linear_cleanup"),
+        ):
+            mock_run.return_value = MagicMock(returncode=0)
+            result = supervisor.stop_slot("test-project", 1)
+
+        assert result.success is True
+        assert result.pr_closed is True
+        assert result.pr_was_merged is False
+
+    def test_stop_busy_slot_with_merged_pr(self, supervisor):
+        """Stopping a slot with a merged PR does not close the PR."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="feat-1",
+        )
+
+        with (
+            patch.object(supervisor, "_stop_slot_kill_worker"),
+            patch.object(supervisor, "_check_pr_status", return_value="merged"),
+            patch.object(supervisor, "_stop_slot_git_cleanup"),
+            patch.object(supervisor, "_stop_slot_linear_cleanup"),
+        ):
+            result = supervisor.stop_slot("test-project", 1)
+
+        assert result.success is True
+        assert result.pr_was_merged is True
+        assert result.pr_closed is False
+
+    def test_stop_slot_updates_db_task(self, supervisor):
+        """Stopping a slot marks the DB task as failed with 'stopped by user'."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="feat-1",
+        )
+
+        # Insert a task record
+        task_id = insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+        )
+        supervisor._conn.commit()
+
+        with (
+            patch.object(supervisor, "_stop_slot_kill_worker"),
+            patch.object(supervisor, "_check_pr_status", return_value=None),
+            patch.object(supervisor, "_stop_slot_git_cleanup"),
+            patch.object(supervisor, "_stop_slot_linear_cleanup"),
+        ):
+            supervisor.stop_slot("test-project", 1)
+
+        task = get_task(supervisor._conn, task_id)
+        assert task["status"] == "failed"
+        assert task["failure_reason"] == "stopped by user"
+
+    def test_stop_slot_inserts_event(self, supervisor):
+        """Stopping a slot inserts a slot_stopped event."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="feat-1",
+        )
+
+        with (
+            patch.object(supervisor, "_stop_slot_kill_worker"),
+            patch.object(supervisor, "_check_pr_status", return_value=None),
+            patch.object(supervisor, "_stop_slot_git_cleanup"),
+            patch.object(supervisor, "_stop_slot_linear_cleanup"),
+        ):
+            supervisor.stop_slot("test-project", 1)
+
+        events = get_events(supervisor._conn, event_type="slot_stopped")
+        assert len(events) == 1
+        assert "TST-1" in events[0]["detail"]
+
+    def test_stop_paused_manual_slot(self, supervisor):
+        """Stopping a manually paused slot works (no PID to kill)."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="feat-1",
+        )
+        sm.mark_paused_manual("test-project", 1)
+
+        with (
+            patch.object(supervisor, "_stop_slot_kill_worker"),
+            patch.object(supervisor, "_check_pr_status", return_value=None),
+            patch.object(supervisor, "_stop_slot_git_cleanup"),
+            patch.object(supervisor, "_stop_slot_linear_cleanup"),
+        ):
+            result = supervisor.stop_slot("test-project", 1)
+
+        assert result.success is True
+        slot = sm.get_slot("test-project", 1)
+        assert slot.status == "free"
+
+    def test_stop_paused_limit_slot(self, supervisor):
+        """Stopping a limit-paused slot works."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="feat-1",
+        )
+        sm.mark_paused_limit("test-project", 1, resume_after="2099-01-01T00:00:00Z")
+
+        with (
+            patch.object(supervisor, "_stop_slot_kill_worker"),
+            patch.object(supervisor, "_check_pr_status", return_value=None),
+            patch.object(supervisor, "_stop_slot_git_cleanup"),
+            patch.object(supervisor, "_stop_slot_linear_cleanup"),
+        ):
+            result = supervisor.stop_slot("test-project", 1)
+
+        assert result.success is True
+        slot = sm.get_slot("test-project", 1)
+        assert slot.status == "free"
+
+    def test_stop_slot_cleans_pending_result_texts(self, supervisor):
+        """Stopping a slot removes any pending result text."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="feat-1",
+        )
+        supervisor._pending_result_texts[("test-project", 1)] = "some output"
+
+        with (
+            patch.object(supervisor, "_stop_slot_kill_worker"),
+            patch.object(supervisor, "_check_pr_status", return_value=None),
+            patch.object(supervisor, "_stop_slot_git_cleanup"),
+            patch.object(supervisor, "_stop_slot_linear_cleanup"),
+        ):
+            supervisor.stop_slot("test-project", 1)
+
+        assert ("test-project", 1) not in supervisor._pending_result_texts
+
+
+class TestStopSlotGitCleanup:
+    """Tests for _stop_slot_git_cleanup."""
+
+    def test_git_cleanup_runs_commands_in_order(self, supervisor):
+        """Git cleanup runs checkout, clean, reset, branch -D, push --delete."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            supervisor._stop_slot_git_cleanup("test-project", 1, "feat-1")
+
+        commands = [c[0][0] for c in mock_run.call_args_list]
+        assert commands[0] == ["git", "checkout", "slot-1-placeholder"]
+        assert commands[1] == ["git", "clean", "-fd"]
+        assert commands[2] == ["git", "reset", "--hard"]
+        assert commands[3] == ["git", "branch", "-D", "feat-1"]
+        assert commands[4] == ["git", "push", "origin", "--delete", "feat-1"]
+
+    def test_git_cleanup_skips_protected_branch(self, supervisor):
+        """Git cleanup does not delete protected branches (main, placeholder)."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            supervisor._stop_slot_git_cleanup("test-project", 1, "main")
+
+        commands = [c[0][0] for c in mock_run.call_args_list]
+        # Should only have checkout, clean, reset — no branch -D or push --delete
+        assert len(commands) == 3
+        assert commands[0][1] == "checkout"
+        assert commands[1][1] == "clean"
+        assert commands[2][1] == "reset"
+
+    def test_git_cleanup_skips_none_branch(self, supervisor):
+        """Git cleanup handles None branch (worker crashed early)."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            supervisor._stop_slot_git_cleanup("test-project", 1, None)
+
+        commands = [c[0][0] for c in mock_run.call_args_list]
+        assert len(commands) == 3  # checkout, clean, reset only
+
+    def test_git_cleanup_ignores_push_delete_error(self, supervisor):
+        """Remote branch deletion failure doesn't raise."""
+        def side_effect(cmd, **kwargs):
+            result = MagicMock(returncode=0)
+            if cmd[1] == "push":
+                raise subprocess.CalledProcessError(1, cmd)
+            return result
+
+        import subprocess as sp
+        with patch("subprocess.run", side_effect=side_effect):
+            # Should not raise
+            supervisor._stop_slot_git_cleanup("test-project", 1, "feat-1")
+
+
+class TestStopSlotLinearCleanup:
+    """Tests for _stop_slot_linear_cleanup."""
+
+    def test_moves_ticket_to_todo(self, supervisor):
+        """Linear cleanup moves the ticket to todo status."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="feat-1",
+        )
+        slot = sm.get_slot("test-project", 1)
+
+        poller = supervisor._pollers["test-project"]
+        supervisor._stop_slot_linear_cleanup(slot)
+
+        poller.move_issue.assert_called_once_with("TST-1", "Todo")
+
+    def test_posts_stop_comment(self, supervisor):
+        """Linear cleanup posts a 'Stopped by user' comment."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="feat-1",
+        )
+        slot = sm.get_slot("test-project", 1)
+
+        poller = supervisor._pollers["test-project"]
+        supervisor._stop_slot_linear_cleanup(slot)
+
+        poller.add_comment.assert_called_once()
+        comment_body = poller.add_comment.call_args[0][1]
+        assert "Stopped by user" in comment_body
+
+    def test_no_ticket_id_skips_cleanup(self, supervisor):
+        """Linear cleanup is a no-op when ticket_id is None."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="feat-1",
+        )
+        slot = sm.get_slot("test-project", 1)
+        slot.ticket_id = None
+
+        poller = supervisor._pollers["test-project"]
+        supervisor._stop_slot_linear_cleanup(slot)
+
+        poller.move_issue.assert_not_called()
+        poller.add_comment.assert_not_called()
+
+
+class TestStopSlotKillWorker:
+    """Tests for _stop_slot_kill_worker."""
+
+    def test_kill_worker_sends_sigterm_then_joins(self, supervisor):
+        """Kill sends SIGTERM, waits, and removes process."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="feat-1",
+        )
+        slot = sm.get_slot("test-project", 1)
+        slot.pid = 12345
+
+        mock_proc = MagicMock()
+        mock_proc.is_alive.return_value = False  # exits after join
+        supervisor._workers[("test-project", 1)] = mock_proc
+
+        with (
+            patch("botfarm.supervisor._is_pid_alive", return_value=True),
+            patch("os.kill") as mock_kill,
+        ):
+            supervisor._stop_slot_kill_worker(slot)
+
+        mock_kill.assert_called_once_with(12345, signal.SIGTERM)
+        mock_proc.join.assert_called()
+        assert ("test-project", 1) not in supervisor._workers
+
+    def test_kill_worker_escalates_to_sigkill(self, supervisor):
+        """If worker doesn't exit after grace period, sends SIGKILL."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="feat-1",
+        )
+        slot = sm.get_slot("test-project", 1)
+        slot.pid = 12345
+
+        mock_proc = MagicMock()
+        # First join returns but process is still alive, then second join works
+        mock_proc.is_alive.return_value = True
+        supervisor._workers[("test-project", 1)] = mock_proc
+
+        with (
+            patch("botfarm.supervisor._is_pid_alive", return_value=True),
+            patch("os.kill") as mock_kill,
+        ):
+            supervisor._stop_slot_kill_worker(slot)
+
+        # Should have called SIGTERM then SIGKILL
+        assert mock_kill.call_count == 2
+        mock_kill.assert_any_call(12345, signal.SIGTERM)
+        mock_kill.assert_any_call(12345, signal.SIGKILL)
+
+    def test_kill_worker_skips_dead_pid(self, supervisor):
+        """If PID is already dead, skips kill and just cleans up."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="feat-1",
+        )
+        slot = sm.get_slot("test-project", 1)
+        slot.pid = 12345
+
+        with (
+            patch("botfarm.supervisor._is_pid_alive", return_value=False),
+            patch("os.kill") as mock_kill,
+        ):
+            supervisor._stop_slot_kill_worker(slot)
+
+        mock_kill.assert_not_called()
+
+    def test_kill_worker_no_pid(self, supervisor):
+        """If no PID (e.g. paused slot), skips kill."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="feat-1",
+        )
+        slot = sm.get_slot("test-project", 1)
+        slot.pid = None
+
+        with patch("os.kill") as mock_kill:
+            supervisor._stop_slot_kill_worker(slot)
+
+        mock_kill.assert_not_called()
+
+    def test_kill_worker_cleans_pause_event(self, supervisor):
+        """Kill removes the pause event for the slot."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="feat-1",
+        )
+        slot = sm.get_slot("test-project", 1)
+        slot.pid = None
+
+        import multiprocessing
+        supervisor._pause_events[("test-project", 1)] = multiprocessing.Event()
+
+        with patch("os.kill"):
+            supervisor._stop_slot_kill_worker(slot)
+
+        assert ("test-project", 1) not in supervisor._pause_events
+
+
+class TestStopSlotPrCleanup:
+    """Tests for _stop_slot_pr_cleanup."""
+
+    def test_no_pr_returns_false_false(self, supervisor):
+        """No PR → (False, False)."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="feat-1",
+        )
+        slot = sm.get_slot("test-project", 1)
+
+        with patch.object(supervisor, "_check_pr_status", return_value=None):
+            merged, closed = supervisor._stop_slot_pr_cleanup(slot)
+
+        assert merged is False
+        assert closed is False
+
+    def test_merged_pr_returns_true_false(self, supervisor):
+        """Merged PR → (True, False) — no close attempt."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="feat-1",
+        )
+        slot = sm.get_slot("test-project", 1)
+
+        with patch.object(supervisor, "_check_pr_status", return_value="merged"):
+            merged, closed = supervisor._stop_slot_pr_cleanup(slot)
+
+        assert merged is True
+        assert closed is False
+
+    def test_open_pr_closes_it(self, supervisor):
+        """Open PR gets closed via gh pr close."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="feat-1",
+        )
+        sm.set_pr_url("test-project", 1, "https://github.com/org/repo/pull/1")
+        slot = sm.get_slot("test-project", 1)
+
+        with (
+            patch.object(supervisor, "_check_pr_status", return_value="open"),
+            patch("subprocess.run") as mock_run,
+        ):
+            mock_run.return_value = MagicMock(returncode=0)
+            merged, closed = supervisor._stop_slot_pr_cleanup(slot)
+
+        assert merged is False
+        assert closed is True
+        # Verify gh pr close was called
+        mock_run.assert_called_once()
+        cmd = mock_run.call_args[0][0]
+        assert cmd[0:3] == ["gh", "pr", "close"]
+
+    def test_closed_pr_returns_false_false(self, supervisor):
+        """Already-closed PR → (False, False)."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="feat-1",
+        )
+        slot = sm.get_slot("test-project", 1)
+
+        with patch.object(supervisor, "_check_pr_status", return_value="closed"):
+            merged, closed = supervisor._stop_slot_pr_cleanup(slot)
+
+        assert merged is False
+        assert closed is False
+
+
+class TestRequestStopSlot:
+    """Tests for the thread-safe request_stop_slot / _handle_stop_requests."""
+
+    def test_request_stop_slot_appends_and_wakes(self, supervisor):
+        """request_stop_slot adds to the list and sets wake event."""
+        supervisor.request_stop_slot("test-project", 1)
+
+        with supervisor._stop_slot_lock:
+            assert ("test-project", 1) in supervisor._stop_slot_requests
+        assert supervisor._wake_event.is_set()
+
+    def test_handle_stop_requests_drains_list(self, supervisor):
+        """_handle_stop_requests processes all pending requests."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="feat-1",
+        )
+
+        supervisor.request_stop_slot("test-project", 1)
+
+        with (
+            patch.object(supervisor, "stop_slot", return_value=StopSlotResult(
+                success=True, message="ok",
+            )) as mock_stop,
+        ):
+            supervisor._handle_stop_requests()
+
+        mock_stop.assert_called_once_with("test-project", 1)
+
+        # List should be drained
+        with supervisor._stop_slot_lock:
+            assert len(supervisor._stop_slot_requests) == 0
+
+    def test_handle_stop_requests_no_requests_is_noop(self, supervisor):
+        """_handle_stop_requests is a no-op when there are no requests."""
+        with patch.object(supervisor, "stop_slot") as mock_stop:
+            supervisor._handle_stop_requests()
+        mock_stop.assert_not_called()
+
+    def test_handle_stop_requests_in_tick(self, supervisor):
+        """_handle_stop_requests is called during _tick."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="feat-1",
+        )
+
+        supervisor.request_stop_slot("test-project", 1)
+
+        with (
+            patch.object(supervisor, "stop_slot", return_value=StopSlotResult(
+                success=True, message="ok",
+            )) as mock_stop,
+            patch.object(supervisor, "_reconcile_workers"),
+            patch.object(supervisor, "_handle_manual_pause_resume"),
+            patch.object(supervisor, "_handle_update_request"),
+            patch.object(supervisor, "_check_timeouts"),
+            patch.object(supervisor, "_handle_finished_slots"),
+            patch.object(supervisor, "_handle_paused_slots"),
+            patch.object(supervisor, "_poll_usage"),
+            patch.object(supervisor, "_poll_capacity"),
+            patch.object(supervisor, "_poll_and_dispatch"),
+            patch.object(supervisor, "_cleanup_old_ticket_logs"),
+            patch.object(supervisor._slot_manager, "refresh_stages_from_disk"),
+            patch.object(supervisor._slot_manager, "refresh_project_pauses"),
+        ):
+            supervisor._tick()
+
+        mock_stop.assert_called_once_with("test-project", 1)
+
+
+class TestDrainResultsForSlot:
+    """Tests for _drain_results_for_slot."""
+
+    def test_discards_results_for_target_slot(self, supervisor):
+        """Results for the stopped slot are discarded."""
+        supervisor._result_queue.put(_WorkerResult(
+            project="test-project", slot_id=1, success=True,
+        ))
+        supervisor._drain_results_for_slot("test-project", 1)
+
+        # Queue should be empty
+        import queue as queue_mod
+        with pytest.raises(queue_mod.Empty):
+            supervisor._result_queue.get(timeout=0.05)
+
+    def test_preserves_results_for_other_slots(self, supervisor):
+        """Results for other slots are put back."""
+        supervisor._result_queue.put(_WorkerResult(
+            project="test-project", slot_id=2, success=True,
+        ))
+        supervisor._drain_results_for_slot("test-project", 1)
+
+        # Should still have the result for slot 2
+        wr = supervisor._result_queue.get(timeout=0.1)
+        assert wr.slot_id == 2

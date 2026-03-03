@@ -36,7 +36,7 @@ from botfarm.notifications import Notifier
 from botfarm.preflight import CheckResult, log_preflight_summary, run_preflight_checks
 from botfarm.slots import SlotManager, SlotState, _is_pid_alive
 from botfarm.usage import DEFAULT_PAUSE_5H_THRESHOLD, DEFAULT_PAUSE_7D_THRESHOLD, UsagePoller
-from botfarm.worker import STAGES, PipelineResult, build_git_env, run_pipeline
+from botfarm.worker import STAGES, PipelineResult, _is_protected_branch, build_git_env, run_pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +71,17 @@ class _StallInfo:
     dispatch_usage_5h: float | None
     dispatch_time: float
     warned: bool = False
+
+
+@dataclass
+class StopSlotResult:
+    """Result of a stop_slot() call."""
+
+    success: bool
+    pr_was_merged: bool = False
+    pr_closed: bool = False
+    ticket_id: str | None = None
+    message: str = ""
 
 
 _COMMENT_MAX_LEN = 2000
@@ -1096,6 +1107,10 @@ class Supervisor:
         # Wake event — set by interactive requests to break out of _sleep() early
         self._wake_event = threading.Event()
 
+        # Stop-slot requests from the dashboard thread
+        self._stop_slot_requests: list[tuple[str, int]] = []
+        self._stop_slot_lock = threading.Lock()
+
         # Queue for worker results — workers send _WorkerResult here
         self._result_queue: multiprocessing.Queue = multiprocessing.Queue()
 
@@ -1861,6 +1876,7 @@ class Supervisor:
 
         for phase in (
             self._reconcile_workers,
+            self._handle_stop_requests,
             self._handle_manual_pause_resume,
             self._handle_update_request,
             self._check_timeouts,
@@ -2431,6 +2447,314 @@ class Supervisor:
     def _compute_resume_after(self) -> str | None:
         """Compute the earliest time to resume based on usage resets + buffer."""
         return PauseResumeManager.compute_resume_after(self._usage_poller)
+
+    # ------------------------------------------------------------------
+    # Stop slot
+    # ------------------------------------------------------------------
+
+    def request_stop_slot(self, project: str, slot_id: int) -> None:
+        """Thread-safe request to stop a slot (called from dashboard)."""
+        with self._stop_slot_lock:
+            self._stop_slot_requests.append((project, slot_id))
+        self._wake_event.set()
+
+    def _handle_stop_requests(self) -> None:
+        """Drain pending stop-slot requests and execute each."""
+        with self._stop_slot_lock:
+            requests = list(self._stop_slot_requests)
+            self._stop_slot_requests.clear()
+        for project, slot_id in requests:
+            try:
+                result = self.stop_slot(project, slot_id)
+                logger.info(
+                    "Stop-slot result for %s/%d: %s",
+                    project, slot_id, result.message,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to stop slot %s/%d", project, slot_id,
+                )
+
+    def stop_slot(self, project: str, slot_id: int) -> StopSlotResult:
+        """Stop a single slot: kill worker, clean up git/PR/Linear, free slot.
+
+        This is the central implementation that both the CLI command and
+        dashboard endpoint call (dashboard via ``request_stop_slot``).
+        """
+        slot = self._slot_manager.get_slot(project, slot_id)
+        if slot is None:
+            return StopSlotResult(
+                success=False,
+                message=f"Slot {project}/{slot_id} not found",
+            )
+
+        if slot.status == "free":
+            return StopSlotResult(
+                success=False,
+                message=f"Slot {project}/{slot_id} is not busy",
+            )
+
+        ticket_id = slot.ticket_id
+        branch = slot.branch
+        pr_was_merged = False
+        pr_closed = False
+
+        # --- Kill worker process ---
+        self._stop_slot_kill_worker(slot)
+
+        # --- PR cleanup ---
+        pr_was_merged, pr_closed = self._stop_slot_pr_cleanup(slot)
+
+        # --- Git cleanup ---
+        self._stop_slot_git_cleanup(project, slot_id, branch)
+
+        # --- Linear cleanup ---
+        self._stop_slot_linear_cleanup(slot)
+
+        # --- State cleanup ---
+        task_id = self._find_task_id(ticket_id)
+        if task_id is not None:
+            update_task(
+                self._conn, task_id,
+                status="failed",
+                failure_reason="stopped by user",
+            )
+        insert_event(
+            self._conn,
+            task_id=task_id,
+            event_type="slot_stopped",
+            detail=f"project={project}, slot={slot_id}, "
+            f"ticket={ticket_id}, branch={branch}, "
+            f"pr_merged={pr_was_merged}, pr_closed={pr_closed}",
+        )
+        self._conn.commit()
+
+        self._slot_manager.free_slot(project, slot_id)
+        self._cleanup_slot_db(project, slot_id)
+        self._pending_result_texts.pop((project, slot_id), None)
+
+        merged_note = " (PR was already merged)" if pr_was_merged else ""
+        closed_note = " (PR closed)" if pr_closed else ""
+        message = (
+            f"Stopped slot {project}/{slot_id} "
+            f"(ticket {ticket_id}){merged_note}{closed_note}"
+        )
+        logger.info(message)
+
+        return StopSlotResult(
+            success=True,
+            pr_was_merged=pr_was_merged,
+            pr_closed=pr_closed,
+            ticket_id=ticket_id,
+            message=message,
+        )
+
+    def _stop_slot_kill_worker(self, slot: SlotState) -> None:
+        """Kill the worker process for a slot being stopped."""
+        key = (slot.project, slot.slot_id)
+        pid = slot.pid
+        grace = self._config.agents.timeout_grace_seconds
+
+        # Clean up pause event
+        self._pause_events.pop(key, None)
+
+        # If PID is not set or slot was paused (no running process), skip
+        if pid is None or not _is_pid_alive(pid):
+            # Still remove tracked process if present
+            proc = self._workers.pop(key, None)
+            if proc is not None:
+                proc.join(timeout=1)
+            self._drain_results_for_slot(slot.project, slot.slot_id)
+            return
+
+        # Send SIGTERM
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except (OSError, ProcessLookupError):
+            pass
+
+        # Wait for graceful exit
+        proc = self._workers.get(key)
+        if proc is not None:
+            proc.join(timeout=grace)
+            if proc.is_alive():
+                # Escalate to SIGKILL
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except (OSError, ProcessLookupError):
+                    pass
+                proc.join(timeout=2)
+            self._workers.pop(key, None)
+        else:
+            # Process not tracked (e.g. reattached after restart) — wait
+            # and escalate via PID only.
+            time.sleep(grace)
+            if _is_pid_alive(pid):
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except (OSError, ProcessLookupError):
+                    pass
+
+        # Drain any pending results for this slot
+        self._drain_results_for_slot(slot.project, slot.slot_id)
+
+    def _drain_results_for_slot(self, project: str, slot_id: int) -> None:
+        """Drain any pending _WorkerResult from the queue for this slot."""
+        drained: list[_WorkerResult] = []
+        while True:
+            try:
+                wr: _WorkerResult = self._result_queue.get(timeout=0.05)
+            except queue_mod.Empty:
+                break
+            if wr.project == project and wr.slot_id == slot_id:
+                continue  # Discard results for the stopped slot
+            drained.append(wr)
+        # Put back results for other slots
+        for wr in drained:
+            self._result_queue.put(wr)
+
+    def _stop_slot_pr_cleanup(self, slot: SlotState) -> tuple[bool, bool]:
+        """Close PR if open, detect if merged. Returns (pr_was_merged, pr_closed)."""
+        pr_status = self._check_pr_status(slot)
+        if pr_status is None:
+            return False, False
+
+        if pr_status == "merged":
+            return True, False
+
+        if pr_status == "open":
+            # Close the PR
+            pr_url = slot.pr_url
+            if not pr_url:
+                task_id = self._find_task_id(slot.ticket_id)
+                if task_id is not None:
+                    task = get_task(self._conn, task_id)
+                    if task:
+                        pr_url = task["pr_url"]
+            if pr_url:
+                project_cfg = self._projects.get(slot.project)
+                if project_cfg:
+                    cwd = self._slot_worktree_cwd(project_cfg, slot.slot_id)
+                    subprocess_env = {**os.environ, **self._git_env} if self._git_env else None
+                    try:
+                        subprocess.run(
+                            ["gh", "pr", "close", pr_url, "--delete-branch"],
+                            capture_output=True, text=True, cwd=cwd, timeout=30,
+                            env=subprocess_env,
+                        )
+                        logger.info("Closed PR %s for stopped slot", pr_url)
+                    except Exception:
+                        logger.warning(
+                            "Failed to close PR %s for stopped slot",
+                            pr_url, exc_info=True,
+                        )
+                return False, True
+
+        # closed state — nothing to do
+        return False, False
+
+    def _stop_slot_git_cleanup(
+        self, project: str, slot_id: int, branch: str | None,
+    ) -> None:
+        """Reset worktree to placeholder branch and delete feature branch."""
+        project_cfg = self._projects.get(project)
+        if not project_cfg:
+            return
+        cwd = self._slot_worktree_cwd(project_cfg, slot_id)
+        placeholder = self._slot_placeholder_branch(slot_id)
+        subprocess_env = {**os.environ, **self._git_env} if self._git_env else None
+
+        # Switch to placeholder branch
+        try:
+            subprocess.run(
+                ["git", "checkout", placeholder],
+                capture_output=True, text=True, cwd=cwd, timeout=15,
+                env=subprocess_env,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to checkout %s in %s", placeholder, cwd, exc_info=True,
+            )
+
+        # Clean untracked files
+        try:
+            subprocess.run(
+                ["git", "clean", "-fd"],
+                capture_output=True, text=True, cwd=cwd, timeout=15,
+                env=subprocess_env,
+            )
+        except Exception:
+            logger.warning("git clean -fd failed in %s", cwd, exc_info=True)
+
+        # Discard uncommitted changes
+        try:
+            subprocess.run(
+                ["git", "reset", "--hard"],
+                capture_output=True, text=True, cwd=cwd, timeout=15,
+                env=subprocess_env,
+            )
+        except Exception:
+            logger.warning("git reset --hard failed in %s", cwd, exc_info=True)
+
+        # Delete local feature branch
+        if branch and not _is_protected_branch(branch):
+            try:
+                subprocess.run(
+                    ["git", "branch", "-D", branch],
+                    capture_output=True, text=True, cwd=cwd, timeout=15,
+                    env=subprocess_env,
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to delete local branch %s", branch, exc_info=True,
+                )
+
+            # Delete remote feature branch (ignore errors if not pushed)
+            try:
+                subprocess.run(
+                    ["git", "push", "origin", "--delete", branch],
+                    capture_output=True, text=True, cwd=cwd, timeout=30,
+                    env=subprocess_env,
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to delete remote branch %s (may not exist)",
+                    branch,
+                )
+
+    def _stop_slot_linear_cleanup(self, slot: SlotState) -> None:
+        """Move ticket back to todo status and post a comment."""
+        if not slot.ticket_id:
+            return
+
+        poller = self._pollers.get(slot.project)
+        if not poller:
+            return
+
+        # Move to todo_status (the default polling status)
+        target_status = self._config.linear.todo_status
+        try:
+            poller.move_issue(slot.ticket_id, target_status)
+            logger.info(
+                "Moved %s to '%s' after stop", slot.ticket_id, target_status,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to move %s to '%s' after stop",
+                slot.ticket_id, target_status,
+            )
+
+        # Post a comment
+        try:
+            poller.add_comment(
+                slot.ticket_id,
+                "**Stopped by user** — work discarded, slot freed",
+            )
+        except Exception:
+            logger.warning(
+                "Failed to post stop comment on %s", slot.ticket_id,
+                exc_info=True,
+            )
 
     def _find_task_id(self, ticket_id: str | None) -> int | None:
         """Look up the task_id for a ticket identifier."""
