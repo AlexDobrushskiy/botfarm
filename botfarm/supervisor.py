@@ -90,6 +90,11 @@ def _collect_descendant_pids(pid: int) -> list[int]:
 
     This is Linux-specific (``/proc/<pid>/task/<pid>/children``).
     On other platforms the list will be empty.
+
+    Note: only collects one level of children.  Grandchildren in their
+    own sessions could theoretically be missed, but ``_kill_pids`` sends
+    signals to the process *group* of each child which covers most
+    practical cases (stage subprocesses use ``start_new_session=True``).
     """
     try:
         children_file = Path(f"/proc/{pid}/task/{pid}/children")
@@ -2556,11 +2561,7 @@ class Supervisor:
             # Verify the slot still has the same ticket — if it was
             # reassigned between the request and this tick, skip the stop.
             slot = self._slot_manager.get_slot(project, slot_id)
-            if (
-                expected_ticket is not None
-                and slot is not None
-                and slot.ticket_id != expected_ticket
-            ):
+            if slot is not None and slot.ticket_id != expected_ticket:
                 logger.warning(
                     "Skipping stale stop request for %s/%d: expected "
                     "ticket=%s, current ticket=%s",
@@ -2627,7 +2628,11 @@ class Supervisor:
             # result was reconciled.
             self._stop_slot_linear_done(slot)
             if task_id is not None:
-                update_task(self._conn, task_id, status="completed")
+                update_task(
+                    self._conn, task_id,
+                    status="completed",
+                    completed_at=datetime.now(timezone.utc).isoformat(),
+                )
         else:
             self._stop_slot_linear_cleanup(slot)
             if task_id is not None:
@@ -2737,9 +2742,12 @@ class Supervisor:
                 _kill_pids(descendant_pids, signal.SIGKILL)
             self._workers.pop(key, None)
         else:
-            # Process not tracked (e.g. reattached after restart) — wait
-            # and escalate via PID only.
-            time.sleep(grace)
+            # Process not tracked (e.g. reattached after restart) — poll
+            # PID liveness instead of blocking the supervisor thread for
+            # the full grace period.
+            deadline = time.time() + grace
+            while _is_pid_alive(pid) and time.time() < deadline:
+                time.sleep(0.5)
             if _is_pid_alive(pid):
                 _kill_process_tree(pid)
             else:
@@ -2825,6 +2833,12 @@ class Supervisor:
 
         # Reset and clean BEFORE checkout — a dirty worktree can block
         # checkout to the placeholder branch.
+        # Remove stale index.lock if the worker was killed mid-git-operation.
+        lock_file = Path(cwd) / ".git" / "index.lock"
+        if lock_file.exists():
+            lock_file.unlink(missing_ok=True)
+            logger.info("Removed stale .git/index.lock in %s", cwd)
+
         try:
             subprocess.run(
                 ["git", "reset", "--hard"],
@@ -2916,7 +2930,7 @@ class Supervisor:
         try:
             poller.add_comment(
                 slot.ticket_id,
-                "**Stopped by user** — work discarded, slot freed",
+                "**Stopped by user** — work discarded",
             )
         except Exception:
             logger.warning(

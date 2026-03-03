@@ -5855,6 +5855,7 @@ class TestStopSlot:
         assert result.pr_was_merged is True
         task = get_task(supervisor._conn, task_id)
         assert task["status"] == "completed"  # marked completed, not failed
+        assert task["completed_at"] is not None  # timestamp must be set
 
     def test_stop_slot_updates_db_task(self, supervisor):
         """Stopping a slot marks the DB task as failed with 'stopped by user'."""
@@ -6366,6 +6367,47 @@ class TestRequestStopSlot:
             supervisor._tick()
 
         mock_stop.assert_called_once_with("test-project", 1)
+
+    def test_handle_stop_skips_when_ticket_reassigned(self, supervisor):
+        """Stop is skipped when the slot's ticket changed between request and processing."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="feat-1",
+        )
+        # Queue the stop request (captures expected_ticket=TST-1)
+        supervisor.request_stop_slot("test-project", 1)
+
+        # Simulate slot being freed and reassigned before processing
+        sm.free_slot("test-project", 1)
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-2", ticket_title="New", branch="feat-2",
+        )
+
+        with patch.object(supervisor, "stop_slot") as mock_stop:
+            supervisor._handle_stop_requests()
+
+        # stop_slot should NOT be called — the ticket was reassigned
+        mock_stop.assert_not_called()
+
+    def test_handle_stop_skips_when_free_slot_reassigned(self, supervisor):
+        """Stop is skipped when a free slot (expected_ticket=None) gets reassigned."""
+        # Slot starts free — request_stop_slot captures expected_ticket=None
+        supervisor.request_stop_slot("test-project", 1)
+
+        # Slot gets assigned before the tick processes the stop
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="feat-1",
+        )
+
+        with patch.object(supervisor, "stop_slot") as mock_stop:
+            supervisor._handle_stop_requests()
+
+        # stop_slot should NOT be called — ticket_id changed from None to TST-1
+        mock_stop.assert_not_called()
 
 
 class TestDrainResultsForSlot:
