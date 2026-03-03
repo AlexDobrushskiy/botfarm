@@ -17,7 +17,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -327,6 +327,129 @@ def parse_stream_json_result(result_data: dict) -> ClaudeResult:
     )
 
 
+def _parse_ndjson_stream(
+    proc_stdout,
+    *,
+    on_context_fill: ContextFillCallback | None = None,
+    log_fh=None,
+) -> tuple[list[str], ClaudeResult | None]:
+    """Read NDJSON lines from Claude's stdout stream.
+
+    Parses each line as JSON, tracks assistant turns for context fill
+    callbacks, and returns when a ``result`` message is received.
+
+    Returns ``(stdout_lines, claude_result)``.  *claude_result* is
+    ``None`` if no result message was received before the stream ended.
+    """
+    stdout_lines: list[str] = []
+    turn_number = 0
+    claude_result: ClaudeResult | None = None
+
+    for line in proc_stdout:
+        stdout_lines.append(line)
+
+        if log_fh is not None:
+            try:
+                log_fh.write(line)
+                log_fh.flush()
+            except OSError:
+                pass
+
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        try:
+            event = json.loads(stripped)
+        except json.JSONDecodeError:
+            logger.debug("Skipping non-JSON stream line: %s", stripped[:100])
+            continue
+
+        msg_type = event.get("type")
+
+        if msg_type == "assistant":
+            turn_number += 1
+            usage = (event.get("message") or {}).get("usage")
+            if usage and on_context_fill is not None:
+                fill_pct = _compute_turn_context_fill(usage, DEFAULT_CONTEXT_WINDOW)
+                if fill_pct is not None:
+                    try:
+                        on_context_fill(turn_number, fill_pct)
+                    except Exception:
+                        logger.debug(
+                            "on_context_fill callback failed", exc_info=True,
+                        )
+
+        elif msg_type == "result":
+            claude_result = parse_stream_json_result(event)
+            break
+
+    return stdout_lines, claude_result
+
+
+def _finalize_streaming_result(
+    proc: subprocess.Popen,
+    cmd: list[str],
+    *,
+    stdout_lines: list[str],
+    stderr_lines: list[str],
+    claude_result: ClaudeResult | None,
+    timed_out: threading.Event,
+    log_fh,
+    timeout: float | None,
+) -> ClaudeResult:
+    """Finalize a streaming Claude process: write logs, check errors, return result.
+
+    Appends stderr to the log file (if open), checks for timeout and
+    non-zero exit codes, and returns the parsed ``ClaudeResult``.
+
+    Raises ``TimeoutError``, ``subprocess.CalledProcessError``, or
+    ``RuntimeError`` when the process did not produce a valid result.
+    """
+    stdout_text = "".join(stdout_lines)
+    stderr_text = "".join(stderr_lines)
+
+    if log_fh is not None:
+        try:
+            if stderr_text:
+                log_fh.write("\n--- STDERR ---\n")
+                log_fh.write(stderr_text)
+        except OSError:
+            pass
+        finally:
+            log_fh.close()
+
+    if timed_out.is_set() and proc.returncode in (-15, -9, 137, 143, None):
+        raise TimeoutError(
+            f"claude streaming process timed out after {timeout}s"
+        )
+
+    if proc.returncode != 0 and claude_result is None:
+        logger.error(
+            "claude (streaming) exited with code %d\nstderr: %s",
+            proc.returncode,
+            stderr_text[:DETAIL_TRUNCATE_CHARS] if stderr_text else "(empty)",
+        )
+        raise subprocess.CalledProcessError(
+            proc.returncode, cmd, output=stdout_text, stderr=stderr_text,
+        )
+
+    if proc.returncode != 0 and claude_result is not None:
+        logger.warning(
+            "claude (streaming) exited with code %d after result was parsed "
+            "(likely killed during MCP server cleanup)",
+            proc.returncode,
+        )
+
+    if claude_result is None:
+        raise RuntimeError(
+            "claude stream-json produced no result message; "
+            f"stdout length={len(stdout_text)}"
+        )
+
+    return claude_result
+
+
 def run_claude_streaming(
     prompt: str,
     *,
@@ -394,14 +517,11 @@ def run_claude_streaming(
     stderr_thread.start()
 
     # Watchdog: kill the process if it exceeds the timeout.
-    # Uses two events: ``cancel_watchdog`` to stop the timer early (normal
-    # completion) and ``timed_out`` so the main thread can detect a timeout.
     cancel_watchdog = threading.Event()
     timed_out = threading.Event()
 
     def _watchdog():
         if not cancel_watchdog.wait(timeout):
-            # Timeout elapsed before cancellation — kill the process group
             timed_out.set()
             _terminate_process_group(proc)
 
@@ -419,53 +539,12 @@ def run_claude_streaming(
         except OSError:
             logger.warning("Failed to open log file %s for streaming", log_file, exc_info=True)
 
-    # Read stdout line-by-line (NDJSON)
-    stdout_lines: list[str] = []
-    turn_number = 0
-    claude_result: ClaudeResult | None = None
-
+    # Parse NDJSON stream with context fill tracking
     try:
-        for line in proc.stdout:
-            stdout_lines.append(line)
-
-            # Write to log file in real-time
-            if log_fh is not None:
-                try:
-                    log_fh.write(line)
-                    log_fh.flush()
-                except OSError:
-                    pass
-
-            stripped = line.strip()
-            if not stripped:
-                continue
-
-            try:
-                event = json.loads(stripped)
-            except json.JSONDecodeError:
-                logger.debug("Skipping non-JSON stream line: %s", stripped[:100])
-                continue
-
-            msg_type = event.get("type")
-
-            if msg_type == "assistant":
-                turn_number += 1
-                usage = (event.get("message") or {}).get("usage")
-                if usage and on_context_fill is not None:
-                    fill_pct = _compute_turn_context_fill(usage, DEFAULT_CONTEXT_WINDOW)
-                    if fill_pct is not None:
-                        try:
-                            on_context_fill(turn_number, fill_pct)
-                        except Exception:
-                            logger.debug(
-                                "on_context_fill callback failed", exc_info=True,
-                            )
-
-            elif msg_type == "result":
-                claude_result = parse_stream_json_result(event)
-                break
+        stdout_lines, claude_result = _parse_ndjson_stream(
+            proc.stdout, on_context_fill=on_context_fill, log_fh=log_fh,
+        )
     finally:
-        # Cancel watchdog
         cancel_watchdog.set()
         if watchdog_thread is not None:
             watchdog_thread.join(timeout=2)
@@ -475,49 +554,15 @@ def run_claude_streaming(
     proc.wait()
     stderr_thread.join(timeout=5)
 
-    stdout_text = "".join(stdout_lines)
-    stderr_text = "".join(stderr_lines)
-
-    # Append stderr to log file and close
-    if log_fh is not None:
-        try:
-            if stderr_text:
-                log_fh.write("\n--- STDERR ---\n")
-                log_fh.write(stderr_text)
-        except OSError:
-            pass
-        finally:
-            log_fh.close()
-
-    if timed_out.is_set() and proc.returncode in (-15, -9, 137, 143, None):
-        raise TimeoutError(
-            f"claude streaming process timed out after {timeout}s"
-        )
-
-    if proc.returncode != 0 and claude_result is None:
-        logger.error(
-            "claude (streaming) exited with code %d\nstderr: %s",
-            proc.returncode,
-            stderr_text[:DETAIL_TRUNCATE_CHARS] if stderr_text else "(empty)",
-        )
-        raise subprocess.CalledProcessError(
-            proc.returncode, cmd, output=stdout_text, stderr=stderr_text,
-        )
-
-    if proc.returncode != 0 and claude_result is not None:
-        logger.warning(
-            "claude (streaming) exited with code %d after result was parsed "
-            "(likely killed during MCP server cleanup)",
-            proc.returncode,
-        )
-
-    if claude_result is None:
-        raise RuntimeError(
-            "claude stream-json produced no result message; "
-            f"stdout length={len(stdout_text)}"
-        )
-
-    return claude_result
+    return _finalize_streaming_result(
+        proc, cmd,
+        stdout_lines=stdout_lines,
+        stderr_lines=stderr_lines,
+        claude_result=claude_result,
+        timed_out=timed_out,
+        log_fh=log_fh,
+        timeout=timeout,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1402,77 +1447,12 @@ def run_pipeline(
     coder_env = build_coder_env(ident, slot_db_path) or None
     reviewer_env = build_reviewer_env(ident, slot_db_path) or None
 
-    # --- Load pipeline template from DB ---
-    pipeline_tpl: PipelineTemplate | None = None
-    try:
-        pipeline_tpl = load_pipeline(conn, ticket_labels or [])
-        logger.info(
-            "Loaded pipeline '%s' for %s (stages: %s)",
-            pipeline_tpl.name, ticket_id,
-            ", ".join(s.name for s in pipeline_tpl.stages),
-        )
-    except Exception:
-        logger.warning(
-            "Could not load pipeline from DB for %s — using legacy constants",
-            ticket_id, exc_info=True,
-        )
-
-    # Derive stage ordering and max-turns from pipeline template
-    if pipeline_tpl is not None:
-        stages = _derive_stages(pipeline_tpl)
-        turns_cfg = _build_turns_cfg(pipeline_tpl, max_turns)
-    else:
-        stages = STAGES
-        turns_cfg = {
-            "implement": DEFAULT_IMPLEMENT_MAX_TURNS,
-            "review": DEFAULT_REVIEW_MAX_TURNS,
-            "fix": DEFAULT_FIX_MAX_TURNS,
-            **(max_turns or {}),
-        }
-
-    # Resolve loop configurations from DB
-    review_loop: StageLoop | None = None
-    ci_retry_loop: StageLoop | None = None
-    if pipeline_tpl is not None:
-        review_loop = get_loop_for_stage(pipeline_tpl, "review")
-        ci_retry_loop = get_loop_for_stage(pipeline_tpl, "ci_fix")
-
-    # Resolve effective iteration counts from loop config or fallback params
-    eff_max_review_iterations = max_review_iterations
-    if review_loop is not None:
-        from botfarm.config import AgentsConfig
-        _agents_cfg = AgentsConfig(
-            max_review_iterations=max_review_iterations,
-            max_ci_retries=max_ci_retries,
-        )
-        eff_max_review_iterations = resolve_max_iterations(review_loop, _agents_cfg)
-
-    eff_max_ci_retries = max_ci_retries
-    if ci_retry_loop is not None:
-        from botfarm.config import AgentsConfig
-        _agents_cfg = AgentsConfig(
-            max_review_iterations=max_review_iterations,
-            max_ci_retries=max_ci_retries,
-        )
-        eff_max_ci_retries = resolve_max_iterations(ci_retry_loop, _agents_cfg)
-
-    # Determine which stages are loop-managed (should be skipped in main
-    # iteration because they're handled inside a loop).
-    #
-    # Two loop patterns:
-    # 1. review_loop (no on_failure_stage): review runs in main flow,
-    #    fix only runs inside the loop → end_stage is managed
-    # 2. ci_retry_loop (has on_failure_stage): pr_checks runs in main flow,
-    #    ci_fix only triggered on failure → start_stage is managed
-    loop_managed_stages: set[str] = set()
-    if pipeline_tpl is not None:
-        for loop in pipeline_tpl.loops:
-            if loop.on_failure_stage:
-                # Retry-style loop: start_stage only runs on failure
-                loop_managed_stages.add(loop.start_stage)
-            else:
-                # Iteration-style loop: end_stage runs inside the loop
-                loop_managed_stages.add(loop.end_stage)
+    # Load pipeline template and derive configuration
+    (stages, turns_cfg, eff_max_review_iterations, eff_max_ci_retries,
+     loop_managed_stages, pipeline_tpl) = _load_pipeline_config(
+        conn, ticket_id, ticket_labels or [], max_turns,
+        max_review_iterations, max_ci_retries,
+    )
 
     # Validate resume_from_stage upfront — check against all pipeline stages
     # (including loop-managed ones), not just main stages.
@@ -1510,9 +1490,11 @@ def run_pipeline(
         placeholder_branch=placeholder_branch,
         coder_env=coder_env,
         reviewer_env=reviewer_env,
-        codex_reviewer_enabled=codex_reviewer_enabled,
-        codex_reviewer_model=codex_reviewer_model,
-        codex_reviewer_timeout_minutes=codex_reviewer_timeout_minutes,
+        codex_config=_CodexReviewerConfig(
+            enabled=codex_reviewer_enabled,
+            model=codex_reviewer_model,
+            timeout_minutes=codex_reviewer_timeout_minutes,
+        ),
     )
 
     # Build main-stage list: skip loop-managed stages (they're handled
@@ -1544,122 +1526,13 @@ def run_pipeline(
             pipeline.paused = True
             return pipeline
 
-        # ----- Review iteration loop -----
-        if stage == "review":
-            success = _run_review_fix_loop(ctx, pr_url=pr_url, max_iterations=eff_max_review_iterations)
-            if not success:
-                return pipeline
-            # Ensure both review and fix appear in stages_completed.
-            if "review" not in pipeline.stages_completed:
-                pipeline.stages_completed.append("review")
-            if "fix" not in pipeline.stages_completed:
-                pipeline.stages_completed.append("fix")
-            continue
-
-        if stage == "fix" and "fix" in pipeline.stages_completed:
-            # Already handled by _run_review_fix_loop above
-            continue
-
-        if stage == "fix":
-            # Resuming from fix — run the initial fix, then enter the
-            # review iteration loop with remaining iterations so fixes
-            # get verified.
-            result = ctx.run_and_record("fix", pr_url=pr_url)
-            if result is None:
-                return pipeline
-            update_task(conn, task_id, review_iterations=1)
-            conn.commit()
-            if eff_max_review_iterations > 1:
-                success = _run_review_fix_loop(
-                    ctx, pr_url=pr_url, max_iterations=eff_max_review_iterations,
-                    start_iteration=2,
-                )
-                if not success:
-                    return pipeline
-            if "review" not in pipeline.stages_completed:
-                pipeline.stages_completed.append("review")
-            if "fix" not in pipeline.stages_completed:
-                pipeline.stages_completed.append("fix")
-            continue
-
-        # ----- CI retry loop -----
-        if stage == "pr_checks":
-            result = ctx.run_and_record("pr_checks", pr_url=pr_url)
-            if result is not None:
-                # CI passed on first try
-                continue
-            # CI failed — attempt retries if configured
-            if eff_max_ci_retries > 0:
-                ci_failure_output = pipeline.failure_reason or "CI checks failed"
-                _reset_for_retry(ctx)
-                success = _run_ci_retry_loop(
-                    ctx,
-                    pr_url=pr_url,
-                    ci_failure_output=ci_failure_output,
-                    max_retries=eff_max_ci_retries,
-                )
-                if not success:
-                    return pipeline
-                # Ensure pr_checks is marked completed
-                if "pr_checks" not in pipeline.stages_completed:
-                    pipeline.stages_completed.append("pr_checks")
-                continue
-            # No retries configured — fail
-            return pipeline
-
-        # ----- Normal stages (implement, merge, etc.) -----
-        result = ctx.run_and_record(stage, pr_url=pr_url)
-        if result is None:
-            return pipeline
-
-        # Capture PR URL from implement stage (or any stage with pr_url result_parser)
-        if result.pr_url:
-            pr_url = result.pr_url
-            pipeline.pr_url = pr_url
-            update_task(conn, task_id, pr_url=pr_url)
-            conn.commit()
-            if slot_manager and project and slot_id is not None:
-                slot_manager.set_pr_url(project, slot_id, pr_url)
-
-        # Investigation/short pipelines: if implement is the last stage
-        # (pipeline has no more stages after it), short-circuit as success.
-        if stage == "implement" and _is_investigation(ticket_labels):
-            pipeline.success = True
-            update_task(
-                conn,
-                task_id,
-                status="completed",
-                turns=pipeline.total_turns,
-                completed_at=datetime.now(timezone.utc).isoformat(),
-            )
-            conn.commit()
-            return pipeline
-
-        # If implement didn't produce a PR URL, check for explicit no-PR signal
-        if stage == "implement" and not pr_url:
-            no_pr_reason = _detect_no_pr_needed(
-                result.claude_result.result_text if result.claude_result else ""
-            )
-            if no_pr_reason:
-                logger.info(
-                    "Implement stage reported no PR needed for %s: %s",
-                    ticket_id, no_pr_reason[:RESULT_TRUNCATE_CHARS],
-                )
-                pipeline.success = True
-                pipeline.no_pr_reason = no_pr_reason
-                update_task(
-                    conn, task_id,
-                    status="completed",
-                    turns=pipeline.total_turns,
-                    completed_at=datetime.now(timezone.utc).isoformat(),
-                    comments=f"NO_PR_NEEDED: {no_pr_reason}",
-                )
-                conn.commit()
-                return pipeline
-            # Otherwise, genuine failure
-            pipeline.failure_stage = "implement"
-            pipeline.failure_reason = "Implement stage did not produce a PR URL"
-            _record_failure(conn, task_id, pipeline)
+        should_stop, pr_url = _dispatch_pipeline_stage(
+            ctx, stage,
+            pr_url=pr_url,
+            eff_max_review_iterations=eff_max_review_iterations,
+            eff_max_ci_retries=eff_max_ci_retries,
+        )
+        if should_stop:
             return pipeline
 
     # All stages passed
@@ -1677,8 +1550,317 @@ def run_pipeline(
 
 
 # ---------------------------------------------------------------------------
+# Pipeline setup and stage dispatch
+# ---------------------------------------------------------------------------
+
+
+def _load_pipeline_config(
+    conn,
+    ticket_id: str,
+    ticket_labels: list[str],
+    max_turns: dict[str, int] | None,
+    max_review_iterations: int,
+    max_ci_retries: int,
+) -> tuple[
+    tuple[str, ...],
+    dict[str, int],
+    int,
+    int,
+    set[str],
+    PipelineTemplate | None,
+]:
+    """Load pipeline template from DB and derive all configuration.
+
+    Returns ``(stages, turns_cfg, eff_max_review_iterations,
+    eff_max_ci_retries, loop_managed_stages, pipeline_tpl)``.
+    """
+    pipeline_tpl: PipelineTemplate | None = None
+    try:
+        pipeline_tpl = load_pipeline(conn, ticket_labels)
+        logger.info(
+            "Loaded pipeline '%s' for %s (stages: %s)",
+            pipeline_tpl.name, ticket_id,
+            ", ".join(s.name for s in pipeline_tpl.stages),
+        )
+    except Exception:
+        logger.warning(
+            "Could not load pipeline from DB for %s — using legacy constants",
+            ticket_id, exc_info=True,
+        )
+
+    # Derive stage ordering and max-turns from pipeline template
+    if pipeline_tpl is not None:
+        stages = _derive_stages(pipeline_tpl)
+        turns_cfg = _build_turns_cfg(pipeline_tpl, max_turns)
+    else:
+        stages = STAGES
+        turns_cfg = {
+            "implement": DEFAULT_IMPLEMENT_MAX_TURNS,
+            "review": DEFAULT_REVIEW_MAX_TURNS,
+            "fix": DEFAULT_FIX_MAX_TURNS,
+            **(max_turns or {}),
+        }
+
+    # Resolve loop configurations from DB
+    review_loop: StageLoop | None = None
+    ci_retry_loop: StageLoop | None = None
+    if pipeline_tpl is not None:
+        review_loop = get_loop_for_stage(pipeline_tpl, "review")
+        ci_retry_loop = get_loop_for_stage(pipeline_tpl, "ci_fix")
+
+    # Resolve effective iteration counts
+    eff_max_review_iterations = max_review_iterations
+    if review_loop is not None:
+        from botfarm.config import AgentsConfig
+        _agents_cfg = AgentsConfig(
+            max_review_iterations=max_review_iterations,
+            max_ci_retries=max_ci_retries,
+        )
+        eff_max_review_iterations = resolve_max_iterations(review_loop, _agents_cfg)
+
+    eff_max_ci_retries = max_ci_retries
+    if ci_retry_loop is not None:
+        from botfarm.config import AgentsConfig
+        _agents_cfg = AgentsConfig(
+            max_review_iterations=max_review_iterations,
+            max_ci_retries=max_ci_retries,
+        )
+        eff_max_ci_retries = resolve_max_iterations(ci_retry_loop, _agents_cfg)
+
+    # Determine loop-managed stages: skipped in main iteration because
+    # they're handled inside their respective loops.
+    loop_managed_stages: set[str] = set()
+    if pipeline_tpl is not None:
+        for loop in pipeline_tpl.loops:
+            if loop.on_failure_stage:
+                loop_managed_stages.add(loop.start_stage)
+            else:
+                loop_managed_stages.add(loop.end_stage)
+
+    return stages, turns_cfg, eff_max_review_iterations, eff_max_ci_retries, loop_managed_stages, pipeline_tpl
+
+
+def _dispatch_pipeline_stage(
+    ctx: "_PipelineContext",
+    stage: str,
+    *,
+    pr_url: str | None,
+    eff_max_review_iterations: int,
+    eff_max_ci_retries: int,
+) -> tuple[bool, str | None]:
+    """Dispatch a single stage in the pipeline main loop.
+
+    Returns ``(should_stop, updated_pr_url)``.  When *should_stop* is
+    ``True``, the pipeline should return immediately (failure or early
+    success already recorded in ``ctx.pipeline``).
+    """
+    # ----- Review iteration loop -----
+    if stage == "review":
+        success = _run_review_fix_loop(
+            ctx, pr_url=pr_url, max_iterations=eff_max_review_iterations,
+        )
+        if not success:
+            return True, pr_url
+        if "review" not in ctx.pipeline.stages_completed:
+            ctx.pipeline.stages_completed.append("review")
+        if "fix" not in ctx.pipeline.stages_completed:
+            ctx.pipeline.stages_completed.append("fix")
+        return False, pr_url
+
+    if stage == "fix" and "fix" in ctx.pipeline.stages_completed:
+        return False, pr_url
+
+    if stage == "fix":
+        should_stop = _handle_fix_resume(
+            ctx, pr_url=pr_url, max_iterations=eff_max_review_iterations,
+        )
+        return should_stop, pr_url
+
+    # ----- CI retry loop -----
+    if stage == "pr_checks":
+        return _handle_pr_checks_stage(
+            ctx, pr_url=pr_url, max_ci_retries=eff_max_ci_retries,
+        )
+
+    # ----- Normal stages (implement, merge, etc.) -----
+    result = ctx.run_and_record(stage, pr_url=pr_url)
+    if result is None:
+        return True, pr_url
+
+    # Capture PR URL from any stage with pr_url result_parser
+    if result.pr_url:
+        pr_url = result.pr_url
+        ctx.pipeline.pr_url = pr_url
+        update_task(ctx.conn, ctx.task_id, pr_url=pr_url)
+        ctx.conn.commit()
+        if ctx.slot_manager and ctx.project and ctx.slot_id is not None:
+            ctx.slot_manager.set_pr_url(ctx.project, ctx.slot_id, pr_url)
+
+    # Post-implement special handling
+    if stage == "implement":
+        should_stop = _handle_implement_result(ctx, result, pr_url)
+        if should_stop:
+            return True, pr_url
+
+    return False, pr_url
+
+
+def _handle_fix_resume(
+    ctx: "_PipelineContext",
+    *,
+    pr_url: str | None,
+    max_iterations: int,
+) -> bool:
+    """Handle resuming from the fix stage.
+
+    Runs the initial fix, then enters the review iteration loop with
+    remaining iterations so fixes get verified.
+
+    Returns ``True`` if the pipeline should stop (failure), ``False``
+    to continue.
+    """
+    result = ctx.run_and_record("fix", pr_url=pr_url)
+    if result is None:
+        return True
+    update_task(ctx.conn, ctx.task_id, review_iterations=1)
+    ctx.conn.commit()
+    if max_iterations > 1:
+        success = _run_review_fix_loop(
+            ctx, pr_url=pr_url, max_iterations=max_iterations,
+            start_iteration=2,
+        )
+        if not success:
+            return True
+    if "review" not in ctx.pipeline.stages_completed:
+        ctx.pipeline.stages_completed.append("review")
+    if "fix" not in ctx.pipeline.stages_completed:
+        ctx.pipeline.stages_completed.append("fix")
+    return False
+
+
+def _handle_pr_checks_stage(
+    ctx: "_PipelineContext",
+    *,
+    pr_url: str | None,
+    max_ci_retries: int,
+) -> tuple[bool, str | None]:
+    """Handle the pr_checks stage with CI retry loop.
+
+    Returns ``(should_stop, pr_url)``.
+    """
+    result = ctx.run_and_record("pr_checks", pr_url=pr_url)
+    if result is not None:
+        return False, pr_url  # CI passed on first try
+
+    if max_ci_retries > 0:
+        ci_failure_output = ctx.pipeline.failure_reason or "CI checks failed"
+        _reset_for_retry(ctx)
+        success = _run_ci_retry_loop(
+            ctx,
+            pr_url=pr_url,
+            ci_failure_output=ci_failure_output,
+            max_retries=max_ci_retries,
+        )
+        if not success:
+            return True, pr_url
+        if "pr_checks" not in ctx.pipeline.stages_completed:
+            ctx.pipeline.stages_completed.append("pr_checks")
+        return False, pr_url
+
+    # No retries configured — fail
+    return True, pr_url
+
+
+def _handle_implement_result(
+    ctx: "_PipelineContext",
+    result: "StageResult",
+    pr_url: str | None,
+) -> bool:
+    """Handle post-implement special cases.
+
+    Returns ``True`` if the pipeline should stop (success or failure
+    already recorded).
+    """
+    # Investigation: short-circuit success
+    if _is_investigation(ctx.ticket_labels):
+        ctx.pipeline.success = True
+        update_task(
+            ctx.conn,
+            ctx.task_id,
+            status="completed",
+            turns=ctx.pipeline.total_turns,
+            completed_at=datetime.now(timezone.utc).isoformat(),
+        )
+        ctx.conn.commit()
+        return True
+
+    # No PR URL: check for explicit no-PR signal
+    if not pr_url:
+        no_pr_reason = _detect_no_pr_needed(
+            result.claude_result.result_text if result.claude_result else ""
+        )
+        if no_pr_reason:
+            logger.info(
+                "Implement stage reported no PR needed for %s: %s",
+                ctx.ticket_id, no_pr_reason[:RESULT_TRUNCATE_CHARS],
+            )
+            ctx.pipeline.success = True
+            ctx.pipeline.no_pr_reason = no_pr_reason
+            update_task(
+                ctx.conn, ctx.task_id,
+                status="completed",
+                turns=ctx.pipeline.total_turns,
+                completed_at=datetime.now(timezone.utc).isoformat(),
+                comments=f"NO_PR_NEEDED: {no_pr_reason}",
+            )
+            ctx.conn.commit()
+            return True
+        # Genuine failure
+        ctx.pipeline.failure_stage = "implement"
+        ctx.pipeline.failure_reason = "Implement stage did not produce a PR URL"
+        _record_failure(ctx.conn, ctx.task_id, ctx.pipeline)
+        return True
+
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+@dataclass
+class _CodexReviewerConfig:
+    """Configuration for the Codex dual-reviewer feature."""
+
+    enabled: bool = False
+    model: str = ""
+    timeout_minutes: int = 15
+
+
+def _env_for_stage(
+    stage: str,
+    pipeline_tpl: PipelineTemplate | None,
+    coder_env: dict[str, str] | None,
+    reviewer_env: dict[str, str] | None,
+) -> dict[str, str] | None:
+    """Return the appropriate env dict for a given stage.
+
+    Uses ``StageTemplate.identity`` when a pipeline template is loaded,
+    falling back to the stage name for backward compatibility.
+    """
+    if pipeline_tpl is not None:
+        try:
+            tpl = get_stage(pipeline_tpl, stage)
+            if tpl.identity == "reviewer":
+                return reviewer_env
+            return coder_env
+        except ValueError:
+            pass
+    # Legacy fallback
+    if stage == "review":
+        return reviewer_env
+    return coder_env
 
 
 @dataclass
@@ -1702,28 +1884,13 @@ class _PipelineContext:
     placeholder_branch: str | None = None
     coder_env: dict[str, str] | None = None
     reviewer_env: dict[str, str] | None = None
-    codex_reviewer_enabled: bool = False
-    codex_reviewer_model: str = ""
-    codex_reviewer_timeout_minutes: int = 15
+    codex_config: _CodexReviewerConfig = field(default_factory=_CodexReviewerConfig)
 
     def _env_for_stage(self, stage: str) -> dict[str, str] | None:
-        """Return the appropriate env dict for a given stage.
-
-        Uses StageTemplate.identity when a pipeline template is loaded,
-        falling back to the stage name for backward compatibility.
-        """
-        if self.pipeline_tpl is not None:
-            try:
-                tpl = get_stage(self.pipeline_tpl, stage)
-                if tpl.identity == "reviewer":
-                    return self.reviewer_env
-                return self.coder_env
-            except ValueError:
-                pass
-        # Legacy fallback
-        if stage == "review":
-            return self.reviewer_env
-        return self.coder_env
+        """Return the appropriate env dict for a given stage."""
+        return _env_for_stage(
+            stage, self.pipeline_tpl, self.coder_env, self.reviewer_env,
+        )
 
     def _get_stage_tpl(self, stage: str) -> StageTemplate | None:
         """Get the StageTemplate for a stage, or None if no pipeline loaded."""
@@ -1892,11 +2059,11 @@ class _PipelineContext:
 
         # Codex reviewer params (only relevant for review stage)
         codex_kwargs: dict = {}
-        if stage == "review" and self.codex_reviewer_enabled:
+        if stage == "review" and self.codex_config.enabled:
             codex_kwargs = {
                 "codex_enabled": True,
-                "codex_model": self.codex_reviewer_model or None,
-                "codex_timeout": self.codex_reviewer_timeout_minutes * 60.0,
+                "codex_model": self.codex_config.model or None,
+                "codex_timeout": self.codex_config.timeout_minutes * 60.0,
                 "codex_log_file": _make_stage_log_path(
                     self.log_dir, "codex_review", iteration,
                 ),
