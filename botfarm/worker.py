@@ -1910,7 +1910,7 @@ class _PipelineContext:
                 ticket_labels=self.ticket_labels,
                 pr_url=pr_url,
                 cwd=self.cwd,
-                max_turns=self.turns_cfg.get(stage, DEFAULT_FIX_MAX_TURNS),
+                max_turns=self.turns_cfg.get(stage, DEFAULT_MAX_TURNS.get(stage, DEFAULT_FIX_MAX_TURNS)),
                 pr_checks_timeout=self.pr_checks_timeout,
                 log_file=log_file,
                 placeholder_branch=self.placeholder_branch,
