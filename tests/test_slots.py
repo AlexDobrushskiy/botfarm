@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
-from botfarm.db import init_db, load_all_project_pause_states, load_all_slots, load_dispatch_state
+from botfarm.db import init_db, load_all_project_pause_states, load_all_slots, load_dispatch_state, save_dispatch_state
 from botfarm.slots import (
     SLOT_STATUSES,
     SlotError,
@@ -827,6 +827,53 @@ class TestDispatchPaused:
         mgr2.load()
         assert mgr2.dispatch_paused is False
         assert mgr2.dispatch_pause_reason is None
+
+
+class TestRefreshDispatchState:
+    def test_detects_external_clear_of_start_paused(self, mgr: SlotManager):
+        """refresh_dispatch_state picks up CLI clearing start_paused."""
+        mgr.register_slot("proj", 1)
+        mgr.set_dispatch_paused(True, "start_paused")
+
+        # Simulate CLI writing paused=False directly to DB
+        save_dispatch_state(mgr._conn, paused=False)
+        mgr._conn.commit()
+
+        result = mgr.refresh_dispatch_state()
+        assert result is True
+        assert mgr.dispatch_paused is False
+        assert mgr.dispatch_pause_reason is None
+
+    def test_ignores_non_start_paused_reason(self, mgr: SlotManager):
+        """refresh_dispatch_state does NOT clear in-memory state for other reasons."""
+        mgr.register_slot("proj", 1)
+        mgr.set_dispatch_paused(True, "manual_pause")
+
+        # Even if DB shows unpaused, we don't clear manual_pause
+        save_dispatch_state(mgr._conn, paused=False)
+        mgr._conn.commit()
+
+        result = mgr.refresh_dispatch_state()
+        assert result is False
+        assert mgr.dispatch_paused is True
+        assert mgr.dispatch_pause_reason == "manual_pause"
+
+    def test_no_change_when_still_paused_in_db(self, mgr: SlotManager):
+        """refresh_dispatch_state returns False when DB still shows paused."""
+        mgr.register_slot("proj", 1)
+        mgr.set_dispatch_paused(True, "start_paused")
+
+        result = mgr.refresh_dispatch_state()
+        assert result is False
+        assert mgr.dispatch_paused is True
+
+    def test_no_change_when_not_paused(self, mgr: SlotManager):
+        """refresh_dispatch_state returns False when not paused at all."""
+        mgr.register_slot("proj", 1)
+
+        result = mgr.refresh_dispatch_state()
+        assert result is False
+        assert mgr.dispatch_paused is False
 
 
 class TestSlotStatuses:

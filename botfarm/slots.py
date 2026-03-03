@@ -555,6 +555,27 @@ class SlotManager:
         """
         self._project_pauses = load_all_project_pause_states(self._conn)
 
+    def refresh_dispatch_state(self) -> bool:
+        """Reload global dispatch pause state from the database.
+
+        Called by the supervisor at the start of each tick so that
+        changes made by the CLI (``botfarm resume``) are picked up.
+
+        Returns ``True`` if an external actor cleared ``start_paused``,
+        indicating the supervisor should also clear its
+        ``_startup_paused`` flag.
+        """
+        paused, reason, _heartbeat = load_dispatch_state(self._conn)
+        if (
+            self._dispatch_paused
+            and self._dispatch_pause_reason == "start_paused"
+            and not paused
+        ):
+            self._dispatch_paused = False
+            self._dispatch_pause_reason = None
+            return True
+        return False
+
     # ------------------------------------------------------------------
     # Dispatch helpers
     # ------------------------------------------------------------------

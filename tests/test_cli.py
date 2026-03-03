@@ -13,6 +13,7 @@ from botfarm.db import (
     insert_stage_run,
     insert_task,
     insert_usage_snapshot,
+    load_dispatch_state,
     save_dispatch_state,
     update_task,
 )
@@ -206,6 +207,117 @@ class TestStatusCommand:
         result = runner.invoke(main, ["status"])
         assert result.exit_code == 0
         assert "paused_limit" in result.output
+
+    def test_start_paused_shows_yellow_banner(self, runner, db_file, monkeypatch):
+        _seed_slots(
+            db_file,
+            [_make_slot("proj", 1, "free")],
+            dispatch_paused=True,
+            dispatch_pause_reason="start_paused",
+        )
+        monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
+        result = runner.invoke(main, ["status"])
+        assert result.exit_code == 0
+        assert "DISPATCH PAUSED" in result.output
+        assert "waiting for user to start" in result.output
+        assert "botfarm resume" in result.output
+
+    def test_non_start_paused_shows_red_banner(self, runner, db_file, monkeypatch):
+        _seed_slots(
+            db_file,
+            [_make_slot("proj", 1, "free")],
+            dispatch_paused=True,
+            dispatch_pause_reason="manual_pause",
+        )
+        monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
+        result = runner.invoke(main, ["status"])
+        assert result.exit_code == 0
+        assert "DISPATCH PAUSED" in result.output
+        assert "manual_pause" in result.output
+        assert "waiting for user to start" not in result.output
+
+
+# ---------------------------------------------------------------------------
+# botfarm resume
+# ---------------------------------------------------------------------------
+
+
+class TestResumeCommand:
+    def test_resume_project(self, runner, db_file, monkeypatch):
+        """Resume with a project argument clears per-project pause."""
+        from botfarm.db import load_all_project_pause_states, save_project_pause_state
+
+        _seed_slots(db_file, [_make_slot("proj", 1, "free")])
+        conn = sqlite3.connect(str(db_file))
+        conn.row_factory = sqlite3.Row
+        save_project_pause_state(conn, project="proj", paused=True, reason="test")
+        conn.commit()
+        conn.close()
+
+        monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
+        result = runner.invoke(main, ["resume", "proj"])
+        assert result.exit_code == 0
+        assert "resumed" in result.output
+
+    def test_resume_global_clears_start_paused(self, runner, db_file, monkeypatch):
+        """Resume without project clears global start_paused dispatch pause."""
+        _seed_slots(
+            db_file,
+            [_make_slot("proj", 1, "free")],
+            dispatch_paused=True,
+            dispatch_pause_reason="start_paused",
+        )
+        monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
+        result = runner.invoke(main, ["resume"])
+        assert result.exit_code == 0
+        assert "Dispatch resumed" in result.output
+
+        # Verify dispatch state was cleared in DB
+        conn = sqlite3.connect(str(db_file))
+        conn.row_factory = sqlite3.Row
+        paused, reason, _ = load_dispatch_state(conn)
+        conn.close()
+        assert not paused
+        assert reason is None
+
+    def test_resume_global_not_paused(self, runner, db_file, monkeypatch):
+        """Resume without project when dispatch is not paused shows message."""
+        _seed_slots(db_file, [_make_slot("proj", 1, "free")])
+        monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
+        result = runner.invoke(main, ["resume"])
+        assert result.exit_code == 0
+        assert "not paused" in result.output
+
+    def test_resume_global_different_reason(self, runner, db_file, monkeypatch):
+        """Resume without project when paused for non-start_paused reason refuses."""
+        _seed_slots(
+            db_file,
+            [_make_slot("proj", 1, "free")],
+            dispatch_paused=True,
+            dispatch_pause_reason="manual_pause",
+        )
+        monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
+        result = runner.invoke(main, ["resume"])
+        assert result.exit_code == 0
+        assert "different reason" in result.output
+        assert "manual_pause" in result.output
+
+        # Verify dispatch state was NOT cleared
+        conn = sqlite3.connect(str(db_file))
+        conn.row_factory = sqlite3.Row
+        paused, reason, _ = load_dispatch_state(conn)
+        conn.close()
+        assert paused
+        assert reason == "manual_pause"
+
+    def test_resume_global_no_database(self, runner, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "botfarm.cli._resolve_paths",
+            lambda _: (tmp_path / "nonexistent.db", None),
+        )
+        result = runner.invoke(main, ["resume"])
+        assert result.exit_code == 0
+        assert "No database found" in result.output
 
 
 # ---------------------------------------------------------------------------

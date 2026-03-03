@@ -5734,6 +5734,39 @@ class TestStartPaused:
         assert sm.dispatch_paused is True
         assert sm.dispatch_pause_reason == "start_paused"
 
+    def test_cli_resume_clears_start_paused_on_next_tick(self, supervisor):
+        """Simulate CLI `botfarm resume` clearing start_paused in DB;
+        the next supervisor tick should pick it up and clear in-memory state."""
+        from botfarm.db import save_dispatch_state, load_dispatch_state
+
+        sm = supervisor.slot_manager
+        sm.set_dispatch_paused(True, "start_paused")
+        supervisor._startup_paused = True
+
+        # Simulate CLI writing paused=False directly to the DB
+        # (preserving heartbeat, as the real CLI now does)
+        _paused, _reason, heartbeat = load_dispatch_state(supervisor._conn)
+        save_dispatch_state(
+            supervisor._conn, paused=False, supervisor_heartbeat=heartbeat,
+        )
+        supervisor._conn.commit()
+
+        # In-memory state is still paused
+        assert sm.dispatch_paused is True
+        assert supervisor._startup_paused is True
+
+        # Run a tick — the supervisor should detect the external change
+        supervisor._tick()
+
+        assert sm.dispatch_paused is False
+        assert sm.dispatch_pause_reason is None
+        assert supervisor._startup_paused is False
+
+        # Verify a start_paused_cleared event was recorded
+        events = get_events(supervisor._conn, event_type="start_paused_cleared")
+        assert len(events) >= 1
+        assert "CLI resume" in events[-1]["detail"]
+
 
 # ---------------------------------------------------------------------------
 # Stop slot

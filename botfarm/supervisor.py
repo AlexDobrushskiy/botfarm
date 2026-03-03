@@ -1949,6 +1949,16 @@ class Supervisor:
         self._slot_manager.refresh_stages_from_disk()
         # Reload per-project pause state (may be changed by CLI or dashboard)
         self._slot_manager.refresh_project_pauses()
+        # Reload global dispatch state (CLI `botfarm resume` may clear start_paused)
+        if self._slot_manager.refresh_dispatch_state():
+            self._startup_paused = False
+            logger.info("start_paused cleared externally (CLI resume)")
+            insert_event(
+                self._conn,
+                event_type="start_paused_cleared",
+                detail="cleared by CLI resume",
+            )
+            self._conn.commit()
 
         for phase in (
             self._reconcile_workers,
