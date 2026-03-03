@@ -16,6 +16,7 @@ from botfarm.db import (
     get_last_cleanup_batch_time,
     init_db,
     list_cleanup_batches,
+    load_all_slots,
     save_project_pause_state,
 )
 from botfarm.linear import LinearClient
@@ -132,6 +133,41 @@ async def api_stop_slot(request: Request):
             return JSONResponse(
                 {"error": "slot_id must be an integer"}, status_code=400,
             )
+    # Validate ticket_id against current slot state to prevent stopping a
+    # reassigned slot (the modal snapshot may be stale).
+    expected_ticket = body.get("ticket_id")
+    if expected_ticket is not None:
+        if not isinstance(expected_ticket, str):
+            return JSONResponse(
+                {"error": "ticket_id must be a string"}, status_code=400,
+            )
+        conn = None
+        try:
+            conn = init_db(request.app.state.db_path)
+            rows = load_all_slots(conn)
+            current_ticket = None
+            current_status = None
+            for row in rows:
+                if row["project"] == project and row["slot_id"] == slot_id:
+                    current_ticket = row["ticket_id"]
+                    current_status = row["status"]
+                    break
+            # Reject if the slot is no longer stoppable
+            stoppable = {"busy", "paused_manual", "paused_limit"}
+            if current_status is not None and current_status not in stoppable:
+                return JSONResponse(
+                    {"error": f"Slot is no longer stoppable (status: {current_status})"},
+                    status_code=409,
+                )
+            # Reject if the ticket has changed since the modal was opened
+            if expected_ticket and current_ticket != expected_ticket:
+                return JSONResponse(
+                    {"error": f"Slot ticket has changed (expected {expected_ticket}, current {current_ticket})"},
+                    status_code=409,
+                )
+        finally:
+            if conn is not None:
+                conn.close()
     cb(project, slot_id)
     return JSONResponse({
         "status": "requested",

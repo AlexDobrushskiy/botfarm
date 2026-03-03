@@ -55,16 +55,17 @@
 <script>
 var _stopSlotProject = "";
 var _stopSlotId = 0;
+var _stopTicketId = "";
 
 function openStopModal(el) {
     _stopSlotProject = el.dataset.project;
     _stopSlotId = parseInt(el.dataset.slotId, 10);
-    var ticketId = el.dataset.ticketId;
+    _stopTicketId = el.dataset.ticketId || "";
     var ticketTitle = el.dataset.ticketTitle;
     var stage = el.dataset.stage;
     var elapsedStr = el.dataset.elapsed;
     document.getElementById("stop-modal-title").textContent = "Stop slot " + _stopSlotProject + "/" + _stopSlotId + "?";
-    document.getElementById("stop-modal-ticket").textContent = ticketId || "-";
+    document.getElementById("stop-modal-ticket").textContent = _stopTicketId || "-";
     document.getElementById("stop-modal-ticket-title").textContent = ticketTitle || "-";
     document.getElementById("stop-modal-stage").textContent = stage ? stage.replace(/_/g, " ") : "-";
     document.getElementById("stop-modal-elapsed").textContent = elapsedStr || "-";
@@ -78,7 +79,7 @@ function confirmStopSlot() {
     fetch("/api/slot/stop", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({project: _stopSlotProject, slot_id: _stopSlotId})
+        body: JSON.stringify({project: _stopSlotProject, slot_id: _stopSlotId, ticket_id: _stopTicketId})
     }).then(function(resp) {
         if (!resp.ok) return resp.json().then(function(d) { throw new Error(d.error || "Request failed"); });
         return resp.json();

@@ -6263,6 +6263,83 @@ class TestStopSlotAPI:
             assert resp.status_code == 400, f"Expected 400 for project={payload!r}"
             assert "project must be a string" in resp.json()["error"]
 
+    def test_stop_with_matching_ticket_id_succeeds(self, db_file):
+        """POST /api/slot/stop succeeds when ticket_id matches current slot."""
+        called = []
+        app = create_app(
+            db_path=db_file,
+            on_stop_slot=lambda p, s: called.append((p, s)),
+        )
+        client = TestClient(app)
+        resp = client.post(
+            "/api/slot/stop",
+            json={"project": "my-project", "slot_id": 1, "ticket_id": "TST-1"},
+        )
+        assert resp.status_code == 200
+        assert called == [("my-project", 1)]
+
+    def test_stop_with_mismatched_ticket_id_returns_409(self, db_file):
+        """POST /api/slot/stop returns 409 when ticket_id doesn't match."""
+        called = []
+        app = create_app(
+            db_path=db_file,
+            on_stop_slot=lambda p, s: called.append((p, s)),
+        )
+        client = TestClient(app)
+        resp = client.post(
+            "/api/slot/stop",
+            json={"project": "my-project", "slot_id": 1, "ticket_id": "TST-999"},
+        )
+        assert resp.status_code == 409
+        assert "ticket has changed" in resp.json()["error"]
+        assert called == []
+
+    def test_stop_with_ticket_id_rejects_free_slot(self, db_file):
+        """POST /api/slot/stop returns 409 when slot is no longer stoppable."""
+        called = []
+        app = create_app(
+            db_path=db_file,
+            on_stop_slot=lambda p, s: called.append((p, s)),
+        )
+        client = TestClient(app)
+        # Slot 2 is free in the db_file fixture
+        resp = client.post(
+            "/api/slot/stop",
+            json={"project": "my-project", "slot_id": 2, "ticket_id": "TST-1"},
+        )
+        assert resp.status_code == 409
+        assert "no longer stoppable" in resp.json()["error"]
+        assert called == []
+
+    def test_stop_without_ticket_id_still_works(self, db_file):
+        """POST /api/slot/stop still works without ticket_id (backward compat)."""
+        called = []
+        app = create_app(
+            db_path=db_file,
+            on_stop_slot=lambda p, s: called.append((p, s)),
+        )
+        client = TestClient(app)
+        resp = client.post(
+            "/api/slot/stop",
+            json={"project": "my-project", "slot_id": 1},
+        )
+        assert resp.status_code == 200
+        assert called == [("my-project", 1)]
+
+    def test_stop_non_string_ticket_id_returns_400(self, db_file):
+        """POST /api/slot/stop rejects non-string ticket_id."""
+        app = create_app(
+            db_path=db_file,
+            on_stop_slot=lambda p, s: None,
+        )
+        client = TestClient(app)
+        resp = client.post(
+            "/api/slot/stop",
+            json={"project": "my-project", "slot_id": 1, "ticket_id": 123},
+        )
+        assert resp.status_code == 400
+        assert "ticket_id must be a string" in resp.json()["error"]
+
 
 class TestStopSlotButton:
     """Tests for the stop button in the slots partial."""
