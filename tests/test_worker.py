@@ -18,7 +18,7 @@ from botfarm.worker import (
     PipelineResult,
     StageResult,
     _CODER_STAGES,
-    _DEFAULT_CONTEXT_WINDOW,
+    DEFAULT_CONTEXT_WINDOW,
     _PipelineContext,
     _REVIEWER_STAGES,
     _build_implement_prompt,

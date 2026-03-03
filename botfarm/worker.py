@@ -40,6 +40,28 @@ from botfarm.workflow import (
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Module constants — extracted magic numbers
+# ---------------------------------------------------------------------------
+
+# Max turns for Claude stages (default when not overridden by pipeline template)
+DEFAULT_IMPLEMENT_MAX_TURNS = 200
+DEFAULT_REVIEW_MAX_TURNS = 100
+DEFAULT_FIX_MAX_TURNS = 100
+
+# Truncation limits (characters) for error messages and subprocess output
+RESULT_TRUNCATE_CHARS = 200
+DETAIL_TRUNCATE_CHARS = 500
+CI_OUTPUT_TRUNCATE_CHARS = 2000
+
+# PR checks timeout (seconds)
+DEFAULT_PR_CHECKS_TIMEOUT = 600
+
+# Default context window size for per-turn fill calculation when the final
+# result hasn't been received yet.  200k is the current window for Claude
+# Opus/Sonnet models.
+DEFAULT_CONTEXT_WINDOW = 200_000
+
+# ---------------------------------------------------------------------------
 # Stage names — backward-compatible constant
 # ---------------------------------------------------------------------------
 
@@ -58,9 +80,9 @@ _REVIEWER_STAGES = frozenset({"review"})
 # Default max-turns per stage — kept for backward compatibility.
 # New code should use StageTemplate.max_turns from the pipeline template.
 DEFAULT_MAX_TURNS: dict[str, int] = {
-    "implement": 200,
-    "review": 100,
-    "fix": 100,
+    "implement": DEFAULT_IMPLEMENT_MAX_TURNS,
+    "review": DEFAULT_REVIEW_MAX_TURNS,
+    "fix": DEFAULT_FIX_MAX_TURNS,
 }
 
 
@@ -237,11 +259,6 @@ def _compute_context_fill(
             return round(unique_tokens / context_window * 100, 2)
     return None
 
-
-# Default context window size for per-turn fill calculation when the final
-# result hasn't been received yet.  200k is the current window for Claude
-# Opus/Sonnet models.
-_DEFAULT_CONTEXT_WINDOW = 200_000
 
 # Type alias for the per-turn context fill callback.
 ContextFillCallback = Callable[[int, float], None]
@@ -435,7 +452,7 @@ def run_claude_streaming(
                 turn_number += 1
                 usage = (event.get("message") or {}).get("usage")
                 if usage and on_context_fill is not None:
-                    fill_pct = _compute_turn_context_fill(usage, _DEFAULT_CONTEXT_WINDOW)
+                    fill_pct = _compute_turn_context_fill(usage, DEFAULT_CONTEXT_WINDOW)
                     if fill_pct is not None:
                         try:
                             on_context_fill(turn_number, fill_pct)
@@ -481,7 +498,7 @@ def run_claude_streaming(
         logger.error(
             "claude (streaming) exited with code %d\nstderr: %s",
             proc.returncode,
-            stderr_text[:500] if stderr_text else "(empty)",
+            stderr_text[:DETAIL_TRUNCATE_CHARS] if stderr_text else "(empty)",
         )
         raise subprocess.CalledProcessError(
             proc.returncode, cmd, output=stdout_text, stderr=stderr_text,
@@ -618,7 +635,7 @@ def _run_claude_stage(
             stage=stage_tpl.name,
             success=False,
             claude_result=result,
-            error=f"Claude reported error: {result.result_text[:200]}",
+            error=f"Claude reported error: {result.result_text[:RESULT_TRUNCATE_CHARS]}",
         )
 
     # Apply result_parser
@@ -668,7 +685,7 @@ def _run_implement(
             stage="implement",
             success=False,
             claude_result=result,
-            error=f"Claude reported error: {result.result_text[:200]}",
+            error=f"Claude reported error: {result.result_text[:RESULT_TRUNCATE_CHARS]}",
         )
 
     pr_url = _extract_pr_url(result.result_text)
@@ -886,7 +903,7 @@ def _run_review(
                     stage=stage_tpl.name,
                     success=False,
                     claude_result=claude_result,
-                    error=f"Claude reported error: {claude_result.result_text[:200]}",
+                    error=f"Claude reported error: {claude_result.result_text[:RESULT_TRUNCATE_CHARS]}",
                 )
             claude_approved = _parse_review_approved(claude_result.result_text)
             # Continue to Codex section below
@@ -912,7 +929,7 @@ def _run_review(
                 stage="review",
                 success=False,
                 claude_result=claude_result,
-                error=f"Claude reported error: {claude_result.result_text[:200]}",
+                error=f"Claude reported error: {claude_result.result_text[:RESULT_TRUNCATE_CHARS]}",
             )
 
         claude_approved = _parse_review_approved(claude_result.result_text)
@@ -1017,7 +1034,7 @@ def _run_codex_review(
             stage="codex_review",
             success=False,
             codex_result=result,
-            error=f"Codex reported error: {result.result_text[:200]}",
+            error=f"Codex reported error: {result.result_text[:RESULT_TRUNCATE_CHARS]}",
         )
 
     approved = _parse_review_approved(result.result_text)
@@ -1088,7 +1105,7 @@ def _run_fix(
             stage="fix",
             success=False,
             claude_result=result,
-            error=f"Claude reported error: {result.result_text[:200]}",
+            error=f"Claude reported error: {result.result_text[:RESULT_TRUNCATE_CHARS]}",
         )
 
     return StageResult(
@@ -1102,7 +1119,7 @@ def _run_pr_checks(
     pr_url: str,
     *,
     cwd: str | Path,
-    timeout: int = 600,
+    timeout: int = DEFAULT_PR_CHECKS_TIMEOUT,
     log_file: Path | None = None,
     env: dict[str, str] | None = None,
 ) -> StageResult:
@@ -1126,7 +1143,7 @@ def _run_pr_checks(
         return StageResult(
             stage="pr_checks",
             success=success,
-            error=None if success else f"CI checks failed:\n{proc.stdout[:2000]}",
+            error=None if success else f"CI checks failed:\n{proc.stdout[:CI_OUTPUT_TRUNCATE_CHARS]}",
         )
     except subprocess.TimeoutExpired:
         elapsed = time.monotonic() - start
@@ -1154,7 +1171,7 @@ def _run_ci_fix(
             stage_tpl, cwd=cwd, max_turns=max_turns,
             prompt_vars={
                 "pr_url": pr_url,
-                "ci_failure_output": ci_failure_output[:2000],
+                "ci_failure_output": ci_failure_output[:CI_OUTPUT_TRUNCATE_CHARS],
             },
             log_file=log_file, env=env, on_context_fill=on_context_fill,
         )
@@ -1163,7 +1180,7 @@ def _run_ci_fix(
         f"The CI checks on PR {pr_url} have failed. "
         "Diagnose and fix the CI failures based on the output below, "
         "then run tests locally, commit and push the fixes.\n\n"
-        f"CI failure output:\n{ci_failure_output[:2000]}"
+        f"CI failure output:\n{ci_failure_output[:CI_OUTPUT_TRUNCATE_CHARS]}"
     )
     result = _invoke_claude(
         prompt, cwd=cwd, max_turns=max_turns, log_file=log_file,
@@ -1175,7 +1192,7 @@ def _run_ci_fix(
             stage="fix",
             success=False,
             claude_result=result,
-            error=f"Claude reported error: {result.result_text[:200]}",
+            error=f"Claude reported error: {result.result_text[:RESULT_TRUNCATE_CHARS]}",
         )
 
     return StageResult(
@@ -1243,7 +1260,7 @@ def _run_merge(
                 pr_url,
             )
         else:
-            error = proc.stderr[:500] if proc.stderr else proc.stdout[:500]
+            error = proc.stderr[:DETAIL_TRUNCATE_CHARS] if proc.stderr else proc.stdout[:DETAIL_TRUNCATE_CHARS]
             return StageResult(stage="merge", success=False, error=error)
 
     # Switch worktree back to its placeholder branch so it doesn't hold
@@ -1327,7 +1344,7 @@ def run_pipeline(
     log_dir: str | Path | None = None,
     placeholder_branch: str | None = None,
     max_turns: dict[str, int] | None = None,
-    pr_checks_timeout: int = 600,
+    pr_checks_timeout: int = DEFAULT_PR_CHECKS_TIMEOUT,
     max_review_iterations: int = 3,
     max_ci_retries: int = 2,
     resume_from_stage: str | None = None,
@@ -1407,9 +1424,9 @@ def run_pipeline(
     else:
         stages = STAGES
         turns_cfg = {
-            "implement": 200,
-            "review": 100,
-            "fix": 100,
+            "implement": DEFAULT_IMPLEMENT_MAX_TURNS,
+            "review": DEFAULT_REVIEW_MAX_TURNS,
+            "fix": DEFAULT_FIX_MAX_TURNS,
             **(max_turns or {}),
         }
 
@@ -1626,7 +1643,7 @@ def run_pipeline(
             if no_pr_reason:
                 logger.info(
                     "Implement stage reported no PR needed for %s: %s",
-                    ticket_id, no_pr_reason[:200],
+                    ticket_id, no_pr_reason[:RESULT_TRUNCATE_CHARS],
                 )
                 pipeline.success = True
                 pipeline.no_pr_reason = no_pr_reason
@@ -1775,7 +1792,7 @@ class _PipelineContext:
                 self.conn,
                 task_id=self.task_id,
                 event_type="codex_review_failed",
-                detail=codex.result_text[:200] if codex.result_text else "unknown error",
+                detail=codex.result_text[:RESULT_TRUNCATE_CHARS] if codex.result_text else "unknown error",
             )
         else:
             codex_approved = _parse_review_approved(codex.result_text)
@@ -1893,7 +1910,7 @@ class _PipelineContext:
                 ticket_labels=self.ticket_labels,
                 pr_url=pr_url,
                 cwd=self.cwd,
-                max_turns=self.turns_cfg.get(stage, 100),
+                max_turns=self.turns_cfg.get(stage, DEFAULT_MAX_TURNS.get(stage, DEFAULT_FIX_MAX_TURNS)),
                 pr_checks_timeout=self.pr_checks_timeout,
                 log_file=log_file,
                 placeholder_branch=self.placeholder_branch,
@@ -1911,11 +1928,11 @@ class _PipelineContext:
                     self.conn,
                     task_id=self.task_id,
                     event_type="codex_review_skipped",
-                    detail=f"review stage raised: {str(exc)[:200]}",
+                    detail=f"review stage raised: {str(exc)[:RESULT_TRUNCATE_CHARS]}",
                 )
                 self.conn.commit()
             self.pipeline.failure_stage = stage
-            self.pipeline.failure_reason = str(exc)[:500]
+            self.pipeline.failure_reason = str(exc)[:DETAIL_TRUNCATE_CHARS]
             _record_failure(self.conn, self.task_id, self.pipeline)
             return None
 
@@ -2119,7 +2136,7 @@ def _run_ci_retry_loop(
             ctx.conn,
             task_id=ctx.task_id,
             event_type="ci_retry_started",
-            detail=f"retry={retry}, ci_output={ci_failure_output[:200]}",
+            detail=f"retry={retry}, ci_output={ci_failure_output[:RESULT_TRUNCATE_CHARS]}",
         )
         ctx.conn.commit()
 
@@ -2148,7 +2165,7 @@ def _run_ci_retry_loop(
         try:
             fix_result = _run_ci_fix(
                 pr_url, ci_failure_output=ci_failure_output,
-                cwd=ctx.cwd, max_turns=ctx.turns_cfg.get("ci_fix", ctx.turns_cfg.get("fix", 100)),
+                cwd=ctx.cwd, max_turns=ctx.turns_cfg.get("ci_fix", ctx.turns_cfg.get("fix", DEFAULT_FIX_MAX_TURNS)),
                 log_file=log_file, env=ctx._env_for_stage("ci_fix") or ctx._env_for_stage("fix"),
                 on_context_fill=_ci_fix_on_fill,
                 stage_tpl=ci_fix_tpl,
@@ -2157,7 +2174,7 @@ def _run_ci_retry_loop(
             logger.error("CI fix stage raised: %s", exc)
             delete_stage_run(ctx.conn, ci_fix_stage_run_id)
             ctx.pipeline.failure_stage = "fix"
-            ctx.pipeline.failure_reason = str(exc)[:500]
+            ctx.pipeline.failure_reason = str(exc)[:DETAIL_TRUNCATE_CHARS]
             _record_failure(ctx.conn, ctx.task_id, ctx.pipeline)
             return False
 
@@ -2405,7 +2422,7 @@ def _record_failure(conn, task_id: int, pipeline: PipelineResult) -> None:
         task_id,
         status="failed",
         turns=pipeline.total_turns,
-        failure_reason=f"{pipeline.failure_stage}: {pipeline.failure_reason}"[:500],
+        failure_reason=f"{pipeline.failure_stage}: {pipeline.failure_reason}"[:DETAIL_TRUNCATE_CHARS],
         completed_at=datetime.now(timezone.utc).isoformat(),
     )
     conn.commit()
@@ -2425,7 +2442,7 @@ def _detect_no_pr_needed(text: str) -> str | None:
     match = _NO_PR_NEEDED_RE.search(text)
     if not match:
         return None
-    return match.group(1).strip()[:500] or None
+    return match.group(1).strip()[:DETAIL_TRUNCATE_CHARS] or None
 
 
 _PR_URL_RE = re.compile(
@@ -2487,7 +2504,7 @@ def _parse_review_approved(text: str) -> bool:
 
     # 3. Keyword heuristics on the tail to avoid false positives from
     #    quoted content earlier in the output.
-    tail = text[-500:]
+    tail = text[-DETAIL_TRUNCATE_CHARS:]
     lower = tail.lower()
     # gh --approve/--request-changes without the full command prefix
     if "--approve" in lower:
