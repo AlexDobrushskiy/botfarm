@@ -171,7 +171,8 @@ def insert_task(
             failure_reason = NULL,
             pr_url = NULL,
             pipeline_stage = NULL,
-            review_state = NULL
+            review_state = NULL,
+            merge_conflict_retries = 0
         """,
         (ticket_id, title, project, slot, status, _now_iso()),
     )
@@ -209,6 +210,7 @@ def update_task(
         "pipeline_stage",
         "review_state",
         "started_on_extra_usage",
+        "merge_conflict_retries",
     }
     bad = set(fields) - allowed
     if bad:

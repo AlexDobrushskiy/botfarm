@@ -164,6 +164,7 @@ class DashboardConfig:
 class AgentsConfig:
     max_review_iterations: int = 3
     max_ci_retries: int = 2
+    max_merge_conflict_retries: int = 2
     timeout_minutes: dict[str, int] = field(default_factory=lambda: {
         "implement": 120,
         "review": 30,
@@ -296,7 +297,7 @@ def _parse_project(data: dict) -> ProjectConfig:
     )
 
 
-_KNOWN_TIMEOUT_STAGES = {"implement", "review", "fix", "pr_checks", "ci_fix", "merge"}
+_KNOWN_TIMEOUT_STAGES = {"implement", "review", "fix", "pr_checks", "ci_fix", "merge", "resolve_conflict"}
 
 
 def resolve_stage_timeout(
@@ -368,6 +369,9 @@ def _validate_config(config: BotfarmConfig) -> None:
 
     if config.agents.max_ci_retries < 0:
         raise ConfigError("agents.max_ci_retries must be at least 0")
+
+    if config.agents.max_merge_conflict_retries < 0:
+        raise ConfigError("agents.max_merge_conflict_retries must be at least 0")
 
     for stage, minutes in config.agents.timeout_minutes.items():
         if stage not in _KNOWN_TIMEOUT_STAGES:
@@ -517,7 +521,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
     )
 
     agents_data = data.get("agents", {})
-    timeout_defaults = {"implement": 120, "review": 30, "fix": 60}
+    timeout_defaults = {"implement": 120, "review": 30, "fix": 60, "resolve_conflict": 60}
     raw_timeouts = agents_data.get("timeout_minutes", {})
     timeout_minutes = {**timeout_defaults, **{k: int(v) for k, v in raw_timeouts.items()}}
     raw_overrides = agents_data.get("timeout_overrides", {})
@@ -543,6 +547,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
     agents = AgentsConfig(
         max_review_iterations=int(agents_data.get("max_review_iterations", 3)),
         max_ci_retries=int(agents_data.get("max_ci_retries", 2)),
+        max_merge_conflict_retries=int(agents_data.get("max_merge_conflict_retries", 2)),
         timeout_minutes=timeout_minutes,
         timeout_overrides=timeout_overrides,
         timeout_grace_seconds=int(agents_data.get("timeout_grace_seconds", 10)),
@@ -636,6 +641,7 @@ EDITABLE_FIELDS: dict[tuple[str, str], dict] = {
     ("usage_limits", "pause_seven_day_threshold"): {"type": "float", "min": 0.0, "max": 1.0},
     ("agents", "max_review_iterations"): {"type": "int", "min": 1},
     ("agents", "max_ci_retries"): {"type": "int", "min": 0},
+    ("agents", "max_merge_conflict_retries"): {"type": "int", "min": 0},
     ("agents", "timeout_minutes"): {"type": "timeout_dict"},
     ("agents", "timeout_grace_seconds"): {"type": "int", "min": 0},
     ("agents", "codex_reviewer_enabled"): {"type": "bool"},

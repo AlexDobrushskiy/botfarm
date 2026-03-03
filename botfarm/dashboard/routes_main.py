@@ -87,6 +87,10 @@ def _compute_slot_pipeline(slot: dict) -> list[dict]:
     """Compute compact pipeline visualization state for a slot row."""
     completed = set(slot.get("stages_completed", []))
     current = slot.get("stage")
+    # resolve_conflict is a loop-internal sub-stage of merge; show merge
+    # as active when the worker is resolving conflicts.
+    if current == "resolve_conflict":
+        current = "merge"
     is_failed = slot.get("status") == "failed"
 
     pipeline = []

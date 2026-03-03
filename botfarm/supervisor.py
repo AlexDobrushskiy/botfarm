@@ -177,6 +177,7 @@ def _worker_entry(
     max_turns: dict[str, int] | None,
     max_review_iterations: int = 3,
     max_ci_retries: int = 2,
+    max_merge_conflict_retries: int = 2,
     resume_from_stage: str | None = None,
     resume_session_id: str | None = None,
     placeholder_branch: str | None = None,
@@ -233,6 +234,7 @@ def _worker_entry(
             max_turns=max_turns,
             max_review_iterations=max_review_iterations,
             max_ci_retries=max_ci_retries,
+            max_merge_conflict_retries=max_merge_conflict_retries,
             resume_from_stage=resume_from_stage,
             resume_session_id=resume_session_id,
             slot_db_path=slot_db_path,
@@ -452,6 +454,7 @@ class WorkerLifecycleManager:
                 "max_turns": None,
                 "max_review_iterations": self._config.agents.max_review_iterations,
                 "max_ci_retries": self._config.agents.max_ci_retries,
+                "max_merge_conflict_retries": self._config.agents.max_merge_conflict_retries,
                 "resume_from_stage": resume_from_stage,
                 "resume_session_id": resume_session_id,
                 "placeholder_branch": Supervisor._slot_placeholder_branch(slot_id),
@@ -1497,6 +1500,37 @@ class Supervisor:
                 )
                 self._mark_recovery_completed(slot, reason="pr_merged_during_merge")
                 return
+            # If mid-merge-conflict-loop (merge_conflict_retries > 0),
+            # decide resume point based on where the worker actually died:
+            # - If slot.stage == "resolve_conflict": worker died during
+            #   conflict resolution itself — resume from resolve_conflict
+            #   so the incomplete merge is retried.
+            # - Otherwise (slot.stage is merge or unknown): worker died
+            #   after resolve_conflict completed — resume from review to
+            #   ensure conflict-resolved code is re-reviewed and passes CI.
+            if next_stage == "merge":
+                task_row = self._conn.execute(
+                    "SELECT merge_conflict_retries FROM tasks WHERE ticket_id = ?",
+                    (ticket_id,),
+                ).fetchone()
+                if task_row and task_row["merge_conflict_retries"] and task_row["merge_conflict_retries"] > 0:
+                    if slot.stage == "resolve_conflict":
+                        next_stage = "resolve_conflict"
+                        logger.info(
+                            "Dead worker PID %d for %s/%d: crashed during "
+                            "resolve_conflict (retries=%d) — resuming from "
+                            "'resolve_conflict'",
+                            old_pid, project, slot_id,
+                            task_row["merge_conflict_retries"],
+                        )
+                    else:
+                        next_stage = "review"
+                        logger.info(
+                            "Dead worker PID %d for %s/%d: mid-merge-conflict-loop "
+                            "(retries=%d) — resuming from 'review' to re-run review/CI",
+                            old_pid, project, slot_id,
+                            task_row["merge_conflict_retries"],
+                        )
             if next_stage:
                 logger.info(
                     "Dead worker PID %d for %s/%d: resuming from stage '%s' "

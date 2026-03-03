@@ -71,7 +71,7 @@ class TestLoadPipeline:
     def test_loads_stages_in_order(self, conn):
         pipeline = load_pipeline(conn, [])
         stage_names = [s.name for s in pipeline.stages]
-        assert stage_names == ["implement", "review", "fix", "pr_checks", "ci_fix", "merge"]
+        assert stage_names == ["implement", "review", "fix", "pr_checks", "ci_fix", "resolve_conflict", "merge"]
 
     def test_loads_loops(self, conn):
         pipeline = load_pipeline(conn, [])
@@ -273,10 +273,13 @@ class TestGetLoopForStage:
         loop = get_loop_for_stage(pipeline, "implement")
         assert loop is None
 
-    def test_merge_has_no_loop(self, conn):
+    def test_merge_has_conflict_loop(self, conn):
         pipeline = load_pipeline_by_name(conn, "implementation")
         loop = get_loop_for_stage(pipeline, "merge")
-        assert loop is None
+        assert loop is not None
+        assert loop.name == "merge_conflict_loop"
+        assert loop.start_stage == "resolve_conflict"
+        assert loop.end_stage == "merge"
 
 
 # ---------------------------------------------------------------------------

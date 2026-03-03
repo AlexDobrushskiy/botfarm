@@ -2000,7 +2000,7 @@ class TestWorkflowDefinitionTables:
             "SELECT COUNT(*) FROM stage_templates WHERE pipeline_id = ?",
             (impl_id,),
         ).fetchone()[0]
-        assert count == 6
+        assert count == 7
 
     def test_implementation_stage_order(self, conn):
         impl_id = conn.execute(
@@ -2011,7 +2011,7 @@ class TestWorkflowDefinitionTables:
             (impl_id,),
         ).fetchall()
         names = [s["name"] for s in stages]
-        assert names == ["implement", "review", "fix", "pr_checks", "ci_fix", "merge"]
+        assert names == ["implement", "review", "fix", "pr_checks", "ci_fix", "resolve_conflict", "merge"]
 
     def test_investigation_stages_count(self, conn):
         inv_id = conn.execute(
@@ -2156,7 +2156,7 @@ class TestWorkflowDefinitionTables:
             "SELECT COUNT(*) FROM stage_loops WHERE pipeline_id = ?",
             (impl_id,),
         ).fetchone()[0]
-        assert count == 2
+        assert count == 3
 
     def test_review_loop(self, conn):
         impl_id = conn.execute(
@@ -2263,9 +2263,9 @@ class TestWorkflowDefinitionTables:
         count = c.execute("SELECT COUNT(*) FROM pipeline_templates").fetchone()[0]
         assert count == 2
         count = c.execute("SELECT COUNT(*) FROM stage_templates").fetchone()[0]
-        assert count == 7  # 6 impl + 1 investigation
+        assert count == 8  # 7 impl + 1 investigation
         count = c.execute("SELECT COUNT(*) FROM stage_loops").fetchone()[0]
-        assert count == 2
+        assert count == 3
         c.close()
 
 

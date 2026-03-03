@@ -476,6 +476,7 @@ def test_load_config_timeout_minutes_defaults(tmp_path):
         "implement": 120,
         "review": 30,
         "fix": 60,
+        "resolve_conflict": 60,
     }
     assert config.agents.timeout_grace_seconds == 10
 
