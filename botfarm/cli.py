@@ -151,7 +151,14 @@ def status(config_path):
 
     # Show dispatch pause banner if active
     if paused:
-        console.print(f"[bold red]DISPATCH PAUSED:[/bold red] {reason or 'unknown'}\n")
+        if reason == "start_paused":
+            console.print(
+                "[bold yellow]DISPATCH PAUSED:[/bold yellow] "
+                "waiting for user to start dispatching "
+                "(run [bold]botfarm resume[/bold] to begin)\n"
+            )
+        else:
+            console.print(f"[bold red]DISPATCH PAUSED:[/bold red] {reason or 'unknown'}\n")
 
     # Show per-project pause state
     paused_projects = {
@@ -479,7 +486,7 @@ def pause_project(project, reason, config_path):
 
 
 @main.command(name="resume")
-@click.argument("project")
+@click.argument("project", required=False, default=None)
 @click.option(
     "--config",
     "config_path",
@@ -488,7 +495,11 @@ def pause_project(project, reason, config_path):
     help="Path to config file.",
 )
 def resume_project(project, config_path):
-    """Resume dispatching new work for a paused project."""
+    """Resume dispatching new work.
+
+    When called with a PROJECT argument, resumes dispatching for that project.
+    When called without arguments, clears the global start_paused dispatch pause.
+    """
     db_path, _ = _resolve_paths(config_path)
 
     if not db_path.exists():
@@ -503,7 +514,24 @@ def resume_project(project, config_path):
         raise click.ClickException(f"Failed to open database: {exc}") from exc
 
     try:
-        # Verify the project exists in slot data
+        if project is None:
+            # Global resume: clear start_paused dispatch pause
+            paused, reason, _heartbeat = load_dispatch_state(conn)
+            if not paused:
+                click.echo("Dispatch is not paused. Nothing to resume.")
+                return
+            if reason != "start_paused":
+                click.echo(
+                    f"Dispatch is paused for a different reason: {reason or 'unknown'}. "
+                    "Use the dashboard or wait for automatic resolution."
+                )
+                return
+            save_dispatch_state(conn, paused=False)
+            conn.commit()
+            click.echo("Dispatch resumed. Tickets will be dispatched on the next poll.")
+            return
+
+        # Per-project resume
         rows = load_all_slots(conn)
         known_projects = {r["project"] for r in rows}
         if project not in known_projects:
