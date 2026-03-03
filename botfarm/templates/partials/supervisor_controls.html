@@ -14,7 +14,7 @@
     <button class="pause-btn pause-btn-play"
             hx-post="/api/resume"
             hx-swap="none"
-            hx-on::after-request="document.getElementById('start-paused-banner')?.remove(); this.closest('[hx-get]') && htmx.trigger(this.closest('[hx-get]'), 'htmx:load')">
+            hx-on::after-request="if(event.detail.successful){document.getElementById('start-paused-banner')?.remove();} this.closest('[hx-get]') && htmx.trigger(this.closest('[hx-get]'), 'htmx:load')">
         &#9654; Start
     </button>
     <span class="pause-hint">Botfarm is ready. Click to start dispatching tickets.</span>

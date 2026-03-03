@@ -2830,6 +2830,26 @@ class TestManualPauseState:
         assert resp.status_code == 200
         assert "start-paused-banner" not in resp.text
 
+    def test_start_paused_banner_neutral_without_callbacks(self, tmp_path):
+        """Banner uses neutral copy when has_callbacks is false (no Start button)."""
+        from datetime import datetime, timezone
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        path = tmp_path / "banner_no_cb.db"
+        conn = init_db(path)
+        _seed_slot(conn, "proj", 1, status="free")
+        save_dispatch_state(conn, paused=True, reason="start_paused",
+                            supervisor_heartbeat=now_iso)
+        conn.commit()
+        conn.close()
+
+        app = create_app(db_path=path)
+        client = TestClient(app)
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert "banner-start-paused" in resp.text
+        assert "Dispatch is paused" in resp.text
+        assert "click" not in resp.text.lower() or "start dispatching" not in resp.text
+
 
 class TestPauseHints:
     """Verify informational hints shown in each pause state."""
