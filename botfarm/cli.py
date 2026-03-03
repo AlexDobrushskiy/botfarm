@@ -1,3 +1,4 @@
+import json
 import os
 import signal
 import sqlite3
@@ -42,7 +43,7 @@ from botfarm.db import (
 from botfarm.linear import LinearAPIError, LinearClient
 from botfarm.linear_cleanup import CleanupService, CooldownError
 from botfarm.slots import SlotState, _is_pid_alive
-from botfarm.worker import is_protected_branch
+from botfarm.worker import build_git_env, is_protected_branch
 from botfarm.systemd_service import UNIT_PATH, generate_unit, install_service, uninstall_service
 from botfarm.usage import refresh_usage_snapshot
 
@@ -1160,31 +1161,41 @@ def _slot_placeholder_branch(slot_id: int) -> str:
 
 
 def _stop_kill_worker(pid: int) -> bool:
-    """Kill a worker PID. Returns True if the process was signalled."""
+    """Kill a worker PID and its process group. Returns True if the process was signalled."""
     if not _is_pid_alive(pid):
         return False
 
+    # Signal the process group first (covers child subprocesses), fall back
+    # to the PID itself if the group call fails.
     try:
-        os.kill(pid, signal.SIGTERM)
+        os.killpg(pid, signal.SIGTERM)
     except (OSError, ProcessLookupError):
-        return False
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except (OSError, ProcessLookupError):
+            return False
 
     # Wait for graceful exit
     deadline = time.time() + _STOP_GRACE_SECONDS
     while _is_pid_alive(pid) and time.time() < deadline:
         time.sleep(0.5)
 
-    # Escalate to SIGKILL if still alive
+    # Escalate to SIGKILL if still alive — kill process group + descendants
     if _is_pid_alive(pid):
         try:
-            os.kill(pid, signal.SIGKILL)
+            os.killpg(pid, signal.SIGKILL)
         except (OSError, ProcessLookupError):
-            pass
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except (OSError, ProcessLookupError):
+                pass
 
     return True
 
 
-def _stop_pr_cleanup(pr_url: str | None, cwd: str | None) -> tuple[bool, bool]:
+def _stop_pr_cleanup(
+    pr_url: str | None, cwd: str | None, env: dict[str, str] | None = None,
+) -> tuple[bool, bool]:
     """Close PR if open, detect if merged. Returns (pr_was_merged, pr_closed)."""
     if not pr_url:
         return False, False
@@ -1193,13 +1204,12 @@ def _stop_pr_cleanup(pr_url: str | None, cwd: str | None) -> tuple[bool, bool]:
     try:
         result = subprocess.run(
             ["gh", "pr", "view", pr_url, "--json", "state"],
-            capture_output=True, text=True, cwd=cwd, timeout=30,
+            capture_output=True, text=True, cwd=cwd, timeout=30, env=env,
         )
         if result.returncode != 0:
             return False, False
 
-        import json as json_mod
-        pr_data = json_mod.loads(result.stdout)
+        pr_data = json.loads(result.stdout)
         state = pr_data.get("state", "").upper()
     except Exception:
         return False, False
@@ -1211,7 +1221,7 @@ def _stop_pr_cleanup(pr_url: str | None, cwd: str | None) -> tuple[bool, bool]:
         try:
             close_result = subprocess.run(
                 ["gh", "pr", "close", pr_url],
-                capture_output=True, text=True, cwd=cwd, timeout=30,
+                capture_output=True, text=True, cwd=cwd, timeout=30, env=env,
             )
             return False, close_result.returncode == 0
         except Exception:
@@ -1222,13 +1232,16 @@ def _stop_pr_cleanup(pr_url: str | None, cwd: str | None) -> tuple[bool, bool]:
 
 def _stop_git_cleanup(
     cwd: str, slot_id: int, branch: str | None,
-) -> bool:
+    env: dict[str, str] | None = None,
+) -> tuple[bool, bool]:
     """Reset worktree to placeholder branch and delete feature branch.
 
-    Returns True if the worktree was successfully switched to the placeholder
-    branch.
+    Returns ``(checkout_ok, branch_deleted)`` — *checkout_ok* is True when
+    the worktree was successfully switched to the placeholder branch,
+    *branch_deleted* is True when the local feature branch was removed.
     """
     placeholder = _slot_placeholder_branch(slot_id)
+    branch_deleted = False
 
     # Remove stale index.lock
     lock_file = Path(cwd) / ".git" / "index.lock"
@@ -1239,7 +1252,7 @@ def _stop_git_cleanup(
     try:
         subprocess.run(
             ["git", "reset", "--hard"],
-            capture_output=True, text=True, cwd=cwd, timeout=15,
+            capture_output=True, text=True, cwd=cwd, timeout=15, env=env,
         )
     except Exception:
         pass
@@ -1247,7 +1260,7 @@ def _stop_git_cleanup(
     try:
         subprocess.run(
             ["git", "clean", "-fd"],
-            capture_output=True, text=True, cwd=cwd, timeout=15,
+            capture_output=True, text=True, cwd=cwd, timeout=15, env=env,
         )
     except Exception:
         pass
@@ -1257,7 +1270,7 @@ def _stop_git_cleanup(
     try:
         result = subprocess.run(
             ["git", "checkout", placeholder],
-            capture_output=True, text=True, cwd=cwd, timeout=15,
+            capture_output=True, text=True, cwd=cwd, timeout=15, env=env,
         )
         checkout_ok = result.returncode == 0
     except Exception:
@@ -1266,10 +1279,11 @@ def _stop_git_cleanup(
     # Delete feature branch only after successful checkout
     if branch and not is_protected_branch(branch) and checkout_ok:
         try:
-            subprocess.run(
+            del_result = subprocess.run(
                 ["git", "branch", "-D", branch],
-                capture_output=True, text=True, cwd=cwd, timeout=15,
+                capture_output=True, text=True, cwd=cwd, timeout=15, env=env,
             )
+            branch_deleted = del_result.returncode == 0
         except Exception:
             pass
 
@@ -1277,12 +1291,12 @@ def _stop_git_cleanup(
         try:
             subprocess.run(
                 ["git", "push", "origin", "--delete", branch],
-                capture_output=True, text=True, cwd=cwd, timeout=30,
+                capture_output=True, text=True, cwd=cwd, timeout=30, env=env,
             )
         except Exception:
             pass
 
-    return checkout_ok
+    return checkout_ok, branch_deleted
 
 
 def _stop_linear_cleanup(
@@ -1455,20 +1469,29 @@ def stop(project, slot_id, force, yes, config_path):
             pid_killed = _stop_kill_worker(pid)
 
         # --- PR cleanup ---
-        # Resolve worktree cwd from config
+        # Resolve worktree cwd and git env from config
         cwd = None
+        subprocess_env = None
         if config:
             for p in config.projects:
                 if p.name == project:
                     cwd = _slot_worktree_cwd(p, slot_id)
                     break
+            git_env = build_git_env(config.identities)
+            if git_env:
+                subprocess_env = {**os.environ, **git_env}
 
-        pr_was_merged, pr_closed = _stop_pr_cleanup(pr_url, cwd)
+        pr_was_merged, pr_closed = _stop_pr_cleanup(pr_url, cwd, env=subprocess_env)
 
         # --- Git cleanup ---
-        checkout_ok = False
+        # When there is no worktree (config missing), there is nothing to
+        # clean up — treat as success so the slot gets freed.
+        checkout_ok = True
+        branch_deleted = False
         if cwd and Path(cwd).is_dir():
-            checkout_ok = _stop_git_cleanup(cwd, slot_id, branch)
+            checkout_ok, branch_deleted = _stop_git_cleanup(
+                cwd, slot_id, branch, env=subprocess_env,
+            )
 
         # --- Linear cleanup ---
         _stop_linear_cleanup(config, ticket_id, project, pr_was_merged)
@@ -1498,27 +1521,35 @@ def stop(project, slot_id, force, yes, config_path):
             detail=f"project={project}, slot={slot_id}, "
             f"ticket={ticket_id}, branch={branch}, "
             f"pr_merged={pr_was_merged}, pr_closed={pr_closed}, "
-            f"checkout_ok={checkout_ok}",
+            f"checkout_ok={checkout_ok}, branch_deleted={branch_deleted}",
         )
         conn.commit()
 
-        # Free the slot in DB
-        _free = SlotState(project="", slot_id=0)
-        free_fields = {
-            k: v for k, v in _free.to_dict().items()
-            if k not in ("project", "slot_id")
-        }
-        slot_data = dict(target)
-        slot_data.update(free_fields)
-        upsert_slot(conn, slot_data)
-        clear_slot_stage(conn, project, slot_id)
+        # Update slot in DB — mirror supervisor behavior
+        if checkout_ok:
+            _free = SlotState(project="", slot_id=0)
+            free_fields = {
+                k: v for k, v in _free.to_dict().items()
+                if k not in ("project", "slot_id")
+            }
+            slot_data = dict(target)
+            slot_data.update(free_fields)
+            upsert_slot(conn, slot_data)
+            clear_slot_stage(conn, project, slot_id)
+        else:
+            # Don't free — worktree is still on the feature branch and
+            # reusing it could cause the next ticket to inherit dirty state.
+            slot_data = dict(target)
+            slot_data["status"] = "failed"
+            slot_data["ticket_id"] = None
+            upsert_slot(conn, slot_data)
         conn.commit()
 
         # --- Post-stop output ---
         console.print(f"\n[bold green]Stopped slot {project}/{slot_id}[/bold green]")
         if pid_killed:
             console.print(f"  - Worker PID {pid} killed")
-        if branch:
+        if branch_deleted:
             console.print(f"  - Branch {branch} deleted")
         if pr_closed:
             console.print(f"  - PR closed")

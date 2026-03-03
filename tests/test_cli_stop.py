@@ -8,12 +8,31 @@ import pytest
 from click.testing import CliRunner
 
 from botfarm.cli import main
+from botfarm.config import BotfarmConfig, IdentitiesConfig, ProjectConfig
 from botfarm.db import init_db, insert_task
 from tests.helpers import (
     make_slot as _make_slot,
     mock_resolve as _mock_resolve,
     seed_slots as _seed_slots,
 )
+
+
+def _make_config(tmp_path, project_name="proj"):
+    """Create a minimal BotfarmConfig with a worktree dir that exists."""
+    worktree_dir = tmp_path / f"botfarm-{project_name}-1"
+    worktree_dir.mkdir(exist_ok=True)
+    return BotfarmConfig(
+        projects=[
+            ProjectConfig(
+                name=project_name,
+                linear_team="TEST",
+                base_dir=str(tmp_path / f"botfarm-{project_name}"),
+                worktree_prefix=f"botfarm-{project_name}-",
+                slots=[1],
+            ),
+        ],
+        identities=IdentitiesConfig(),
+    )
 
 
 @pytest.fixture()
@@ -79,7 +98,7 @@ class TestStopArgumentResolution:
         # Mock subprocess calls to avoid real git/gh operations
         with patch("botfarm.cli._stop_kill_worker", return_value=False), \
              patch("botfarm.cli._stop_pr_cleanup", return_value=(False, False)), \
-             patch("botfarm.cli._stop_git_cleanup", return_value=True), \
+             patch("botfarm.cli._stop_git_cleanup", return_value=(True, False)), \
              patch("botfarm.cli._stop_linear_cleanup"):
             result = runner.invoke(main, ["stop", "--force"])
         assert result.exit_code == 0
@@ -94,7 +113,7 @@ class TestStopArgumentResolution:
         monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
         with patch("botfarm.cli._stop_kill_worker", return_value=False), \
              patch("botfarm.cli._stop_pr_cleanup", return_value=(False, False)), \
-             patch("botfarm.cli._stop_git_cleanup", return_value=True), \
+             patch("botfarm.cli._stop_git_cleanup", return_value=(True, False)), \
              patch("botfarm.cli._stop_linear_cleanup"):
             result = runner.invoke(main, ["stop", "proj", "--force"])
         assert result.exit_code == 0
@@ -109,7 +128,7 @@ class TestStopArgumentResolution:
         monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
         with patch("botfarm.cli._stop_kill_worker", return_value=False), \
              patch("botfarm.cli._stop_pr_cleanup", return_value=(False, False)), \
-             patch("botfarm.cli._stop_git_cleanup", return_value=True), \
+             patch("botfarm.cli._stop_git_cleanup", return_value=(True, False)), \
              patch("botfarm.cli._stop_linear_cleanup"):
             result = runner.invoke(main, ["stop", "proj", "2", "--force"])
         assert result.exit_code == 0
@@ -135,7 +154,7 @@ class TestStopArgumentResolution:
         monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
         with patch("botfarm.cli._stop_kill_worker", return_value=False), \
              patch("botfarm.cli._stop_pr_cleanup", return_value=(False, False)), \
-             patch("botfarm.cli._stop_git_cleanup", return_value=True), \
+             patch("botfarm.cli._stop_git_cleanup", return_value=(True, False)), \
              patch("botfarm.cli._stop_linear_cleanup"):
             # Select project 1 (alpha), then auto-selects only slot
             result = runner.invoke(main, ["stop", "--force"], input="1\n")
@@ -158,7 +177,7 @@ class TestStopArgumentResolution:
         monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
         with patch("botfarm.cli._stop_kill_worker", return_value=False), \
              patch("botfarm.cli._stop_pr_cleanup", return_value=(False, False)), \
-             patch("botfarm.cli._stop_git_cleanup", return_value=True), \
+             patch("botfarm.cli._stop_git_cleanup", return_value=(True, False)), \
              patch("botfarm.cli._stop_linear_cleanup"):
             # Select slot 2
             result = runner.invoke(main, ["stop", "proj", "--force"], input="2\n")
@@ -205,7 +224,7 @@ class TestStopConfirmation:
         monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
         with patch("botfarm.cli._stop_kill_worker", return_value=False), \
              patch("botfarm.cli._stop_pr_cleanup", return_value=(False, False)), \
-             patch("botfarm.cli._stop_git_cleanup", return_value=True), \
+             patch("botfarm.cli._stop_git_cleanup", return_value=(True, False)), \
              patch("botfarm.cli._stop_linear_cleanup"):
             result = runner.invoke(main, ["stop", "proj", "1", "--force"])
         assert result.exit_code == 0
@@ -220,7 +239,7 @@ class TestStopConfirmation:
         monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
         with patch("botfarm.cli._stop_kill_worker", return_value=False), \
              patch("botfarm.cli._stop_pr_cleanup", return_value=(False, False)), \
-             patch("botfarm.cli._stop_git_cleanup", return_value=True), \
+             patch("botfarm.cli._stop_git_cleanup", return_value=(True, False)), \
              patch("botfarm.cli._stop_linear_cleanup"):
             result = runner.invoke(main, ["stop", "proj", "1", "-y"])
         assert result.exit_code == 0
@@ -246,7 +265,7 @@ class TestStopExecution:
 
         with patch("botfarm.cli._stop_kill_worker", side_effect=fake_kill), \
              patch("botfarm.cli._stop_pr_cleanup", return_value=(False, False)), \
-             patch("botfarm.cli._stop_git_cleanup", return_value=True), \
+             patch("botfarm.cli._stop_git_cleanup", return_value=(True, False)), \
              patch("botfarm.cli._stop_linear_cleanup"):
             result = runner.invoke(main, ["stop", "proj", "1", "--force"])
         assert result.exit_code == 0
@@ -263,7 +282,7 @@ class TestStopExecution:
         monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
         with patch("botfarm.cli._stop_kill_worker", return_value=False), \
              patch("botfarm.cli._stop_pr_cleanup", return_value=(False, True)), \
-             patch("botfarm.cli._stop_git_cleanup", return_value=True), \
+             patch("botfarm.cli._stop_git_cleanup", return_value=(True, False)), \
              patch("botfarm.cli._stop_linear_cleanup"):
             result = runner.invoke(main, ["stop", "proj", "1", "--force"])
         assert result.exit_code == 0
@@ -279,24 +298,27 @@ class TestStopExecution:
         monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
         with patch("botfarm.cli._stop_kill_worker", return_value=False), \
              patch("botfarm.cli._stop_pr_cleanup", return_value=(True, False)), \
-             patch("botfarm.cli._stop_git_cleanup", return_value=True), \
+             patch("botfarm.cli._stop_git_cleanup", return_value=(True, False)), \
              patch("botfarm.cli._stop_linear_cleanup"):
             result = runner.invoke(main, ["stop", "proj", "1", "--force"])
         assert result.exit_code == 0
         assert "already merged" in result.output
         assert "left as-is" in result.output
 
-    def test_branch_deleted_in_output(self, runner, db_file, monkeypatch):
+    def test_branch_deleted_in_output(self, runner, db_file, tmp_path, monkeypatch):
         _seed_slots(db_file, [
             _make_slot(
                 "proj", 1, "busy",
                 ticket_id="T-1", branch="feat/my-branch",
             ),
         ])
-        monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
+        config = _make_config(tmp_path)
+        monkeypatch.setattr(
+            "botfarm.cli._resolve_paths", _mock_resolve(db_file, config),
+        )
         with patch("botfarm.cli._stop_kill_worker", return_value=False), \
              patch("botfarm.cli._stop_pr_cleanup", return_value=(False, False)), \
-             patch("botfarm.cli._stop_git_cleanup", return_value=True), \
+             patch("botfarm.cli._stop_git_cleanup", return_value=(True, True)), \
              patch("botfarm.cli._stop_linear_cleanup"):
             result = runner.invoke(main, ["stop", "proj", "1", "--force"])
         assert result.exit_code == 0
@@ -314,7 +336,7 @@ class TestStopExecution:
 
         with patch("botfarm.cli._stop_kill_worker", return_value=False), \
              patch("botfarm.cli._stop_pr_cleanup", return_value=(False, False)), \
-             patch("botfarm.cli._stop_git_cleanup", return_value=True), \
+             patch("botfarm.cli._stop_git_cleanup", return_value=(True, False)), \
              patch("botfarm.cli._stop_linear_cleanup", side_effect=fake_linear):
             result = runner.invoke(main, ["stop", "proj", "1", "--force"])
         assert result.exit_code == 0
@@ -335,7 +357,7 @@ class TestStopDbState:
         monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
         with patch("botfarm.cli._stop_kill_worker", return_value=False), \
              patch("botfarm.cli._stop_pr_cleanup", return_value=(False, False)), \
-             patch("botfarm.cli._stop_git_cleanup", return_value=True), \
+             patch("botfarm.cli._stop_git_cleanup", return_value=(True, False)), \
              patch("botfarm.cli._stop_linear_cleanup"):
             result = runner.invoke(main, ["stop", "proj", "1", "--force"])
         assert result.exit_code == 0
@@ -365,7 +387,7 @@ class TestStopDbState:
         monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
         with patch("botfarm.cli._stop_kill_worker", return_value=False), \
              patch("botfarm.cli._stop_pr_cleanup", return_value=(False, False)), \
-             patch("botfarm.cli._stop_git_cleanup", return_value=True), \
+             patch("botfarm.cli._stop_git_cleanup", return_value=(True, False)), \
              patch("botfarm.cli._stop_linear_cleanup"):
             result = runner.invoke(main, ["stop", "proj", "1", "--force"])
         assert result.exit_code == 0
@@ -391,7 +413,7 @@ class TestStopDbState:
         monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
         with patch("botfarm.cli._stop_kill_worker", return_value=False), \
              patch("botfarm.cli._stop_pr_cleanup", return_value=(True, False)), \
-             patch("botfarm.cli._stop_git_cleanup", return_value=True), \
+             patch("botfarm.cli._stop_git_cleanup", return_value=(True, False)), \
              patch("botfarm.cli._stop_linear_cleanup"):
             result = runner.invoke(main, ["stop", "proj", "1", "--force"])
         assert result.exit_code == 0
@@ -409,7 +431,7 @@ class TestStopDbState:
         monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
         with patch("botfarm.cli._stop_kill_worker", return_value=False), \
              patch("botfarm.cli._stop_pr_cleanup", return_value=(False, False)), \
-             patch("botfarm.cli._stop_git_cleanup", return_value=True), \
+             patch("botfarm.cli._stop_git_cleanup", return_value=(True, False)), \
              patch("botfarm.cli._stop_linear_cleanup"):
             result = runner.invoke(main, ["stop", "proj", "1", "--force"])
         assert result.exit_code == 0
@@ -438,7 +460,7 @@ class TestStopPausedSlots:
         monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
         with patch("botfarm.cli._stop_kill_worker", return_value=False), \
              patch("botfarm.cli._stop_pr_cleanup", return_value=(False, False)), \
-             patch("botfarm.cli._stop_git_cleanup", return_value=True), \
+             patch("botfarm.cli._stop_git_cleanup", return_value=(True, False)), \
              patch("botfarm.cli._stop_linear_cleanup"):
             result = runner.invoke(main, ["stop", "proj", "1", "--force"])
         assert result.exit_code == 0
@@ -451,7 +473,7 @@ class TestStopPausedSlots:
         monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
         with patch("botfarm.cli._stop_kill_worker", return_value=False), \
              patch("botfarm.cli._stop_pr_cleanup", return_value=(False, False)), \
-             patch("botfarm.cli._stop_git_cleanup", return_value=True), \
+             patch("botfarm.cli._stop_git_cleanup", return_value=(True, False)), \
              patch("botfarm.cli._stop_linear_cleanup"):
             result = runner.invoke(main, ["stop", "proj", "1", "--force"])
         assert result.exit_code == 0
