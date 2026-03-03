@@ -5534,3 +5534,201 @@ class TestCapacityBlockedDispatchInteraction:
         # Still paused — usage doesn't overwrite because dispatch is already paused
         assert supervisor.slot_manager.dispatch_paused is True
         assert supervisor.slot_manager.dispatch_pause_reason == "capacity_blocked"
+
+
+# ---------------------------------------------------------------------------
+# start_paused
+# ---------------------------------------------------------------------------
+
+
+class TestStartPaused:
+    """Tests for the start_paused config option and supervisor startup logic."""
+
+    def test_start_paused_true_pauses_dispatch_on_startup(self, tmp_config, tmp_path, monkeypatch):
+        """Supervisor starts with dispatch paused when start_paused=True."""
+        tmp_config.start_paused = True
+        monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "test.db"))
+
+        mock_poller = MagicMock()
+        mock_poller.project_name = "test-project"
+        mock_poller.poll.return_value = PollResult(candidates=[], blocked=[], auto_close_parents=[])
+        mock_poller.is_issue_terminal.return_value = False
+
+        with patch("botfarm.supervisor.create_pollers", return_value=[mock_poller]):
+            sup = Supervisor(tmp_config, log_dir=tmp_path / "logs")
+
+        sm = sup.slot_manager
+        assert sm.dispatch_paused is False  # Not paused yet
+
+        sup._recover_on_startup()
+        sup._apply_start_paused()
+
+        assert sm.dispatch_paused is True
+        assert sm.dispatch_pause_reason == "start_paused"
+        assert sup._startup_paused is True
+
+    def test_start_paused_false_does_not_pause(self, tmp_config, tmp_path, monkeypatch):
+        """Supervisor starts with dispatch active when start_paused=False."""
+        tmp_config.start_paused = False
+        monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "test.db"))
+
+        mock_poller = MagicMock()
+        mock_poller.project_name = "test-project"
+        mock_poller.poll.return_value = PollResult(candidates=[], blocked=[], auto_close_parents=[])
+        mock_poller.is_issue_terminal.return_value = False
+
+        with patch("botfarm.supervisor.create_pollers", return_value=[mock_poller]):
+            sup = Supervisor(tmp_config, log_dir=tmp_path / "logs")
+
+        sm = sup.slot_manager
+        sup._recover_on_startup()
+        sup._apply_start_paused()
+
+        assert sm.dispatch_paused is False
+        assert sup._startup_paused is False
+
+    def test_start_paused_not_auto_resumed_by_usage(self, supervisor):
+        """_poll_and_dispatch should not auto-resume dispatch paused for start_paused."""
+        sm = supervisor.slot_manager
+        sm.set_dispatch_paused(True, "start_paused")
+
+        # Set utilization to low values that would normally trigger resume
+        supervisor._usage_poller._state.utilization_5h = 0.10
+        supervisor._usage_poller._state.utilization_7d = 0.10
+
+        poller = supervisor._pollers["test-project"]
+        poller.poll.return_value = PollResult(
+            candidates=[make_issue()], blocked=[], auto_close_parents=[],
+        )
+
+        with patch.object(supervisor, "_dispatch_worker") as mock_dispatch:
+            supervisor._poll_and_dispatch()
+            mock_dispatch.assert_not_called()
+
+        assert sm.dispatch_paused is True
+        assert sm.dispatch_pause_reason == "start_paused"
+
+    def test_resume_clears_start_paused(self, supervisor):
+        """request_resume (manual resume) clears start_paused dispatch pause."""
+        sm = supervisor.slot_manager
+        sm.set_dispatch_paused(True, "start_paused")
+        supervisor._startup_paused = True
+
+        # Trigger resume
+        supervisor.request_resume()
+        supervisor._handle_manual_pause_resume()
+
+        assert sm.dispatch_paused is False
+        assert sm.dispatch_pause_reason is None
+        assert supervisor._startup_paused is False
+
+    def test_start_paused_skipped_when_already_paused(self, tmp_config, tmp_path, monkeypatch):
+        """start_paused does not override an existing pause (e.g. from crash recovery)."""
+        tmp_config.start_paused = True
+        monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "test.db"))
+
+        mock_poller = MagicMock()
+        mock_poller.project_name = "test-project"
+        mock_poller.poll.return_value = PollResult(candidates=[], blocked=[], auto_close_parents=[])
+        mock_poller.is_issue_terminal.return_value = False
+
+        with patch("botfarm.supervisor.create_pollers", return_value=[mock_poller]):
+            sup = Supervisor(tmp_config, log_dir=tmp_path / "logs")
+
+        sm = sup.slot_manager
+        # Pre-set a different pause reason (e.g. from persisted crash state)
+        sm.set_dispatch_paused(True, "manual_pause")
+
+        sup._recover_on_startup()
+        sup._apply_start_paused()
+
+        assert sm.dispatch_paused is True
+        assert sm.dispatch_pause_reason == "manual_pause"
+
+    def test_start_paused_resyncs_flag_from_persisted_state(self, tmp_config, tmp_path, monkeypatch):
+        """_startup_paused flag is set when persisted reason is already start_paused."""
+        tmp_config.start_paused = True
+        monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "test.db"))
+
+        mock_poller = MagicMock()
+        mock_poller.project_name = "test-project"
+        mock_poller.poll.return_value = PollResult(candidates=[], blocked=[], auto_close_parents=[])
+        mock_poller.is_issue_terminal.return_value = False
+
+        with patch("botfarm.supervisor.create_pollers", return_value=[mock_poller]):
+            sup = Supervisor(tmp_config, log_dir=tmp_path / "logs")
+
+        sm = sup.slot_manager
+        # Simulate persisted start_paused from a previous run
+        sm.set_dispatch_paused(True, "start_paused")
+        assert sup._startup_paused is False  # Not yet synced
+
+        sup._apply_start_paused()
+
+        # Flag should be synced from persisted state
+        assert sm.dispatch_paused is True
+        assert sm.dispatch_pause_reason == "start_paused"
+        assert sup._startup_paused is True
+
+    def test_restart_with_start_paused_false_clears_persisted_pause(
+        self, tmp_config, tmp_path, monkeypatch,
+    ):
+        """Restarting with start_paused=false clears a persisted start_paused pause."""
+        tmp_config.start_paused = False
+        monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "test.db"))
+
+        mock_poller = MagicMock()
+        mock_poller.project_name = "test-project"
+        mock_poller.poll.return_value = PollResult(candidates=[], blocked=[], auto_close_parents=[])
+        mock_poller.is_issue_terminal.return_value = False
+
+        with patch("botfarm.supervisor.create_pollers", return_value=[mock_poller]):
+            sup = Supervisor(tmp_config, log_dir=tmp_path / "logs")
+
+        sm = sup.slot_manager
+        # Simulate persisted start_paused from a previous run
+        sm.set_dispatch_paused(True, "start_paused")
+        assert sm.dispatch_paused is True
+
+        sup._apply_start_paused()
+
+        # Config says false — persisted pause should be cleared
+        assert sm.dispatch_paused is False
+        assert sm.dispatch_pause_reason is None
+        assert sup._startup_paused is False
+
+    def test_capacity_blocked_restores_start_paused(self, supervisor):
+        """When capacity_blocked clears and _startup_paused is set, restore start_paused."""
+        sm = supervisor.slot_manager
+        supervisor._startup_paused = True
+        supervisor._linear_client = MagicMock()
+
+        # Enter blocked state
+        supervisor._linear_client.count_active_issues.return_value = ActiveIssuesCount(
+            total=240, by_project={"proj": 240},
+        )
+        supervisor._poll_capacity()
+        assert supervisor._capacity_level == "blocked"
+        assert sm.dispatch_pause_reason == "capacity_blocked"
+
+        # Drop below resume threshold — should restore start_paused, not unpause
+        supervisor._linear_client.count_active_issues.return_value = ActiveIssuesCount(
+            total=220, by_project={"proj": 220},
+        )
+        supervisor._poll_capacity()
+
+        assert sm.dispatch_paused is True
+        assert sm.dispatch_pause_reason == "start_paused"
+
+    def test_update_failed_restores_start_paused(self, supervisor):
+        """When update fails and _startup_paused is set, restore start_paused."""
+        sm = supervisor.slot_manager
+        supervisor._startup_paused = True
+        sm.set_dispatch_paused(True, "update_in_progress")
+        supervisor._update_event.set()
+
+        with patch("botfarm.git_update.pull_and_install", return_value=False):
+            supervisor._handle_update_request()
+
+        assert sm.dispatch_paused is True
+        assert sm.dispatch_pause_reason == "start_paused"
