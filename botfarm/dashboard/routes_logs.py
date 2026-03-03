@@ -69,7 +69,7 @@ def _find_latest_log(app, ticket_id: str, stage: str) -> Path | None:
     return files[0] if files else None
 
 
-_ALL_LOG_STAGES = list(STAGES) + ["ci_fix", "codex_review"]
+_ALL_LOG_STAGES = list(STAGES) + ["ci_fix", "codex_review", "resolve_conflict"]
 
 
 def _available_stages_with_logs(app, ticket_id: str) -> list[str]:

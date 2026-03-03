@@ -1501,25 +1501,36 @@ class Supervisor:
                 self._mark_recovery_completed(slot, reason="pr_merged_during_merge")
                 return
             # If mid-merge-conflict-loop (merge_conflict_retries > 0),
-            # resume from review to ensure conflict-resolved code is
-            # re-reviewed and passes CI.  This also fires if the worker
-            # crashed *during* resolve_conflict (before it completed),
-            # but that's safe: the review stage will see unresolved
-            # conflicts, the fix loop will address them, and the merge
-            # will re-enter the conflict loop if needed.
+            # decide resume point based on where the worker actually died:
+            # - If slot.stage == "resolve_conflict": worker died during
+            #   conflict resolution itself — resume from resolve_conflict
+            #   so the incomplete merge is retried.
+            # - Otherwise (slot.stage is merge or unknown): worker died
+            #   after resolve_conflict completed — resume from review to
+            #   ensure conflict-resolved code is re-reviewed and passes CI.
             if next_stage == "merge":
                 task_row = self._conn.execute(
                     "SELECT merge_conflict_retries FROM tasks WHERE ticket_id = ?",
                     (ticket_id,),
                 ).fetchone()
                 if task_row and task_row["merge_conflict_retries"] and task_row["merge_conflict_retries"] > 0:
-                    next_stage = "review"
-                    logger.info(
-                        "Dead worker PID %d for %s/%d: mid-merge-conflict-loop "
-                        "(retries=%d) — resuming from 'review' to re-run review/CI",
-                        old_pid, project, slot_id,
-                        task_row["merge_conflict_retries"],
-                    )
+                    if slot.stage == "resolve_conflict":
+                        next_stage = "resolve_conflict"
+                        logger.info(
+                            "Dead worker PID %d for %s/%d: crashed during "
+                            "resolve_conflict (retries=%d) — resuming from "
+                            "'resolve_conflict'",
+                            old_pid, project, slot_id,
+                            task_row["merge_conflict_retries"],
+                        )
+                    else:
+                        next_stage = "review"
+                        logger.info(
+                            "Dead worker PID %d for %s/%d: mid-merge-conflict-loop "
+                            "(retries=%d) — resuming from 'review' to re-run review/CI",
+                            old_pid, project, slot_id,
+                            task_row["merge_conflict_retries"],
+                        )
             if next_stage:
                 logger.info(
                     "Dead worker PID %d for %s/%d: resuming from stage '%s' "

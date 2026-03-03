@@ -521,7 +521,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
     )
 
     agents_data = data.get("agents", {})
-    timeout_defaults = {"implement": 120, "review": 30, "fix": 60}
+    timeout_defaults = {"implement": 120, "review": 30, "fix": 60, "resolve_conflict": 60}
     raw_timeouts = agents_data.get("timeout_minutes", {})
     timeout_minutes = {**timeout_defaults, **{k: int(v) for k, v in raw_timeouts.items()}}
     raw_overrides = agents_data.get("timeout_overrides", {})
