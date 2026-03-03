@@ -5967,15 +5967,15 @@ class TestStopSlotGitCleanup:
     """Tests for _stop_slot_git_cleanup."""
 
     def test_git_cleanup_runs_commands_in_order(self, supervisor):
-        """Git cleanup runs checkout, clean, reset, branch -D, push --delete."""
+        """Git cleanup runs reset, clean, checkout, branch -D, push --delete."""
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
             supervisor._stop_slot_git_cleanup("test-project", 1, "feat-1")
 
         commands = [c[0][0] for c in mock_run.call_args_list]
-        assert commands[0] == ["git", "checkout", "slot-1-placeholder"]
+        assert commands[0] == ["git", "reset", "--hard"]
         assert commands[1] == ["git", "clean", "-fd"]
-        assert commands[2] == ["git", "reset", "--hard"]
+        assert commands[2] == ["git", "checkout", "slot-1-placeholder"]
         assert commands[3] == ["git", "branch", "-D", "feat-1"]
         assert commands[4] == ["git", "push", "origin", "--delete", "feat-1"]
 
@@ -5986,11 +5986,11 @@ class TestStopSlotGitCleanup:
             supervisor._stop_slot_git_cleanup("test-project", 1, "main")
 
         commands = [c[0][0] for c in mock_run.call_args_list]
-        # Should only have checkout, clean, reset — no branch -D or push --delete
+        # Should only have reset, clean, checkout — no branch -D or push --delete
         assert len(commands) == 3
-        assert commands[0][1] == "checkout"
+        assert commands[0][1] == "reset"
         assert commands[1][1] == "clean"
-        assert commands[2][1] == "reset"
+        assert commands[2][1] == "checkout"
 
     def test_git_cleanup_skips_none_branch(self, supervisor):
         """Git cleanup handles None branch (worker crashed early)."""
@@ -6406,3 +6406,52 @@ class TestStaleResultRejection:
         slot = sm.get_slot("test-project", 1)
         assert slot.status == "busy"
         assert slot.ticket_id == "NEW-1"
+
+    def test_stale_result_ignored_for_free_slot(self, supervisor):
+        """A late-arriving result is ignored when slot has been freed (no ticket)."""
+        sm = supervisor.slot_manager
+        # Slot starts free (default)
+        slot = sm.get_slot("test-project", 1)
+        assert slot.status == "free"
+        assert slot.ticket_id is None
+
+        # Enqueue a stale result from a previously-stopped ticket
+        supervisor._result_queue.put(_WorkerResult(
+            project="test-project", slot_id=1, ticket_id="OLD-1",
+            success=False,
+            failure_stage="implement", failure_reason="crash",
+        ))
+
+        supervisor._reconcile_workers()
+
+        # Slot should still be free (not marked failed)
+        slot = sm.get_slot("test-project", 1)
+        assert slot.status == "free"
+
+    def test_stop_completed_pending_cleanup_slot_returns_error(self, supervisor):
+        """Stopping a completed_pending_cleanup slot returns an error."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="feat-1",
+        )
+        sm.mark_completed("test-project", 1)
+        slot = sm.get_slot("test-project", 1)
+        assert slot.status == "completed_pending_cleanup"
+
+        result = supervisor.stop_slot("test-project", 1)
+        assert result.success is False
+        assert "completed work" in result.message
+
+    def test_git_cleanup_skips_branch_delete_on_checkout_failure(self, supervisor):
+        """Branch deletion is skipped when checkout to placeholder fails."""
+        def side_effect(cmd, **kwargs):
+            result = MagicMock(returncode=0)
+            if cmd[1] == "checkout":
+                result.returncode = 1  # checkout fails
+            return result
+
+        with patch("subprocess.run", side_effect=side_effect):
+            supervisor._stop_slot_git_cleanup("test-project", 1, "feat-1")
+
+        # Should not raise; branch -D and push --delete should not be called

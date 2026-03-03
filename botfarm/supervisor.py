@@ -85,32 +85,47 @@ class StopSlotResult:
     message: str = ""
 
 
+def _collect_descendant_pids(pid: int) -> list[int]:
+    """Return direct child PIDs of *pid* by reading /proc.
+
+    This is Linux-specific (``/proc/<pid>/task/<pid>/children``).
+    On other platforms the list will be empty.
+    """
+    try:
+        children_file = Path(f"/proc/{pid}/task/{pid}/children")
+        if children_file.exists():
+            return [int(p) for p in children_file.read_text().split() if p]
+    except (OSError, ValueError):
+        pass
+    return []
+
+
+def _kill_descendant_sessions(pid: int, sig: int = signal.SIGKILL) -> None:
+    """Send *sig* to every descendant session/process-group of *pid*.
+
+    Stage subprocesses use ``start_new_session=True``, so they live in
+    their own session groups that survive the death of the worker.  This
+    helper signals each child's process group to clean them up.
+    """
+    for cpid in _collect_descendant_pids(pid):
+        try:
+            os.killpg(os.getpgid(cpid), sig)
+        except (OSError, ProcessLookupError):
+            try:
+                os.kill(cpid, sig)
+            except (OSError, ProcessLookupError):
+                pass
+
+
 def _kill_process_tree(pid: int) -> None:
     """SIGKILL a process and all its descendants.
 
     The worker creates its own process group (``os.setpgrp()``), and stage
     subprocesses use ``start_new_session=True`` which puts them in
-    separate session/process groups.  We first collect child PIDs, then
-    SIGKILL each child's process group (in case it's a session leader),
-    and finally SIGKILL the worker's own process group.
+    separate session/process groups.  We first kill child session groups,
+    then SIGKILL the worker's own process group.
     """
-    child_pids: list[int] = []
-    try:
-        children_dir = Path(f"/proc/{pid}/task/{pid}/children")
-        if children_dir.exists():
-            child_pids = [int(p) for p in children_dir.read_text().split() if p]
-    except (OSError, ValueError):
-        pass
-
-    # Kill child session groups (stage subprocesses)
-    for cpid in child_pids:
-        try:
-            os.killpg(os.getpgid(cpid), signal.SIGKILL)
-        except (OSError, ProcessLookupError):
-            try:
-                os.kill(cpid, signal.SIGKILL)
-            except (OSError, ProcessLookupError):
-                pass
+    _kill_descendant_sessions(pid, signal.SIGKILL)
 
     # Kill the worker's own process group
     try:
@@ -1955,13 +1970,14 @@ class Supervisor:
             except queue_mod.Empty:
                 break
             # Guard against stale results from a stopped worker that
-            # arrive after the slot has been reassigned to a new ticket.
+            # arrive after the slot has been freed or reassigned.
             slot = self._slot_manager.get_slot(wr.project, wr.slot_id)
-            if wr.ticket_id and slot and slot.ticket_id and wr.ticket_id != slot.ticket_id:
+            if wr.ticket_id and slot and wr.ticket_id != slot.ticket_id:
                 logger.warning(
                     "Ignoring stale result for %s/%d: result ticket=%s, "
-                    "current ticket=%s",
-                    wr.project, wr.slot_id, wr.ticket_id, slot.ticket_id,
+                    "current ticket=%s (status=%s)",
+                    wr.project, wr.slot_id, wr.ticket_id,
+                    slot.ticket_id, slot.status,
                 )
                 continue
             if wr.paused:
@@ -2546,6 +2562,13 @@ class Supervisor:
                 message=f"Slot {project}/{slot_id} is not busy",
             )
 
+        if slot.status == "completed_pending_cleanup":
+            return StopSlotResult(
+                success=False,
+                message=f"Slot {project}/{slot_id} has completed work "
+                f"pending cleanup — use normal cleanup instead",
+            )
+
         ticket_id = slot.ticket_id
         branch = slot.branch
         pr_was_merged = False
@@ -2645,6 +2668,10 @@ class Supervisor:
                 # Escalate to SIGKILL on worker group and child groups
                 _kill_process_tree(pid)
                 proc.join(timeout=2)
+            else:
+                # Worker exited but stage subprocesses (start_new_session=True)
+                # may still be running in their own sessions — reap them.
+                _kill_descendant_sessions(pid, signal.SIGKILL)
             self._workers.pop(key, None)
         else:
             # Process not tracked (e.g. reattached after restart) — wait
@@ -2652,6 +2679,8 @@ class Supervisor:
             time.sleep(grace)
             if _is_pid_alive(pid):
                 _kill_process_tree(pid)
+            else:
+                _kill_descendant_sessions(pid, signal.SIGKILL)
 
         # Drain any pending results for this slot
         self._drain_results_for_slot(slot.project, slot.slot_id)
@@ -2694,7 +2723,7 @@ class Supervisor:
                 project_cfg = self._projects.get(slot.project)
                 if project_cfg:
                     cwd = self._slot_worktree_cwd(project_cfg, slot.slot_id)
-                    subprocess_env = {**os.environ, **self._git_env} if self._git_env else None
+                    subprocess_env = self._subprocess_env()
                     try:
                         result = subprocess.run(
                             ["gh", "pr", "close", pr_url],
@@ -2728,31 +2757,10 @@ class Supervisor:
             return
         cwd = self._slot_worktree_cwd(project_cfg, slot_id)
         placeholder = self._slot_placeholder_branch(slot_id)
-        subprocess_env = {**os.environ, **self._git_env} if self._git_env else None
+        subprocess_env = self._subprocess_env()
 
-        # Switch to placeholder branch
-        try:
-            subprocess.run(
-                ["git", "checkout", placeholder],
-                capture_output=True, text=True, cwd=cwd, timeout=15,
-                env=subprocess_env,
-            )
-        except Exception:
-            logger.warning(
-                "Failed to checkout %s in %s", placeholder, cwd, exc_info=True,
-            )
-
-        # Clean untracked files
-        try:
-            subprocess.run(
-                ["git", "clean", "-fd"],
-                capture_output=True, text=True, cwd=cwd, timeout=15,
-                env=subprocess_env,
-            )
-        except Exception:
-            logger.warning("git clean -fd failed in %s", cwd, exc_info=True)
-
-        # Discard uncommitted changes
+        # Reset and clean BEFORE checkout — a dirty worktree can block
+        # checkout to the placeholder branch.
         try:
             subprocess.run(
                 ["git", "reset", "--hard"],
@@ -2762,8 +2770,31 @@ class Supervisor:
         except Exception:
             logger.warning("git reset --hard failed in %s", cwd, exc_info=True)
 
-        # Delete local feature branch
-        if branch and not is_protected_branch(branch):
+        try:
+            subprocess.run(
+                ["git", "clean", "-fd"],
+                capture_output=True, text=True, cwd=cwd, timeout=15,
+                env=subprocess_env,
+            )
+        except Exception:
+            logger.warning("git clean -fd failed in %s", cwd, exc_info=True)
+
+        # Switch to placeholder branch
+        checkout_ok = False
+        try:
+            result = subprocess.run(
+                ["git", "checkout", placeholder],
+                capture_output=True, text=True, cwd=cwd, timeout=15,
+                env=subprocess_env,
+            )
+            checkout_ok = result.returncode == 0
+        except Exception:
+            logger.warning(
+                "Failed to checkout %s in %s", placeholder, cwd, exc_info=True,
+            )
+
+        # Only delete the feature branch after confirming we switched away
+        if branch and not is_protected_branch(branch) and checkout_ok:
             try:
                 subprocess.run(
                     ["git", "branch", "-D", branch],
@@ -2787,6 +2818,11 @@ class Supervisor:
                     "Failed to delete remote branch %s (may not exist)",
                     branch,
                 )
+        elif branch and not is_protected_branch(branch):
+            logger.warning(
+                "Skipping branch deletion for %s — checkout to %s failed",
+                branch, placeholder,
+            )
 
     def _stop_slot_linear_cleanup(self, slot: SlotState) -> None:
         """Move ticket back to todo status and post a comment."""
@@ -3318,6 +3354,12 @@ class Supervisor:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _subprocess_env(self) -> dict[str, str] | None:
+        """Build environment dict for subprocess calls, merging git env."""
+        if self._git_env:
+            return {**os.environ, **self._git_env}
+        return None
 
     @staticmethod
     def _slot_worktree_cwd(project_cfg: ProjectConfig, slot_id: int) -> str:
