@@ -35,7 +35,7 @@ from botfarm.worker import (
     _check_pr_merged,
     _compute_context_fill,
     _extract_pr_url,
-    _is_protected_branch,
+    is_protected_branch,
     _make_stage_log_path,
     _parse_pr_url,
     _parse_review_approved,
@@ -1080,20 +1080,20 @@ class TestRunMerge:
 
 class TestIsProtectedBranch:
     def test_main_is_protected(self):
-        assert _is_protected_branch("main") is True
+        assert is_protected_branch("main") is True
 
     def test_slot_placeholder_is_protected(self):
-        assert _is_protected_branch("slot-1-placeholder") is True
-        assert _is_protected_branch("slot-42-placeholder") is True
+        assert is_protected_branch("slot-1-placeholder") is True
+        assert is_protected_branch("slot-42-placeholder") is True
 
     def test_feature_branch_is_not_protected(self):
-        assert _is_protected_branch("feat/my-feature") is False
-        assert _is_protected_branch("adobrushskiy/sma-141-fix") is False
+        assert is_protected_branch("feat/my-feature") is False
+        assert is_protected_branch("adobrushskiy/sma-141-fix") is False
 
     def test_similar_but_not_matching_patterns(self):
-        assert _is_protected_branch("slot-placeholder") is False
-        assert _is_protected_branch("slot-1-placeholders") is False
-        assert _is_protected_branch("main-backup") is False
+        assert is_protected_branch("slot-placeholder") is False
+        assert is_protected_branch("slot-1-placeholders") is False
+        assert is_protected_branch("main-backup") is False
 
 
 class TestCheckPrMerged:

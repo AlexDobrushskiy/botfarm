@@ -1247,7 +1247,7 @@ def _run_ci_fix(
     )
 
 
-def _is_protected_branch(branch: str) -> bool:
+def is_protected_branch(branch: str) -> bool:
     """Return True if the branch must never be deleted."""
     if branch == "main":
         return True
@@ -1327,7 +1327,7 @@ def _run_merge(
 
     # Delete the local feature branch to prevent stale branch accumulation.
     if feature_branch:
-        if _is_protected_branch(feature_branch):
+        if is_protected_branch(feature_branch):
             logger.warning(
                 "Refusing to delete protected branch '%s'", feature_branch,
             )

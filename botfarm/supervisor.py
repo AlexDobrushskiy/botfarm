@@ -36,7 +36,7 @@ from botfarm.notifications import Notifier
 from botfarm.preflight import CheckResult, log_preflight_summary, run_preflight_checks
 from botfarm.slots import SlotManager, SlotState, _is_pid_alive
 from botfarm.usage import DEFAULT_PAUSE_5H_THRESHOLD, DEFAULT_PAUSE_7D_THRESHOLD, UsagePoller
-from botfarm.worker import STAGES, PipelineResult, _is_protected_branch, build_git_env, run_pipeline
+from botfarm.worker import STAGES, PipelineResult, is_protected_branch, build_git_env, run_pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +55,7 @@ class _WorkerResult:
     project: str
     slot_id: int
     success: bool
+    ticket_id: str = ""
     failure_stage: str | None = None
     failure_reason: str | None = None
     limit_hit: bool = False
@@ -82,6 +83,43 @@ class StopSlotResult:
     pr_closed: bool = False
     ticket_id: str | None = None
     message: str = ""
+
+
+def _kill_process_tree(pid: int) -> None:
+    """SIGKILL a process and all its descendants.
+
+    The worker creates its own process group (``os.setpgrp()``), and stage
+    subprocesses use ``start_new_session=True`` which puts them in
+    separate session/process groups.  We first collect child PIDs, then
+    SIGKILL each child's process group (in case it's a session leader),
+    and finally SIGKILL the worker's own process group.
+    """
+    child_pids: list[int] = []
+    try:
+        children_dir = Path(f"/proc/{pid}/task/{pid}/children")
+        if children_dir.exists():
+            child_pids = [int(p) for p in children_dir.read_text().split() if p]
+    except (OSError, ValueError):
+        pass
+
+    # Kill child session groups (stage subprocesses)
+    for cpid in child_pids:
+        try:
+            os.killpg(os.getpgid(cpid), signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            try:
+                os.kill(cpid, signal.SIGKILL)
+            except (OSError, ProcessLookupError):
+                pass
+
+    # Kill the worker's own process group
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except (OSError, ProcessLookupError):
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            pass
 
 
 _COMMENT_MAX_LEN = 2000
@@ -177,7 +215,8 @@ def _worker_entry(
         )
         if result.paused:
             result_queue.put(_WorkerResult(
-                project=project_name, slot_id=slot_id, success=False,
+                project=project_name, slot_id=slot_id, ticket_id=ticket_id,
+                success=False,
                 paused=True,
                 stages_completed=result.stages_completed,
             ))
@@ -187,7 +226,8 @@ def _worker_entry(
             )
         elif result.success:
             result_queue.put(_WorkerResult(
-                project=project_name, slot_id=slot_id, success=True,
+                project=project_name, slot_id=slot_id, ticket_id=ticket_id,
+                success=True,
                 no_pr_reason=result.no_pr_reason,
                 result_text=result.result_text,
             ))
@@ -199,7 +239,8 @@ def _worker_entry(
             # Check if the failure looks like a limit hit
             limit_hit = _check_limit_hit(result)
             result_queue.put(_WorkerResult(
-                project=project_name, slot_id=slot_id, success=False,
+                project=project_name, slot_id=slot_id, ticket_id=ticket_id,
+                success=False,
                 failure_stage=result.failure_stage,
                 failure_reason=result.failure_reason,
                 limit_hit=limit_hit,
@@ -221,7 +262,8 @@ def _worker_entry(
             "Worker %s/%d crashed for %s", project_name, slot_id, ticket_id,
         )
         result_queue.put(_WorkerResult(
-            project=project_name, slot_id=slot_id, success=False,
+            project=project_name, slot_id=slot_id, ticket_id=ticket_id,
+            success=False,
             failure_stage="worker_entry",
             failure_reason=str(exc)[:500],
         ))
@@ -1912,6 +1954,16 @@ class Supervisor:
                 wr: _WorkerResult = self._result_queue.get(timeout=0.05)
             except queue_mod.Empty:
                 break
+            # Guard against stale results from a stopped worker that
+            # arrive after the slot has been reassigned to a new ticket.
+            slot = self._slot_manager.get_slot(wr.project, wr.slot_id)
+            if wr.ticket_id and slot and slot.ticket_id and wr.ticket_id != slot.ticket_id:
+                logger.warning(
+                    "Ignoring stale result for %s/%d: result ticket=%s, "
+                    "current ticket=%s",
+                    wr.project, wr.slot_id, wr.ticket_id, slot.ticket_id,
+                )
+                continue
             if wr.paused:
                 # Sync stages_completed from the worker subprocess
                 if wr.stages_completed:
@@ -2508,12 +2560,13 @@ class Supervisor:
         # --- Git cleanup ---
         self._stop_slot_git_cleanup(project, slot_id, branch)
 
-        # --- Linear cleanup ---
-        self._stop_slot_linear_cleanup(slot)
+        # --- Linear cleanup (skip if PR was already merged) ---
+        if not pr_was_merged:
+            self._stop_slot_linear_cleanup(slot)
 
         # --- State cleanup ---
         task_id = self._find_task_id(ticket_id)
-        if task_id is not None:
+        if task_id is not None and not pr_was_merged:
             update_task(
                 self._conn, task_id,
                 status="failed",
@@ -2550,7 +2603,14 @@ class Supervisor:
         )
 
     def _stop_slot_kill_worker(self, slot: SlotState) -> None:
-        """Kill the worker process for a slot being stopped."""
+        """Kill the worker process and its child process tree.
+
+        The worker runs in its own process group (via ``os.setpgrp()``),
+        and stage subprocesses (Claude/Codex) use ``start_new_session=True``
+        creating their own session groups.  We signal the worker's process
+        group first for a graceful shutdown, then escalate to SIGKILL on
+        both the worker group and any child session groups.
+        """
         key = (slot.project, slot.slot_id)
         pid = slot.pid
         grace = self._config.agents.timeout_grace_seconds
@@ -2567,22 +2627,23 @@ class Supervisor:
             self._drain_results_for_slot(slot.project, slot.slot_id)
             return
 
-        # Send SIGTERM
+        # Send SIGTERM to the worker's process group (worker + direct children)
         try:
-            os.kill(pid, signal.SIGTERM)
+            os.killpg(pid, signal.SIGTERM)
         except (OSError, ProcessLookupError):
-            pass
+            # Fallback: signal just the worker PID
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except (OSError, ProcessLookupError):
+                pass
 
         # Wait for graceful exit
         proc = self._workers.get(key)
         if proc is not None:
             proc.join(timeout=grace)
             if proc.is_alive():
-                # Escalate to SIGKILL
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                except (OSError, ProcessLookupError):
-                    pass
+                # Escalate to SIGKILL on worker group and child groups
+                _kill_process_tree(pid)
                 proc.join(timeout=2)
             self._workers.pop(key, None)
         else:
@@ -2590,10 +2651,7 @@ class Supervisor:
             # and escalate via PID only.
             time.sleep(grace)
             if _is_pid_alive(pid):
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                except (OSError, ProcessLookupError):
-                    pass
+                _kill_process_tree(pid)
 
         # Drain any pending results for this slot
         self._drain_results_for_slot(slot.project, slot.slot_id)
@@ -2623,7 +2681,7 @@ class Supervisor:
             return True, False
 
         if pr_status == "open":
-            # Close the PR
+            # Close the PR (without --delete-branch; git cleanup handles branches)
             pr_url = slot.pr_url
             if not pr_url:
                 task_id = self._find_task_id(slot.ticket_id)
@@ -2631,24 +2689,32 @@ class Supervisor:
                     task = get_task(self._conn, task_id)
                     if task:
                         pr_url = task["pr_url"]
+            closed = False
             if pr_url:
                 project_cfg = self._projects.get(slot.project)
                 if project_cfg:
                     cwd = self._slot_worktree_cwd(project_cfg, slot.slot_id)
                     subprocess_env = {**os.environ, **self._git_env} if self._git_env else None
                     try:
-                        subprocess.run(
-                            ["gh", "pr", "close", pr_url, "--delete-branch"],
+                        result = subprocess.run(
+                            ["gh", "pr", "close", pr_url],
                             capture_output=True, text=True, cwd=cwd, timeout=30,
                             env=subprocess_env,
                         )
-                        logger.info("Closed PR %s for stopped slot", pr_url)
+                        if result.returncode == 0:
+                            closed = True
+                            logger.info("Closed PR %s for stopped slot", pr_url)
+                        else:
+                            logger.warning(
+                                "gh pr close %s exited %d: %s",
+                                pr_url, result.returncode, result.stderr,
+                            )
                     except Exception:
                         logger.warning(
                             "Failed to close PR %s for stopped slot",
                             pr_url, exc_info=True,
                         )
-                return False, True
+            return False, closed
 
         # closed state — nothing to do
         return False, False
@@ -2697,7 +2763,7 @@ class Supervisor:
             logger.warning("git reset --hard failed in %s", cwd, exc_info=True)
 
         # Delete local feature branch
-        if branch and not _is_protected_branch(branch):
+        if branch and not is_protected_branch(branch):
             try:
                 subprocess.run(
                     ["git", "branch", "-D", branch],
