@@ -893,6 +893,8 @@ def cleanup(action, count, min_age, status_filter, project, dry_run, yes, config
     if not cfg.projects:
         raise click.ClickException("No projects configured.")
 
+    console = Console()
+
     # Resolve team key and project name from config.
     # When --project is given, find the matching configured project so
     # we use the correct team; otherwise default to the first project.
@@ -901,7 +903,13 @@ def cleanup(action, count, min_age, status_filter, project, dry_run, yes, config
         for p in cfg.projects:
             if p.linear_project == project or p.name == project:
                 resolved_proj = p
+                project = p.linear_project or p.name
                 break
+        else:
+            console.print(
+                f"[yellow]Warning: --project {project!r} does not match any "
+                f"configured project. Using team {resolved_proj.linear_team!r}.[/yellow]"
+            )
     else:
         project = resolved_proj.linear_project or ""
     team_key = resolved_proj.linear_team
@@ -917,8 +925,6 @@ def cleanup(action, count, min_age, status_filter, project, dry_run, yes, config
         raise click.ClickException(str(exc)) from exc
     except sqlite3.Error as exc:
         raise click.ClickException(f"Failed to open database: {exc}") from exc
-
-    console = Console()
 
     try:
         client = LinearClient(api_key=cfg.linear.api_key)

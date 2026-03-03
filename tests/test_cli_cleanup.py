@@ -283,6 +283,70 @@ class TestCleanupFilterOptions:
         assert captured_kwargs["team_key"] == "TEAM-B"
         assert captured_kwargs["project_name"] == "Project Beta"
 
+    def test_project_name_normalized_to_linear_project(
+        self, runner, db_file, monkeypatch
+    ):
+        """When --project matches by p.name, project is rewritten to p.linear_project."""
+        from botfarm.config import (
+            BotfarmConfig,
+            IdentitiesConfig,
+            CoderIdentity,
+            LinearConfig,
+            ProjectConfig,
+            ReviewerIdentity,
+        )
+
+        cfg = BotfarmConfig(
+            projects=[
+                ProjectConfig(
+                    name="proj-b",
+                    linear_team="TEAM-B",
+                    linear_project="Project Beta",
+                    base_dir="/tmp/b",
+                    worktree_prefix="b-slot-",
+                    slots=[1],
+                ),
+            ],
+            linear=LinearConfig(api_key="test-key"),
+            identities=IdentitiesConfig(
+                coder=CoderIdentity(),
+                reviewer=ReviewerIdentity(),
+            ),
+        )
+        monkeypatch.setattr(
+            "botfarm.cli._resolve_paths", lambda _: (db_file, cfg)
+        )
+        captured_kwargs = {}
+
+        original_init = CleanupService.__init__
+
+        def mock_init(self, client, conn, **kwargs):
+            captured_kwargs.update(kwargs)
+            original_init(self, client, conn, **kwargs)
+
+        with patch.object(CleanupService, "__init__", mock_init):
+            with patch.object(CleanupService, "fetch_candidates", return_value=[]):
+                result = runner.invoke(
+                    main, ["cleanup", "--dry-run", "--project", "proj-b"]
+                )
+
+        assert result.exit_code == 0
+        assert captured_kwargs["team_key"] == "TEAM-B"
+        # Should be normalized to the Linear project name, not the config name
+        assert captured_kwargs["project_name"] == "Project Beta"
+
+    def test_unmatched_project_warns(self, runner, db_file, monkeypatch):
+        """When --project doesn't match any configured project, a warning is shown."""
+        monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
+        with patch.object(CleanupService, "fetch_candidates", return_value=[]):
+            result = runner.invoke(
+                main, ["cleanup", "--dry-run", "--project", "nonexistent"]
+            )
+
+        assert result.exit_code == 0
+        assert "Warning" in result.output
+        assert "nonexistent" in result.output
+
     def test_min_age_option(self, runner, db_file, monkeypatch):
         monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
         captured_kwargs = {}
