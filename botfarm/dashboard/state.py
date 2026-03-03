@@ -232,13 +232,13 @@ def manual_pause_state(state: dict) -> str:
     """
     dispatch_paused = state.get("dispatch_paused", False)
     pause_reason = state.get("dispatch_pause_reason")
-    if not dispatch_paused or pause_reason != "manual_pause":
+    if not dispatch_paused or pause_reason not in ("manual_pause", "start_paused"):
         slots = state.get("slots", [])
         has_manual_paused = any(s["status"] == "paused_manual" for s in slots)
         if has_manual_paused:
             return "paused"
         return "running"
-    # Dispatch is paused for manual reason — check if workers are still busy
+    # Dispatch is paused for manual/start_paused reason — check if workers are still busy
     slots = state.get("slots", [])
     has_busy = any(s["status"] == "busy" for s in slots)
     if has_busy:

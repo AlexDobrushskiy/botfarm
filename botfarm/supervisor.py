@@ -918,6 +918,7 @@ class PauseResumeManager:
             ):
                 logger.info("Manual resume: dispatch unpaused")
                 self._slot_manager.set_dispatch_paused(False)
+                self._sup._startup_paused = False
                 insert_event(
                     self._conn,
                     event_type="manual_resumed",
@@ -1097,6 +1098,11 @@ class Supervisor:
 
         # Queue for worker results — workers send _WorkerResult here
         self._result_queue: multiprocessing.Queue = multiprocessing.Queue()
+
+        # Tracks whether the supervisor started in paused mode and hasn't been
+        # manually resumed yet.  Used to restore "start_paused" when a secondary
+        # pause reason (capacity_blocked, update_in_progress) clears.
+        self._startup_paused: bool = False
 
         # Timestamp of last ticket log cleanup (runs at most once per hour)
         self._last_log_cleanup: float = 0.0
@@ -1283,6 +1289,21 @@ class Supervisor:
         # Exception: _resume_recovered_worker commits early to record
         # the recovery_resumed event before spawning.
         self._conn.commit()
+
+    def _apply_start_paused(self) -> None:
+        """Pause dispatch on startup if configured and not already paused."""
+        if self._config.start_paused and not self._slot_manager.dispatch_paused:
+            self._slot_manager.set_dispatch_paused(True, "start_paused")
+            self._startup_paused = True
+            logger.info(
+                "Supervisor started in paused mode "
+                "— use dashboard or CLI to start dispatching"
+            )
+            insert_event(
+                self._conn,
+                event_type="start_paused",
+            )
+            self._conn.commit()
 
     def _is_ticket_externally_done(self, slot: SlotState) -> bool:
         """Check if a ticket was moved to Done/Cancelled in Linear externally.
@@ -1730,23 +1751,7 @@ class Supervisor:
         else:
             # Recover from previous state before entering main loop
             self._recover_on_startup()
-
-            # If start_paused is configured and dispatch isn't already paused
-            # (e.g. from crash recovery), pause dispatch on startup.
-            if (
-                self._config.start_paused
-                and not self._slot_manager.dispatch_paused
-            ):
-                self._slot_manager.set_dispatch_paused(True, "start_paused")
-                logger.info(
-                    "Supervisor started in paused mode "
-                    "— use dashboard or CLI to start dispatching"
-                )
-                insert_event(
-                    self._conn,
-                    event_type="start_paused",
-                )
-                self._conn.commit()
+            self._apply_start_paused()
 
         # Initial usage poll so we have data before the first dispatch
         if not self._degraded:
@@ -1804,21 +1809,7 @@ class Supervisor:
             self._conn.commit()
             self._degraded = False
             self._recover_on_startup()
-
-            if (
-                self._config.start_paused
-                and not self._slot_manager.dispatch_paused
-            ):
-                self._slot_manager.set_dispatch_paused(True, "start_paused")
-                logger.info(
-                    "Supervisor started in paused mode "
-                    "— use dashboard or CLI to start dispatching"
-                )
-                insert_event(
-                    self._conn,
-                    event_type="start_paused",
-                )
-                self._conn.commit()
+            self._apply_start_paused()
 
             try:
                 self._usage_poller.force_poll(self._conn)
@@ -2585,7 +2576,11 @@ class Supervisor:
             self._conn.commit()
             self._update_event.clear()
             self._update_failed_event.set()
-            self._slot_manager.set_dispatch_paused(False)
+            if self._startup_paused:
+                self._slot_manager.set_dispatch_paused(True, "start_paused")
+                logger.info("Update failed — restoring start_paused state")
+            else:
+                self._slot_manager.set_dispatch_paused(False)
             return
 
         # Step 4: Exit with special code for restart
@@ -2713,7 +2708,11 @@ class Supervisor:
             )
             self._conn.commit()
             if self._slot_manager.dispatch_pause_reason == "capacity_blocked":
-                self._slot_manager.set_dispatch_paused(False)
+                if self._startup_paused:
+                    self._slot_manager.set_dispatch_paused(True, "start_paused")
+                    logger.info("Capacity cleared — restoring start_paused state")
+                else:
+                    self._slot_manager.set_dispatch_paused(False)
             self._notifier.notify_capacity_cleared(
                 count=result.total, limit=limit, percentage=percentage,
             )

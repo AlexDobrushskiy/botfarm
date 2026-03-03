@@ -5561,13 +5561,11 @@ class TestStartPaused:
         assert sm.dispatch_paused is False  # Not paused yet
 
         sup._recover_on_startup()
-
-        # Simulate the start_paused logic from run()
-        if sup._config.start_paused and not sm.dispatch_paused:
-            sm.set_dispatch_paused(True, "start_paused")
+        sup._apply_start_paused()
 
         assert sm.dispatch_paused is True
         assert sm.dispatch_pause_reason == "start_paused"
+        assert sup._startup_paused is True
 
     def test_start_paused_false_does_not_pause(self, tmp_config, tmp_path, monkeypatch):
         """Supervisor starts with dispatch active when start_paused=False."""
@@ -5584,9 +5582,10 @@ class TestStartPaused:
 
         sm = sup.slot_manager
         sup._recover_on_startup()
+        sup._apply_start_paused()
 
-        # start_paused is False so dispatch stays active
         assert sm.dispatch_paused is False
+        assert sup._startup_paused is False
 
     def test_start_paused_not_auto_resumed_by_usage(self, supervisor):
         """_poll_and_dispatch should not auto-resume dispatch paused for start_paused."""
@@ -5613,6 +5612,7 @@ class TestStartPaused:
         """request_resume (manual resume) clears start_paused dispatch pause."""
         sm = supervisor.slot_manager
         sm.set_dispatch_paused(True, "start_paused")
+        supervisor._startup_paused = True
 
         # Trigger resume
         supervisor.request_resume()
@@ -5620,6 +5620,7 @@ class TestStartPaused:
 
         assert sm.dispatch_paused is False
         assert sm.dispatch_pause_reason is None
+        assert supervisor._startup_paused is False
 
     def test_start_paused_skipped_when_already_paused(self, tmp_config, tmp_path, monkeypatch):
         """start_paused does not override an existing pause (e.g. from crash recovery)."""
@@ -5639,10 +5640,43 @@ class TestStartPaused:
         sm.set_dispatch_paused(True, "manual_pause")
 
         sup._recover_on_startup()
-
-        # start_paused should NOT override the existing pause
-        if sup._config.start_paused and not sm.dispatch_paused:
-            sm.set_dispatch_paused(True, "start_paused")
+        sup._apply_start_paused()
 
         assert sm.dispatch_paused is True
         assert sm.dispatch_pause_reason == "manual_pause"
+
+    def test_capacity_blocked_restores_start_paused(self, supervisor):
+        """When capacity_blocked clears and _startup_paused is set, restore start_paused."""
+        sm = supervisor.slot_manager
+        supervisor._startup_paused = True
+        supervisor._linear_client = MagicMock()
+
+        # Enter blocked state
+        supervisor._linear_client.count_active_issues.return_value = ActiveIssuesCount(
+            total=240, by_project={"proj": 240},
+        )
+        supervisor._poll_capacity()
+        assert supervisor._capacity_level == "blocked"
+        assert sm.dispatch_pause_reason == "capacity_blocked"
+
+        # Drop below resume threshold — should restore start_paused, not unpause
+        supervisor._linear_client.count_active_issues.return_value = ActiveIssuesCount(
+            total=220, by_project={"proj": 220},
+        )
+        supervisor._poll_capacity()
+
+        assert sm.dispatch_paused is True
+        assert sm.dispatch_pause_reason == "start_paused"
+
+    def test_update_failed_restores_start_paused(self, supervisor):
+        """When update fails and _startup_paused is set, restore start_paused."""
+        sm = supervisor.slot_manager
+        supervisor._startup_paused = True
+        sm.set_dispatch_paused(True, "update_in_progress")
+        supervisor._update_event.set()
+
+        with patch("botfarm.git_update.pull_and_install", return_value=False):
+            supervisor._handle_update_request()
+
+        assert sm.dispatch_paused is True
+        assert sm.dispatch_pause_reason == "start_paused"
