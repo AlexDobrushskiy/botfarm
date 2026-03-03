@@ -8,6 +8,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
 from .state import (
+    check_commits_behind,
     context_fill_class,
     elapsed,
     get_capacity_data,
@@ -74,7 +75,7 @@ def partial_usage(request: Request):
     usage = fresh if fresh is not None else state.get("usage", {})
     dispatch_paused = state.get("dispatch_paused", False)
     dispatch_pause_reason = state.get("dispatch_pause_reason")
-    dashboard_checked = get_dashboard_last_fresh_time()
+    dashboard_checked = get_dashboard_last_fresh_time(app)
     last_usage_check = dashboard_checked or state.get("last_usage_check")
     stale = usage_is_stale(last_usage_check)
     return templates.TemplateResponse("partials/usage.html", {
@@ -154,8 +155,6 @@ def partial_supervisor_controls(request: Request):
 
 @router.get("/partials/update-banner", response_class=HTMLResponse)
 def partial_update_banner(request: Request):
-    from .state import check_commits_behind
-
     app = request.app
     templates = request.app.state.templates
     # Check if supervisor signalled that update failed

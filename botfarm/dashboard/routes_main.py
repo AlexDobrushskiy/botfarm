@@ -17,6 +17,7 @@ from botfarm.db import (
     get_distinct_ticket_projects,
     get_distinct_ticket_statuses,
     get_events,
+    get_latest_context_fill_by_ticket,
     get_stage_run_aggregates,
     get_stage_runs,
     get_task,
@@ -60,8 +61,6 @@ _EMPTY_TASK_AGGREGATES: dict = {
 
 def _enrich_slots_with_context_fill(app, slots: list[dict]) -> list[dict]:
     """Attach latest context_fill_pct to busy slots from the DB."""
-    from botfarm.db import get_latest_context_fill_by_ticket
-
     busy_tickets = [
         s["ticket_id"] for s in slots
         if s.get("status") == "busy" and s.get("ticket_id")
@@ -621,7 +620,7 @@ def index(request: Request):
     dispatch_pause_reason = state.get("dispatch_pause_reason")
     usage = state.get("usage", {})
     queue = state.get("queue")
-    dashboard_checked = get_dashboard_last_fresh_time()
+    dashboard_checked = get_dashboard_last_fresh_time(app)
     last_usage_check = dashboard_checked or state.get("last_usage_check")
     _linear_url = lambda tid: linear_url(app, tid)
     return templates.TemplateResponse("index.html", {

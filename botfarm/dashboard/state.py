@@ -285,33 +285,27 @@ def get_capacity_data(app: FastAPI) -> dict | None:
     return capacity
 
 
-# --- Usage refresh state (module-level, shared across requests) ---
+# --- Constants for rate-limiting ---
 
-_usage_refresh_lock = threading.Lock()
-_last_usage_refresh: dict = {"time": None, "data": None}
 _USAGE_REFRESH_INTERVAL = 60  # seconds — rate-limit API calls
-# Track when the dashboard itself last got fresh data (wall-clock ISO str)
-_dashboard_last_fresh: dict = {"time": None}
-
-# --- Update check state ---
-
-_update_check_lock = threading.Lock()
-_last_update_check: dict = {"time": None, "commits_behind": 0}
 _UPDATE_CHECK_INTERVAL = 60  # seconds
 
 
-def reset_caches() -> None:
-    """Reset all module-level caches. Called by create_app() so each app
-    instance starts with clean state (important for tests)."""
-    _last_usage_refresh["time"] = None
-    _last_usage_refresh["data"] = None
-    _dashboard_last_fresh["time"] = None
-    _last_update_check["time"] = None
-    _last_update_check["commits_behind"] = 0
+def init_caches(app: FastAPI) -> None:
+    """Initialise per-app rate-limit caches on ``app.state``.
+
+    Called by ``create_app()`` so each app instance gets isolated caches
+    (important for tests and when multiple apps coexist in one process).
+    """
+    app.state._usage_refresh_lock = threading.Lock()
+    app.state._last_usage_refresh = {"time": None, "data": None}
+    app.state._dashboard_last_fresh = {"time": None}
+    app.state._update_check_lock = threading.Lock()
+    app.state._last_update_check = {"time": None, "commits_behind": 0}
 
 
-def get_dashboard_last_fresh_time() -> str | None:
-    return _dashboard_last_fresh["time"]
+def get_dashboard_last_fresh_time(app: FastAPI) -> str | None:
+    return app.state._dashboard_last_fresh["time"]
 
 
 def refresh_and_get_usage(app: FastAPI) -> dict | None:
@@ -323,10 +317,12 @@ def refresh_and_get_usage(app: FastAPI) -> dict | None:
     import time
 
     now = time.monotonic()
-    with _usage_refresh_lock:
-        last = _last_usage_refresh["time"]
+    lock = app.state._usage_refresh_lock
+    cache = app.state._last_usage_refresh
+    with lock:
+        last = cache["time"]
         if last is not None and now - last < _USAGE_REFRESH_INTERVAL:
-            return _last_usage_refresh["data"]
+            return cache["data"]
         # Don't claim the slot yet — wait for the API call to succeed
         in_flight_time = now
 
@@ -339,10 +335,10 @@ def refresh_and_get_usage(app: FastAPI) -> dict | None:
         state = _pkg.refresh_usage_snapshot(conn)
         if state is not None:
             result = state.to_dict()
-            with _usage_refresh_lock:
-                _last_usage_refresh["time"] = in_flight_time
-                _last_usage_refresh["data"] = result
-            _dashboard_last_fresh["time"] = (
+            with lock:
+                cache["time"] = in_flight_time
+                cache["data"] = result
+            app.state._dashboard_last_fresh["time"] = (
                 datetime.now(timezone.utc).isoformat()
             )
             return result
@@ -373,10 +369,12 @@ def check_commits_behind(app: FastAPI) -> int:
     import time as _time
 
     now = _time.monotonic()
-    with _update_check_lock:
-        last = _last_update_check["time"]
+    lock = app.state._update_check_lock
+    cache = app.state._last_update_check
+    with lock:
+        last = cache["time"]
         if last is not None and now - last < _UPDATE_CHECK_INTERVAL:
-            return _last_update_check["commits_behind"]
+            return cache["commits_behind"]
 
     try:
         # Look up via the package module so tests can mock.patch
@@ -387,7 +385,7 @@ def check_commits_behind(app: FastAPI) -> int:
         logger.warning("Update check failed", exc_info=True)
         count = 0
 
-    with _update_check_lock:
-        _last_update_check["time"] = now
-        _last_update_check["commits_behind"] = count
+    with lock:
+        cache["time"] = now
+        cache["commits_behind"] = count
     return count

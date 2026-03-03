@@ -17,7 +17,7 @@ from .routes_config import router as config_router
 from .routes_logs import router as logs_router
 from .routes_main import router as main_router
 from .routes_partials import router as partials_router
-from .state import TEMPLATES_DIR, reset_caches
+from .state import TEMPLATES_DIR, init_caches
 
 logger = logging.getLogger(__name__)
 
@@ -79,9 +79,6 @@ def create_app(
     """
     app = FastAPI(title="Botfarm Dashboard", docs_url=None, redoc_url=None)
 
-    # Reset module-level caches so each app instance starts clean
-    reset_caches()
-
     # Store paths on app state for route handlers
     app.state.db_path = Path(db_path).expanduser()
     app.state.linear_workspace = linear_workspace
@@ -99,6 +96,9 @@ def create_app(
     app.state.logs_dir = Path(logs_dir).expanduser() if logs_dir else None
     app.state.git_env = git_env
     app.state.templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+
+    # Initialise per-app rate-limit caches (isolated per app instance)
+    init_caches(app)
 
     # Include all route modules
     app.include_router(main_router)
