@@ -33,6 +33,8 @@ from botfarm.db import (
     save_project_pause_state,
     upsert_slot,
 )
+from botfarm.linear import LinearAPIError, LinearClient
+from botfarm.linear_cleanup import CleanupService, CooldownError
 from botfarm.slots import SlotState, _is_pid_alive
 from botfarm.systemd_service import UNIT_PATH, generate_unit, install_service, uninstall_service
 from botfarm.usage import refresh_usage_snapshot
@@ -817,3 +819,181 @@ def uninstall_service_cmd():
         ) from exc
 
     click.echo("Service stopped, disabled, and removed.")
+
+
+def _days_ago(iso_timestamp: str | None) -> int:
+    """Return how many days ago an ISO timestamp is, or 0 if unparseable."""
+    if not iso_timestamp:
+        return 0
+    try:
+        dt = datetime.fromisoformat(iso_timestamp.replace("Z", "+00:00"))
+        return max(0, (datetime.now(timezone.utc) - dt).days)
+    except (ValueError, TypeError):
+        return 0
+
+
+@main.command()
+@click.option(
+    "--action",
+    type=click.Choice(["archive", "delete"]),
+    default="archive",
+    help="Action to perform (default: archive).",
+)
+@click.option(
+    "--count",
+    type=int,
+    default=50,
+    help="Max issues to process (default: 50).",
+)
+@click.option(
+    "--min-age",
+    type=int,
+    default=7,
+    help="Minimum days since completion (default: 7).",
+)
+@click.option(
+    "--status",
+    "status_filter",
+    type=click.Choice(["done", "canceled", "all"]),
+    default="all",
+    help="Filter by status (default: all).",
+)
+@click.option("--project", default=None, help="Filter by project name.")
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Preview candidates without taking action.",
+)
+@click.option(
+    "--yes",
+    is_flag=True,
+    default=False,
+    help="Skip confirmation prompt.",
+)
+@click.option(
+    "--config",
+    "config_path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help="Path to config file.",
+)
+def cleanup(action, count, min_age, status_filter, project, dry_run, yes, config_path):
+    """Bulk archive or delete old completed/canceled Linear issues."""
+    db_path, cfg = _resolve_paths(config_path)
+
+    if cfg is None:
+        raise click.ClickException(
+            "Config file not found. Run 'botfarm init' first."
+        )
+
+    if not cfg.linear.api_key:
+        raise click.ClickException("linear.api_key not configured.")
+
+    if not cfg.projects:
+        raise click.ClickException("No projects configured.")
+
+    # Use first project's team key; --project filters within Linear
+    team_key = cfg.projects[0].linear_team
+
+    if not db_path.exists():
+        raise click.ClickException(
+            "No database found. Run the supervisor first to initialize the DB."
+        )
+
+    try:
+        conn = init_db(db_path)
+    except SchemaVersionError as exc:
+        raise click.ClickException(str(exc)) from exc
+    except sqlite3.Error as exc:
+        raise click.ClickException(f"Failed to open database: {exc}") from exc
+
+    console = Console()
+
+    try:
+        client = LinearClient(api_key=cfg.linear.api_key)
+        svc = CleanupService(
+            client,
+            conn,
+            team_key=team_key,
+            project_name=project or "",
+            min_age_days=min_age,
+            default_limit=count,
+        )
+
+        # Fetch candidates
+        candidates = svc.fetch_candidates(
+            limit=count, status_filter=status_filter
+        )
+
+        if not candidates:
+            console.print("No cleanup candidates found.")
+            return
+
+        # Display candidate table
+        table = Table(title="Cleanup Candidates")
+        table.add_column("ID", style="bold", no_wrap=True)
+        table.add_column("Title")
+        table.add_column("Status", no_wrap=True)
+        table.add_column("Age (days)", justify="right", no_wrap=True)
+        table.add_column("Project", no_wrap=True)
+
+        for c in candidates:
+            age = _days_ago(c.completed_at or c.updated_at)
+            table.add_row(
+                c.identifier,
+                c.title[:60],
+                c.status or "-",
+                str(age),
+                c.project_name or "-",
+            )
+
+        console.print(table)
+        console.print(f"\n[bold]{len(candidates)}[/bold] candidate(s) found.\n")
+
+        if dry_run:
+            console.print("[dim]Dry run — no action taken.[/dim]")
+            return
+
+        # Confirmation prompt
+        if not yes:
+            if not click.confirm(
+                f"{action.capitalize()} {len(candidates)} issue(s)?"
+            ):
+                console.print("Aborted.")
+                return
+
+        # Execute cleanup with progress
+        selected_ids = [c.linear_uuid for c in candidates]
+        with console.status(
+            f"[bold yellow]{action.capitalize().rstrip('e')}ing {len(candidates)} issue(s)...",
+        ):
+            try:
+                result = svc.run_cleanup(
+                    action=action,
+                    limit=count,
+                    issue_ids=selected_ids,
+                )
+            except CooldownError as exc:
+                raise click.ClickException(str(exc)) from exc
+            except LinearAPIError as exc:
+                raise click.ClickException(f"Linear API error: {exc}") from exc
+
+        # Summary
+        skipped_msg = ""
+        if result.skipped:
+            skipped_msg = f" {result.skipped} skipped (backup failed)."
+        freed = result.succeeded
+        console.print(
+            f"\n[bold green]{action.capitalize()}d {result.succeeded}/{result.total_candidates} issues.[/bold green]"
+            f"{skipped_msg}"
+            f" Freed ~{freed} capacity slot(s)."
+        )
+        if result.failed:
+            console.print(
+                f"[bold red]{result.failed} failed.[/bold red]"
+            )
+            for err in result.errors[:5]:
+                console.print(f"  [red]{err}[/red]")
+    finally:
+        conn.close()

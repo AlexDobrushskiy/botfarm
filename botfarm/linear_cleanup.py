@@ -35,6 +35,8 @@ class CleanupCandidate:
     completed_at: str | None
     labels: list[str]
     has_active_children: bool
+    status: str = ""
+    project_name: str = ""
 
 
 @dataclass
@@ -121,8 +123,17 @@ class CleanupService:
         except (ValueError, AttributeError):
             return False
 
-    def fetch_candidates(self, limit: int | None = None) -> list[CleanupCandidate]:
+    def fetch_candidates(
+        self,
+        limit: int | None = None,
+        status_filter: str = "all",
+    ) -> list[CleanupCandidate]:
         """Fetch completed/canceled issues filtered by age and label.
+
+        Args:
+            limit: Max issues to fetch from the API.
+            status_filter: ``"done"`` for completed only, ``"canceled"`` for
+                canceled only, or ``"all"`` for both (default).
 
         Returns issues that pass all filters:
         - Status is completed or canceled
@@ -137,6 +148,10 @@ class CleanupService:
             project_name=self._project_name,
         )
 
+        # Map CLI status filter values to Linear state types
+        _status_type_map = {"done": "completed", "canceled": "canceled"}
+        allowed_type = _status_type_map.get(status_filter)
+
         protected_lower = self._protected_label.lower()
         candidates = []
 
@@ -146,6 +161,16 @@ class CleanupService:
             title = node.get("title", "")
             updated_at = node.get("updatedAt", "")
             completed_at = node.get("completedAt")
+            state_info = node.get("state") or {}
+            state_type = state_info.get("type", "")
+            state_name = state_info.get("name", "")
+            project_info = node.get("project") or {}
+            project_name = project_info.get("name", "")
+
+            # Status type filter
+            if allowed_type and state_type != allowed_type:
+                logger.debug("Skipping %s: state type %s", identifier, state_type)
+                continue
 
             # Label filter
             label_nodes = node.get("labels", {}).get("nodes", [])
@@ -164,8 +189,8 @@ class CleanupService:
             has_active_children = False
             if child_nodes:
                 for child in child_nodes:
-                    state_type = (child.get("state") or {}).get("type", "")
-                    if state_type not in ("completed", "canceled"):
+                    child_state_type = (child.get("state") or {}).get("type", "")
+                    if child_state_type not in ("completed", "canceled"):
                         has_active_children = True
                         break
             if has_active_children:
@@ -183,6 +208,8 @@ class CleanupService:
                     completed_at=completed_at,
                     labels=labels,
                     has_active_children=False,
+                    status=state_name,
+                    project_name=project_name,
                 )
             )
 

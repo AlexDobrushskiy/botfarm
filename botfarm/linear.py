@@ -250,6 +250,8 @@ _COMPLETED_ISSUE_FIELDS = """
       title
       updatedAt
       completedAt
+      state { type name }
+      project { name }
       labels { nodes { name } }
       children {
         nodes {
