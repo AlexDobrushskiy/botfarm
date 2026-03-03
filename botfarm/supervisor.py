@@ -1500,6 +1500,22 @@ class Supervisor:
                 )
                 self._mark_recovery_completed(slot, reason="pr_merged_during_merge")
                 return
+            # If mid-merge-conflict-loop (resolve_conflict ran but the
+            # post-conflict review/CI pass hasn't completed), resume from
+            # review to ensure conflict-resolved code is re-reviewed.
+            if next_stage == "merge":
+                task_row = self._conn.execute(
+                    "SELECT merge_conflict_retries FROM tasks WHERE ticket_id = ?",
+                    (ticket_id,),
+                ).fetchone()
+                if task_row and task_row["merge_conflict_retries"] and task_row["merge_conflict_retries"] > 0:
+                    next_stage = "review"
+                    logger.info(
+                        "Dead worker PID %d for %s/%d: mid-merge-conflict-loop "
+                        "(retries=%d) — resuming from 'review' to re-run review/CI",
+                        old_pid, project, slot_id,
+                        task_row["merge_conflict_retries"],
+                    )
             if next_stage:
                 logger.info(
                     "Dead worker PID %d for %s/%d: resuming from stage '%s' "

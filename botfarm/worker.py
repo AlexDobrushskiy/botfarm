@@ -1282,6 +1282,11 @@ def _is_merge_conflict(
             timeout=30,
             env=env,
         )
+        if proc.returncode != 0:
+            logger.warning(
+                "gh pr view failed (rc=%d): %s", proc.returncode, proc.stderr[:200],
+            )
+            return True  # fall back to regex match
         mergeable = proc.stdout.strip().upper()
         return mergeable == "CONFLICTING"
     except (subprocess.TimeoutExpired, OSError):
@@ -1798,6 +1803,16 @@ def _dispatch_pipeline_stage(
             ctx, pr_url=pr_url, max_ci_retries=eff_max_ci_retries,
         )
 
+    # ----- Resolve conflict (resume mid-merge-conflict-loop) -----
+    if stage == "resolve_conflict":
+        return _handle_resolve_conflict_resume(
+            ctx,
+            pr_url=pr_url,
+            eff_max_review_iterations=eff_max_review_iterations,
+            eff_max_ci_retries=eff_max_ci_retries,
+            eff_max_merge_conflict_retries=eff_max_merge_conflict_retries,
+        )
+
     # ----- Merge with conflict retry loop -----
     if stage == "merge":
         return _handle_merge_stage(
@@ -1895,6 +1910,51 @@ def _handle_pr_checks_stage(
 
     # No retries configured — fail
     return True, pr_url
+
+
+def _handle_resolve_conflict_resume(
+    ctx: "_PipelineContext",
+    *,
+    pr_url: str | None,
+    eff_max_review_iterations: int,
+    eff_max_ci_retries: int,
+    eff_max_merge_conflict_retries: int,
+) -> tuple[bool, str | None]:
+    """Handle resuming from the resolve_conflict stage.
+
+    When a worker is resumed mid-merge-conflict-loop (e.g. after a
+    usage-limit pause during resolve_conflict), we must re-run the
+    remaining loop steps — review, pr_checks, and merge — to ensure
+    the conflict-resolved code is reviewed and passes CI before merging.
+
+    Returns ``(should_stop, pr_url)``.
+    """
+    result = ctx.run_and_record("resolve_conflict", pr_url=pr_url)
+    if result is None:
+        return True, pr_url
+
+    # Re-run review→fix loop on the conflict-resolved code
+    success = _run_review_fix_loop(
+        ctx, pr_url=pr_url, max_iterations=eff_max_review_iterations,
+    )
+    if not success:
+        return True, pr_url
+
+    # Re-run pr_checks (with CI retry support)
+    checks_stop, pr_url = _handle_pr_checks_stage(
+        ctx, pr_url=pr_url, max_ci_retries=eff_max_ci_retries,
+    )
+    if checks_stop:
+        return True, pr_url
+
+    # Attempt merge (with full conflict retry support)
+    return _handle_merge_stage(
+        ctx,
+        pr_url=pr_url,
+        max_merge_conflict_retries=eff_max_merge_conflict_retries,
+        eff_max_review_iterations=eff_max_review_iterations,
+        eff_max_ci_retries=eff_max_ci_retries,
+    )
 
 
 def _handle_merge_stage(
