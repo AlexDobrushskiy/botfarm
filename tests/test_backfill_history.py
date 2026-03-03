@@ -86,24 +86,25 @@ class TestBackfillHistory:
         monkeypatch.setattr(
             "botfarm.cli._resolve_paths", _mock_resolve(db_file, config=None)
         )
+        _seed_tasks(db_file, [
+            {"ticket_id": "SMA-1", "title": "Task 1", "project": "proj", "slot": 1},
+        ])
         result = runner.invoke(main, ["backfill-history"])
         assert result.exit_code != 0
         assert "Config file required" in result.output
 
     def test_no_database(self, runner, tmp_path, monkeypatch):
-        config = _make_config()
         monkeypatch.setattr(
             "botfarm.cli._resolve_paths",
-            lambda _: (tmp_path / "nonexistent.db", config),
+            lambda _: (tmp_path / "nonexistent.db", None),
         )
         result = runner.invoke(main, ["backfill-history"])
         assert result.exit_code == 0
         assert "No database found" in result.output
 
     def test_no_tasks(self, runner, db_file, monkeypatch):
-        config = _make_config()
         monkeypatch.setattr(
-            "botfarm.cli._resolve_paths", _mock_resolve(db_file, config)
+            "botfarm.cli._resolve_paths", _mock_resolve(db_file, config=None)
         )
         result = runner.invoke(main, ["backfill-history"])
         assert result.exit_code == 0
@@ -241,7 +242,7 @@ class TestBackfillHistory:
 
         result = runner.invoke(main, ["backfill-history"])
         assert result.exit_code == 0
-        assert "Warning: SMA-2 not found in Linear" in result.output
+        assert "Warning: failed to fetch SMA-2 from Linear" in result.output
         assert "1 fetched" in result.output
         assert "1 failed" in result.output
 
@@ -269,9 +270,8 @@ class TestBackfillHistory:
     @patch("botfarm.linear.LinearClient")
     def test_dry_run(self, mock_client_cls, runner, db_file, monkeypatch):
         """--dry-run shows what would be fetched without actually fetching."""
-        config = _make_config()
         monkeypatch.setattr(
-            "botfarm.cli._resolve_paths", _mock_resolve(db_file, config)
+            "botfarm.cli._resolve_paths", _mock_resolve(db_file, config=None)
         )
         _seed_tasks(db_file, [
             {"ticket_id": "SMA-1", "title": "Task 1", "project": "proj", "slot": 1},
@@ -294,9 +294,8 @@ class TestBackfillHistory:
 
     def test_all_already_backfilled(self, runner, db_file, monkeypatch):
         """When all tickets are already in ticket_history, shows 'nothing to do'."""
-        config = _make_config()
         monkeypatch.setattr(
-            "botfarm.cli._resolve_paths", _mock_resolve(db_file, config)
+            "botfarm.cli._resolve_paths", _mock_resolve(db_file, config=None)
         )
         _seed_tasks(db_file, [
             {"ticket_id": "SMA-1", "title": "Task 1", "project": "proj", "slot": 1},

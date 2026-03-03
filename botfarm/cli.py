@@ -849,12 +849,6 @@ def backfill_history(config_path, project, force, dry_run):
 
     db_path, config = _resolve_paths(config_path)
 
-    if config is None:
-        raise click.ClickException(
-            "Config file required (needed for Linear API key). "
-            "Use --config or ensure ~/.botfarm/config.yaml exists."
-        )
-
     if not db_path.exists():
         click.echo("No database found. No tasks to backfill.")
         return
@@ -909,6 +903,12 @@ def backfill_history(config_path, project, force, dry_run):
         if skipped_existing:
             click.echo(f"({skipped_existing} already in ticket_history, skipped)")
 
+        if config is None:
+            raise click.ClickException(
+                "Config file required (needed for Linear API key). "
+                "Use --config or ensure ~/.botfarm/config.yaml exists."
+            )
+
         client = LinearClient(api_key=config.linear.api_key)
         fetched = 0
         failed = 0
@@ -920,16 +920,15 @@ def backfill_history(config_path, project, force, dry_run):
                 upsert_ticket_history(conn, **details)
                 conn.commit()
                 fetched += 1
-            except LinearAPIError:
-                click.echo(f"  Warning: {ticket_id} not found in Linear, skipping")
-                failed += 1
-            except Exception as exc:
-                click.echo(f"  Error fetching {ticket_id}: {exc}")
+            except LinearAPIError as exc:
+                click.echo(
+                    f"  Warning: failed to fetch {ticket_id} from Linear, skipping ({exc})"
+                )
                 failed += 1
 
             # Progress update every 5 tickets or on the last one
             if i % 5 == 0 or i == total:
-                click.echo(f"  Fetched {i}/{total} tickets...")
+                click.echo(f"  Processed {i}/{total} tickets...")
 
             # Rate limiting: small delay between API calls
             if i < total:
