@@ -520,7 +520,12 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
     if isinstance(raw_overrides, dict):
         for label, stages in raw_overrides.items():
             if isinstance(stages, dict):
-                timeout_overrides[str(label)] = dict(stages)
+                try:
+                    timeout_overrides[str(label)] = {
+                        k: int(v) for k, v in stages.items()
+                    }
+                except (ValueError, TypeError) as exc:
+                    raise ConfigError(f"agents.timeout_overrides.{label}: {exc}")
             else:
                 # Pass through for _validate_config() to report the error
                 timeout_overrides[str(label)] = stages
