@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
-import sqlite3
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from click.testing import CliRunner
 
 from botfarm.cli import main
-from botfarm.db import init_db, insert_cleanup_batch
+from botfarm.db import init_db
 from botfarm.linear_cleanup import CleanupCandidate, CleanupResult, CleanupService, CooldownError
 
 
@@ -217,6 +215,73 @@ class TestCleanupFilterOptions:
 
         assert result.exit_code == 0
         assert captured_kwargs["limit"] == 25
+
+    def test_count_zero_rejected(self, runner, db_file, monkeypatch):
+        monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
+        result = runner.invoke(main, ["cleanup", "--dry-run", "--count", "0"])
+        assert result.exit_code != 0
+
+    def test_count_negative_rejected(self, runner, db_file, monkeypatch):
+        monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
+        result = runner.invoke(main, ["cleanup", "--dry-run", "--count", "-1"])
+        assert result.exit_code != 0
+
+    def test_project_resolves_team_from_config(self, runner, db_file, monkeypatch):
+        """When --project matches a configured project, its team is used."""
+        from botfarm.config import (
+            BotfarmConfig,
+            IdentitiesConfig,
+            CoderIdentity,
+            LinearConfig,
+            ProjectConfig,
+            ReviewerIdentity,
+        )
+
+        cfg = BotfarmConfig(
+            projects=[
+                ProjectConfig(
+                    name="proj-a",
+                    linear_team="TEAM-A",
+                    linear_project="Project Alpha",
+                    base_dir="/tmp/a",
+                    worktree_prefix="a-slot-",
+                    slots=[1],
+                ),
+                ProjectConfig(
+                    name="proj-b",
+                    linear_team="TEAM-B",
+                    linear_project="Project Beta",
+                    base_dir="/tmp/b",
+                    worktree_prefix="b-slot-",
+                    slots=[2],
+                ),
+            ],
+            linear=LinearConfig(api_key="test-key"),
+            identities=IdentitiesConfig(
+                coder=CoderIdentity(),
+                reviewer=ReviewerIdentity(),
+            ),
+        )
+        monkeypatch.setattr(
+            "botfarm.cli._resolve_paths", lambda _: (db_file, cfg)
+        )
+        captured_kwargs = {}
+
+        original_init = CleanupService.__init__
+
+        def mock_init(self, client, conn, **kwargs):
+            captured_kwargs.update(kwargs)
+            original_init(self, client, conn, **kwargs)
+
+        with patch.object(CleanupService, "__init__", mock_init):
+            with patch.object(CleanupService, "fetch_candidates", return_value=[]):
+                result = runner.invoke(
+                    main, ["cleanup", "--dry-run", "--project", "Project Beta"]
+                )
+
+        assert result.exit_code == 0
+        assert captured_kwargs["team_key"] == "TEAM-B"
+        assert captured_kwargs["project_name"] == "Project Beta"
 
     def test_min_age_option(self, runner, db_file, monkeypatch):
         monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))

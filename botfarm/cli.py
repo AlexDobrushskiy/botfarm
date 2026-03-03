@@ -841,7 +841,7 @@ def _days_ago(iso_timestamp: str | None) -> int:
 )
 @click.option(
     "--count",
-    type=int,
+    type=click.IntRange(min=1),
     default=50,
     help="Max issues to process (default: 50).",
 )
@@ -893,11 +893,18 @@ def cleanup(action, count, min_age, status_filter, project, dry_run, yes, config
     if not cfg.projects:
         raise click.ClickException("No projects configured.")
 
-    # Resolve team key and project name from the first configured project
-    first_proj = cfg.projects[0]
-    team_key = first_proj.linear_team
-    if project is None:
-        project = getattr(first_proj, "linear_project", "") or ""
+    # Resolve team key and project name from config.
+    # When --project is given, find the matching configured project so
+    # we use the correct team; otherwise default to the first project.
+    resolved_proj = cfg.projects[0]
+    if project is not None:
+        for p in cfg.projects:
+            if p.linear_project == project or p.name == project:
+                resolved_proj = p
+                break
+    else:
+        project = resolved_proj.linear_project or ""
+    team_key = resolved_proj.linear_team
 
     if not db_path.exists():
         raise click.ClickException(

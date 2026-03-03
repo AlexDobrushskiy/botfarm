@@ -142,15 +142,22 @@ class CleanupService:
         - Not a parent with active (non-completed/canceled) children
         """
         fetch_limit = limit or self._default_limit
+
+        # Map CLI status filter values to Linear state types and push
+        # the filter into the GraphQL query so we always get a full
+        # page of matching issues.
+        _status_type_map: dict[str, list[str]] = {
+            "done": ["completed"],
+            "canceled": ["canceled"],
+        }
+        state_types = _status_type_map.get(status_filter)
+
         nodes = self._client.fetch_completed_issues(
             team_key=self._team_key,
             first=fetch_limit,
             project_name=self._project_name,
+            state_types=state_types,
         )
-
-        # Map CLI status filter values to Linear state types
-        _status_type_map = {"done": "completed", "canceled": "canceled"}
-        allowed_type = _status_type_map.get(status_filter)
 
         protected_lower = self._protected_label.lower()
         candidates = []
@@ -166,11 +173,6 @@ class CleanupService:
             state_name = state_info.get("name", "")
             project_info = node.get("project") or {}
             project_name = project_info.get("name", "")
-
-            # Status type filter
-            if allowed_type and state_type != allowed_type:
-                logger.debug("Skipping %s: state type %s", identifier, state_type)
-                continue
 
             # Label filter
             label_nodes = node.get("labels", {}).get("nodes", [])
