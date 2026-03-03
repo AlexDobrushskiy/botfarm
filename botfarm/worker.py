@@ -46,10 +46,11 @@ logger = logging.getLogger(__name__)
 # Max turns for Claude stages (default when not overridden by pipeline template)
 DEFAULT_IMPLEMENT_MAX_TURNS = 200
 DEFAULT_REVIEW_MAX_TURNS = 100
+DEFAULT_FIX_MAX_TURNS = 100
 
 # Truncation limits (characters) for error messages and subprocess output
 RESULT_TRUNCATE_CHARS = 200
-STDERR_TRUNCATE_CHARS = 500
+DETAIL_TRUNCATE_CHARS = 500
 CI_OUTPUT_TRUNCATE_CHARS = 2000
 
 # PR checks timeout (seconds)
@@ -81,7 +82,7 @@ _REVIEWER_STAGES = frozenset({"review"})
 DEFAULT_MAX_TURNS: dict[str, int] = {
     "implement": DEFAULT_IMPLEMENT_MAX_TURNS,
     "review": DEFAULT_REVIEW_MAX_TURNS,
-    "fix": DEFAULT_REVIEW_MAX_TURNS,
+    "fix": DEFAULT_FIX_MAX_TURNS,
 }
 
 
@@ -497,7 +498,7 @@ def run_claude_streaming(
         logger.error(
             "claude (streaming) exited with code %d\nstderr: %s",
             proc.returncode,
-            stderr_text[:STDERR_TRUNCATE_CHARS] if stderr_text else "(empty)",
+            stderr_text[:DETAIL_TRUNCATE_CHARS] if stderr_text else "(empty)",
         )
         raise subprocess.CalledProcessError(
             proc.returncode, cmd, output=stdout_text, stderr=stderr_text,
@@ -1259,7 +1260,7 @@ def _run_merge(
                 pr_url,
             )
         else:
-            error = proc.stderr[:STDERR_TRUNCATE_CHARS] if proc.stderr else proc.stdout[:STDERR_TRUNCATE_CHARS]
+            error = proc.stderr[:DETAIL_TRUNCATE_CHARS] if proc.stderr else proc.stdout[:DETAIL_TRUNCATE_CHARS]
             return StageResult(stage="merge", success=False, error=error)
 
     # Switch worktree back to its placeholder branch so it doesn't hold
@@ -1425,7 +1426,7 @@ def run_pipeline(
         turns_cfg = {
             "implement": DEFAULT_IMPLEMENT_MAX_TURNS,
             "review": DEFAULT_REVIEW_MAX_TURNS,
-            "fix": DEFAULT_REVIEW_MAX_TURNS,
+            "fix": DEFAULT_FIX_MAX_TURNS,
             **(max_turns or {}),
         }
 
@@ -1931,7 +1932,7 @@ class _PipelineContext:
                 )
                 self.conn.commit()
             self.pipeline.failure_stage = stage
-            self.pipeline.failure_reason = str(exc)[:STDERR_TRUNCATE_CHARS]
+            self.pipeline.failure_reason = str(exc)[:DETAIL_TRUNCATE_CHARS]
             _record_failure(self.conn, self.task_id, self.pipeline)
             return None
 
@@ -2173,7 +2174,7 @@ def _run_ci_retry_loop(
             logger.error("CI fix stage raised: %s", exc)
             delete_stage_run(ctx.conn, ci_fix_stage_run_id)
             ctx.pipeline.failure_stage = "fix"
-            ctx.pipeline.failure_reason = str(exc)[:STDERR_TRUNCATE_CHARS]
+            ctx.pipeline.failure_reason = str(exc)[:DETAIL_TRUNCATE_CHARS]
             _record_failure(ctx.conn, ctx.task_id, ctx.pipeline)
             return False
 
@@ -2421,7 +2422,7 @@ def _record_failure(conn, task_id: int, pipeline: PipelineResult) -> None:
         task_id,
         status="failed",
         turns=pipeline.total_turns,
-        failure_reason=f"{pipeline.failure_stage}: {pipeline.failure_reason}"[:STDERR_TRUNCATE_CHARS],
+        failure_reason=f"{pipeline.failure_stage}: {pipeline.failure_reason}"[:DETAIL_TRUNCATE_CHARS],
         completed_at=datetime.now(timezone.utc).isoformat(),
     )
     conn.commit()
@@ -2441,7 +2442,7 @@ def _detect_no_pr_needed(text: str) -> str | None:
     match = _NO_PR_NEEDED_RE.search(text)
     if not match:
         return None
-    return match.group(1).strip()[:STDERR_TRUNCATE_CHARS] or None
+    return match.group(1).strip()[:DETAIL_TRUNCATE_CHARS] or None
 
 
 _PR_URL_RE = re.compile(
@@ -2503,7 +2504,7 @@ def _parse_review_approved(text: str) -> bool:
 
     # 3. Keyword heuristics on the tail to avoid false positives from
     #    quoted content earlier in the output.
-    tail = text[-STDERR_TRUNCATE_CHARS:]
+    tail = text[-DETAIL_TRUNCATE_CHARS:]
     lower = tail.lower()
     # gh --approve/--request-changes without the full command prefix
     if "--approve" in lower:
