@@ -1921,3 +1921,38 @@ def test_default_config_template_includes_capacity_fields():
     assert "critical_threshold:" in DEFAULT_CONFIG_TEMPLATE
     assert "pause_threshold:" in DEFAULT_CONFIG_TEMPLATE
     assert "resume_threshold:" in DEFAULT_CONFIG_TEMPLATE
+
+
+# --- start_paused ---
+
+
+def test_start_paused_defaults_to_true(tmp_path):
+    config_path = _write_config(tmp_path, MINIMAL_CONFIG)
+    config = load_config(config_path)
+    assert config.start_paused is True
+
+
+def test_start_paused_false(tmp_path):
+    data = {**MINIMAL_CONFIG, "start_paused": False}
+    config_path = _write_config(tmp_path, data)
+    config = load_config(config_path)
+    assert config.start_paused is False
+
+
+def test_start_paused_true_explicit(tmp_path):
+    data = {**MINIMAL_CONFIG, "start_paused": True}
+    config_path = _write_config(tmp_path, data)
+    config = load_config(config_path)
+    assert config.start_paused is True
+
+
+def test_start_paused_non_bool_raises(tmp_path):
+    data = {**MINIMAL_CONFIG, "start_paused": "yes"}
+    config_path = _write_config(tmp_path, data)
+    with pytest.raises(ConfigError, match="must be a boolean"):
+        load_config(config_path)
+
+
+def test_default_config_template_includes_start_paused():
+    from botfarm.config import DEFAULT_CONFIG_TEMPLATE
+    assert "start_paused:" in DEFAULT_CONFIG_TEMPLATE

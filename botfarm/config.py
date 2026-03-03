@@ -91,6 +91,10 @@ agents:
 #     github_token: ${REVIEWER_GITHUB_TOKEN}
 #     linear_api_key: ${REVIEWER_LINEAR_API_KEY}
 
+# Start with dispatch paused — use dashboard or CLI to begin dispatching.
+# Set to false to dispatch immediately on startup.
+start_paused: true
+
 # notifications:
 #   webhook_url: https://hooks.slack.com/services/...
 #   webhook_format: slack  # or "discord"
@@ -218,6 +222,7 @@ class BotfarmConfig:
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     notifications: NotificationsConfig = field(default_factory=NotificationsConfig)
     identities: IdentitiesConfig = field(default_factory=IdentitiesConfig)
+    start_paused: bool = True
     source_path: str = ""  # Set by load_config to the source file path
 
 
@@ -450,7 +455,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
     known_keys = {
         "projects", "linear", "database", "usage_limits",
         "dashboard", "agents", "logging", "notifications",
-        "identities",
+        "identities", "start_paused",
     }
     unknown = set(data.keys()) - known_keys
     if unknown:
@@ -589,6 +594,8 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
             "state is now persisted in the SQLite database."
         )
 
+    start_paused = _parse_bool(data, "start_paused", True, section="top-level")
+
     config = BotfarmConfig(
         projects=projects,
         linear=linear,
@@ -599,6 +606,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         logging=logging_cfg,
         notifications=notifications,
         identities=identities,
+        start_paused=start_paused,
     )
 
     _validate_config(config)

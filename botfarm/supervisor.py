@@ -910,10 +910,11 @@ class PauseResumeManager:
             for slot in self._slot_manager.paused_manual_slots():
                 sup._resume_manual_paused_worker(slot)
 
-            # Clear dispatch pause if it was set for manual pause
+            # Clear dispatch pause if it was set for manual pause or start_paused
             if (
                 self._slot_manager.dispatch_paused
-                and self._slot_manager.dispatch_pause_reason == "manual_pause"
+                and self._slot_manager.dispatch_pause_reason
+                in ("manual_pause", "start_paused")
             ):
                 logger.info("Manual resume: dispatch unpaused")
                 self._slot_manager.set_dispatch_paused(False)
@@ -1730,6 +1731,23 @@ class Supervisor:
             # Recover from previous state before entering main loop
             self._recover_on_startup()
 
+            # If start_paused is configured and dispatch isn't already paused
+            # (e.g. from crash recovery), pause dispatch on startup.
+            if (
+                self._config.start_paused
+                and not self._slot_manager.dispatch_paused
+            ):
+                self._slot_manager.set_dispatch_paused(True, "start_paused")
+                logger.info(
+                    "Supervisor started in paused mode "
+                    "— use dashboard or CLI to start dispatching"
+                )
+                insert_event(
+                    self._conn,
+                    event_type="start_paused",
+                )
+                self._conn.commit()
+
         # Initial usage poll so we have data before the first dispatch
         if not self._degraded:
             try:
@@ -1786,6 +1804,22 @@ class Supervisor:
             self._conn.commit()
             self._degraded = False
             self._recover_on_startup()
+
+            if (
+                self._config.start_paused
+                and not self._slot_manager.dispatch_paused
+            ):
+                self._slot_manager.set_dispatch_paused(True, "start_paused")
+                logger.info(
+                    "Supervisor started in paused mode "
+                    "— use dashboard or CLI to start dispatching"
+                )
+                insert_event(
+                    self._conn,
+                    event_type="start_paused",
+                )
+                self._conn.commit()
+
             try:
                 self._usage_poller.force_poll(self._conn)
             except Exception:
@@ -2714,12 +2748,13 @@ class Supervisor:
 
         # Utilization is below thresholds — resume if previously paused by
         # usage checks.  Other pause reasons (manual_pause, update_in_progress,
-        # capacity_blocked) must be cleared by their own flow.
+        # capacity_blocked, start_paused) must be cleared by their own flow.
         if self._slot_manager.dispatch_paused:
             if self._slot_manager.dispatch_pause_reason in (
                 "manual_pause",
                 "update_in_progress",
                 "capacity_blocked",
+                "start_paused",
             ):
                 return  # Don't auto-resume — handled by respective flow
             prev_reason = self._slot_manager.dispatch_pause_reason
