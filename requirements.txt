@@ -11,3 +11,4 @@ sse-starlette
 pytest
 pytest-asyncio
 pytest-playwright
+pytest-xdist

@@ -66,9 +66,9 @@ def test_expand_env_vars_bare_dollar_not_expanded(monkeypatch):
     assert expand_env_vars("prefix-$MY_VAR-suffix") == "prefix-$MY_VAR-suffix"
 
 
-def test_expand_env_vars_missing_raises():
+def test_expand_env_vars_missing_raises(monkeypatch):
     key = "BOTFARM_TEST_MISSING_VAR_12345"
-    os.environ.pop(key, None)
+    monkeypatch.delenv(key, raising=False)
     with pytest.raises(ConfigError, match="not set"):
         expand_env_vars(f"${{{key}}}")
 
