@@ -526,7 +526,7 @@ def resume_project(project, config_path):
                     "Use the dashboard or wait for automatic resolution."
                 )
                 return
-            save_dispatch_state(conn, paused=False)
+            save_dispatch_state(conn, paused=False, supervisor_heartbeat=_heartbeat)
             conn.commit()
             click.echo("Dispatch resumed. Tickets will be dispatched on the next poll.")
             return
