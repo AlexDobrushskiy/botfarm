@@ -250,6 +250,8 @@ _COMPLETED_ISSUE_FIELDS = """
       title
       updatedAt
       completedAt
+      state { type name }
+      project { name }
       labels { nodes { name } }
       children {
         nodes {
@@ -260,11 +262,11 @@ _COMPLETED_ISSUE_FIELDS = """
 """
 
 COMPLETED_ISSUES_QUERY = """
-query CompletedCanceledIssues($teamKey: String!, $first: Int!) {
+query CompletedCanceledIssues($teamKey: String!, $first: Int!, $stateTypes: [String!]!) {
   issues(
     filter: {
       team: { key: { eq: $teamKey } }
-      state: { type: { in: ["completed", "canceled"] } }
+      state: { type: { in: $stateTypes } }
     }
     first: $first
     orderBy: updatedAt
@@ -277,12 +279,12 @@ query CompletedCanceledIssues($teamKey: String!, $first: Int!) {
 """
 
 COMPLETED_ISSUES_WITH_PROJECT_QUERY = """
-query CompletedCanceledIssuesForProject($teamKey: String!, $projectName: String!, $first: Int!) {
+query CompletedCanceledIssuesForProject($teamKey: String!, $projectName: String!, $first: Int!, $stateTypes: [String!]!) {
   issues(
     filter: {
       team: { key: { eq: $teamKey } }
       project: { name: { eq: $projectName } }
-      state: { type: { in: ["completed", "canceled"] } }
+      state: { type: { in: $stateTypes } }
     }
     first: $first
     orderBy: updatedAt
@@ -736,22 +738,36 @@ class LinearClient:
         team_key: str,
         first: int = 50,
         project_name: str = "",
+        state_types: list[str] | None = None,
     ) -> list[dict]:
         """Fetch completed/canceled issues sorted by updatedAt ascending.
+
+        Args:
+            state_types: Linear state types to include, e.g.
+                ``["completed"]`` or ``["canceled"]``.  Defaults to
+                ``["completed", "canceled"]``.
 
         Returns raw dicts with id, identifier, title, updatedAt,
         completedAt, labels, and children info.
         """
+        if state_types is None:
+            state_types = ["completed", "canceled"]
+
         if project_name:
             query = COMPLETED_ISSUES_WITH_PROJECT_QUERY
             variables: dict = {
                 "teamKey": team_key,
                 "projectName": project_name,
                 "first": first,
+                "stateTypes": state_types,
             }
         else:
             query = COMPLETED_ISSUES_QUERY
-            variables = {"teamKey": team_key, "first": first}
+            variables = {
+                "teamKey": team_key,
+                "first": first,
+                "stateTypes": state_types,
+            }
 
         data = self._execute(query, variables)
         return data.get("issues", {}).get("nodes", [])

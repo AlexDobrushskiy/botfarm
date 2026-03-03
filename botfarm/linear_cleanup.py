@@ -35,6 +35,8 @@ class CleanupCandidate:
     completed_at: str | None
     labels: list[str]
     has_active_children: bool
+    status: str = ""
+    project_name: str = ""
 
 
 @dataclass
@@ -121,8 +123,17 @@ class CleanupService:
         except (ValueError, AttributeError):
             return False
 
-    def fetch_candidates(self, limit: int | None = None) -> list[CleanupCandidate]:
+    def fetch_candidates(
+        self,
+        limit: int | None = None,
+        status_filter: str = "all",
+    ) -> list[CleanupCandidate]:
         """Fetch completed/canceled issues filtered by age and label.
+
+        Args:
+            limit: Max issues to fetch from the API.
+            status_filter: ``"done"`` for completed only, ``"canceled"`` for
+                canceled only, or ``"all"`` for both (default).
 
         Returns issues that pass all filters:
         - Status is completed or canceled
@@ -131,10 +142,21 @@ class CleanupService:
         - Not a parent with active (non-completed/canceled) children
         """
         fetch_limit = limit or self._default_limit
+
+        # Map CLI status filter values to Linear state types and push
+        # the filter into the GraphQL query so we always get a full
+        # page of matching issues.
+        _status_type_map: dict[str, list[str]] = {
+            "done": ["completed"],
+            "canceled": ["canceled"],
+        }
+        state_types = _status_type_map.get(status_filter)
+
         nodes = self._client.fetch_completed_issues(
             team_key=self._team_key,
             first=fetch_limit,
             project_name=self._project_name,
+            state_types=state_types,
         )
 
         protected_lower = self._protected_label.lower()
@@ -146,6 +168,11 @@ class CleanupService:
             title = node.get("title", "")
             updated_at = node.get("updatedAt", "")
             completed_at = node.get("completedAt")
+            state_info = node.get("state") or {}
+            state_type = state_info.get("type", "")
+            state_name = state_info.get("name", "")
+            project_info = node.get("project") or {}
+            project_name = project_info.get("name", "")
 
             # Label filter
             label_nodes = node.get("labels", {}).get("nodes", [])
@@ -164,8 +191,8 @@ class CleanupService:
             has_active_children = False
             if child_nodes:
                 for child in child_nodes:
-                    state_type = (child.get("state") or {}).get("type", "")
-                    if state_type not in ("completed", "canceled"):
+                    child_state_type = (child.get("state") or {}).get("type", "")
+                    if child_state_type not in ("completed", "canceled"):
                         has_active_children = True
                         break
             if has_active_children:
@@ -183,6 +210,8 @@ class CleanupService:
                     completed_at=completed_at,
                     labels=labels,
                     has_active_children=False,
+                    status=state_name,
+                    project_name=project_name,
                 )
             )
 
@@ -222,6 +251,7 @@ class CleanupService:
         limit: int | None = None,
         dry_run: bool = False,
         issue_ids: list[str] | None = None,
+        candidates: list[CleanupCandidate] | None = None,
     ) -> CleanupResult:
         """Run a bulk archive or delete operation.
 
@@ -231,6 +261,9 @@ class CleanupService:
             dry_run: If True, fetch candidates but don't execute
             issue_ids: If provided, only process candidates whose linear_uuid
                 is in this list (used by the UI to honour user selection).
+            candidates: Pre-fetched candidates to use instead of calling
+                fetch_candidates again.  When provided, ``limit`` and
+                ``issue_ids`` are ignored.
 
         Returns:
             CleanupResult with operation summary
@@ -245,10 +278,11 @@ class CleanupService:
         if not dry_run:
             self._check_cooldown()
 
-        candidates = self.fetch_candidates(limit=limit)
-        if issue_ids is not None:
-            allowed = set(issue_ids)
-            candidates = [c for c in candidates if c.linear_uuid in allowed]
+        if candidates is None:
+            candidates = self.fetch_candidates(limit=limit)
+            if issue_ids is not None:
+                allowed = set(issue_ids)
+                candidates = [c for c in candidates if c.linear_uuid in allowed]
         batch_id = str(uuid.uuid4())
         result = CleanupResult(
             batch_id=batch_id,
