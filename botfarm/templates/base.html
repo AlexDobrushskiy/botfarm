@@ -316,6 +316,59 @@
         .slot-links { white-space: nowrap; font-size: 0.8rem; }
         .slot-links a { margin-right: 0.5rem; }
 
+        /* Stop slot button */
+        .stop-slot-btn {
+            padding: 0.2rem 0.6rem;
+            border-radius: var(--pico-border-radius);
+            border: 1px solid var(--pico-del-color);
+            background: transparent;
+            color: var(--pico-del-color);
+            cursor: pointer;
+            font-size: 0.75rem;
+            font-weight: 600;
+            line-height: 1.4;
+            transition: background 0.15s ease, color 0.15s ease;
+        }
+        .stop-slot-btn:hover {
+            background: var(--pico-del-color);
+            color: #fff;
+        }
+
+        /* Stop slot modal */
+        .stop-modal-article {
+            max-width: 28rem;
+        }
+        .stop-modal-info {
+            font-size: 0.85rem;
+            margin-bottom: 0.75rem;
+        }
+        .stop-modal-info th {
+            text-align: right;
+            padding-right: 0.75rem;
+            white-space: nowrap;
+            color: var(--pico-muted-color);
+        }
+        .stop-modal-warnings {
+            font-size: 0.85rem;
+            color: var(--pico-del-color);
+            background: rgba(239, 68, 68, 0.08);
+            border: 1px solid rgba(239, 68, 68, 0.2);
+            border-radius: var(--pico-border-radius);
+            padding: 0.5rem 0.75rem;
+        }
+        .stop-modal-warnings ul {
+            margin: 0.25rem 0 0 1rem;
+            padding: 0;
+        }
+        .stop-modal-warnings li {
+            margin-bottom: 0.15rem;
+        }
+        .stop-slot-confirm-btn {
+            background: var(--pico-del-color) !important;
+            border-color: var(--pico-del-color) !important;
+            color: #fff !important;
+        }
+
         /* Failure reason truncation */
         .failure-reason { max-width: 600px; }
         .failure-reason details summary {

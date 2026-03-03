@@ -5016,6 +5016,18 @@ class TestDegradedMode:
 
         mock_rerun.assert_called_once()
 
+    def test_tick_degraded_drains_stop_requests(self, supervisor):
+        """_tick_degraded drains pending stop-slot requests."""
+        import time
+        supervisor._degraded = True
+        supervisor._last_preflight_rerun = time.monotonic()  # Just now
+
+        with patch.object(supervisor, "_handle_stop_requests") as mock_handle:
+            with patch.object(supervisor, "_rerun_preflight"):
+                supervisor._tick_degraded()
+
+        mock_handle.assert_called_once()
+
     def test_request_rerun_preflight_sets_events(self, supervisor):
         """request_rerun_preflight sets both the rerun and wake events."""
         supervisor.request_rerun_preflight()

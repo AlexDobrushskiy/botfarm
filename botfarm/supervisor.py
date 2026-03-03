@@ -1830,6 +1830,7 @@ class Supervisor:
                 on_resume=self.request_resume,
                 on_update=self.request_update,
                 on_rerun_preflight=self.request_rerun_preflight,
+                on_stop_slot=self.request_stop_slot,
                 get_preflight_results=self.get_preflight_results,
                 get_degraded=lambda: self.degraded,
                 update_failed_event=self._update_failed_event,
@@ -1890,7 +1891,13 @@ class Supervisor:
     _PREFLIGHT_RERUN_INTERVAL = 30
 
     def _tick_degraded(self) -> None:
-        """Tick while in degraded mode — no dispatch, just re-run preflight."""
+        """Tick while in degraded mode — no dispatch, just re-run preflight.
+
+        Stop-slot requests are still drained so dashboard-initiated stops
+        don't queue up indefinitely while preflight is failing.
+        """
+        self._handle_stop_requests()
+
         manual_rerun = self._rerun_preflight_event.is_set()
         if manual_rerun:
             self._rerun_preflight_event.clear()

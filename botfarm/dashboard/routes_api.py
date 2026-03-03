@@ -16,6 +16,7 @@ from botfarm.db import (
     get_last_cleanup_batch_time,
     init_db,
     list_cleanup_batches,
+    load_all_slots,
     save_project_pause_state,
 )
 from botfarm.linear import LinearClient
@@ -91,6 +92,87 @@ def _get_preflight_data(app) -> dict:
         "checks": checks,
         "failed_critical": failed_critical,
     }
+
+
+# --- Stop Slot API ---
+
+@router.post("/api/slot/stop")
+async def api_stop_slot(request: Request):
+    """Request a slot stop via the supervisor's thread-safe callback."""
+    cb = request.app.state.on_stop_slot
+    if cb is None:
+        return JSONResponse(
+            {"error": "Stop not available (supervisor not connected)"},
+            status_code=503,
+        )
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "Expected a JSON object"}, status_code=400)
+    project = body.get("project", "")
+    slot_id = body.get("slot_id")
+    if not project or slot_id is None:
+        return JSONResponse(
+            {"error": "project and slot_id are required"}, status_code=400,
+        )
+    if not isinstance(project, str):
+        return JSONResponse(
+            {"error": "project must be a string"}, status_code=400,
+        )
+    # Reject non-integral types (bool is a subclass of int, float silently truncates)
+    if isinstance(slot_id, bool) or not isinstance(slot_id, (int, str)):
+        return JSONResponse(
+            {"error": "slot_id must be an integer"}, status_code=400,
+        )
+    if isinstance(slot_id, str):
+        try:
+            slot_id = int(slot_id)
+        except ValueError:
+            return JSONResponse(
+                {"error": "slot_id must be an integer"}, status_code=400,
+            )
+    # Validate ticket_id against current slot state to prevent stopping a
+    # reassigned slot (the modal snapshot may be stale).
+    expected_ticket = body.get("ticket_id")
+    if expected_ticket is not None:
+        if not isinstance(expected_ticket, str):
+            return JSONResponse(
+                {"error": "ticket_id must be a string"}, status_code=400,
+            )
+        conn = None
+        try:
+            conn = init_db(request.app.state.db_path)
+            rows = load_all_slots(conn)
+            current_ticket = None
+            current_status = None
+            for row in rows:
+                if row["project"] == project and row["slot_id"] == slot_id:
+                    current_ticket = row["ticket_id"]
+                    current_status = row["status"]
+                    break
+            # Reject if the slot is no longer stoppable
+            stoppable = {"busy", "paused_manual", "paused_limit"}
+            if current_status is not None and current_status not in stoppable:
+                return JSONResponse(
+                    {"error": f"Slot is no longer stoppable (status: {current_status})"},
+                    status_code=409,
+                )
+            # Reject if the ticket has changed since the modal was opened
+            if expected_ticket and current_ticket != expected_ticket:
+                return JSONResponse(
+                    {"error": f"Slot ticket has changed (expected {expected_ticket}, current {current_ticket})"},
+                    status_code=409,
+                )
+        finally:
+            if conn is not None:
+                conn.close()
+    cb(project, slot_id)
+    return JSONResponse({
+        "status": "requested",
+        "message": f"Stop requested for {project}/{slot_id}",
+    })
 
 
 # --- Pause / Resume API ---

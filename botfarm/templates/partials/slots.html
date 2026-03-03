@@ -27,6 +27,7 @@
             <th>Context Fill</th>
             <th>Elapsed</th>
             <th>Links</th>
+            <th></th>
         </tr>
     </thead>
     <tbody>
@@ -109,6 +110,19 @@
                 {% endif %}
                 {% if slot.pr_url %}
                 <a href="{{ slot.pr_url }}" target="_blank" rel="noopener" title="Pull request">PR</a>
+                {% endif %}
+            </td>
+            <td>
+                {% if slot.status in ("busy", "paused_manual", "paused_limit") %}
+                <button class="stop-slot-btn"
+                        data-project="{{ slot.project }}"
+                        data-slot-id="{{ slot.slot_id }}"
+                        data-ticket-id="{{ slot.ticket_id or '' }}"
+                        data-ticket-title="{{ slot.ticket_title or '' }}"
+                        data-stage="{{ slot.stage or '' }}"
+                        data-elapsed="{{ elapsed(slot.started_at) }}"
+                        onclick="openStopModal(this)"
+                        title="Stop this slot">Stop</button>
                 {% endif %}
             </td>
         </tr>
