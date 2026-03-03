@@ -1180,7 +1180,9 @@ def _stop_kill_worker(pid: int) -> bool:
     while _is_pid_alive(pid) and time.time() < deadline:
         time.sleep(0.5)
 
-    # Escalate to SIGKILL if still alive — kill process group + descendants
+    # Escalate to SIGKILL if still alive.
+    # Note: does not kill start_new_session=True subprocesses (Claude/Codex);
+    # those are in separate sessions and will timeout on their own.
     if _is_pid_alive(pid):
         try:
             os.killpg(pid, signal.SIGKILL)
@@ -1301,10 +1303,13 @@ def _stop_git_cleanup(
 
 def _stop_linear_cleanup(
     config, ticket_id: str | None, project_name: str, pr_was_merged: bool,
-) -> None:
-    """Move ticket back to todo (or done if merged) and post a comment."""
+) -> bool:
+    """Move ticket back to todo (or done if merged) and post a comment.
+
+    Returns True if the Linear state transition succeeded.
+    """
     if not ticket_id or not config or not config.linear.api_key:
-        return
+        return False
 
     # Find the project config to get team key
     project_cfg = None
@@ -1313,7 +1318,7 @@ def _stop_linear_cleanup(
             project_cfg = p
             break
     if not project_cfg:
-        return
+        return False
 
     try:
         client = LinearClient(api_key=config.linear.api_key)
@@ -1325,13 +1330,15 @@ def _stop_linear_cleanup(
             target = config.linear.todo_status
 
         state_id = states.get(target)
-        if state_id:
-            client.update_issue_state(ticket_id, state_id)
+        if not state_id:
+            return False
+        client.update_issue_state(ticket_id, state_id)
 
         if not pr_was_merged:
             client.add_comment(ticket_id, "**Stopped by user** — work discarded")
+        return True
     except Exception:
-        pass  # Best-effort; don't fail the stop command
+        return False  # Best-effort; don't fail the stop command
 
 
 @main.command(name="stop")
@@ -1494,7 +1501,7 @@ def stop(project, slot_id, force, yes, config_path):
             )
 
         # --- Linear cleanup ---
-        _stop_linear_cleanup(config, ticket_id, project, pr_was_merged)
+        linear_ok = _stop_linear_cleanup(config, ticket_id, project, pr_was_merged)
 
         # --- DB cleanup ---
         task_row = get_task_by_ticket(conn, ticket_id) if ticket_id else None
@@ -1525,7 +1532,13 @@ def stop(project, slot_id, force, yes, config_path):
         )
         conn.commit()
 
-        # Update slot in DB — mirror supervisor behavior
+        # Update slot in DB — mirror supervisor behavior.
+        # Note: if the supervisor is running, it holds slot state in memory
+        # and may overwrite this DB update on the next tick. However, the
+        # worker PID is already dead, so the supervisor's reconciliation
+        # loop will detect the dead process and handle cleanup itself.
+        # This DB-only approach (Option A from the ticket spec) ensures
+        # stop works even when the supervisor is not running.
         if checkout_ok:
             _free = SlotState(project="", slot_id=0)
             free_fields = {
@@ -1539,15 +1552,11 @@ def stop(project, slot_id, force, yes, config_path):
         else:
             # Don't free — worktree is still on the feature branch and
             # reusing it could cause the next ticket to inherit dirty state.
-            # Clear stale process metadata (mirrors mark_failed() which
-            # sets pid=None).
+            # Only clear pid (mirrors mark_failed() which sets status="failed"
+            # and pid=None, preserving ticket_id/title/branch for diagnosis).
             slot_data = dict(target)
             slot_data["status"] = "failed"
-            slot_data["ticket_id"] = None
             slot_data["pid"] = None
-            slot_data["sigterm_sent_at"] = None
-            slot_data["stage"] = None
-            slot_data["stage_started_at"] = None
             upsert_slot(conn, slot_data)
         conn.commit()
 
@@ -1563,9 +1572,9 @@ def stop(project, slot_id, force, yes, config_path):
             console.print(
                 f"  - [yellow]PR was already merged — you may need to manually revert[/yellow]"
             )
-        if ticket_id:
+        if ticket_id and linear_ok:
             if pr_was_merged:
-                console.print(f"  - Ticket {ticket_id} left as-is (PR merged)")
+                console.print(f'  - Ticket {ticket_id} moved to "Done" (PR merged)')
             else:
                 console.print(f'  - Ticket {ticket_id} moved to "Todo"')
         if not checkout_ok and cwd and Path(cwd).is_dir():

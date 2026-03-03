@@ -303,7 +303,7 @@ class TestStopExecution:
             result = runner.invoke(main, ["stop", "proj", "1", "--force"])
         assert result.exit_code == 0
         assert "already merged" in result.output
-        assert "left as-is" in result.output
+        assert 'moved to "Done"' in result.output
 
     def test_branch_deleted_in_output(self, runner, db_file, tmp_path, monkeypatch):
         _seed_slots(db_file, [
@@ -333,6 +333,7 @@ class TestStopExecution:
 
         def fake_linear(config, ticket_id, project_name, pr_was_merged):
             linear_calls.append((ticket_id, pr_was_merged))
+            return True
 
         with patch("botfarm.cli._stop_kill_worker", return_value=False), \
              patch("botfarm.cli._stop_pr_cleanup", return_value=(False, False)), \
