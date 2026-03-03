@@ -2,6 +2,7 @@ import os
 import signal
 import sqlite3
 import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -24,6 +25,7 @@ from botfarm.db import (
     get_codex_review_stats,
     get_stage_run_aggregates,
     get_task_history,
+    get_ticket_history_entry,
     init_db,
     load_all_project_pause_states,
     load_all_slots,
@@ -32,6 +34,7 @@ from botfarm.db import (
     save_dispatch_state,
     save_project_pause_state,
     upsert_slot,
+    upsert_ticket_history,
 )
 from botfarm.slots import SlotState, _is_pid_alive
 from botfarm.systemd_service import UNIT_PATH, generate_unit, install_service, uninstall_service
@@ -817,3 +820,123 @@ def uninstall_service_cmd():
         ) from exc
 
     click.echo("Service stopped, disabled, and removed.")
+
+
+@main.command(name="backfill-history")
+@click.option(
+    "--config",
+    "config_path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help="Path to config file.",
+)
+@click.option("--project", default=None, help="Only backfill tickets from this project.")
+@click.option(
+    "--force",
+    is_flag=True,
+    default=False,
+    help="Re-fetch even if ticket already exists in ticket_history.",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Show what would be fetched without actually fetching.",
+)
+def backfill_history(config_path, project, force, dry_run):
+    """Backfill ticket_history from Linear for all tickets in the tasks table."""
+    from botfarm.linear import LinearAPIError, LinearClient
+
+    db_path, config = _resolve_paths(config_path)
+
+    if config is None:
+        raise click.ClickException(
+            "Config file required (needed for Linear API key). "
+            "Use --config or ensure ~/.botfarm/config.yaml exists."
+        )
+
+    if not db_path.exists():
+        click.echo("No database found. No tasks to backfill.")
+        return
+
+    try:
+        conn = init_db(db_path)
+    except SchemaVersionError as exc:
+        raise click.ClickException(str(exc)) from exc
+    except sqlite3.Error as exc:
+        raise click.ClickException(f"Failed to open database: {exc}") from exc
+
+    try:
+        # Get distinct ticket_ids from tasks table, optionally filtered by project
+        query = "SELECT DISTINCT ticket_id FROM tasks"
+        params: list[object] = []
+        if project:
+            query += " WHERE project = ?"
+            params.append(project)
+        query += " ORDER BY ticket_id"
+        rows = conn.execute(query, params).fetchall()
+        all_ticket_ids = [r[0] for r in rows]
+
+        if not all_ticket_ids:
+            click.echo("No tickets found in tasks table.")
+            return
+
+        # Determine which tickets need backfilling
+        if force:
+            to_fetch = all_ticket_ids
+        else:
+            to_fetch = [
+                tid for tid in all_ticket_ids
+                if get_ticket_history_entry(conn, tid) is None
+            ]
+
+        if not to_fetch:
+            click.echo("All tickets already in ticket_history. Nothing to backfill.")
+            return
+
+        total = len(to_fetch)
+        skipped_existing = len(all_ticket_ids) - len(to_fetch)
+
+        if dry_run:
+            click.echo(f"Dry run: would fetch {total} ticket(s) from Linear:")
+            for tid in to_fetch:
+                click.echo(f"  {tid}")
+            if skipped_existing:
+                click.echo(f"({skipped_existing} already in ticket_history, skipped)")
+            return
+
+        click.echo(f"Backfilling {total} ticket(s) from Linear...")
+        if skipped_existing:
+            click.echo(f"({skipped_existing} already in ticket_history, skipped)")
+
+        client = LinearClient(api_key=config.linear.api_key)
+        fetched = 0
+        failed = 0
+
+        for i, ticket_id in enumerate(to_fetch, 1):
+            try:
+                details = client.fetch_issue_details(ticket_id)
+                details["capture_source"] = "backfill"
+                upsert_ticket_history(conn, **details)
+                conn.commit()
+                fetched += 1
+            except LinearAPIError:
+                click.echo(f"  Warning: {ticket_id} not found in Linear, skipping")
+                failed += 1
+            except Exception as exc:
+                click.echo(f"  Error fetching {ticket_id}: {exc}")
+                failed += 1
+
+            # Progress update every 5 tickets or on the last one
+            if i % 5 == 0 or i == total:
+                click.echo(f"  Fetched {i}/{total} tickets...")
+
+            # Rate limiting: small delay between API calls
+            if i < total:
+                time.sleep(0.2)
+
+        click.echo(f"Backfill complete: {fetched} fetched, {failed} failed.")
+    except sqlite3.Error as exc:
+        raise click.ClickException(f"Database error: {exc}") from exc
+    finally:
+        conn.close()
