@@ -6,11 +6,9 @@ import json
 import logging
 import sqlite3
 from datetime import datetime, timezone
-from pathlib import Path
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
-from fastapi.templating import Jinja2Templates
 
 from botfarm.db import (
     count_tasks,
@@ -30,7 +28,7 @@ from botfarm.db import (
 from botfarm.worker import STAGES
 from botfarm.workflow import load_all_pipelines, resolve_max_iterations
 
-from .formatters import _review_display_status, build_pipeline_state
+from .formatters import build_pipeline_state, review_display_status
 from .state import (
     context_fill_class,
     elapsed,
@@ -39,6 +37,7 @@ from .state import (
     get_dashboard_last_fresh_time,
     get_db,
     linear_url,
+    manual_pause_state,
     read_state,
     refresh_and_get_usage,
     supervisor_status,
@@ -46,8 +45,6 @@ from .state import (
 )
 
 logger = logging.getLogger(__name__)
-
-TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 
 router = APIRouter()
 
@@ -59,10 +56,6 @@ _EMPTY_TASK_AGGREGATES: dict = {
     "max_context_fill_pct": None,
     "extra_usage_cost_usd": 0.0,
 }
-
-
-def _get_templates() -> Jinja2Templates:
-    return Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 
 def _enrich_slots_with_context_fill(app, slots: list[dict]) -> list[dict]:
@@ -158,7 +151,7 @@ def _enrich_slots_with_codex_review(app, slots: list[dict]) -> list[dict]:
                 (task_row["id"],),
             ).fetchone()
             if codex_row:
-                slot["codex_review_status"] = _review_display_status(
+                slot["codex_review_status"] = review_display_status(
                     codex_row["exit_subtype"]
                 )
                 claude_row = conn.execute(
@@ -167,7 +160,7 @@ def _enrich_slots_with_codex_review(app, slots: list[dict]) -> list[dict]:
                     "ORDER BY id DESC LIMIT 1",
                     (task_row["id"],),
                 ).fetchone()
-                slot["claude_review_status"] = _review_display_status(
+                slot["claude_review_status"] = review_display_status(
                     claude_row["exit_subtype"] if claude_row else None
                 )
     except sqlite3.OperationalError:
@@ -282,7 +275,6 @@ def _extract_history_params(request: Request) -> dict:
 def _history_context(request: Request) -> dict:
     """Build the full template context for history views."""
     app = request.app
-    templates = _get_templates()
     hp = _extract_history_params(request)
     conn = get_db(app)
     tasks: list[dict] = []
@@ -620,7 +612,7 @@ def _compute_metrics(
 @router.get("/", response_class=HTMLResponse)
 def index(request: Request):
     app = request.app
-    templates = _get_templates()
+    templates = request.app.state.templates
     state = read_state(app)
     slots = _enrich_slots_with_context_fill(app, state.get("slots", []))
     slots = _enrich_slots_with_pipeline(slots)
@@ -653,14 +645,14 @@ def index(request: Request):
 
 @router.get("/history", response_class=HTMLResponse)
 def history_page(request: Request):
-    templates = _get_templates()
+    templates = request.app.state.templates
     ctx = _history_context(request)
     return templates.TemplateResponse("history.html", ctx)
 
 
 @router.get("/tickets", response_class=HTMLResponse)
 def tickets_page(request: Request):
-    templates = _get_templates()
+    templates = request.app.state.templates
     ctx = _tickets_context(request)
     return templates.TemplateResponse("tickets.html", ctx)
 
@@ -668,7 +660,7 @@ def tickets_page(request: Request):
 @router.get("/tickets/{ticket_id}", response_class=HTMLResponse)
 def ticket_detail_page(request: Request, ticket_id: str):
     app = request.app
-    templates = _get_templates()
+    templates = request.app.state.templates
     ticket = None
     task = None
     conn = get_db(app)
@@ -705,7 +697,7 @@ def ticket_detail_page(request: Request, ticket_id: str):
 @router.get("/task/{task_id}", response_class=HTMLResponse)
 def task_detail_page(request: Request, task_id: str):
     app = request.app
-    templates = _get_templates()
+    templates = request.app.state.templates
     task = None
     stages: list[dict] = []
     events: list[dict] = []
@@ -760,7 +752,7 @@ def task_detail_page(request: Request, task_id: str):
 @router.get("/usage", response_class=HTMLResponse)
 def usage_page(request: Request):
     app = request.app
-    templates = _get_templates()
+    templates = request.app.state.templates
     state = read_state(app)
     fresh = refresh_and_get_usage(app)
     usage = fresh if fresh is not None else state.get("usage", {})
@@ -795,7 +787,7 @@ def usage_page(request: Request):
 @router.get("/metrics", response_class=HTMLResponse)
 def metrics_page(request: Request):
     app = request.app
-    templates = _get_templates()
+    templates = request.app.state.templates
     filter_project = request.query_params.get("project") or ""
     conn = get_db(app)
     metrics = dict(_EMPTY_METRICS)
@@ -821,7 +813,7 @@ def metrics_page(request: Request):
 @router.get("/workflow", response_class=HTMLResponse)
 def workflow_page(request: Request):
     app = request.app
-    templates = _get_templates()
+    templates = request.app.state.templates
     conn = get_db(app)
     pipelines_data: list[dict] = []
     if conn:
@@ -948,7 +940,3 @@ def workflow_page(request: Request):
         "active_page": "workflow",
         "supervisor": supervisor_status(app, read_state(app)),
     })
-
-
-# Import needed for the index route
-from .state import manual_pause_state  # noqa: E402 — circular import avoidance

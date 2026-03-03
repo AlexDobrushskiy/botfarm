@@ -11,6 +11,7 @@ from itertools import groupby
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.templating import Jinja2Templates
 
 from botfarm.db import (
     init_db,
@@ -21,6 +22,8 @@ from botfarm.db import (
 )
 
 logger = logging.getLogger(__name__)
+
+TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 
 
 def get_db(app: FastAPI) -> sqlite3.Connection | None:

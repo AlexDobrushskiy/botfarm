@@ -6,11 +6,9 @@ import asyncio
 import logging
 import sqlite3
 from datetime import datetime, timezone
-from pathlib import Path
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.templating import Jinja2Templates
 
 from botfarm.db import (
     get_cleanup_batch,
@@ -47,13 +45,7 @@ from .state import (
 
 logger = logging.getLogger(__name__)
 
-TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
-
 router = APIRouter()
-
-
-def _get_templates() -> Jinja2Templates:
-    return Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 
 # --- Preflight / System Health ---
@@ -189,7 +181,7 @@ def api_update(request: Request):
 
 @router.get("/health", response_class=HTMLResponse)
 def health_page(request: Request):
-    templates = _get_templates()
+    templates = request.app.state.templates
     data = _get_preflight_data(request.app)
     return templates.TemplateResponse("health.html", {
         "request": request,
@@ -722,7 +714,7 @@ def _cleanup_cooldown_remaining(conn: sqlite3.Connection) -> float:
 @router.get("/cleanup", response_class=HTMLResponse)
 def cleanup_page(request: Request):
     app = request.app
-    templates = _get_templates()
+    templates = request.app.state.templates
     conn = get_db(app)
     batches = []
     cooldown = 0.0

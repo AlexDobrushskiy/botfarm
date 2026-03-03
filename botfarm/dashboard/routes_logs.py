@@ -9,7 +9,6 @@ from pathlib import Path
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse
-from fastapi.templating import Jinja2Templates
 from sse_starlette.sse import EventSourceResponse
 
 from botfarm.db import get_task, get_task_by_ticket, load_all_slots
@@ -20,15 +19,9 @@ from .state import get_db, linear_url, read_state, supervisor_status
 
 logger = logging.getLogger(__name__)
 
-TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
-
 router = APIRouter()
 
 MAX_LOG_DISPLAY = 2 * 1024 * 1024  # 2 MB
-
-
-def _get_templates() -> Jinja2Templates:
-    return Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 
 def _read_log_file(path: Path) -> str:
@@ -143,7 +136,7 @@ def _resolve_task(app, task_id: str) -> tuple[dict | None, str]:
 def log_viewer_page(request: Request, task_id: str):
     """Log viewer page — shows available stages, redirects to latest."""
     app = request.app
-    templates = _get_templates()
+    templates = request.app.state.templates
     task, ticket_id = _resolve_task(app, task_id)
 
     available = _available_stages_with_logs(app, ticket_id)
@@ -193,7 +186,7 @@ def log_viewer_page(request: Request, task_id: str):
 def log_viewer_stage_page(request: Request, task_id: str, stage: str):
     """Log viewer page for a specific stage."""
     app = request.app
-    templates = _get_templates()
+    templates = request.app.state.templates
     task, ticket_id = _resolve_task(app, task_id)
 
     available = _available_stages_with_logs(app, ticket_id)

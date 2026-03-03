@@ -9,7 +9,6 @@ from pathlib import Path
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
-from fastapi.templating import Jinja2Templates
 
 from botfarm.config import (
     EDITABLE_FIELDS,
@@ -25,13 +24,7 @@ from .state import read_state, supervisor_status
 
 logger = logging.getLogger(__name__)
 
-TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
-
 router = APIRouter()
-
-
-def _get_templates() -> Jinja2Templates:
-    return Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 
 def _mask_secret(value: str) -> str:
@@ -157,7 +150,7 @@ def _config_values(app) -> dict:
 @router.get("/config", response_class=HTMLResponse)
 def config_page(request: Request):
     app = request.app
-    templates = _get_templates()
+    templates = request.app.state.templates
     cfg = app.state.botfarm_config
     enabled = cfg is not None
     return templates.TemplateResponse("config.html", {
@@ -386,7 +379,7 @@ def _write_env_file(env_path: Path, data: dict[str, str]) -> None:
 @router.get("/identities", response_class=HTMLResponse)
 def identities_page(request: Request):
     app = request.app
-    templates = _get_templates()
+    templates = request.app.state.templates
     return templates.TemplateResponse("identities.html", {
         "request": request,
         "identity": _identity_status(app),

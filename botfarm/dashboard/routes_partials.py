@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import sqlite3
-from pathlib import Path
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
-from fastapi.templating import Jinja2Templates
 
 from .state import (
     context_fill_class,
@@ -23,13 +21,7 @@ from .state import (
     usage_is_stale,
 )
 
-TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
-
 router = APIRouter()
-
-
-def _get_templates() -> Jinja2Templates:
-    return Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 
 @router.get("/partials/slots", response_class=HTMLResponse)
@@ -41,7 +33,7 @@ def partial_slots(request: Request):
     )
 
     app = request.app
-    templates = _get_templates()
+    templates = request.app.state.templates
     state = read_state(app)
     slots = _enrich_slots_with_context_fill(app, state.get("slots", []))
     slots = _enrich_slots_with_pipeline(slots)
@@ -65,7 +57,7 @@ def partial_slots(request: Request):
 @router.get("/partials/supervisor-badge", response_class=HTMLResponse)
 def partial_supervisor_badge(request: Request):
     app = request.app
-    templates = _get_templates()
+    templates = request.app.state.templates
     state = read_state(app)
     return templates.TemplateResponse("partials/supervisor_badge.html", {
         "request": request,
@@ -76,7 +68,7 @@ def partial_supervisor_badge(request: Request):
 @router.get("/partials/usage", response_class=HTMLResponse)
 def partial_usage(request: Request):
     app = request.app
-    templates = _get_templates()
+    templates = request.app.state.templates
     state = read_state(app)
     fresh = refresh_and_get_usage(app)
     usage = fresh if fresh is not None else state.get("usage", {})
@@ -99,7 +91,7 @@ def partial_usage(request: Request):
 @router.get("/partials/linear-capacity", response_class=HTMLResponse)
 def partial_linear_capacity(request: Request):
     app = request.app
-    templates = _get_templates()
+    templates = request.app.state.templates
     return templates.TemplateResponse("partials/linear_capacity.html", {
         "request": request,
         "capacity": get_capacity_data(app),
@@ -110,7 +102,7 @@ def partial_linear_capacity(request: Request):
 @router.get("/partials/queue", response_class=HTMLResponse)
 def partial_queue(request: Request):
     app = request.app
-    templates = _get_templates()
+    templates = request.app.state.templates
     state = read_state(app)
     queue = state.get("queue")
     project_pauses = state.get("project_pauses", {})
@@ -128,7 +120,7 @@ def partial_queue(request: Request):
 def partial_history(request: Request):
     from .routes_main import _history_context
 
-    templates = _get_templates()
+    templates = request.app.state.templates
     ctx = _history_context(request)
     return templates.TemplateResponse("partials/history.html", ctx)
 
@@ -137,7 +129,7 @@ def partial_history(request: Request):
 def partial_tickets(request: Request):
     from .routes_main import _tickets_context
 
-    templates = _get_templates()
+    templates = request.app.state.templates
     ctx = _tickets_context(request)
     return templates.TemplateResponse("partials/tickets.html", ctx)
 
@@ -145,7 +137,7 @@ def partial_tickets(request: Request):
 @router.get("/partials/supervisor-controls", response_class=HTMLResponse)
 def partial_supervisor_controls(request: Request):
     app = request.app
-    templates = _get_templates()
+    templates = request.app.state.templates
     state = read_state(app)
     pause_state = manual_pause_state(state)
     busy_slots = [
@@ -165,7 +157,7 @@ def partial_update_banner(request: Request):
     from .state import check_commits_behind
 
     app = request.app
-    templates = _get_templates()
+    templates = request.app.state.templates
     # Check if supervisor signalled that update failed
     failed_evt = app.state.update_failed_event
     if failed_evt is not None and failed_evt.is_set():
@@ -192,7 +184,7 @@ def partial_update_banner(request: Request):
 def partial_preflight_banner(request: Request):
     from .routes_api import _get_preflight_data
 
-    templates = _get_templates()
+    templates = request.app.state.templates
     data = _get_preflight_data(request.app)
     return templates.TemplateResponse("partials/preflight_banner.html", {
         "request": request,
@@ -204,7 +196,7 @@ def partial_preflight_banner(request: Request):
 def partial_health_checks(request: Request):
     from .routes_api import _get_preflight_data
 
-    templates = _get_templates()
+    templates = request.app.state.templates
     data = _get_preflight_data(request.app)
     return templates.TemplateResponse("partials/health_checks.html", {
         "request": request,
@@ -216,7 +208,7 @@ def partial_health_checks(request: Request):
 def partial_health_badge(request: Request):
     from .routes_api import _get_preflight_data
 
-    templates = _get_templates()
+    templates = request.app.state.templates
     data = _get_preflight_data(request.app)
     return templates.TemplateResponse("partials/health_badge.html", {
         "request": request,

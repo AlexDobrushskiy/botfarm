@@ -229,7 +229,7 @@ def format_codex_ndjson_line(raw_line: str) -> tuple[str, str]:
     return ("log", stripped)
 
 
-def _review_display_status(exit_subtype: str | None) -> str:
+def review_display_status(exit_subtype: str | None) -> str:
     """Map a review stage exit_subtype to a human-readable display status."""
     exit_sub = (exit_subtype or "").lower()
     if exit_sub in ("approved", "changes_requested"):
@@ -275,7 +275,7 @@ def build_pipeline_state(
     codex_summary = None
     if codex_runs:
         last = codex_runs[-1]
-        codex_status = _review_display_status(last.get("exit_subtype"))
+        codex_status = review_display_status(last.get("exit_subtype"))
         codex_summary = {"status": codex_status, "count": len(codex_runs)}
 
     # Find the last stage that has runs (by canonical order)

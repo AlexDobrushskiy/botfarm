@@ -17,11 +17,9 @@ from .routes_config import router as config_router
 from .routes_logs import router as logs_router
 from .routes_main import router as main_router
 from .routes_partials import router as partials_router
-from .state import elapsed, format_duration, reset_caches
+from .state import TEMPLATES_DIR, elapsed, format_duration, reset_caches
 
 logger = logging.getLogger(__name__)
-
-TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 
 
 def create_app(
@@ -100,6 +98,7 @@ def create_app(
     app.state.auto_restart = auto_restart
     app.state.logs_dir = Path(logs_dir).expanduser() if logs_dir else None
     app.state.git_env = git_env
+    app.state.templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
     # Make helpers available to templates via middleware
     @app.middleware("http")
