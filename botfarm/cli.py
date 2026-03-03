@@ -847,7 +847,7 @@ def _days_ago(iso_timestamp: str | None) -> int:
 )
 @click.option(
     "--min-age",
-    type=int,
+    type=click.IntRange(min=0),
     default=7,
     help="Minimum days since completion (default: 7).",
 )
@@ -893,8 +893,11 @@ def cleanup(action, count, min_age, status_filter, project, dry_run, yes, config
     if not cfg.projects:
         raise click.ClickException("No projects configured.")
 
-    # Use first project's team key; --project filters within Linear
-    team_key = cfg.projects[0].linear_team
+    # Resolve team key and project name from the first configured project
+    first_proj = cfg.projects[0]
+    team_key = first_proj.linear_team
+    if project is None:
+        project = getattr(first_proj, "linear_project", "") or ""
 
     if not db_path.exists():
         raise click.ClickException(
@@ -922,9 +925,12 @@ def cleanup(action, count, min_age, status_filter, project, dry_run, yes, config
         )
 
         # Fetch candidates
-        candidates = svc.fetch_candidates(
-            limit=count, status_filter=status_filter
-        )
+        try:
+            candidates = svc.fetch_candidates(
+                limit=count, status_filter=status_filter
+            )
+        except LinearAPIError as exc:
+            raise click.ClickException(f"Linear API error: {exc}") from exc
 
         if not candidates:
             console.print("No cleanup candidates found.")
@@ -963,16 +969,15 @@ def cleanup(action, count, min_age, status_filter, project, dry_run, yes, config
                 console.print("Aborted.")
                 return
 
-        # Execute cleanup with progress
-        selected_ids = [c.linear_uuid for c in candidates]
+        # Execute cleanup with progress (pass pre-fetched candidates to avoid
+        # a redundant API call inside run_cleanup)
         with console.status(
             f"[bold yellow]{action.capitalize().rstrip('e')}ing {len(candidates)} issue(s)...",
         ):
             try:
                 result = svc.run_cleanup(
                     action=action,
-                    limit=count,
-                    issue_ids=selected_ids,
+                    candidates=candidates,
                 )
             except CooldownError as exc:
                 raise click.ClickException(str(exc)) from exc
@@ -983,11 +988,9 @@ def cleanup(action, count, min_age, status_filter, project, dry_run, yes, config
         skipped_msg = ""
         if result.skipped:
             skipped_msg = f" {result.skipped} skipped (backup failed)."
-        freed = result.succeeded
         console.print(
-            f"\n[bold green]{action.capitalize()}d {result.succeeded}/{result.total_candidates} issues.[/bold green]"
+            f"\n[bold green]{action.capitalize()}d {result.succeeded}/{result.total_candidates} issues successfully.[/bold green]"
             f"{skipped_msg}"
-            f" Freed ~{freed} capacity slot(s)."
         )
         if result.failed:
             console.print(

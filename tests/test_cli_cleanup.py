@@ -194,8 +194,6 @@ class TestCleanupFilterOptions:
         monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
         captured_kwargs = {}
 
-        original_init = CleanupService.__init__
-
         def mock_fetch(self, limit=None, status_filter="all"):
             captured_kwargs["status_filter"] = status_filter
             return []
@@ -326,7 +324,7 @@ class TestCleanupExecution:
 
         assert result.exit_code == 0
         assert "Archived 2/2" in result.output
-        assert "Freed ~2 capacity slot(s)" in result.output
+        assert "successfully" in result.output
 
     def test_delete_success_summary(self, runner, db_file, monkeypatch):
         monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
