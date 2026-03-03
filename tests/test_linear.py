@@ -35,6 +35,9 @@ from botfarm.linear import (
 # ---------------------------------------------------------------------------
 
 
+from tests.helpers import make_issue
+
+
 def _make_project(
     name: str = "proj-a",
     team: str = "SMA",
@@ -46,32 +49,6 @@ def _make_project(
         base_dir="~/proj-a",
         worktree_prefix="proj-a-slot-",
         slots=slots or [1, 2],
-    )
-
-
-def _make_issue(
-    *,
-    id: str = "id-1",
-    identifier: str = "SMA-10",
-    title: str = "Test issue",
-    priority: int = 2,
-    labels: list[str] | None = None,
-    assignee_id: str | None = None,
-    sort_order: float = 0.0,
-    blocked_by: list[str] | None = None,
-    children_states: list[tuple[str, str]] | None = None,
-) -> LinearIssue:
-    return LinearIssue(
-        id=id,
-        identifier=identifier,
-        title=title,
-        priority=priority,
-        url=f"https://linear.app/test/{identifier}",
-        assignee_id=assignee_id,
-        labels=labels or [],
-        sort_order=sort_order,
-        blocked_by=blocked_by,
-        children_states=children_states,
     )
 
 
@@ -762,9 +739,9 @@ class TestLinearPollerPoll:
     def test_returns_sorted_by_sort_order(self):
         poller = self._make_poller()
         poller._client.fetch_team_issues.return_value = [
-            _make_issue(id="a", identifier="SMA-1", sort_order=3.0),
-            _make_issue(id="b", identifier="SMA-2", sort_order=1.0),
-            _make_issue(id="c", identifier="SMA-3", sort_order=2.0),
+            make_issue(id="a", identifier="SMA-1", sort_order=3.0),
+            make_issue(id="b", identifier="SMA-2", sort_order=1.0),
+            make_issue(id="c", identifier="SMA-3", sort_order=2.0),
         ]
         result = poller.poll()
         assert [c.identifier for c in result.candidates] == ["SMA-2", "SMA-3", "SMA-1"]
@@ -772,9 +749,9 @@ class TestLinearPollerPoll:
     def test_sort_order_ignores_priority(self):
         poller = self._make_poller()
         poller._client.fetch_team_issues.return_value = [
-            _make_issue(id="a", identifier="SMA-1", priority=1, sort_order=3.0),
-            _make_issue(id="b", identifier="SMA-2", priority=4, sort_order=1.0),
-            _make_issue(id="c", identifier="SMA-3", priority=2, sort_order=2.0),
+            make_issue(id="a", identifier="SMA-1", priority=1, sort_order=3.0),
+            make_issue(id="b", identifier="SMA-2", priority=4, sort_order=1.0),
+            make_issue(id="c", identifier="SMA-3", priority=2, sort_order=2.0),
         ]
         result = poller.poll()
         # Sort is by sort_order, not priority
@@ -783,9 +760,9 @@ class TestLinearPollerPoll:
     def test_filters_blocked_tickets(self):
         poller = self._make_poller()
         poller._client.fetch_team_issues.return_value = [
-            _make_issue(id="a", identifier="SMA-1", sort_order=1.0),
-            _make_issue(id="b", identifier="SMA-2", sort_order=2.0, blocked_by=["SMA-1"]),
-            _make_issue(id="c", identifier="SMA-3", sort_order=3.0),
+            make_issue(id="a", identifier="SMA-1", sort_order=1.0),
+            make_issue(id="b", identifier="SMA-2", sort_order=2.0, blocked_by=["SMA-1"]),
+            make_issue(id="c", identifier="SMA-3", sort_order=3.0),
         ]
         result = poller.poll()
         assert [c.identifier for c in result.candidates] == ["SMA-1", "SMA-3"]
@@ -795,9 +772,9 @@ class TestLinearPollerPoll:
         """Tickets blocked via inverseRelations are also filtered out."""
         poller = self._make_poller()
         poller._client.fetch_team_issues.return_value = [
-            _make_issue(id="a", identifier="SMA-1", sort_order=1.0),
-            _make_issue(id="b", identifier="SMA-2", sort_order=2.0, blocked_by=["SMA-1"]),
-            _make_issue(id="c", identifier="SMA-3", sort_order=3.0),
+            make_issue(id="a", identifier="SMA-1", sort_order=1.0),
+            make_issue(id="b", identifier="SMA-2", sort_order=2.0, blocked_by=["SMA-1"]),
+            make_issue(id="c", identifier="SMA-3", sort_order=3.0),
         ]
         result = poller.poll()
         # SMA-2 is blocked (regardless of how blocked_by was populated)
@@ -807,8 +784,8 @@ class TestLinearPollerPoll:
     def test_unblocked_tickets_not_filtered(self):
         poller = self._make_poller()
         poller._client.fetch_team_issues.return_value = [
-            _make_issue(id="a", identifier="SMA-1", sort_order=1.0, blocked_by=None),
-            _make_issue(id="b", identifier="SMA-2", sort_order=2.0, blocked_by=[]),
+            make_issue(id="a", identifier="SMA-1", sort_order=1.0, blocked_by=None),
+            make_issue(id="b", identifier="SMA-2", sort_order=2.0, blocked_by=[]),
         ]
         result = poller.poll()
         assert len(result.candidates) == 2
@@ -818,9 +795,9 @@ class TestLinearPollerPoll:
         """Blocked issues should be sorted by sort_order."""
         poller = self._make_poller()
         poller._client.fetch_team_issues.return_value = [
-            _make_issue(id="a", identifier="SMA-1", sort_order=3.0, blocked_by=["SMA-10"]),
-            _make_issue(id="b", identifier="SMA-2", sort_order=1.0, blocked_by=["SMA-10"]),
-            _make_issue(id="c", identifier="SMA-3", sort_order=2.0, blocked_by=["SMA-10"]),
+            make_issue(id="a", identifier="SMA-1", sort_order=3.0, blocked_by=["SMA-10"]),
+            make_issue(id="b", identifier="SMA-2", sort_order=1.0, blocked_by=["SMA-10"]),
+            make_issue(id="c", identifier="SMA-3", sort_order=2.0, blocked_by=["SMA-10"]),
         ]
         result = poller.poll()
         assert [b.identifier for b in result.blocked] == ["SMA-2", "SMA-3", "SMA-1"]
@@ -828,9 +805,9 @@ class TestLinearPollerPoll:
     def test_excludes_tags(self):
         poller = self._make_poller(exclude_tags=["Human", "Manual"])
         poller._client.fetch_team_issues.return_value = [
-            _make_issue(id="a", identifier="SMA-1", labels=["Feature"]),
-            _make_issue(id="b", identifier="SMA-2", labels=["Human"]),
-            _make_issue(id="c", identifier="SMA-3", labels=["Bug", "manual"]),
+            make_issue(id="a", identifier="SMA-1", labels=["Feature"]),
+            make_issue(id="b", identifier="SMA-2", labels=["Human"]),
+            make_issue(id="c", identifier="SMA-3", labels=["Bug", "manual"]),
         ]
         result = poller.poll()
         assert len(result.candidates) == 1
@@ -839,8 +816,8 @@ class TestLinearPollerPoll:
     def test_exclude_tags_case_insensitive(self):
         poller = self._make_poller(exclude_tags=["human"])
         poller._client.fetch_team_issues.return_value = [
-            _make_issue(id="a", identifier="SMA-1", labels=["HUMAN"]),
-            _make_issue(id="b", identifier="SMA-2", labels=["Feature"]),
+            make_issue(id="a", identifier="SMA-1", labels=["HUMAN"]),
+            make_issue(id="b", identifier="SMA-2", labels=["Feature"]),
         ]
         result = poller.poll()
         assert len(result.candidates) == 1
@@ -849,8 +826,8 @@ class TestLinearPollerPoll:
     def test_excludes_active_ticket_ids(self):
         poller = self._make_poller()
         poller._client.fetch_team_issues.return_value = [
-            _make_issue(id="active-1", identifier="SMA-1"),
-            _make_issue(id="new-1", identifier="SMA-2"),
+            make_issue(id="active-1", identifier="SMA-1"),
+            make_issue(id="new-1", identifier="SMA-2"),
         ]
         result = poller.poll(active_ticket_ids={"SMA-1"})
         assert len(result.candidates) == 1
@@ -866,7 +843,7 @@ class TestLinearPollerPoll:
     def test_none_labels_handled(self):
         poller = self._make_poller()
         poller._client.fetch_team_issues.return_value = [
-            _make_issue(id="a", identifier="SMA-1", labels=None),
+            make_issue(id="a", identifier="SMA-1", labels=None),
         ]
         result = poller.poll()
         assert len(result.candidates) == 1
@@ -896,7 +873,7 @@ class TestLinearPollerParentHandling:
         """Parent with all children completed goes to auto_close_parents."""
         poller = self._make_poller()
         poller._client.fetch_team_issues.return_value = [
-            _make_issue(
+            make_issue(
                 id="p1", identifier="SMA-100",
                 children_states=[("SMA-101", "completed"), ("SMA-102", "completed")],
             ),
@@ -910,7 +887,7 @@ class TestLinearPollerParentHandling:
         """Parent with children in completed/canceled goes to auto_close."""
         poller = self._make_poller()
         poller._client.fetch_team_issues.return_value = [
-            _make_issue(
+            make_issue(
                 id="p1", identifier="SMA-100",
                 children_states=[("SMA-101", "completed"), ("SMA-102", "canceled")],
             ),
@@ -923,7 +900,7 @@ class TestLinearPollerParentHandling:
         """Parent with some open children is skipped entirely."""
         poller = self._make_poller()
         poller._client.fetch_team_issues.return_value = [
-            _make_issue(
+            make_issue(
                 id="p1", identifier="SMA-100",
                 children_states=[("SMA-101", "completed"), ("SMA-102", "started")],
             ),
@@ -936,7 +913,7 @@ class TestLinearPollerParentHandling:
         """Parent with all children still open is skipped."""
         poller = self._make_poller()
         poller._client.fetch_team_issues.return_value = [
-            _make_issue(
+            make_issue(
                 id="p1", identifier="SMA-100",
                 children_states=[("SMA-101", "unstarted"), ("SMA-102", "started")],
             ),
@@ -949,7 +926,7 @@ class TestLinearPollerParentHandling:
         """Issue with no children (children_states=None) is a normal candidate."""
         poller = self._make_poller()
         poller._client.fetch_team_issues.return_value = [
-            _make_issue(id="a", identifier="SMA-1"),
+            make_issue(id="a", identifier="SMA-1"),
         ]
         result = poller.poll()
         assert len(result.candidates) == 1
@@ -959,16 +936,16 @@ class TestLinearPollerParentHandling:
         """Mix of parent and normal issues are properly separated."""
         poller = self._make_poller()
         poller._client.fetch_team_issues.return_value = [
-            _make_issue(id="a", identifier="SMA-1", sort_order=1.0),
-            _make_issue(
+            make_issue(id="a", identifier="SMA-1", sort_order=1.0),
+            make_issue(
                 id="p1", identifier="SMA-100", sort_order=2.0,
                 children_states=[("SMA-101", "completed")],
             ),
-            _make_issue(
+            make_issue(
                 id="p2", identifier="SMA-200", sort_order=3.0,
                 children_states=[("SMA-201", "started")],
             ),
-            _make_issue(id="b", identifier="SMA-2", sort_order=4.0),
+            make_issue(id="b", identifier="SMA-2", sort_order=4.0),
         ]
         result = poller.poll()
         assert [c.identifier for c in result.candidates] == ["SMA-1", "SMA-2"]

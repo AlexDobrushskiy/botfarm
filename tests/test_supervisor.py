@@ -37,6 +37,7 @@ from botfarm.supervisor import (
     setup_logging,
 )
 from botfarm.worker import PipelineResult, STAGES
+from tests.helpers import make_config, make_issue
 
 
 # ---------------------------------------------------------------------------
@@ -44,46 +45,10 @@ from botfarm.worker import PipelineResult, STAGES
 # ---------------------------------------------------------------------------
 
 
-def _make_config(tmp_path: Path) -> BotfarmConfig:
-    """Build a minimal valid config rooted in tmp_path."""
-    return BotfarmConfig(
-        projects=[
-            ProjectConfig(
-                name="test-project",
-                linear_team="TST",
-                base_dir=str(tmp_path / "repo"),
-                worktree_prefix="test-project-slot-",
-                slots=[1, 2],
-            ),
-        ],
-        linear=LinearConfig(
-            api_key="test-key",
-            poll_interval_seconds=10,
-            exclude_tags=["Human"],
-        ),
-        database=DatabaseConfig(),
-    )
-
-
-def _make_issue(
-    id: str = "issue-uuid-1",
-    identifier: str = "TST-1",
-    title: str = "Test ticket",
-    priority: int = 2,
-) -> LinearIssue:
-    return LinearIssue(
-        id=id,
-        identifier=identifier,
-        title=title,
-        priority=priority,
-        url=f"https://linear.app/team/issue/{identifier}",
-    )
-
-
 @pytest.fixture()
 def tmp_config(tmp_path):
     """Return a BotfarmConfig and ensure directories exist."""
-    config = _make_config(tmp_path)
+    config = make_config(tmp_path)
     (tmp_path / "repo").mkdir()
     return config
 
@@ -101,14 +66,6 @@ def supervisor(tmp_config, tmp_path, monkeypatch):
         sup = Supervisor(tmp_config, log_dir=tmp_path / "logs")
 
     return sup
-
-
-@pytest.fixture()
-def conn(tmp_path):
-    db_file = tmp_path / "test.db"
-    connection = init_db(db_file, allow_migration=True)
-    yield connection
-    connection.close()
 
 
 # ---------------------------------------------------------------------------
@@ -400,7 +357,7 @@ class TestDispatchPauseResume:
         supervisor._usage_poller._state.utilization_7d = 0.50
 
         poller = supervisor._pollers["test-project"]
-        poller.poll.return_value = PollResult(candidates=[_make_issue()], blocked=[], auto_close_parents=[])
+        poller.poll.return_value = PollResult(candidates=[make_issue()], blocked=[], auto_close_parents=[])
 
         with patch.object(supervisor, "_dispatch_worker") as mock_dispatch:
             supervisor._poll_and_dispatch()
@@ -451,7 +408,7 @@ class TestDispatchPauseResume:
         supervisor._usage_poller._state.utilization_7d = 0.60
 
         poller = supervisor._pollers["test-project"]
-        poller.poll.return_value = PollResult(candidates=[_make_issue()], blocked=[], auto_close_parents=[])
+        poller.poll.return_value = PollResult(candidates=[make_issue()], blocked=[], auto_close_parents=[])
 
         with patch.object(supervisor, "_dispatch_worker"):
             supervisor._poll_and_dispatch()
@@ -464,7 +421,7 @@ class TestDispatchPauseResume:
         supervisor._usage_poller._state.utilization_7d = None
 
         poller = supervisor._pollers["test-project"]
-        poller.poll.return_value = PollResult(candidates=[_make_issue()], blocked=[], auto_close_parents=[])
+        poller.poll.return_value = PollResult(candidates=[make_issue()], blocked=[], auto_close_parents=[])
 
         with patch.object(supervisor, "_dispatch_worker") as mock_dispatch:
             supervisor._poll_and_dispatch()
@@ -492,14 +449,14 @@ class TestPollAndDispatch:
         )
 
         poller = supervisor._pollers["test-project"]
-        poller.poll.return_value = PollResult(candidates=[_make_issue()], blocked=[], auto_close_parents=[])
+        poller.poll.return_value = PollResult(candidates=[make_issue()], blocked=[], auto_close_parents=[])
 
         with patch.object(supervisor, "_dispatch_worker") as mock_dispatch:
             supervisor._poll_and_dispatch()
             mock_dispatch.assert_not_called()
 
     def test_dispatches_to_free_slot(self, supervisor):
-        issue = _make_issue()
+        issue = make_issue()
         poller = supervisor._pollers["test-project"]
         poller.poll.return_value = PollResult(candidates=[issue], blocked=[], auto_close_parents=[])
 
@@ -521,7 +478,7 @@ class TestPollAndDispatch:
 class TestParentAutoClose:
     def test_auto_closes_parent_with_all_children_done(self, supervisor):
         """Parent issues with all children done are auto-moved to Done."""
-        parent_issue = _make_issue(identifier="TST-100", title="Parent")
+        parent_issue = make_issue(identifier="TST-100", title="Parent")
         poller = supervisor._pollers["test-project"]
         poller.poll.return_value = PollResult(
             candidates=[],
@@ -541,8 +498,8 @@ class TestParentAutoClose:
 
     def test_auto_close_failure_does_not_crash(self, supervisor):
         """If auto-close fails, dispatch continues normally."""
-        parent = _make_issue(identifier="TST-100", title="Parent")
-        normal = _make_issue(identifier="TST-1", title="Normal")
+        parent = make_issue(identifier="TST-100", title="Parent")
+        normal = make_issue(identifier="TST-1", title="Normal")
         poller = supervisor._pollers["test-project"]
         poller.poll.return_value = PollResult(
             candidates=[normal],
@@ -557,8 +514,8 @@ class TestParentAutoClose:
 
     def test_auto_close_does_not_consume_slot(self, supervisor):
         """Auto-closing a parent doesn't use a worker slot."""
-        parent = _make_issue(identifier="TST-100", title="Parent")
-        normal = _make_issue(identifier="TST-1", title="Normal")
+        parent = make_issue(identifier="TST-100", title="Parent")
+        normal = make_issue(identifier="TST-1", title="Normal")
         poller = supervisor._pollers["test-project"]
         poller.poll.return_value = PollResult(
             candidates=[normal],
@@ -574,8 +531,8 @@ class TestParentAutoClose:
 
     def test_multiple_parents_auto_closed(self, supervisor):
         """Multiple auto-closeable parents are all processed."""
-        p1 = _make_issue(identifier="TST-100", title="Parent 1")
-        p2 = _make_issue(identifier="TST-200", title="Parent 2")
+        p1 = make_issue(identifier="TST-100", title="Parent 1")
+        p2 = make_issue(identifier="TST-200", title="Parent 2")
         poller = supervisor._pollers["test-project"]
         poller.poll.return_value = PollResult(
             candidates=[],
@@ -603,7 +560,7 @@ class TestPerProjectPause:
         """A paused project should not have its poller called."""
         supervisor.slot_manager.set_project_paused("test-project", True, "manual")
         poller = supervisor._pollers["test-project"]
-        poller.poll.return_value = PollResult(candidates=[_make_issue()], blocked=[], auto_close_parents=[])
+        poller.poll.return_value = PollResult(candidates=[make_issue()], blocked=[], auto_close_parents=[])
 
         with patch.object(supervisor, "_dispatch_worker") as mock_dispatch:
             supervisor._poll_and_dispatch()
@@ -615,7 +572,7 @@ class TestPerProjectPause:
         supervisor.slot_manager.set_project_paused("test-project", True, "manual")
         supervisor.slot_manager.set_project_paused("test-project", False)
 
-        issue = _make_issue()
+        issue = make_issue()
         poller = supervisor._pollers["test-project"]
         poller.poll.return_value = PollResult(candidates=[issue], blocked=[], auto_close_parents=[])
 
@@ -665,7 +622,7 @@ class TestPerProjectPause:
 
 class TestDispatchWorker:
     def test_creates_task_and_spawns_process(self, supervisor):
-        issue = _make_issue()
+        issue = make_issue()
         slot = supervisor.slot_manager.get_slot("test-project", 1)
         poller = supervisor._pollers["test-project"]
 
@@ -695,7 +652,7 @@ class TestDispatchWorker:
             assert task["status"] == "in_progress"
 
     def test_linear_move_failure_skips_dispatch(self, supervisor):
-        issue = _make_issue()
+        issue = make_issue()
         slot = supervisor.slot_manager.get_slot("test-project", 1)
         poller = supervisor._pollers["test-project"]
         poller.move_issue.side_effect = Exception("API down")
@@ -708,7 +665,7 @@ class TestDispatchWorker:
         assert supervisor.slot_manager.get_slot("test-project", 1).status == "free"
 
     def test_worker_dispatched_event_recorded(self, supervisor):
-        issue = _make_issue()
+        issue = make_issue()
         slot = supervisor.slot_manager.get_slot("test-project", 1)
         poller = supervisor._pollers["test-project"]
 
@@ -724,7 +681,7 @@ class TestDispatchWorker:
         assert "TST-1" in events[0]["detail"]
 
     def test_process_not_daemon(self, supervisor):
-        issue = _make_issue()
+        issue = make_issue()
         slot = supervisor.slot_manager.get_slot("test-project", 1)
         poller = supervisor._pollers["test-project"]
 
@@ -835,7 +792,7 @@ class TestCoderAutoAssignment:
 
     def test_dispatch_assigns_to_coder(self, supervisor_with_coder):
         """Dispatch auto-assigns the ticket to the coder bot."""
-        issue = _make_issue()
+        issue = make_issue()
         slot = supervisor_with_coder.slot_manager.get_slot("test-project", 1)
         poller = supervisor_with_coder._pollers["test-project"]
 
@@ -852,7 +809,7 @@ class TestCoderAutoAssignment:
 
     def test_dispatch_continues_on_assignment_failure(self, supervisor_with_coder):
         """Assignment failure does not block dispatch."""
-        issue = _make_issue()
+        issue = make_issue()
         slot = supervisor_with_coder.slot_manager.get_slot("test-project", 1)
         poller = supervisor_with_coder._pollers["test-project"]
         supervisor_with_coder._coder_linear.assign_issue.side_effect = Exception("API error")
@@ -869,7 +826,7 @@ class TestCoderAutoAssignment:
 
     def test_dispatch_skips_assignment_without_coder(self, supervisor):
         """Without coder identity, no assignment call is made."""
-        issue = _make_issue()
+        issue = make_issue()
         slot = supervisor.slot_manager.get_slot("test-project", 1)
         poller = supervisor._pollers["test-project"]
 
@@ -2057,11 +2014,11 @@ class TestMultiProject:
 
         mock_alpha = MagicMock()
         mock_alpha.project_name = "alpha"
-        mock_alpha.poll.return_value = PollResult(candidates=[_make_issue(id="a1", identifier="A-1")], blocked=[], auto_close_parents=[])
+        mock_alpha.poll.return_value = PollResult(candidates=[make_issue(id="a1", identifier="A-1")], blocked=[], auto_close_parents=[])
 
         mock_beta = MagicMock()
         mock_beta.project_name = "beta"
-        mock_beta.poll.return_value = PollResult(candidates=[_make_issue(id="b1", identifier="B-1")], blocked=[], auto_close_parents=[])
+        mock_beta.poll.return_value = PollResult(candidates=[make_issue(id="b1", identifier="B-1")], blocked=[], auto_close_parents=[])
 
         with patch(
             "botfarm.supervisor.create_pollers",
@@ -2311,7 +2268,7 @@ class TestCheckTimeouts:
     def test_timeout_with_custom_config(self, tmp_path, monkeypatch):
         """Custom timeout_minutes values are respected."""
         monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "test.db"))
-        config = _make_config(tmp_path)
+        config = make_config(tmp_path)
         config.agents.timeout_minutes = {"implement": 10, "review": 5, "fix": 8}
         (tmp_path / "repo").mkdir()
 
@@ -2377,7 +2334,7 @@ class TestCheckTimeouts:
     def test_timeout_override_uses_label_timeout(self, tmp_path, monkeypatch):
         """Tickets with label-based timeout overrides use the shorter timeout."""
         monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "test.db"))
-        config = _make_config(tmp_path)
+        config = make_config(tmp_path)
         config.agents.timeout_overrides = {"Investigation": {"implement": 20}}
         (tmp_path / "repo").mkdir()
 
@@ -2419,7 +2376,7 @@ class TestCheckTimeouts:
     def test_timeout_override_no_match_uses_default(self, tmp_path, monkeypatch):
         """Tickets without matching labels use the default timeout."""
         monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "test.db"))
-        config = _make_config(tmp_path)
+        config = make_config(tmp_path)
         config.agents.timeout_overrides = {"Investigation": {"implement": 20}}
         (tmp_path / "repo").mkdir()
 
@@ -3676,7 +3633,7 @@ class TestConfigurableStatusNames:
         sup = supervisor_custom_statuses
         sm = sup.slot_manager
         poller = sup._pollers["test-project"]
-        issue = _make_issue()
+        issue = make_issue()
 
         slot = sm.get_slot("test-project", 1)
 
@@ -4099,7 +4056,7 @@ class TestSlotWorktreeCwd:
 
     def test_dispatch_worker_uses_worktree_cwd(self, supervisor, tmp_path):
         """_dispatch_worker passes the slot worktree path, not base_dir."""
-        issue = _make_issue()
+        issue = make_issue()
         slot = supervisor.slot_manager.get_slot("test-project", 1)
         poller = supervisor._pollers["test-project"]
 
@@ -4174,7 +4131,7 @@ class TestSlotWorktreeCwd:
 
     def test_dispatch_worker_seeds_slot_db(self, supervisor, tmp_path):
         """_dispatch_worker creates a sandboxed slot DB and passes it to worker."""
-        issue = _make_issue()
+        issue = make_issue()
         slot = supervisor.slot_manager.get_slot("test-project", 1)
         poller = supervisor._pollers["test-project"]
 
@@ -4195,7 +4152,7 @@ class TestSlotWorktreeCwd:
 
     def test_dispatch_worker_slot_db_path_format(self, supervisor, tmp_path):
         """Slot DB path follows the expected format."""
-        issue = _make_issue()
+        issue = make_issue()
         slot = supervisor.slot_manager.get_slot("test-project", 1)
         poller = supervisor._pollers["test-project"]
 
@@ -4425,7 +4382,7 @@ class TestManualPauseResume:
         supervisor._usage_poller._state.utilization_7d = 0.10
 
         poller = supervisor._pollers["test-project"]
-        poller.poll.return_value = PollResult(candidates=[_make_issue()], blocked=[], auto_close_parents=[])
+        poller.poll.return_value = PollResult(candidates=[make_issue()], blocked=[], auto_close_parents=[])
 
         with patch.object(supervisor, "_dispatch_worker") as mock_dispatch:
             supervisor._poll_and_dispatch()
@@ -4445,7 +4402,7 @@ class TestManualPauseResume:
         supervisor._usage_poller._state.utilization_7d = 0.10
 
         poller = supervisor._pollers["test-project"]
-        poller.poll.return_value = PollResult(candidates=[_make_issue()], blocked=[], auto_close_parents=[])
+        poller.poll.return_value = PollResult(candidates=[make_issue()], blocked=[], auto_close_parents=[])
 
         with patch.object(supervisor, "_dispatch_worker") as mock_dispatch:
             supervisor._poll_and_dispatch()
@@ -4491,7 +4448,7 @@ class TestManualPauseResume:
         supervisor._usage_poller._state.utilization_7d = 0.10
 
         poller = supervisor._pollers["test-project"]
-        poller.poll.return_value = PollResult(candidates=[_make_issue()], blocked=[], auto_close_parents=[])
+        poller.poll.return_value = PollResult(candidates=[make_issue()], blocked=[], auto_close_parents=[])
 
         with patch.object(supervisor, "_dispatch_worker") as mock_dispatch:
             supervisor._poll_and_dispatch()
@@ -4881,7 +4838,7 @@ class TestUsageStallDetection:
         """_dispatch_worker records stall tracking data."""
         sm = supervisor.slot_manager
         slot = sm.get_slot("test-project", 1)
-        issue = _make_issue()
+        issue = make_issue()
         poller = supervisor._pollers["test-project"]
 
         supervisor._usage_poller.state.utilization_5h = 0.42
@@ -5137,7 +5094,7 @@ class TestTicketHistoryCapture:
 
     def test_dispatch_captures_ticket_history(self, supervisor):
         """Dispatch should capture ticket details into ticket_history."""
-        issue = _make_issue()
+        issue = make_issue()
         slot = supervisor.slot_manager.get_slot("test-project", 1)
         poller = supervisor._pollers["test-project"]
         poller._client.fetch_issue_details.side_effect = self._mock_fetch_issue_details
@@ -5197,7 +5154,7 @@ class TestTicketHistoryCapture:
 
     def test_capture_failure_does_not_block_dispatch(self, supervisor):
         """If ticket history capture fails, dispatch should still proceed."""
-        issue = _make_issue()
+        issue = make_issue()
         slot = supervisor.slot_manager.get_slot("test-project", 1)
         poller = supervisor._pollers["test-project"]
         poller._client.fetch_issue_details.side_effect = Exception("API down")

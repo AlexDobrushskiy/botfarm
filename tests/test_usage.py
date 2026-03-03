@@ -10,7 +10,7 @@ import httpx
 import pytest
 
 from botfarm.credentials import CredentialManager
-from botfarm.db import get_usage_snapshots, init_db
+from botfarm.db import get_usage_snapshots
 from botfarm.usage import (
     DEFAULT_PAUSE_5H_THRESHOLD,
     DEFAULT_PAUSE_7D_THRESHOLD,
@@ -253,12 +253,7 @@ class TestUsageState:
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture()
-def conn(tmp_path):
-    db_file = tmp_path / "test.db"
-    connection = init_db(db_file)
-    yield connection
-    connection.close()
+# conn fixture provided by tests/conftest.py
 
 
 @pytest.fixture()

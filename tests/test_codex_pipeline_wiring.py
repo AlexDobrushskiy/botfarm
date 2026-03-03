@@ -15,7 +15,7 @@ from unittest.mock import patch
 import pytest
 
 from botfarm.codex import CodexResult
-from botfarm.db import get_events, get_stage_runs, init_db, insert_task
+from botfarm.db import get_events, get_stage_runs, insert_task
 from botfarm.worker import (
     ClaudeResult,
     PipelineResult,
@@ -25,6 +25,7 @@ from botfarm.worker import (
     _parse_review_approved,
     run_pipeline,
 )
+from tests.helpers import make_claude_result, make_codex_result
 
 
 PR_URL = "https://github.com/owner/repo/pull/42"
@@ -33,14 +34,6 @@ PR_URL = "https://github.com/owner/repo/pull/42"
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture()
-def conn(tmp_path):
-    db_file = tmp_path / "test.db"
-    connection = init_db(db_file)
-    yield connection
-    connection.close()
 
 
 @pytest.fixture()
@@ -60,30 +53,6 @@ def task_id(conn):
 # ---------------------------------------------------------------------------
 
 
-def _make_claude_result(text: str = "done", is_error: bool = False) -> ClaudeResult:
-    return ClaudeResult(
-        session_id="s-test",
-        num_turns=5,
-        duration_seconds=15.0,
-        exit_subtype="tool_use",
-        result_text=text,
-        is_error=is_error,
-    )
-
-
-def _make_codex_result(text: str = "done", is_error: bool = False) -> CodexResult:
-    return CodexResult(
-        thread_id="t-codex",
-        num_turns=3,
-        duration_seconds=10.0,
-        result_text=text,
-        is_error=is_error,
-        input_tokens=1000,
-        output_tokens=500,
-        cached_input_tokens=200,
-    )
-
-
 def _mock_stage_result(
     stage,
     success=True,
@@ -94,7 +63,7 @@ def _mock_stage_result(
 ):
     cr = None
     if stage in ("implement", "review", "fix"):
-        cr = _make_claude_result()
+        cr = make_claude_result()
     return StageResult(
         stage=stage,
         success=success,
@@ -201,7 +170,7 @@ class TestCodexStageRunRecorded:
     @patch("botfarm.worker._execute_stage")
     def test_codex_review_row_recorded(self, mock_exec, conn, task_id, tmp_path):
         """When Codex succeeds, a separate codex_review stage_runs row is inserted."""
-        codex_res = _make_codex_result("VERDICT: APPROVED")
+        codex_res = make_codex_result("VERDICT: APPROVED", thread_id="t-codex")
         mock_exec.side_effect = [
             _mock_stage_result("implement", pr_url=PR_URL),
             _mock_stage_result(
@@ -260,7 +229,7 @@ class TestCodexStageRunRecorded:
     @patch("botfarm.worker._execute_stage")
     def test_codex_error_still_records_stage_run(self, mock_exec, conn, task_id, tmp_path):
         """When Codex returns is_error, a stage_run row is still recorded."""
-        codex_res = _make_codex_result("Error output", is_error=True)
+        codex_res = make_codex_result("Error output", is_error=True, thread_id="t-codex")
         mock_exec.side_effect = [
             _mock_stage_result("implement", pr_url=PR_URL),
             _mock_stage_result(
@@ -315,7 +284,7 @@ class TestCodexLogFileSeparate:
     @patch("botfarm.worker._execute_stage")
     def test_codex_log_file_in_stage_run(self, mock_exec, conn, task_id, tmp_path):
         """Codex stage_run row has its own log_file_path (not the Claude one)."""
-        codex_res = _make_codex_result("VERDICT: APPROVED")
+        codex_res = make_codex_result("VERDICT: APPROVED")
         mock_exec.side_effect = [
             _mock_stage_result("implement", pr_url=PR_URL),
             _mock_stage_result(
@@ -358,7 +327,7 @@ class TestCodexEventsRecorded:
     @patch("botfarm.worker._execute_stage")
     def test_codex_completed_events(self, mock_exec, conn, task_id, tmp_path):
         """Successful Codex review records started + completed events."""
-        codex_res = _make_codex_result("VERDICT: APPROVED")
+        codex_res = make_codex_result("VERDICT: APPROVED")
         mock_exec.side_effect = [
             _mock_stage_result("implement", pr_url=PR_URL),
             _mock_stage_result(
@@ -391,7 +360,7 @@ class TestCodexEventsRecorded:
     @patch("botfarm.worker._execute_stage")
     def test_codex_completed_changes_requested(self, mock_exec, conn, task_id, tmp_path):
         """Codex requests changes → completed event with changes_requested verdict."""
-        codex_res = _make_codex_result("VERDICT: CHANGES_REQUESTED")
+        codex_res = make_codex_result("VERDICT: CHANGES_REQUESTED")
         mock_exec.side_effect = [
             _mock_stage_result("implement", pr_url=PR_URL),
             _mock_stage_result(
@@ -421,7 +390,7 @@ class TestCodexEventsRecorded:
     @patch("botfarm.worker._execute_stage")
     def test_codex_failed_events(self, mock_exec, conn, task_id, tmp_path):
         """Codex error records started + failed events."""
-        codex_res = _make_codex_result("Error", is_error=True)
+        codex_res = make_codex_result("Error", is_error=True)
         mock_exec.side_effect = [
             _mock_stage_result("implement", pr_url=PR_URL),
             _mock_stage_result(

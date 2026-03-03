@@ -16,7 +16,6 @@ from botfarm.db import (
     get_events,
     get_last_cleanup_batch_time,
     get_ticket_history_entry,
-    init_db,
     insert_cleanup_batch,
     insert_cleanup_batch_item,
     update_cleanup_batch,
@@ -32,17 +31,8 @@ from botfarm.linear_cleanup import (
 
 
 # ---------------------------------------------------------------------------
-# Fixtures
+# Fixtures — conn provided by tests/conftest.py
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture()
-def conn(tmp_path):
-    """Yield a fresh DB connection with all migrations applied."""
-    db_file = tmp_path / "test.db"
-    connection = init_db(db_file, allow_migration=True)
-    yield connection
-    connection.close()
 
 
 @pytest.fixture()

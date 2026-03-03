@@ -41,6 +41,9 @@ from botfarm.db import (
 )
 
 
+from tests.helpers import seed_slot as _seed_slot
+
+
 def _seed_queue_entry(conn, project, position, ticket_id, ticket_title, priority=3, url="", snapshot_at="2026-02-25T12:00:00+00:00", blocked_by=None):
     """Helper to seed a queue entry row in the DB."""
     import json as _json
@@ -50,21 +53,6 @@ def _seed_queue_entry(conn, project, position, ticket_id, ticket_title, priority
         (project, position, ticket_id, ticket_title, priority, 0.0, url or f"https://linear.app/issue/{ticket_id}", snapshot_at, blocked_by_json),
     )
     conn.commit()
-
-
-def _seed_slot(conn, project, slot_id, status="free", **overrides):
-    """Helper to seed a slot row in the DB."""
-    slot = {
-        "project": project, "slot_id": slot_id, "status": status,
-        "ticket_id": None, "ticket_title": None, "branch": None,
-        "pr_url": None, "stage": None, "stage_iteration": 0,
-        "current_session_id": None, "started_at": None,
-        "stage_started_at": None, "sigterm_sent_at": None,
-        "pid": None, "interrupted_by_limit": False,
-        "resume_after": None, "stages_completed": [],
-    }
-    slot.update(overrides)
-    upsert_slot(conn, slot)
 
 
 @pytest.fixture()

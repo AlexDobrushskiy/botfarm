@@ -49,13 +49,7 @@ from botfarm.db import (
 )
 
 
-@pytest.fixture()
-def conn(tmp_path):
-    """Yield a fresh in-memory-style DB connection using a temp file."""
-    db_file = tmp_path / "test.db"
-    connection = init_db(db_file, allow_migration=True)
-    yield connection
-    connection.close()
+# conn fixture provided by tests/conftest.py
 
 
 # ---------------------------------------------------------------------------
