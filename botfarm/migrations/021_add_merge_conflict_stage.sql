@@ -1,10 +1,15 @@
 -- Migration 021: Add resolve_conflict stage and merge_conflict_loop for
 -- handling merge conflicts when parallel slots cause branch divergence.
 
+-- Move merge from stage_order=6 to 7 to make room for resolve_conflict
+-- before merge in the canonical ordering (loop-only stages should sort
+-- before the stage they retry into).
+UPDATE stage_templates SET stage_order = 7 WHERE pipeline_id = 1 AND name = 'merge';
+
 -- New stage template: resolve_conflict (Claude merges main into feature branch)
 INSERT INTO stage_templates (pipeline_id, name, stage_order, executor_type, identity, prompt_template, max_turns, timeout_minutes, result_parser)
 VALUES (
-    1, 'resolve_conflict', 7, 'claude', 'coder',
+    1, 'resolve_conflict', 6, 'claude', 'coder',
     'The feature branch has merge conflicts with main. Resolve them by running:
 
 1. git fetch origin main

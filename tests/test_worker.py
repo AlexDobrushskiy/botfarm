@@ -3273,7 +3273,7 @@ class TestDeriveStages:
     def test_derives_from_pipeline(self, conn):
         pipeline = load_pipeline(conn, [])
         stages = _derive_stages(pipeline)
-        assert stages == ("implement", "review", "fix", "pr_checks", "ci_fix", "merge", "resolve_conflict")
+        assert stages == ("implement", "review", "fix", "pr_checks", "ci_fix", "resolve_conflict", "merge")
 
     def test_investigation_pipeline_single_stage(self, conn):
         pipeline = load_pipeline(conn, ["Investigation"])

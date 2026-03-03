@@ -2011,7 +2011,7 @@ class TestWorkflowDefinitionTables:
             (impl_id,),
         ).fetchall()
         names = [s["name"] for s in stages]
-        assert names == ["implement", "review", "fix", "pr_checks", "ci_fix", "merge", "resolve_conflict"]
+        assert names == ["implement", "review", "fix", "pr_checks", "ci_fix", "resolve_conflict", "merge"]
 
     def test_investigation_stages_count(self, conn):
         inv_id = conn.execute(

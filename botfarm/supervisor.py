@@ -1500,9 +1500,13 @@ class Supervisor:
                 )
                 self._mark_recovery_completed(slot, reason="pr_merged_during_merge")
                 return
-            # If mid-merge-conflict-loop (resolve_conflict ran but the
-            # post-conflict review/CI pass hasn't completed), resume from
-            # review to ensure conflict-resolved code is re-reviewed.
+            # If mid-merge-conflict-loop (merge_conflict_retries > 0),
+            # resume from review to ensure conflict-resolved code is
+            # re-reviewed and passes CI.  This also fires if the worker
+            # crashed *during* resolve_conflict (before it completed),
+            # but that's safe: the review stage will see unresolved
+            # conflicts, the fix loop will address them, and the merge
+            # will re-enter the conflict loop if needed.
             if next_stage == "merge":
                 task_row = self._conn.execute(
                     "SELECT merge_conflict_retries FROM tasks WHERE ticket_id = ?",

@@ -171,7 +171,8 @@ def insert_task(
             failure_reason = NULL,
             pr_url = NULL,
             pipeline_stage = NULL,
-            review_state = NULL
+            review_state = NULL,
+            merge_conflict_retries = 0
         """,
         (ticket_id, title, project, slot, status, _now_iso()),
     )

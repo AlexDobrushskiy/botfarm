@@ -71,7 +71,7 @@ class TestLoadPipeline:
     def test_loads_stages_in_order(self, conn):
         pipeline = load_pipeline(conn, [])
         stage_names = [s.name for s in pipeline.stages]
-        assert stage_names == ["implement", "review", "fix", "pr_checks", "ci_fix", "merge", "resolve_conflict"]
+        assert stage_names == ["implement", "review", "fix", "pr_checks", "ci_fix", "resolve_conflict", "merge"]
 
     def test_loads_loops(self, conn):
         pipeline = load_pipeline(conn, [])

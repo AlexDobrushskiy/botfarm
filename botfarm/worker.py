@@ -23,7 +23,7 @@ from pathlib import Path
 
 from botfarm.codex import CodexResult, run_codex_streaming
 from botfarm.config import IdentitiesConfig
-from botfarm.db import delete_stage_run, insert_event, insert_stage_run, is_extra_usage_active, update_stage_run_context_fill, update_task
+from botfarm.db import delete_stage_run, get_task, insert_event, insert_stage_run, is_extra_usage_active, update_stage_run_context_fill, update_task
 from botfarm.process import terminate_process_group as _terminate_process_group
 from botfarm.slots import update_slot_stage
 from botfarm.workflow import (
@@ -1309,7 +1309,6 @@ def _run_resolve_conflict(
     if stage_tpl is not None:
         return _run_claude_stage(
             stage_tpl, cwd=cwd, max_turns=max_turns,
-            prompt_vars={"pr_url": pr_url},
             log_file=log_file, env=env, on_context_fill=on_context_fill,
         )
     # Legacy fallback
@@ -2009,7 +2008,12 @@ def _run_merge_conflict_loop(
     Returns ``True`` on success (merge completed) and ``False`` if
     retries are exhausted or a non-conflict error occurs.
     """
-    for retry in range(1, max_retries + 1):
+    # Seed from persisted count so crash-recovered / paused workers
+    # don't restart the budget from scratch.
+    task_row = get_task(ctx.conn, ctx.task_id)
+    already_used = (task_row["merge_conflict_retries"] if task_row else 0) or 0
+
+    for retry in range(already_used + 1, max_retries + 1):
         insert_event(
             ctx.conn,
             task_id=ctx.task_id,
