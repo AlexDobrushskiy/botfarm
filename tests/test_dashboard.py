@@ -6142,3 +6142,168 @@ class TestHistoryTicketLink:
         resp = client.get("/history")
         body = resp.text
         assert "/tickets/TIK-1" in body
+
+
+class TestStopSlotAPI:
+    """Tests for POST /api/slot/stop endpoint."""
+
+    def test_stop_calls_callback(self, db_file):
+        """POST /api/slot/stop calls on_stop_slot with project and slot_id."""
+        called = []
+        app = create_app(
+            db_path=db_file,
+            on_stop_slot=lambda p, s: called.append((p, s)),
+        )
+        client = TestClient(app)
+        resp = client.post("/api/slot/stop", json={"project": "my-project", "slot_id": 1})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "requested"
+        assert "my-project/1" in data["message"]
+        assert called == [("my-project", 1)]
+
+    def test_stop_without_callback_returns_503(self, db_file):
+        """POST /api/slot/stop returns 503 when no callback is registered."""
+        app = create_app(db_path=db_file)
+        client = TestClient(app)
+        resp = client.post("/api/slot/stop", json={"project": "proj", "slot_id": 1})
+        assert resp.status_code == 503
+
+    def test_stop_missing_project_returns_400(self, db_file):
+        """POST /api/slot/stop returns 400 when project is missing."""
+        app = create_app(
+            db_path=db_file,
+            on_stop_slot=lambda p, s: None,
+        )
+        client = TestClient(app)
+        resp = client.post("/api/slot/stop", json={"slot_id": 1})
+        assert resp.status_code == 400
+
+    def test_stop_missing_slot_id_returns_400(self, db_file):
+        """POST /api/slot/stop returns 400 when slot_id is missing."""
+        app = create_app(
+            db_path=db_file,
+            on_stop_slot=lambda p, s: None,
+        )
+        client = TestClient(app)
+        resp = client.post("/api/slot/stop", json={"project": "proj"})
+        assert resp.status_code == 400
+
+    def test_stop_invalid_slot_id_returns_400(self, db_file):
+        """POST /api/slot/stop returns 400 when slot_id is not an integer."""
+        app = create_app(
+            db_path=db_file,
+            on_stop_slot=lambda p, s: None,
+        )
+        client = TestClient(app)
+        resp = client.post("/api/slot/stop", json={"project": "proj", "slot_id": "abc"})
+        assert resp.status_code == 400
+
+    def test_stop_slot_id_coerced_from_string(self, db_file):
+        """POST /api/slot/stop coerces slot_id from string to int."""
+        called = []
+        app = create_app(
+            db_path=db_file,
+            on_stop_slot=lambda p, s: called.append((p, s)),
+        )
+        client = TestClient(app)
+        resp = client.post("/api/slot/stop", json={"project": "proj", "slot_id": "2"})
+        assert resp.status_code == 200
+        assert called == [("proj", 2)]
+
+
+class TestStopSlotButton:
+    """Tests for the stop button in the slots partial."""
+
+    def test_busy_slot_has_stop_button(self, tmp_path):
+        """A busy slot should show a Stop button."""
+        path = tmp_path / "test.db"
+        conn = init_db(path)
+        _seed_slot(
+            conn, "my-project", 1, status="busy",
+            ticket_id="TST-1", ticket_title="Fix bug",
+            stage="implement", stage_iteration=1,
+            started_at="2026-02-12T10:00:00+00:00", pid=1234,
+        )
+        save_dispatch_state(conn, paused=False)
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=path)
+        client = TestClient(app)
+        resp = client.get("/partials/slots")
+        assert resp.status_code == 200
+        assert "stop-slot-btn" in resp.text
+        assert "Stop" in resp.text
+
+    def test_free_slot_has_no_stop_button(self, tmp_path):
+        """A free slot should not show a Stop button."""
+        path = tmp_path / "test.db"
+        conn = init_db(path)
+        _seed_slot(conn, "my-project", 1, status="free")
+        save_dispatch_state(conn, paused=False)
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=path)
+        client = TestClient(app)
+        resp = client.get("/partials/slots")
+        assert resp.status_code == 200
+        assert "stop-slot-btn" not in resp.text
+
+    def test_paused_limit_slot_has_stop_button(self, tmp_path):
+        """A paused_limit slot should show a Stop button."""
+        path = tmp_path / "test.db"
+        conn = init_db(path)
+        _seed_slot(
+            conn, "my-project", 1, status="paused_limit",
+            ticket_id="TST-1", ticket_title="Fix bug",
+            stage="review", stage_iteration=1,
+            started_at="2026-02-12T10:00:00+00:00",
+            interrupted_by_limit=True,
+        )
+        save_dispatch_state(conn, paused=False)
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=path)
+        client = TestClient(app)
+        resp = client.get("/partials/slots")
+        assert resp.status_code == 200
+        assert "stop-slot-btn" in resp.text
+
+    def test_paused_manual_slot_has_stop_button(self, tmp_path):
+        """A paused_manual slot should show a Stop button."""
+        path = tmp_path / "test.db"
+        conn = init_db(path)
+        _seed_slot(
+            conn, "my-project", 1, status="paused_manual",
+            ticket_id="TST-1", ticket_title="Fix bug",
+            stage="implement", stage_iteration=1,
+            started_at="2026-02-12T10:00:00+00:00",
+        )
+        save_dispatch_state(conn, paused=True, reason="manual_pause")
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=path)
+        client = TestClient(app)
+        resp = client.get("/partials/slots")
+        assert resp.status_code == 200
+        assert "stop-slot-btn" in resp.text
+
+    def test_stop_modal_present(self, tmp_path):
+        """The stop confirmation modal dialog should be present when slots exist."""
+        path = tmp_path / "test.db"
+        conn = init_db(path)
+        _seed_slot(
+            conn, "my-project", 1, status="busy",
+            ticket_id="TST-1", ticket_title="Fix bug",
+            stage="implement", stage_iteration=1,
+            started_at="2026-02-12T10:00:00+00:00", pid=1234,
+        )
+        save_dispatch_state(conn, paused=False)
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=path)
+        client = TestClient(app)
+        resp = client.get("/partials/slots")
+        assert resp.status_code == 200
+        assert 'id="stop-slot-modal"' in resp.text
+        assert "Kill the running worker process" in resp.text

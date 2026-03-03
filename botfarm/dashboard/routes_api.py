@@ -93,6 +93,40 @@ def _get_preflight_data(app) -> dict:
     }
 
 
+# --- Stop Slot API ---
+
+@router.post("/api/slot/stop")
+async def api_stop_slot(request: Request):
+    """Request a slot stop via the supervisor's thread-safe callback."""
+    cb = request.app.state.on_stop_slot
+    if cb is None:
+        return JSONResponse(
+            {"error": "Stop not available (supervisor not connected)"},
+            status_code=503,
+        )
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+    project = body.get("project", "")
+    slot_id = body.get("slot_id")
+    if not project or slot_id is None:
+        return JSONResponse(
+            {"error": "project and slot_id are required"}, status_code=400,
+        )
+    try:
+        slot_id = int(slot_id)
+    except (TypeError, ValueError):
+        return JSONResponse(
+            {"error": "slot_id must be an integer"}, status_code=400,
+        )
+    cb(project, slot_id)
+    return JSONResponse({
+        "status": "requested",
+        "message": f"Stop requested for {project}/{slot_id}",
+    })
+
+
 # --- Pause / Resume API ---
 
 @router.post("/api/pause")

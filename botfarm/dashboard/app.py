@@ -33,6 +33,7 @@ def create_app(
     on_resume: Callable[[], None] | None = None,
     on_update: Callable[[], None] | None = None,
     on_rerun_preflight: Callable[[], None] | None = None,
+    on_stop_slot: Callable[[str, int], None] | None = None,
     get_preflight_results: Callable[[], list] | None = None,
     get_degraded: Callable[[], bool] | None = None,
     update_failed_event: threading.Event | None = None,
@@ -68,6 +69,10 @@ def create_app(
     on_rerun_preflight:
         Callback invoked when the user triggers a manual preflight re-run
         from the dashboard (e.g. ``supervisor.request_rerun_preflight``).
+    on_stop_slot:
+        Callback invoked when the user clicks Stop on a slot. Takes
+        ``(project, slot_id)`` arguments (e.g.
+        ``supervisor.request_stop_slot``).
     get_preflight_results:
         Callable that returns the latest list of preflight ``CheckResult``
         objects (e.g. ``supervisor.get_preflight_results``).
@@ -88,6 +93,7 @@ def create_app(
     app.state.on_resume = on_resume
     app.state.on_update = on_update
     app.state.on_rerun_preflight = on_rerun_preflight
+    app.state.on_stop_slot = on_stop_slot
     app.state.get_preflight_results = get_preflight_results
     app.state.get_degraded = get_degraded
     app.state.update_in_progress = False
@@ -122,6 +128,7 @@ def start_dashboard(
     on_resume: Callable[[], None] | None = None,
     on_update: Callable[[], None] | None = None,
     on_rerun_preflight: Callable[[], None] | None = None,
+    on_stop_slot: Callable[[str, int], None] | None = None,
     get_preflight_results: Callable[[], list] | None = None,
     get_degraded: Callable[[], bool] | None = None,
     update_failed_event: threading.Event | None = None,
@@ -144,6 +151,7 @@ def start_dashboard(
         on_resume=on_resume,
         on_update=on_update,
         on_rerun_preflight=on_rerun_preflight,
+        on_stop_slot=on_stop_slot,
         get_preflight_results=get_preflight_results,
         get_degraded=get_degraded,
         update_failed_event=update_failed_event,

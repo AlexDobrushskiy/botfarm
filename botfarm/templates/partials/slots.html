@@ -27,6 +27,7 @@
             <th>Context Fill</th>
             <th>Elapsed</th>
             <th>Links</th>
+            <th></th>
         </tr>
     </thead>
     <tbody>
@@ -111,11 +112,84 @@
                 <a href="{{ slot.pr_url }}" target="_blank" rel="noopener" title="Pull request">PR</a>
                 {% endif %}
             </td>
+            <td>
+                {% if slot.status in ("busy", "paused_manual", "paused_limit") %}
+                <button class="stop-slot-btn"
+                        onclick="openStopModal('{{ slot.project }}', {{ slot.slot_id }}, '{{ slot.ticket_id or '' }}', '{{ (slot.ticket_title or '') | e }}', '{{ slot.stage or '' }}', '{{ elapsed(slot.started_at) }}')"
+                        title="Stop this slot">Stop</button>
+                {% endif %}
+            </td>
         </tr>
         {% endfor %}
     </tbody>
 </table>
 </figure>
+
+<!-- Stop slot confirmation modal -->
+<dialog id="stop-slot-modal">
+    <article class="stop-modal-article">
+        <header>
+            <button aria-label="Close" rel="prev" onclick="document.getElementById('stop-slot-modal').close()"></button>
+            <h3 id="stop-modal-title">Stop slot?</h3>
+        </header>
+        <div class="stop-modal-body">
+            <table class="stop-modal-info">
+                <tr><th>Ticket</th><td id="stop-modal-ticket">-</td></tr>
+                <tr><th>Title</th><td id="stop-modal-ticket-title">-</td></tr>
+                <tr><th>Stage</th><td id="stop-modal-stage">-</td></tr>
+                <tr><th>Elapsed</th><td id="stop-modal-elapsed">-</td></tr>
+            </table>
+            <div class="stop-modal-warnings">
+                <strong>Warning:</strong> This will:
+                <ul>
+                    <li>Kill the running worker process</li>
+                    <li>Discard any uncommitted work</li>
+                    <li>Close the PR if one exists</li>
+                    <li>Move the ticket back to Todo</li>
+                </ul>
+            </div>
+        </div>
+        <footer>
+            <button class="secondary" onclick="document.getElementById('stop-slot-modal').close()">Cancel</button>
+            <button class="stop-slot-confirm-btn" id="stop-modal-confirm" onclick="confirmStopSlot()">Stop</button>
+        </footer>
+    </article>
+</dialog>
+
+<script>
+var _stopSlotProject = "";
+var _stopSlotId = 0;
+
+function openStopModal(project, slotId, ticketId, ticketTitle, stage, elapsedStr) {
+    _stopSlotProject = project;
+    _stopSlotId = slotId;
+    document.getElementById("stop-modal-title").textContent = "Stop slot " + project + "/" + slotId + "?";
+    document.getElementById("stop-modal-ticket").textContent = ticketId || "-";
+    document.getElementById("stop-modal-ticket-title").textContent = ticketTitle || "-";
+    document.getElementById("stop-modal-stage").textContent = stage ? stage.replace(/_/g, " ") : "-";
+    document.getElementById("stop-modal-elapsed").textContent = elapsedStr || "-";
+    document.getElementById("stop-slot-modal").showModal();
+}
+
+function confirmStopSlot() {
+    var btn = document.getElementById("stop-modal-confirm");
+    btn.disabled = true;
+    btn.textContent = "Stopping...";
+    fetch("/api/slot/stop", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({project: _stopSlotProject, slot_id: _stopSlotId})
+    }).then(function(resp) { return resp.json(); }).then(function(data) {
+        document.getElementById("stop-slot-modal").close();
+        btn.disabled = false;
+        btn.textContent = "Stop";
+    }).catch(function(err) {
+        btn.disabled = false;
+        btn.textContent = "Stop";
+        alert("Failed to stop slot: " + err);
+    });
+}
+</script>
 {% else %}
 <p>No slots configured. Is the supervisor running?</p>
 {% endif %}
