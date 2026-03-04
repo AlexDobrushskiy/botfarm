@@ -623,6 +623,61 @@ def get_events(
 
 
 # ---------------------------------------------------------------------------
+# Refactoring analysis scheduler helpers
+# ---------------------------------------------------------------------------
+
+
+def _get_last_refactoring_analysis_event(
+    conn: sqlite3.Connection,
+) -> sqlite3.Row | None:
+    """Return the most recent refactoring_analysis_scheduled event row, or None."""
+    return conn.execute(
+        "SELECT created_at, detail FROM task_events "
+        "WHERE event_type = 'refactoring_analysis_scheduled' "
+        "ORDER BY created_at DESC LIMIT 1"
+    ).fetchone()
+
+
+def get_last_refactoring_analysis_date(conn: sqlite3.Connection) -> datetime | None:
+    """Return the timestamp of the most recent refactoring_analysis_scheduled event."""
+    row = _get_last_refactoring_analysis_event(conn)
+    if row is None:
+        return None
+    return datetime.fromisoformat(row["created_at"].replace("Z", "+00:00"))
+
+
+def get_last_scheduled_refactoring_ticket(
+    conn: sqlite3.Connection,
+) -> str | None:
+    """Return the Linear identifier of the most recently scheduled refactoring ticket.
+
+    Returns the identifier (e.g. ``"SMA-123"``), or ``None`` if no ticket
+    has been scheduled yet.  The caller is responsible for checking whether
+    the ticket is still open via the poller.
+    """
+    row = _get_last_refactoring_analysis_event(conn)
+    if row is None:
+        return None
+    return row["detail"]
+
+
+def record_refactoring_analysis_created(
+    conn: sqlite3.Connection,
+    ticket_identifier: str,
+) -> int:
+    """Record that a refactoring analysis ticket was created.
+
+    Uses the existing task_events table with event_type='refactoring_analysis_scheduled'.
+    The ticket identifier is stored in the detail field.
+    """
+    return insert_event(
+        conn,
+        event_type="refactoring_analysis_scheduled",
+        detail=ticket_identifier,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Slot runtime state helpers
 # ---------------------------------------------------------------------------
 

@@ -320,6 +320,76 @@ mutation IssueUnarchive($id: String!) {
 }
 """
 
+TEAM_LABELS_QUERY = """
+query TeamLabels($teamKey: String!) {
+  issueLabels(
+    filter: {
+      or: [
+        { team: { key: { eq: $teamKey } } }
+        { team: { null: true } }
+      ]
+    }
+    first: 250
+  ) {
+    nodes { id name }
+  }
+}
+"""
+
+CREATE_LABEL_MUTATION = """
+mutation CreateLabel($input: IssueLabelCreateInput!) {
+  issueLabelCreate(input: $input) {
+    success
+    issueLabel { id name }
+  }
+}
+"""
+
+CREATE_ISSUE_MUTATION = """
+mutation CreateIssue($input: IssueCreateInput!) {
+  issueCreate(input: $input) {
+    success
+    issue {
+      id
+      identifier
+      url
+    }
+  }
+}
+"""
+
+ISSUES_BY_LABEL_QUERY = """
+query IssuesByLabel($teamKey: String!, $labelName: String!, $first: Int!) {
+  issues(
+    first: $first
+    includeArchived: false
+    filter: {
+      team: { key: { eq: $teamKey } }
+      labels: { name: { eq: $labelName } }
+      state: { type: { nin: ["completed", "canceled"] } }
+    }
+  ) {
+    nodes {
+      id
+      identifier
+      title
+      state { type name }
+    }
+  }
+}
+"""
+
+PROJECT_BY_NAME_QUERY = """
+query ProjectByName($name: String!) {
+  projects(filter: { name: { eq: $name } }, first: 1) {
+    nodes {
+      id
+      name
+    }
+  }
+}
+"""
+
 ACTIVE_ISSUES_FOR_PROJECT_COUNT_QUERY = """
 query ActiveIssuesForProjectCount($first: Int!, $after: String, $projectName: String!) {
   issues(
@@ -786,6 +856,94 @@ class LinearClient:
         """Unarchive an issue. Returns True on success."""
         data = self._execute(ISSUE_UNARCHIVE_MUTATION, {"id": issue_id})
         return data.get("issueUnarchive", {}).get("success", False)
+
+    def get_team_id(self, team_key: str) -> str:
+        """Return the internal UUID for a team given its key.
+
+        Reuses TEAM_STATES_QUERY (which also fetches workflow states) since
+        there is no lighter team-by-key query defined. The extra state data
+        is simply ignored.
+        """
+        data = self._execute(TEAM_STATES_QUERY, {"teamKey": team_key})
+        teams = data.get("teams", {}).get("nodes", [])
+        if not teams:
+            raise LinearAPIError(f"Team with key '{team_key}' not found")
+        return teams[0]["id"]
+
+    def get_project_id(self, project_name: str) -> str | None:
+        """Return the internal UUID for a project given its name, or None."""
+        data = self._execute(PROJECT_BY_NAME_QUERY, {"name": project_name})
+        nodes = data.get("projects", {}).get("nodes", [])
+        if not nodes:
+            return None
+        return nodes[0]["id"]
+
+    def get_label_id(self, team_key: str, label_name: str) -> str | None:
+        """Look up a label by name (team-scoped or workspace-scoped). Returns id or None."""
+        data = self._execute(TEAM_LABELS_QUERY, {"teamKey": team_key})
+        for label in data.get("issueLabels", {}).get("nodes", []):
+            if label["name"].lower() == label_name.lower():
+                return label["id"]
+        return None
+
+    def get_or_create_label(self, team_key: str, label_name: str) -> str:
+        """Get an existing label id or create one. Returns the label id."""
+        label_id = self.get_label_id(team_key, label_name)
+        if label_id:
+            return label_id
+        team_id = self.get_team_id(team_key)
+        data = self._execute(
+            CREATE_LABEL_MUTATION,
+            {"input": {"name": label_name, "teamId": team_id}},
+        )
+        result = data.get("issueLabelCreate", {})
+        if not result.get("success"):
+            raise LinearAPIError(f"Failed to create label '{label_name}'")
+        return result["issueLabel"]["id"]
+
+    def create_issue(
+        self,
+        *,
+        team_id: str,
+        title: str,
+        description: str = "",
+        priority: int | None = None,
+        label_ids: list[str] | None = None,
+        project_id: str | None = None,
+        state_id: str | None = None,
+    ) -> dict:
+        """Create a new issue. Returns dict with id, identifier, url."""
+        input_data: dict = {
+            "teamId": team_id,
+            "title": title,
+        }
+        if description:
+            input_data["description"] = description
+        if priority is not None:
+            input_data["priority"] = priority
+        if label_ids:
+            input_data["labelIds"] = label_ids
+        if project_id:
+            input_data["projectId"] = project_id
+        if state_id:
+            input_data["stateId"] = state_id
+        data = self._execute(CREATE_ISSUE_MUTATION, {"input": input_data})
+        result = data.get("issueCreate", {})
+        if not result.get("success"):
+            raise LinearAPIError("issueCreate returned success=false")
+        return result.get("issue", {})
+
+    def fetch_open_issues_with_label(
+        self,
+        team_key: str,
+        label_name: str,
+    ) -> list[dict]:
+        """Fetch non-completed, non-canceled issues with a given label."""
+        data = self._execute(
+            ISSUES_BY_LABEL_QUERY,
+            {"teamKey": team_key, "labelName": label_name, "first": 50},
+        )
+        return data.get("issues", {}).get("nodes", [])
 
     def count_active_issues_for_project(self, project_name: str) -> int | None:
         """Count all non-archived issues for a specific project.

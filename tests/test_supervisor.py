@@ -6807,3 +6807,61 @@ class TestRefactoringAnalysisNotification:
         supervisor._notifier.notify_refactoring_action_needed.assert_called_once()
         kwargs = supervisor._notifier.notify_refactoring_action_needed.call_args[1]
         assert kwargs["num_tickets"] == 3
+
+    def test_custom_label_triggers_notification(self, tmp_path, monkeypatch):
+        """Notification fires when ticket has a non-default custom label."""
+        from botfarm.config import RefactoringAnalysisConfig
+
+        monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "test.db"))
+        config = make_config(tmp_path)
+        config.refactoring_analysis = RefactoringAnalysisConfig(
+            enabled=True,
+            linear_label="My Custom Label",
+        )
+        (tmp_path / "repo").mkdir(exist_ok=True)
+        mock_poller = MagicMock()
+        mock_poller.project_name = "test-project"
+        mock_poller.poll.return_value = PollResult(
+            candidates=[], blocked=[], auto_close_parents=[]
+        )
+        with patch("botfarm.supervisor.create_pollers", return_value=[mock_poller]):
+            sup = Supervisor(config, log_dir=tmp_path / "logs")
+
+        sup._notifier = MagicMock()
+        slot = sup.slot_manager.get_slot("test-project", 1)
+        slot.ticket_id = "SMA-50"
+        slot.ticket_labels = ["My Custom Label"]
+        sup._pending_result_texts[("test-project", 1)] = "No action needed."
+
+        sup._maybe_send_refactoring_notification(slot)
+
+        sup._notifier.notify_refactoring_all_clear.assert_called_once()
+
+    def test_custom_label_skips_default_label(self, tmp_path, monkeypatch):
+        """Default label 'Refactoring Analysis' doesn't trigger when custom label set."""
+        from botfarm.config import RefactoringAnalysisConfig
+
+        monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "test.db"))
+        config = make_config(tmp_path)
+        config.refactoring_analysis = RefactoringAnalysisConfig(
+            enabled=True,
+            linear_label="My Custom Label",
+        )
+        (tmp_path / "repo").mkdir(exist_ok=True)
+        mock_poller = MagicMock()
+        mock_poller.project_name = "test-project"
+        mock_poller.poll.return_value = PollResult(
+            candidates=[], blocked=[], auto_close_parents=[]
+        )
+        with patch("botfarm.supervisor.create_pollers", return_value=[mock_poller]):
+            sup = Supervisor(config, log_dir=tmp_path / "logs")
+
+        sup._notifier = MagicMock()
+        slot = sup.slot_manager.get_slot("test-project", 1)
+        slot.ticket_id = "SMA-50"
+        slot.ticket_labels = ["Refactoring Analysis"]
+        sup._pending_result_texts[("test-project", 1)] = "No action needed."
+
+        sup._maybe_send_refactoring_notification(slot)
+
+        sup._notifier.notify_refactoring_all_clear.assert_not_called()
