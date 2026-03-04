@@ -2547,11 +2547,12 @@ class Supervisor:
         ticket_count_match = re.search(
             r"(\d+)\s+refactoring\s+ticket", result_text, re.IGNORECASE
         )
-        if ticket_count_match:
-            num_tickets = int(ticket_count_match.group(1))
+        num_tickets = int(ticket_count_match.group(1)) if ticket_count_match else 0
+
+        if num_tickets > 0:
             # Extract parent ticket ID (the investigation ticket itself
             # is typically the parent, or the agent may mention one).
-            parent_match = re.search(r"(SMA-\d+)", result_text)
+            parent_match = re.search(r"([A-Z]+-\d+)", result_text)
             parent_id = parent_match.group(1) if parent_match else ticket_id
 
             # Extract brief list of concerns — look for "Top concerns: ..."
@@ -2573,11 +2574,22 @@ class Supervisor:
                 brief_list=brief_list,
                 linear_ticket_url=linear_url,
             )
-        else:
+        elif re.search(
+            r"no action needed|no refactoring needed|all clear|"
+            r"code quality is \w+",
+            result_text,
+            re.IGNORECASE,
+        ):
             self._notifier.notify_refactoring_all_clear(
                 month=month,
                 year=year,
                 linear_ticket_url=linear_url,
+            )
+        else:
+            logger.warning(
+                "Refactoring analysis ticket %s completed but result text "
+                "could not be classified — skipping notification",
+                ticket_id,
             )
 
     # ------------------------------------------------------------------

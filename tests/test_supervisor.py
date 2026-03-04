@@ -6653,14 +6653,16 @@ class TestRefactoringAnalysisNotification:
         slot = supervisor.slot_manager.get_slot("test-project", 1)
         slot.ticket_id = "SMA-50"
         slot.ticket_labels = ["refactoring analysis"]
-        supervisor._pending_result_texts[("test-project", 1)] = "All good."
+        supervisor._pending_result_texts[("test-project", 1)] = (
+            "Analysis complete. No action needed."
+        )
 
         supervisor._maybe_send_refactoring_notification(slot)
 
         supervisor._notifier.notify_refactoring_all_clear.assert_called_once()
 
-    def test_all_clear_when_no_result_text(self, supervisor):
-        """Sends all_clear when no result text is available."""
+    def test_skips_notification_when_no_result_text(self, supervisor):
+        """Skips notification when no result text is available."""
         supervisor._notifier = MagicMock()
         slot = supervisor.slot_manager.get_slot("test-project", 1)
         slot.ticket_id = "SMA-50"
@@ -6669,10 +6671,11 @@ class TestRefactoringAnalysisNotification:
 
         supervisor._maybe_send_refactoring_notification(slot)
 
-        supervisor._notifier.notify_refactoring_all_clear.assert_called_once()
+        supervisor._notifier.notify_refactoring_all_clear.assert_not_called()
+        supervisor._notifier.notify_refactoring_action_needed.assert_not_called()
 
     def test_action_needed_falls_back_to_ticket_id_as_parent(self, supervisor):
-        """Uses the ticket_id as parent when no SMA-xxx found in text."""
+        """Uses the ticket_id as parent when no ticket ID found in text."""
         supervisor._notifier = MagicMock()
         slot = supervisor.slot_manager.get_slot("test-project", 1)
         slot.ticket_id = "SMA-50"
@@ -6686,3 +6689,33 @@ class TestRefactoringAnalysisNotification:
         kwargs = supervisor._notifier.notify_refactoring_action_needed.call_args[1]
         assert kwargs["parent_ticket_id"] == "SMA-50"
         assert kwargs["brief_list"] == "see ticket for details"
+
+    def test_zero_tickets_sends_all_clear(self, supervisor):
+        """Treats '0 refactoring tickets' as all-clear, not action-needed."""
+        supervisor._notifier = MagicMock()
+        slot = supervisor.slot_manager.get_slot("test-project", 1)
+        slot.ticket_id = "SMA-50"
+        slot.ticket_labels = ["Refactoring Analysis"]
+        supervisor._pending_result_texts[("test-project", 1)] = (
+            "Found 0 refactoring tickets needed. No action needed."
+        )
+
+        supervisor._maybe_send_refactoring_notification(slot)
+
+        supervisor._notifier.notify_refactoring_all_clear.assert_called_once()
+        supervisor._notifier.notify_refactoring_action_needed.assert_not_called()
+
+    def test_skips_notification_when_unclassifiable(self, supervisor):
+        """Skips notification when result text can't be classified."""
+        supervisor._notifier = MagicMock()
+        slot = supervisor.slot_manager.get_slot("test-project", 1)
+        slot.ticket_id = "SMA-50"
+        slot.ticket_labels = ["Refactoring Analysis"]
+        supervisor._pending_result_texts[("test-project", 1)] = (
+            "Analysis complete. Some findings documented."
+        )
+
+        supervisor._maybe_send_refactoring_notification(slot)
+
+        supervisor._notifier.notify_refactoring_all_clear.assert_not_called()
+        supervisor._notifier.notify_refactoring_action_needed.assert_not_called()
