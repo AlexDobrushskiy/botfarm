@@ -188,6 +188,7 @@ def _worker_entry(
     codex_reviewer_enabled: bool = False,
     codex_reviewer_model: str = "",
     codex_reviewer_timeout_minutes: int = 15,
+    codex_reviewer_skip_on_reiteration: bool = True,
 ) -> None:
     """Entry point for a worker subprocess.
 
@@ -234,6 +235,8 @@ def _worker_entry(
             codex_reviewer_model = str(rt["codex_reviewer_model"])
         if "codex_reviewer_timeout_minutes" in rt:
             codex_reviewer_timeout_minutes = int(rt["codex_reviewer_timeout_minutes"])
+        if "codex_reviewer_skip_on_reiteration" in rt:
+            codex_reviewer_skip_on_reiteration = bool(rt["codex_reviewer_skip_on_reiteration"])
         if "max_merge_conflict_retries" in rt:
             max_merge_conflict_retries = int(rt["max_merge_conflict_retries"])
     except Exception:
@@ -263,6 +266,7 @@ def _worker_entry(
             codex_reviewer_enabled=codex_reviewer_enabled,
             codex_reviewer_model=codex_reviewer_model,
             codex_reviewer_timeout_minutes=codex_reviewer_timeout_minutes,
+            codex_reviewer_skip_on_reiteration=codex_reviewer_skip_on_reiteration,
         )
         if result.paused:
             result_queue.put(_WorkerResult(
@@ -484,6 +488,7 @@ class WorkerLifecycleManager:
                 "codex_reviewer_enabled": self._config.agents.codex_reviewer_enabled,
                 "codex_reviewer_model": self._config.agents.codex_reviewer_model,
                 "codex_reviewer_timeout_minutes": self._config.agents.codex_reviewer_timeout_minutes,
+                "codex_reviewer_skip_on_reiteration": self._config.agents.codex_reviewer_skip_on_reiteration,
             },
             daemon=False,
         )

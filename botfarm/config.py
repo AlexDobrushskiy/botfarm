@@ -79,6 +79,7 @@ agents:
   codex_reviewer_enabled: false
   codex_reviewer_model: ""              # e.g. "o3", "o4-mini", or empty for default
   codex_reviewer_timeout_minutes: 15    # separate from Claude review timeout
+  codex_reviewer_skip_on_reiteration: true  # skip codex on review iterations 2+
 
 # identities:
 #   coder:
@@ -183,6 +184,7 @@ class AgentsConfig:
     codex_reviewer_enabled: bool = False
     codex_reviewer_model: str = ""
     codex_reviewer_timeout_minutes: int = 15
+    codex_reviewer_skip_on_reiteration: bool = True
 
 
 @dataclass
@@ -586,6 +588,9 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         codex_reviewer_timeout_minutes=int(
             agents_data.get("codex_reviewer_timeout_minutes", 15)
         ),
+        codex_reviewer_skip_on_reiteration=_parse_bool(
+            agents_data, "codex_reviewer_skip_on_reiteration", True, section="agents",
+        ),
     )
 
     log_data = data.get("logging", {})
@@ -688,6 +693,7 @@ EDITABLE_FIELDS: dict[tuple[str, str], dict] = {
     ("agents", "codex_reviewer_enabled"): {"type": "bool"},
     ("agents", "codex_reviewer_model"): {"type": "str"},
     ("agents", "codex_reviewer_timeout_minutes"): {"type": "int", "min": 1},
+    ("agents", "codex_reviewer_skip_on_reiteration"): {"type": "bool"},
 }
 
 # Fields that require a supervisor restart to take effect.
