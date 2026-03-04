@@ -219,6 +219,24 @@ def _worker_entry(
     db_path = resolve_db_path()
     conn = init_db(db_path)
 
+    # Read latest runtime config from DB to pick up dashboard changes
+    # that occurred between supervisor snapshot and worker spawn.
+    try:
+        from botfarm.db import read_runtime_config
+        rt = read_runtime_config(conn)
+        if "max_review_iterations" in rt:
+            max_review_iterations = int(rt["max_review_iterations"])
+        if "max_ci_retries" in rt:
+            max_ci_retries = int(rt["max_ci_retries"])
+        if "codex_reviewer_enabled" in rt:
+            codex_reviewer_enabled = bool(rt["codex_reviewer_enabled"])
+        if "codex_reviewer_model" in rt:
+            codex_reviewer_model = str(rt["codex_reviewer_model"])
+        if "codex_reviewer_timeout_minutes" in rt:
+            codex_reviewer_timeout_minutes = int(rt["codex_reviewer_timeout_minutes"])
+    except Exception:
+        logger.debug("Could not read runtime config from DB, using defaults")
+
     try:
         result: PipelineResult = run_pipeline(
             ticket_id=ticket_id,
