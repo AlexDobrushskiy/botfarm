@@ -15,7 +15,8 @@ This document defines the procedure an agent follows when it picks up a refactor
 Measure for each `.py` file under `botfarm/`:
 
 - Lines of code (via `wc -l`)
-- Number of functions/classes (skim the file or use grep for `def ` / `class `)
+- Number of functions/classes (via grep for `def ` / `class `)
+- For classes with many methods, count methods (`def ` inside the class) and instance variables (`self.` assignments in `__init__`)
 - Identify any files that have grown significantly since the last analysis
 
 Focus on files that exceed these **action thresholds** (not aspirational targets — these are "something is wrong" levels):
@@ -87,7 +88,21 @@ When refactoring is warranted:
    - Constraints (tests must pass, no behavioral changes, etc.)
    - Set dependencies between tickets where appropriate
 
-3. Post a comment on the Investigation ticket linking to the parent ticket
+3. Post a comment on the Investigation ticket with a findings summary and link to the parent ticket:
+
+   ```
+   ## Refactoring Analysis — {month} {year}
+
+   **Verdict: Refactoring needed.**
+
+   Findings:
+   - {file}: {problem} ({quantitative evidence})
+   - {file}: {problem} ({quantitative evidence})
+
+   Created {N} refactoring tickets under {parent-id}:
+   - {child-id}: {title}
+   - {child-id}: {title}
+   ```
 4. End with a final summary that includes the phrase **"Created {N} refactoring tickets under {parent-id}"** (e.g., "Created 3 refactoring tickets under SMA-456. Top concerns: supervisor.py complexity, duplicate config parsing"). The supervisor parses this to send the appropriate notification automatically. Status transitions are handled by the supervisor — do not move the ticket manually.
 
 ## 4. What NOT to Flag
