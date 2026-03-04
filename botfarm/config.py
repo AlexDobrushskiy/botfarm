@@ -77,6 +77,7 @@ agents:
   timeout_grace_seconds: 10
   codex_reviewer_enabled: false
   codex_reviewer_model: ""              # e.g. "o3", "o4-mini", or empty for default
+  codex_reviewer_reasoning_effort: "medium"  # none, low, medium, high, xhigh — or empty for default
   codex_reviewer_timeout_minutes: 15    # separate from Claude review timeout
   codex_reviewer_skip_on_reiteration: true  # skip codex on review iterations 2+
 
@@ -181,6 +182,7 @@ class AgentsConfig:
     timeout_grace_seconds: int = 10
     codex_reviewer_enabled: bool = False
     codex_reviewer_model: str = ""
+    codex_reviewer_reasoning_effort: str = "medium"
     codex_reviewer_timeout_minutes: int = 15
     codex_reviewer_skip_on_reiteration: bool = True
 
@@ -582,6 +584,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         timeout_grace_seconds=int(agents_data.get("timeout_grace_seconds", 10)),
         codex_reviewer_enabled=_parse_bool(agents_data, "codex_reviewer_enabled", False, section="agents"),
         codex_reviewer_model=str(agents_data.get("codex_reviewer_model", "")),
+        codex_reviewer_reasoning_effort=str(agents_data.get("codex_reviewer_reasoning_effort", "medium")),
         codex_reviewer_timeout_minutes=int(
             agents_data.get("codex_reviewer_timeout_minutes", 15)
         ),
@@ -696,6 +699,7 @@ EDITABLE_FIELDS: dict[tuple[str, str], dict] = {
     ("agents", "timeout_grace_seconds"): {"type": "int", "min": 0},
     ("agents", "codex_reviewer_enabled"): {"type": "bool"},
     ("agents", "codex_reviewer_model"): {"type": "str"},
+    ("agents", "codex_reviewer_reasoning_effort"): {"type": "str"},
     ("agents", "codex_reviewer_timeout_minutes"): {"type": "int", "min": 1},
     ("agents", "codex_reviewer_skip_on_reiteration"): {"type": "bool"},
 }

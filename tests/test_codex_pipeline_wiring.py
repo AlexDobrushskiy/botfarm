@@ -152,6 +152,7 @@ class TestPipelineContextCodexFields:
             max_review_iterations=3,
             codex_reviewer_enabled=True,
             codex_reviewer_model="o3",
+            codex_reviewer_reasoning_effort="low",
             codex_reviewer_timeout_minutes=20,
         )
         # If it ran without error, the params were accepted.
@@ -159,6 +160,7 @@ class TestPipelineContextCodexFields:
         review_call = mock_exec.call_args_list[1]
         assert review_call.kwargs.get("codex_enabled") is True
         assert review_call.kwargs.get("codex_model") == "o3"
+        assert review_call.kwargs.get("codex_reasoning_effort") == "low"
         assert review_call.kwargs.get("codex_timeout") == 20 * 60.0
 
 

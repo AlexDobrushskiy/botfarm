@@ -242,6 +242,7 @@
             </tr>
             {% if full_config_values.agents.codex_reviewer_enabled %}
             <tr><td>Codex Reviewer Model</td><td>{{ full_config_values.agents.codex_reviewer_model or "default" }}</td></tr>
+            <tr><td>Codex Reviewer Reasoning Effort</td><td>{{ full_config_values.agents.codex_reviewer_reasoning_effort or "default" }}</td></tr>
             <tr><td>Codex Reviewer Timeout</td><td>{{ full_config_values.agents.codex_reviewer_timeout_minutes }} min</td></tr>
             {% endif %}
         </tbody>
@@ -434,6 +435,11 @@
                 Codex Reviewer Model
                 <input type="text" id="agents-codex_reviewer_model" name="codex_reviewer_model"
                        value="{{ config_values.agents.codex_reviewer_model }}" placeholder="default">
+            </label>
+            <label for="agents-codex_reviewer_reasoning_effort">
+                Codex Reviewer Reasoning Effort
+                <input type="text" id="agents-codex_reviewer_reasoning_effort" name="codex_reviewer_reasoning_effort"
+                       value="{{ config_values.agents.codex_reviewer_reasoning_effort }}" placeholder="medium">
             </label>
             <label for="agents-codex_reviewer_timeout_minutes">
                 Codex Reviewer Timeout (minutes)

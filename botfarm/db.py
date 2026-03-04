@@ -1173,6 +1173,7 @@ RUNTIME_CONFIG_KEYS: frozenset[str] = frozenset({
     "max_merge_conflict_retries",
     "codex_reviewer_enabled",
     "codex_reviewer_model",
+    "codex_reviewer_reasoning_effort",
     "codex_reviewer_timeout_minutes",
     "codex_reviewer_skip_on_reiteration",
 })

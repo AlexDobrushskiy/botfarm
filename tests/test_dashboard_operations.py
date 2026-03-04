@@ -1639,6 +1639,7 @@ class TestCodexConfigToggles:
         body = resp.text
         assert "codex_reviewer_enabled" in body
         assert "codex_reviewer_model" in body
+        assert "codex_reviewer_reasoning_effort" in body
         assert "codex_reviewer_timeout_minutes" in body
 
 
