@@ -137,6 +137,7 @@ agents:
   codex_reviewer_enabled: false          # Enable Codex as a secondary reviewer (default: false)
   codex_reviewer_model: ""               # Codex model, e.g. "o3", "o4-mini", or empty for default
   codex_reviewer_timeout_minutes: 15     # Timeout for Codex review stage (default: 15)
+  codex_reviewer_skip_on_reiteration: true  # Skip codex on review iterations 2+ (default: true)
 ```
 
 Valid stage names for `timeout_minutes`: `implement`, `review`, `fix`, `pr_checks`, `merge`.
