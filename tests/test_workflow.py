@@ -1007,7 +1007,7 @@ class TestValidatePipeline:
 
 
 # ---------------------------------------------------------------------------
-# Worktree path in prompt templates (migration 021)
+# Worktree path in prompt templates (migration 025)
 # ---------------------------------------------------------------------------
 
 
