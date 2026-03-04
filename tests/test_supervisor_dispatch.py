@@ -174,7 +174,7 @@ class TestHandleFinishedSlots:
         poller.move_issue.assert_called_once_with("TST-1", "Done")
         assert sm.get_slot("test-project", 1).status == "free"
 
-    def test_failed_slot_moved_back_to_todo_and_freed(self, supervisor):
+    def test_failed_slot_labeled_and_freed(self, supervisor):
         sm = supervisor.slot_manager
         sm.assign_ticket(
             "test-project", 1,
@@ -186,7 +186,8 @@ class TestHandleFinishedSlots:
 
         supervisor._handle_finished_slots()
 
-        poller.move_issue.assert_called_once_with("TST-1", "Todo")
+        poller.move_issue.assert_not_called()
+        poller.add_labels.assert_called_once_with("TST-1", ["Failed", "Human"])
         poller.add_comment.assert_called_once()
         assert sm.get_slot("test-project", 1).status == "free"
 
@@ -239,8 +240,8 @@ class TestHandleFinishedSlots:
         poller.move_issue.assert_called_once_with("TST-1", "Done")
         assert sm.get_slot("test-project", 1).status == "free"
 
-    def test_failed_slot_no_merged_pr_moves_to_failed_status(self, supervisor):
-        """Failed slot without a merged PR should move to failed_status as before."""
+    def test_failed_slot_no_merged_pr_adds_labels(self, supervisor):
+        """Failed slot without a merged PR should add Failed+Human labels, not move ticket."""
         sm = supervisor.slot_manager
         sm.assign_ticket(
             "test-project", 1,
@@ -253,7 +254,8 @@ class TestHandleFinishedSlots:
         with patch.object(supervisor, "_check_pr_status", return_value=(None, None)):
             supervisor._handle_finished_slots()
 
-        poller.move_issue.assert_called_once_with("TST-1", "Todo")
+        poller.move_issue.assert_not_called()
+        poller.add_labels.assert_called_once_with("TST-1", ["Failed", "Human"])
         assert sm.get_slot("test-project", 1).status == "free"
 
     def test_failed_slot_merged_pr_updates_task_to_completed(self, supervisor):
@@ -1122,7 +1124,6 @@ def _make_config_custom_statuses(tmp_path: Path) -> BotfarmConfig:
             in_progress_status="Working",
             done_status="Shipped",
             in_review_status="Review",
-            failed_status="Needs Attention",
             comment_on_failure=True,
             comment_on_completion=True,
             comment_on_limit_pause=True,
@@ -1202,7 +1203,8 @@ class TestConfigurableStatusNames:
 
         poller.move_issue.assert_called_once_with("TST-1", "Shipped")
 
-    def test_failed_slot_uses_custom_failed_status(self, supervisor_custom_statuses):
+    def test_failed_slot_adds_labels_regardless_of_config(self, supervisor_custom_statuses):
+        """Failed slot should add labels rather than moving to any status."""
         sup = supervisor_custom_statuses
         sm = sup.slot_manager
         sm.assign_ticket(
@@ -1215,7 +1217,8 @@ class TestConfigurableStatusNames:
 
         sup._handle_finished_slots()
 
-        poller.move_issue.assert_called_once_with("TST-1", "Needs Attention")
+        poller.move_issue.assert_not_called()
+        poller.add_labels.assert_called_once_with("TST-1", ["Failed", "Human"])
 
 
 

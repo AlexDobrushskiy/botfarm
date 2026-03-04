@@ -386,14 +386,14 @@ class TestCheckLinearApi:
         ):
             results = check_linear_api(config)
 
-        # Should have: 1 team check + 5 status checks = 6
-        assert len(results) == 6
+        # Should have: 1 team check + 4 status checks = 5
+        assert len(results) == 5
         # Team check passes
         assert results[0].passed
         assert "TST" in results[0].message
-        # All 5 statuses pass (failed_status defaults to "Todo" which also exists)
+        # All 4 statuses pass (failed_status has been removed)
         passed_statuses = [r for r in results[1:] if r.passed]
-        assert len(passed_statuses) == 5
+        assert len(passed_statuses) == 4
         failed_statuses = [r for r in results[1:] if not r.passed]
         assert len(failed_statuses) == 0
 

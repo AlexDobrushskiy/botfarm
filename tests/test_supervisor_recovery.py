@@ -1100,8 +1100,8 @@ class TestExternallyDoneTicket:
         # Normal recovery: no PR found → failed
         assert sm.get_slot("test-project", 1).status == "failed"
 
-    def test_failed_slot_skips_move_when_ticket_terminal(self, supervisor):
-        """_handle_failed_slot doesn't move a ticket that's already Done."""
+    def test_failed_slot_skips_labels_when_ticket_terminal(self, supervisor):
+        """_handle_failed_slot doesn't add labels to a ticket that's already Done."""
         sm = supervisor.slot_manager
         sm.assign_ticket(
             "test-project", 1,
@@ -1123,8 +1123,9 @@ class TestExternallyDoneTicket:
         with patch.object(supervisor, "_check_pr_status", return_value=(None, None)):
             supervisor._handle_failed_slot(slot)
 
-        # move_issue should NOT have been called
+        # Neither move_issue nor add_labels should have been called
         poller.move_issue.assert_not_called()
+        poller.add_labels.assert_not_called()
         # Slot should still be freed
         assert sm.get_slot("test-project", 1).status == "free"
 

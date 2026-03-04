@@ -39,7 +39,6 @@ linear:
   in_progress_status: In Progress
   done_status: Done
   in_review_status: In Review
-  failed_status: Todo
   # Comment posting controls
   comment_on_failure: true
   comment_on_completion: false
@@ -142,7 +141,6 @@ class LinearConfig:
     in_progress_status: str = "In Progress"
     done_status: str = "Done"
     in_review_status: str = "In Review"
-    failed_status: str = "Todo"
     # Comment posting controls
     comment_on_failure: bool = True
     comment_on_completion: bool = False
@@ -526,7 +524,6 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         in_progress_status=str(linear_data.get("in_progress_status", "In Progress")),
         done_status=str(linear_data.get("done_status", "Done")),
         in_review_status=str(linear_data.get("in_review_status", "In Review")),
-        failed_status=str(linear_data.get("failed_status", "Todo")),
         comment_on_failure=_parse_bool(linear_data, "comment_on_failure", True),
         comment_on_completion=_parse_bool(linear_data, "comment_on_completion", False),
         comment_on_limit_pause=_parse_bool(linear_data, "comment_on_limit_pause", False),
@@ -637,6 +634,13 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         linear_label=str(ra_data.get("linear_label", "Refactoring Analysis")).strip(),
         priority=int(ra_data.get("priority", 4)),
     )
+
+    if "failed_status" in linear_data:
+        logger.warning(
+            "The 'linear.failed_status' config key is deprecated and ignored — "
+            "failed tickets now keep their current status and receive "
+            "'Failed' + 'Human' labels instead."
+        )
 
     if "state_file" in data:
         logger.warning(

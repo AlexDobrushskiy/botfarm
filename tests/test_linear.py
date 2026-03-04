@@ -722,6 +722,69 @@ class TestAssignIssue:
 
 
 # ---------------------------------------------------------------------------
+# LinearClient.add_labels
+# ---------------------------------------------------------------------------
+
+
+class TestLinearClientAddLabels:
+    """Tests for LinearClient.add_labels — preserving existing labels."""
+
+    def test_merges_new_labels_with_existing(self):
+        client = LinearClient(api_key="key")
+        # First call: fetch existing labels; second call: update
+        fetch_resp = _graphql_response({
+            "issue": {"labels": {"nodes": [{"id": "existing-1"}]}}
+        })
+        update_resp = _graphql_response({
+            "issueUpdate": {"success": True, "issue": {"id": "i1"}}
+        })
+        with patch.object(httpx, "post", side_effect=[fetch_resp, update_resp]) as mock_post:
+            client.add_labels("i1", ["new-1", "new-2"])
+
+        # The update call should include both existing and new IDs
+        update_body = mock_post.call_args_list[1].kwargs["json"]
+        assert set(update_body["variables"]["labelIds"]) == {
+            "existing-1", "new-1", "new-2",
+        }
+
+    def test_deduplicates_already_present_labels(self):
+        client = LinearClient(api_key="key")
+        fetch_resp = _graphql_response({
+            "issue": {"labels": {"nodes": [{"id": "L1"}, {"id": "L2"}]}}
+        })
+        update_resp = _graphql_response({
+            "issueUpdate": {"success": True, "issue": {"id": "i1"}}
+        })
+        with patch.object(httpx, "post", side_effect=[fetch_resp, update_resp]) as mock_post:
+            client.add_labels("i1", ["L2", "L3"])
+
+        update_body = mock_post.call_args_list[1].kwargs["json"]
+        assert update_body["variables"]["labelIds"] == ["L1", "L2", "L3"]
+
+    def test_handles_no_existing_labels(self):
+        client = LinearClient(api_key="key")
+        fetch_resp = _graphql_response({"issue": {"labels": {"nodes": []}}})
+        update_resp = _graphql_response({
+            "issueUpdate": {"success": True, "issue": {"id": "i1"}}
+        })
+        with patch.object(httpx, "post", side_effect=[fetch_resp, update_resp]) as mock_post:
+            client.add_labels("i1", ["L1"])
+
+        update_body = mock_post.call_args_list[1].kwargs["json"]
+        assert update_body["variables"]["labelIds"] == ["L1"]
+
+    def test_failure_raises(self):
+        client = LinearClient(api_key="key")
+        fetch_resp = _graphql_response({"issue": {"labels": {"nodes": []}}})
+        update_resp = _graphql_response({
+            "issueUpdate": {"success": False, "issue": None}
+        })
+        with patch.object(httpx, "post", side_effect=[fetch_resp, update_resp]):
+            with pytest.raises(LinearAPIError, match="Failed to add labels"):
+                client.add_labels("i1", ["L1"])
+
+
+# ---------------------------------------------------------------------------
 # LinearPoller.poll
 # ---------------------------------------------------------------------------
 
@@ -847,6 +910,29 @@ class TestLinearPollerPoll:
         ]
         result = poller.poll()
         assert len(result.candidates) == 1
+
+    def test_filters_failed_label_defense_in_depth(self):
+        """Issues with 'Failed' label are always skipped, even without exclude_tags."""
+        poller = self._make_poller(exclude_tags=[])
+        poller._client.fetch_team_issues.return_value = [
+            make_issue(id="a", identifier="SMA-1", labels=["Bug"]),
+            make_issue(id="b", identifier="SMA-2", labels=["Failed"]),
+            make_issue(id="c", identifier="SMA-3", labels=["Feature", "Failed"]),
+        ]
+        result = poller.poll()
+        assert len(result.candidates) == 1
+        assert result.candidates[0].identifier == "SMA-1"
+
+    def test_filters_failed_label_case_insensitive(self):
+        """'Failed' label filter is case-insensitive."""
+        poller = self._make_poller(exclude_tags=[])
+        poller._client.fetch_team_issues.return_value = [
+            make_issue(id="a", identifier="SMA-1", labels=["FAILED"]),
+            make_issue(id="b", identifier="SMA-2", labels=["Feature"]),
+        ]
+        result = poller.poll()
+        assert len(result.candidates) == 1
+        assert result.candidates[0].identifier == "SMA-2"
 
     def test_properties(self):
         poller = self._make_poller()
@@ -1246,6 +1332,15 @@ class TestCoderClientRouting:
         poller.add_comment("i1", "Hello")
         coder.add_comment.assert_called_once_with("i1", "Hello")
         owner.add_comment.assert_not_called()
+
+    def test_add_labels_uses_coder_client(self):
+        poller, owner, coder = self._make_poller_with_coder()
+        coder.get_or_create_label.side_effect = lambda team, name: f"id-{name}"
+        poller.add_labels("i1", ["Failed", "Human"])
+        # get_or_create_label should resolve names via coder client
+        assert coder.get_or_create_label.call_count == 2
+        coder.add_labels.assert_called_once_with("i1", ["id-Failed", "id-Human"])
+        owner.add_labels.assert_not_called()
 
     def test_add_comment_as_owner_uses_owner_client(self):
         poller, owner, coder = self._make_poller_with_coder()

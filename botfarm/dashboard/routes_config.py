@@ -64,7 +64,6 @@ def _full_config_values(app) -> dict:
             "in_progress_status": cfg.linear.in_progress_status,
             "done_status": cfg.linear.done_status,
             "in_review_status": cfg.linear.in_review_status,
-            "failed_status": cfg.linear.failed_status,
             "comment_on_failure": cfg.linear.comment_on_failure,
             "comment_on_completion": cfg.linear.comment_on_completion,
             "comment_on_limit_pause": cfg.linear.comment_on_limit_pause,
