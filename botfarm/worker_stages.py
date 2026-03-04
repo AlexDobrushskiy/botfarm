@@ -630,15 +630,19 @@ def _run_ci_fix(
     env: dict[str, str] | None = None,
     on_context_fill: ContextFillCallback | None = None,
     stage_tpl: StageTemplate | None = None,
+    shared_mem_path: Path | None = None,
 ) -> StageResult:
     """CI FIX stage — Claude Code fixes CI failures using CI output context."""
     if stage_tpl is not None:
+        prompt_vars: dict[str, str] = {
+            "pr_url": pr_url,
+            "ci_failure_output": ci_failure_output[:CI_OUTPUT_TRUNCATE_CHARS],
+        }
+        if shared_mem_path:
+            prompt_vars["shared_mem_path"] = str(shared_mem_path)
         return _run_claude_stage(
             stage_tpl, cwd=cwd, max_turns=max_turns,
-            prompt_vars={
-                "pr_url": pr_url,
-                "ci_failure_output": ci_failure_output[:CI_OUTPUT_TRUNCATE_CHARS],
-            },
+            prompt_vars=prompt_vars,
             log_file=log_file, env=env, on_context_fill=on_context_fill,
         )
     # Legacy fallback
@@ -884,6 +888,7 @@ def _execute_stage(
     env: dict[str, str] | None = None,
     on_context_fill: ContextFillCallback | None = None,
     stage_tpl: StageTemplate | None = None,
+    shared_mem_path: Path | None = None,
     codex_enabled: bool = False,
     codex_model: str | None = None,
     codex_timeout: float | None = None,
@@ -926,6 +931,10 @@ def _execute_stage(
                     owner=owner,
                     repo=repo,
                 )
+            # Pass shared-mem path to implement and fix stages so they can
+            # share context (implementer writes summary, fixer reads it).
+            if shared_mem_path and stage in ("implement", "fix"):
+                prompt_vars["shared_mem_path"] = str(shared_mem_path)
             return _run_claude_stage(
                 stage_tpl, cwd=cwd, max_turns=max_turns,
                 prompt_vars=prompt_vars,
