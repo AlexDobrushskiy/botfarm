@@ -51,7 +51,7 @@ from botfarm.linear import LinearClient, LinearPoller, create_pollers
 from botfarm.notifications import Notifier
 from botfarm.preflight import CheckResult, log_preflight_summary, run_preflight_checks
 from botfarm.slots import SlotManager, SlotState
-from botfarm.usage import DEFAULT_PAUSE_5H_THRESHOLD, UsagePoller
+from botfarm.usage import DEFAULT_PAUSE_5H_THRESHOLD, DEFAULT_PAUSE_7D_THRESHOLD, UsagePoller
 from botfarm.worker import STAGES, PipelineResult, build_git_env, run_pipeline
 
 # Import mixin classes
@@ -86,6 +86,7 @@ DEFAULT_LOG_DIR = Path.home() / ".botfarm" / "logs"
 __all__ = [
     "DEFAULT_LOG_DIR",
     "DEFAULT_PAUSE_5H_THRESHOLD",
+    "DEFAULT_PAUSE_7D_THRESHOLD",
     "PipelineResult",
     "STAGES",
     "StopSlotResult",

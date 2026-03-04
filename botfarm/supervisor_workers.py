@@ -13,7 +13,6 @@ import logging
 import logging.handlers
 import multiprocessing
 import os
-import queue as queue_mod
 import signal
 import time
 from dataclasses import dataclass
