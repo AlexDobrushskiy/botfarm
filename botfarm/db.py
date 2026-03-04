@@ -623,6 +623,58 @@ def get_events(
 
 
 # ---------------------------------------------------------------------------
+# Refactoring analysis scheduler helpers
+# ---------------------------------------------------------------------------
+
+
+def get_last_refactoring_analysis_date(conn: sqlite3.Connection) -> datetime | None:
+    """Return the timestamp of the most recent refactoring_analysis_scheduled event."""
+    row = conn.execute(
+        "SELECT created_at FROM task_events "
+        "WHERE event_type = 'refactoring_analysis_scheduled' "
+        "ORDER BY created_at DESC LIMIT 1"
+    ).fetchone()
+    if row is None:
+        return None
+    return datetime.fromisoformat(row["created_at"].replace("Z", "+00:00"))
+
+
+def has_open_refactoring_analysis_ticket(
+    conn: sqlite3.Connection,
+) -> tuple[bool, str | None]:
+    """Check if there's a previously scheduled refactoring analysis ticket still open.
+
+    Returns (has_open, ticket_identifier) — ticket_identifier is the Linear
+    identifier stored in the event detail field, or None.
+    """
+    row = conn.execute(
+        "SELECT detail FROM task_events "
+        "WHERE event_type = 'refactoring_analysis_scheduled' "
+        "ORDER BY created_at DESC LIMIT 1"
+    ).fetchone()
+    if row is None:
+        return False, None
+    # detail stores the Linear ticket identifier (e.g. "SMA-123")
+    return True, row["detail"]
+
+
+def record_refactoring_analysis_created(
+    conn: sqlite3.Connection,
+    ticket_identifier: str,
+) -> int:
+    """Record that a refactoring analysis ticket was created.
+
+    Uses the existing task_events table with event_type='refactoring_analysis_scheduled'.
+    The ticket identifier is stored in the detail field.
+    """
+    return insert_event(
+        conn,
+        event_type="refactoring_analysis_scheduled",
+        detail=ticket_identifier,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Slot runtime state helpers
 # ---------------------------------------------------------------------------
 

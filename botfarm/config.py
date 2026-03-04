@@ -91,6 +91,14 @@ agents:
 #     github_token: ${REVIEWER_GITHUB_TOKEN}
 #     linear_api_key: ${REVIEWER_LINEAR_API_KEY}
 
+# Periodic refactoring analysis — auto-creates investigation tickets
+# on a configurable cadence. Disabled by default.
+# refactoring_analysis:
+#   enabled: true
+#   cadence_days: 14
+#   linear_label: "Refactoring Analysis"
+#   priority: 4  # Low priority — doesn't preempt feature work
+
 # Start with dispatch paused — use the dashboard to begin dispatching.
 # Set to false to dispatch immediately on startup.
 start_paused: true
@@ -185,6 +193,14 @@ class LoggingConfig:
 
 
 @dataclass
+class RefactoringAnalysisConfig:
+    enabled: bool = False
+    cadence_days: int = 14
+    linear_label: str = "Refactoring Analysis"
+    priority: int = 4  # Low priority
+
+
+@dataclass
 class NotificationsConfig:
     webhook_url: str = ""
     webhook_format: str = "slack"  # "slack" or "discord"
@@ -223,6 +239,9 @@ class BotfarmConfig:
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     notifications: NotificationsConfig = field(default_factory=NotificationsConfig)
     identities: IdentitiesConfig = field(default_factory=IdentitiesConfig)
+    refactoring_analysis: RefactoringAnalysisConfig = field(
+        default_factory=RefactoringAnalysisConfig
+    )
     start_paused: bool = True
     source_path: str = ""  # Set by load_config to the source file path
 
@@ -423,6 +442,15 @@ def _validate_config(config: BotfarmConfig) -> None:
     if config.logging.ticket_log_retention_days < 1:
         raise ConfigError("logging.ticket_log_retention_days must be at least 1")
 
+    ra = config.refactoring_analysis
+    if ra.cadence_days < 1:
+        raise ConfigError("refactoring_analysis.cadence_days must be at least 1")
+    if ra.priority not in (0, 1, 2, 3, 4):
+        raise ConfigError(
+            "refactoring_analysis.priority must be 0-4 "
+            "(0=None, 1=Urgent, 2=High, 3=Normal, 4=Low)"
+        )
+
     if config.notifications.webhook_format not in ("slack", "discord"):
         raise ConfigError(
             f"notifications.webhook_format must be 'slack' or 'discord', "
@@ -459,7 +487,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
     known_keys = {
         "projects", "linear", "database", "usage_limits",
         "dashboard", "agents", "logging", "notifications",
-        "identities", "start_paused",
+        "identities", "refactoring_analysis", "start_paused",
     }
     unknown = set(data.keys()) - known_keys
     if unknown:
@@ -593,6 +621,16 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         ),
     )
 
+    ra_data = data.get("refactoring_analysis", {})
+    if not isinstance(ra_data, dict):
+        ra_data = {}
+    refactoring_analysis = RefactoringAnalysisConfig(
+        enabled=_parse_bool(ra_data, "enabled", False, section="refactoring_analysis"),
+        cadence_days=int(ra_data.get("cadence_days", 14)),
+        linear_label=str(ra_data.get("linear_label", "Refactoring Analysis")),
+        priority=int(ra_data.get("priority", 4)),
+    )
+
     if "state_file" in data:
         logger.warning(
             "The 'state_file' config key is deprecated and ignored — all "
@@ -611,6 +649,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         logging=logging_cfg,
         notifications=notifications,
         identities=identities,
+        refactoring_analysis=refactoring_analysis,
         start_paused=start_paused,
     )
 

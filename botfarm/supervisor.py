@@ -31,7 +31,7 @@ from pathlib import Path
 from types import FrameType
 
 from botfarm.config import BotfarmConfig, IdentitiesConfig, ProjectConfig, resolve_stage_timeout
-from botfarm.db import get_events, get_task, init_db, insert_event, insert_task, resolve_db_path, save_capacity_state, save_queue_entries, update_task, upsert_ticket_history
+from botfarm.db import get_events, get_last_refactoring_analysis_date, get_task, has_open_refactoring_analysis_ticket, init_db, insert_event, insert_task, record_refactoring_analysis_created, resolve_db_path, save_capacity_state, save_queue_entries, update_task, upsert_ticket_history
 from botfarm.linear import LinearClient, LinearPoller, create_pollers
 from botfarm.notifications import Notifier
 from botfarm.preflight import CheckResult, log_preflight_summary, run_preflight_checks
@@ -2014,6 +2014,7 @@ class Supervisor:
             self._poll_capacity,
             self._poll_and_dispatch,
             self._cleanup_old_ticket_logs,
+            self._maybe_create_refactoring_analysis_ticket,
         ):
             try:
                 phase()
@@ -2612,6 +2613,147 @@ class Supervisor:
                 "could not be classified — skipping notification",
                 ticket_id,
             )
+
+    # ------------------------------------------------------------------
+    # Periodic refactoring analysis ticket scheduler
+    # ------------------------------------------------------------------
+
+    _REFACTORING_ANALYSIS_TICKET_TEMPLATE = """\
+## Periodic Codebase Refactoring Analysis
+
+This is an automatically scheduled investigation ticket. Analyze the current state of \
+the codebase and determine whether refactoring is needed.
+
+### Instructions
+
+Follow the Refactoring Analysis Procedure documented in CLAUDE.md (or docs/refactoring-analysis.md).
+
+### Expected Outcomes
+
+**If code quality is "good enough":**
+1. Post a concise summary comment on this ticket (2-5 bullet points)
+2. Send a notification: "Refactoring analysis complete — no action needed"
+3. Move this ticket to Done
+
+**If refactoring is needed:**
+1. Create a parent ticket "Codebase Refactoring — MONTH YEAR" with findings summary
+2. Create child implementation tickets for each refactoring area with dependencies
+3. Post a summary comment on this investigation ticket linking to the parent
+4. Send a notification: "Refactoring analysis complete — N tickets created under PARENT-ID"
+5. Move this ticket to Done
+"""
+
+    def _maybe_create_refactoring_analysis_ticket(self) -> None:
+        """Check if it's time to create a new refactoring analysis ticket."""
+        ra_config = self._config.refactoring_analysis
+        if not ra_config.enabled:
+            return
+
+        now = datetime.now(timezone.utc)
+
+        # Check last creation time from DB
+        last_created = get_last_refactoring_analysis_date(self._conn)
+        if last_created:
+            days_since = (now - last_created).total_seconds() / 86400
+            if days_since < ra_config.cadence_days:
+                return
+
+        # Check if there's already an open refactoring analysis ticket
+        has_open, last_ticket_id = has_open_refactoring_analysis_ticket(self._conn)
+        if has_open and last_ticket_id:
+            # Verify the ticket is still open in Linear before skipping
+            for poller in self._pollers.values():
+                if poller.is_issue_terminal(last_ticket_id):
+                    # Previous ticket is done — allow creating a new one
+                    break
+            else:
+                # No poller confirmed it's terminal → assume still open
+                logger.debug(
+                    "Skipping refactoring analysis — previous ticket %s still open",
+                    last_ticket_id,
+                )
+                return
+
+        # Also check Linear directly for any open tickets with the label
+        # (catches manually created tickets or ones from before DB tracking)
+        for poller in self._pollers.values():
+            try:
+                open_issues = self._linear_client.fetch_open_issues_with_label(
+                    poller.team_key,
+                    ra_config.linear_label,
+                )
+                if open_issues:
+                    logger.debug(
+                        "Skipping refactoring analysis — found %d open ticket(s) "
+                        "with label '%s'",
+                        len(open_issues),
+                        ra_config.linear_label,
+                    )
+                    return
+            except Exception:
+                logger.warning(
+                    "Failed to check Linear for open refactoring analysis tickets"
+                )
+
+        # Create the ticket
+        self._create_refactoring_analysis_ticket(now)
+
+    def _create_refactoring_analysis_ticket(self, now: datetime) -> None:
+        """Create a refactoring analysis investigation ticket in Linear."""
+        ra_config = self._config.refactoring_analysis
+        month = now.strftime("%B")
+        year = now.year
+        title = f"Refactoring Analysis — {month} {year}"
+
+        # Use the first project's team for ticket creation
+        first_project = self._config.projects[0]
+        team_key = first_project.linear_team
+
+        try:
+            team_id = self._linear_client.get_team_id(team_key)
+
+            # Resolve label IDs — "Investigation" + configured label
+            label_ids = []
+            for label_name in ("Investigation", ra_config.linear_label):
+                try:
+                    label_id = self._linear_client.get_or_create_label(
+                        team_key, label_name
+                    )
+                    label_ids.append(label_id)
+                except Exception:
+                    logger.warning(
+                        "Failed to resolve/create label '%s' — skipping",
+                        label_name,
+                    )
+
+            description = self._REFACTORING_ANALYSIS_TICKET_TEMPLATE
+
+            issue = self._linear_client.create_issue(
+                team_id=team_id,
+                title=title,
+                description=description,
+                priority=ra_config.priority,
+                label_ids=label_ids or None,
+            )
+
+            identifier = issue.get("identifier", "unknown")
+            record_refactoring_analysis_created(self._conn, identifier)
+            self._conn.commit()
+
+            logger.info(
+                "Created refactoring analysis ticket: %s (%s)",
+                identifier,
+                issue.get("url", ""),
+            )
+            insert_event(
+                self._conn,
+                event_type="refactoring_analysis_created",
+                detail=identifier,
+            )
+            self._conn.commit()
+
+        except Exception:
+            logger.exception("Failed to create refactoring analysis ticket")
 
     # ------------------------------------------------------------------
     # Limit interruption handling
