@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import queue
 import re
 import shutil
 import signal
@@ -57,8 +58,6 @@ class OperationsMixin:
 
     def _handle_completed_slot(self, slot: SlotState) -> None:
         """Update Linear for a completed slot and free it."""
-        from botfarm.supervisor import Supervisor
-
         project = slot.project
         linear_cfg = self._config.linear
         poller = self._pollers.get(project)
@@ -131,8 +130,6 @@ class OperationsMixin:
 
     def _handle_failed_slot(self, slot: SlotState) -> None:
         """Update Linear for a failed slot and free it."""
-        from botfarm.supervisor import Supervisor
-
         pr_status, _pr_url = self._check_pr_status(slot)
         if pr_status == "merged":
             logger.info(
@@ -679,8 +676,6 @@ Note: The supervisor handles status transitions automatically — do not move th
 
     def _handle_limit_hit(self, wr: _WorkerResult) -> None:
         """Handle a worker result that indicates a usage limit hit."""
-        from botfarm.supervisor_workers import PauseResumeManager
-
         slot = self._slot_manager.get_slot(wr.project, wr.slot_id)
 
         resume_after = self._compute_resume_after()
@@ -917,7 +912,7 @@ Note: The supervisor handles status transitions automatically — do not move th
         while True:
             try:
                 wr: _WorkerResult = self._result_queue.get(timeout=0.05)
-            except Exception:
+            except queue.Empty:
                 break
             if wr.project == project and wr.slot_id == slot_id:
                 continue
