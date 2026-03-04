@@ -1783,9 +1783,10 @@ def _compute_refreshable_limits(
 ) -> frozenset[str]:
     """Determine which limit fields should be refreshed from runtime config.
 
-    A field is refreshable unless the pipeline template defines a loop
-    with ``config_key=None`` for it, meaning the loop uses a fixed
-    iteration count that should not be overridden by runtime config.
+    A field is refreshable only when the pipeline template's loop for that
+    stage has a ``config_key`` that matches the corresponding runtime-config
+    field name.  Loops with ``config_key=None`` (fixed iteration count) or
+    a custom/unknown ``config_key`` are not refreshable.
     """
     all_fields = {"max_review_iterations", "max_ci_retries", "max_merge_conflict_retries"}
     if pipeline_tpl is None:
@@ -1793,7 +1794,7 @@ def _compute_refreshable_limits(
 
     for stage_name, field_name in _LOOP_STAGE_TO_LIMIT_FIELD.items():
         loop = get_loop_for_stage(pipeline_tpl, stage_name)
-        if loop is not None and loop.config_key is None:
+        if loop is not None and loop.config_key != field_name:
             all_fields.discard(field_name)
 
     return frozenset(all_fields)
@@ -1924,14 +1925,18 @@ def _handle_pr_checks_stage(
     if result is not None:
         return False, pr_url  # CI passed on first try
 
-    if max_ci_retries > 0:
+    # Re-read in case the budget was changed while pr_checks was running
+    ctx._refresh_runtime_config()
+    eff_max_ci_retries = ctx.max_ci_retries
+
+    if eff_max_ci_retries > 0:
         ci_failure_output = ctx.pipeline.failure_reason or "CI checks failed"
         _reset_for_retry(ctx)
         success = _run_ci_retry_loop(
             ctx,
             pr_url=pr_url,
             ci_failure_output=ci_failure_output,
-            max_retries=max_ci_retries,
+            max_retries=eff_max_ci_retries,
         )
         if not success:
             return True, pr_url
@@ -1997,8 +2002,12 @@ def _handle_merge_stage(
     if result is not None:
         return False, pr_url  # merge succeeded
 
+    # Re-read in case the budget was changed while merge was running
+    ctx._refresh_runtime_config()
+    eff_max_merge_conflict_retries = ctx.max_merge_conflict_retries
+
     merge_error = ctx.pipeline.failure_reason or "merge failed"
-    if max_merge_conflict_retries > 0 and _is_merge_conflict(
+    if eff_max_merge_conflict_retries > 0 and _is_merge_conflict(
         merge_error, pr_url or "", ctx.cwd,
         env={**os.environ, **(ctx.coder_env or {})},
     ):
@@ -2006,7 +2015,7 @@ def _handle_merge_stage(
         success = _run_merge_conflict_loop(
             ctx,
             pr_url=pr_url,
-            max_retries=max_merge_conflict_retries,
+            max_retries=eff_max_merge_conflict_retries,
         )
         if not success:
             return True, pr_url
@@ -2255,8 +2264,8 @@ class _PipelineContext:
     max_ci_retries: int = 2
     max_merge_conflict_retries: int = 2
     # Which limit fields are driven by runtime config (vs fixed by pipeline template).
-    # Fields NOT in this set were set by a pipeline loop with config_key=None and
-    # should not be overwritten by dashboard/runtime config changes.
+    # Fields NOT in this set were set by a pipeline loop whose config_key does
+    # not match the runtime-config field and should not be overwritten.
     _refreshable_limits: frozenset[str] = field(
         default_factory=lambda: frozenset({"max_review_iterations", "max_ci_retries", "max_merge_conflict_retries"}),
     )
@@ -2280,7 +2289,11 @@ class _PipelineContext:
 
         for attr in ("max_review_iterations", "max_ci_retries", "max_merge_conflict_retries"):
             if attr in rt and attr in self._refreshable_limits:
-                new_val = int(rt[attr])
+                try:
+                    new_val = int(rt[attr])
+                except (ValueError, TypeError):
+                    logger.warning("Invalid runtime config value for %s: %r", attr, rt[attr])
+                    continue
                 if getattr(self, attr) != new_val:
                     changes.append(f"{attr}: {getattr(self, attr)} -> {new_val}")
                     setattr(self, attr, new_val)
@@ -2292,7 +2305,11 @@ class _PipelineContext:
         }
         for db_key, (codex_attr, cast) in codex_fields.items():
             if db_key in rt:
-                new_val = cast(rt[db_key])
+                try:
+                    new_val = cast(rt[db_key])
+                except (ValueError, TypeError):
+                    logger.warning("Invalid runtime config value for %s: %r", db_key, rt[db_key])
+                    continue
                 if getattr(self.codex_config, codex_attr) != new_val:
                     changes.append(f"{db_key}: {getattr(self.codex_config, codex_attr)} -> {new_val}")
                     setattr(self.codex_config, codex_attr, new_val)
@@ -2637,6 +2654,7 @@ def _run_review_fix_loop(
     reached — pipeline should proceed to pr_checks) and ``False`` if a
     stage failed (failure already recorded by ``run_and_record``).
     """
+    actual_iterations = start_iteration - 1
     for iteration in range(start_iteration, max_iterations + 1):
         ctx._refresh_runtime_config()
         # Note: only limit reductions take effect mid-loop; increases
@@ -2647,6 +2665,8 @@ def _run_review_fix_loop(
                 ctx.max_review_iterations, iteration,
             )
             break
+
+        actual_iterations = iteration
 
         insert_event(
             ctx.conn,
@@ -2689,17 +2709,18 @@ def _run_review_fix_loop(
         update_task(ctx.conn, ctx.task_id, review_iterations=iteration)
         ctx.conn.commit()
 
-    # Max iterations reached — proceed to pr_checks regardless
+    # Max iterations reached (or limit reduced mid-loop) — proceed to pr_checks regardless
+    effective_limit = min(ctx.max_review_iterations, max_iterations)
     insert_event(
         ctx.conn,
         task_id=ctx.task_id,
         event_type="max_iterations_reached",
-        detail=f"iterations={max_iterations}",
+        detail=f"iterations={actual_iterations}, limit={effective_limit}",
     )
     ctx.conn.commit()
     logger.warning(
         "Max review iterations (%d) reached for %s — proceeding to pr_checks",
-        max_iterations, ctx.ticket_id,
+        effective_limit, ctx.ticket_id,
     )
     return True
 

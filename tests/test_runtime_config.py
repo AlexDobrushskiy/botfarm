@@ -242,6 +242,36 @@ class TestRefreshRuntimeConfig:
 
         assert ctx.max_merge_conflict_retries == 4
 
+    def test_malformed_int_value_skipped(self, conn):
+        """Malformed DB values (e.g. 'abc' for an int field) are skipped without crashing."""
+        ctx = _make_ctx(conn, max_review_iterations=3, max_ci_retries=2)
+
+        write_runtime_config(conn, "max_review_iterations", "abc")
+        write_runtime_config(conn, "max_ci_retries", 5)
+        conn.commit()
+
+        ctx._refresh_runtime_config()
+
+        # Malformed value skipped — stays at original
+        assert ctx.max_review_iterations == 3
+        # Valid value still applied
+        assert ctx.max_ci_retries == 5
+
+    def test_malformed_codex_value_skipped(self, conn):
+        """Malformed codex config values are skipped without crashing."""
+        ctx = _make_ctx(
+            conn,
+            codex_config=_CodexReviewerConfig(enabled=False, model="", timeout_minutes=15),
+        )
+
+        write_runtime_config(conn, "codex_reviewer_timeout_minutes", "not_a_number")
+        conn.commit()
+
+        ctx._refresh_runtime_config()
+
+        # Malformed value skipped — stays at original
+        assert ctx.codex_config.timeout_minutes == 15
+
 
 class TestComputeRefreshableLimits:
     """_compute_refreshable_limits respects pipeline loop config_key."""
@@ -292,6 +322,31 @@ class TestComputeRefreshableLimits:
             )],
         )
         result = _compute_refreshable_limits(tpl)
+        assert "max_review_iterations" not in result
+        # Other fields still refreshable
+        assert "max_ci_retries" in result
+        assert "max_merge_conflict_retries" in result
+
+    def test_loop_with_custom_config_key_not_refreshable(self):
+        """A loop with an arbitrary config_key that doesn't match the runtime field is not refreshable."""
+        from botfarm.worker import _compute_refreshable_limits
+        from botfarm.workflow import PipelineTemplate, StageLoop, StageTemplate
+
+        tpl = PipelineTemplate(
+            id=1, name="test", description=None, ticket_label=None, is_default=False,
+            stages=[StageTemplate(
+                id=1, name="review", stage_order=0, executor_type="claude",
+                identity=None, prompt_template="", max_turns=5,
+                timeout_minutes=None, shell_command=None, result_parser=None,
+            )],
+            loops=[StageLoop(
+                id=1, name="review_loop", start_stage="review", end_stage="fix",
+                max_iterations=5, config_key="custom_review_budget",
+                exit_condition=None, on_failure_stage=None,
+            )],
+        )
+        result = _compute_refreshable_limits(tpl)
+        # custom_review_budget != max_review_iterations → not refreshable
         assert "max_review_iterations" not in result
         # Other fields still refreshable
         assert "max_ci_retries" in result
