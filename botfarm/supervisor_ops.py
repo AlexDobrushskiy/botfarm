@@ -548,7 +548,7 @@ the codebase and determine whether refactoring is needed.
 
 ### Instructions
 
-Follow the Refactoring Analysis Procedure documented in CLAUDE.md (or docs/refactoring-analysis.md).
+Follow the Refactoring Analysis Procedure documented in AGENTS.md (or docs/refactoring-analysis.md).
 
 ### Expected Outcomes
 

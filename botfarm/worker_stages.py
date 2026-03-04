@@ -70,7 +70,7 @@ def _build_implement_prompt(ticket_id: str, labels: list[str] | None) -> str:
         )
     return (
         f"Work on Linear ticket {ticket_id}. "
-        "Follow the Linear Tickets workflow in CLAUDE.md. "
+        "Follow the Linear Tickets workflow in AGENTS.md. "
         "Complete all steps through PR creation. Do not stop until the PR is created. "
         "If the work described in the ticket is already fully implemented on main "
         "(e.g. delivered by another PR), verify all acceptance criteria are met, "
@@ -257,6 +257,23 @@ def _build_codex_review_prompt(
     prompt = (
         f"Review the pull request at {pr_url}. "
         "Read the PR diff carefully. Be thorough but constructive.\n\n"
+        "REVIEW SCOPE AND SEVERITY GUIDELINES:\n"
+        "Focus ONLY on issues that materially affect the correctness, safety, "
+        "or reliability of the code:\n"
+        "- Bugs, logic errors, or runtime failures\n"
+        "- Security vulnerabilities\n"
+        "- Data loss or corruption risks\n"
+        "- Broken builds or test failures\n"
+        "- Clear violations of project conventions stated in AGENTS.md\n\n"
+        "Do NOT flag or request changes for:\n"
+        "- Style preferences or cosmetic suggestions\n"
+        "- Accessibility, performance, or UX improvements not required by the ticket\n"
+        "- Theoretical edge cases unlikely to occur in practice\n"
+        "- Missing features or enhancements beyond the ticket scope\n"
+        "- Minor naming, formatting, or documentation nits\n\n"
+        "Use CHANGES_REQUESTED only when a comment identifies a real defect that "
+        "would break functionality or violate explicit project requirements. "
+        "If all your comments are suggestions or nice-to-haves, use APPROVED.\n\n"
         "IMPORTANT: First fetch existing review comments to avoid posting duplicate feedback:\n"
         f"  gh api repos/{owner}/{repo}/pulls/{number}/comments\n\n"
     )
@@ -268,7 +285,17 @@ def _build_codex_review_prompt(
         "Do NOT submit a final review via 'gh pr review'. Only post inline comments "
         "and output your verdict marker.\n\n"
     )
-    prompt += _review_verdict_instructions(submit_review=False)
+    prompt += (
+        "VERDICT RULES:\n"
+        "Output VERDICT: CHANGES_REQUESTED only if you identified a critical defect "
+        "(bug, security vulnerability, data loss risk, broken build, or violation of "
+        "explicit project requirements). If your comments are limited to suggestions, "
+        "nice-to-haves, or non-critical observations, output VERDICT: APPROVED.\n\n"
+        "At the very end of your response, output exactly one of these verdict "
+        "markers on its own line:\n"
+        "  VERDICT: APPROVED\n"
+        "  VERDICT: CHANGES_REQUESTED"
+    )
     return prompt
 
 
