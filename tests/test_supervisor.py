@@ -1024,7 +1024,7 @@ class TestSleep:
 
 
 class TestWorkerEntry:
-    @patch("botfarm.supervisor.run_pipeline")
+    @patch("botfarm.supervisor_workers.run_pipeline")
     def test_worker_ignores_sigint_and_isolates_process_group(self, mock_pipeline, tmp_path, monkeypatch):
         """_worker_entry must ignore SIGINT and call os.setpgrp() to isolate
         from the parent process group (so group SIGTERM doesn't reach it,
@@ -1053,8 +1053,8 @@ class TestWorkerEntry:
         mock_result.result_text = None
         mock_pipeline.return_value = mock_result
 
-        with patch("botfarm.supervisor.signal.signal") as mock_signal, \
-             patch("botfarm.supervisor.os.setpgrp") as mock_setpgrp:
+        with patch("botfarm.supervisor_workers.signal.signal") as mock_signal, \
+             patch("botfarm.supervisor_workers.os.setpgrp") as mock_setpgrp:
             _worker_entry(
                 ticket_id="TST-SIG",
                 ticket_title="Test",
@@ -1069,7 +1069,7 @@ class TestWorkerEntry:
             mock_signal.assert_any_call(signal.SIGINT, signal.SIG_IGN)
             mock_setpgrp.assert_called_once()
 
-    @patch("botfarm.supervisor.run_pipeline")
+    @patch("botfarm.supervisor_workers.run_pipeline")
     def test_successful_pipeline_sends_success(self, mock_pipeline, tmp_path, monkeypatch):
         import multiprocessing
         db_path = str(tmp_path / "test.db")
@@ -1112,7 +1112,7 @@ class TestWorkerEntry:
         assert wr.project == "proj"
         assert wr.slot_id == 1
 
-    @patch("botfarm.supervisor.run_pipeline")
+    @patch("botfarm.supervisor_workers.run_pipeline")
     def test_failed_pipeline_sends_failure(self, mock_pipeline, tmp_path, monkeypatch):
         import multiprocessing
         db_path = str(tmp_path / "test.db")
@@ -1155,7 +1155,7 @@ class TestWorkerEntry:
         assert wr.success is False
         assert wr.failure_stage == "implement"
 
-    @patch("botfarm.supervisor.run_pipeline")
+    @patch("botfarm.supervisor_workers.run_pipeline")
     def test_exception_sends_failure(self, mock_pipeline, tmp_path, monkeypatch):
         import multiprocessing
         db_path = str(tmp_path / "test.db")
@@ -2063,7 +2063,7 @@ class TestCheckTimeouts:
 
     def _run_full_timeout(self, supervisor):
         """Run both phases of timeout: SIGTERM then SIGKILL after grace."""
-        with patch("botfarm.supervisor.os.kill") as mock_kill:
+        with patch("botfarm.supervisor_recovery.os.kill") as mock_kill:
             supervisor._check_timeouts()  # phase 1: sends SIGTERM
 
         # Phase 2: simulate grace period elapsed
@@ -2071,7 +2071,7 @@ class TestCheckTimeouts:
         # Set sigterm_sent_at far in the past so grace period has elapsed
         slot.sigterm_sent_at = "2020-01-01T00:00:00.000000Z"
 
-        with patch("botfarm.supervisor.os.kill", side_effect=ProcessLookupError):
+        with patch("botfarm.supervisor_recovery.os.kill", side_effect=ProcessLookupError):
             supervisor._check_timeouts()  # phase 2: escalates to SIGKILL
 
     def test_no_timeout_when_within_limit(self, supervisor):
@@ -2081,7 +2081,7 @@ class TestCheckTimeouts:
         started = (now - timedelta(minutes=10)).isoformat()
         self._make_busy_slot(supervisor, stage_started_at=started)
 
-        with patch("botfarm.supervisor.os.kill") as mock_kill:
+        with patch("botfarm.supervisor_recovery.os.kill") as mock_kill:
             supervisor._check_timeouts()
             mock_kill.assert_not_called()
 
@@ -2093,7 +2093,7 @@ class TestCheckTimeouts:
         started = (now - timedelta(minutes=130)).isoformat()
         self._make_busy_slot(supervisor, stage_started_at=started)
 
-        with patch("botfarm.supervisor.os.kill") as mock_kill:
+        with patch("botfarm.supervisor_recovery.os.kill") as mock_kill:
             supervisor._check_timeouts()
             mock_kill.assert_called_once_with(99999, signal.SIGTERM)
 
@@ -2119,7 +2119,7 @@ class TestCheckTimeouts:
         supervisor._conn.commit()
 
         # Phase 1 only: send SIGTERM — do NOT escalate to SIGKILL
-        with patch("botfarm.supervisor.os.kill"):
+        with patch("botfarm.supervisor_recovery.os.kill"):
             supervisor._check_timeouts()
 
         # Event should already be recorded even though slot is still busy
@@ -2156,11 +2156,11 @@ class TestCheckTimeouts:
         self._make_busy_slot(supervisor, stage_started_at=started)
 
         # Phase 1: send SIGTERM
-        with patch("botfarm.supervisor.os.kill"):
+        with patch("botfarm.supervisor_recovery.os.kill"):
             supervisor._check_timeouts()
 
         # Phase 2: sigterm_sent_at is very recent (just set), grace=10s not elapsed
-        with patch("botfarm.supervisor.os.kill") as mock_kill:
+        with patch("botfarm.supervisor_recovery.os.kill") as mock_kill:
             supervisor._check_timeouts()
             mock_kill.assert_not_called()
 
@@ -2231,7 +2231,7 @@ class TestCheckTimeouts:
         started = (now - timedelta(hours=10)).isoformat()
         self._make_busy_slot(supervisor, stage_started_at=started, stage="pr_checks")
 
-        with patch("botfarm.supervisor.os.kill") as mock_kill:
+        with patch("botfarm.supervisor_recovery.os.kill") as mock_kill:
             supervisor._check_timeouts()
             mock_kill.assert_not_called()
 
@@ -2249,7 +2249,7 @@ class TestCheckTimeouts:
         slot.stage_started_at = None
         slot.pid = 99999
 
-        with patch("botfarm.supervisor.os.kill") as mock_kill:
+        with patch("botfarm.supervisor_recovery.os.kill") as mock_kill:
             supervisor._check_timeouts()
             mock_kill.assert_not_called()
 
@@ -2301,14 +2301,14 @@ class TestCheckTimeouts:
         sup._conn.commit()
 
         # Phase 1: SIGTERM
-        with patch("botfarm.supervisor.os.kill"):
+        with patch("botfarm.supervisor_recovery.os.kill"):
             sup._check_timeouts()
 
         # Phase 2: set sigterm_sent_at to past for grace period expiry
         slot = sm.get_slot("test-project", 1)
         slot.sigterm_sent_at = "2020-01-01T00:00:00.000000Z"
 
-        with patch("botfarm.supervisor.os.kill", side_effect=ProcessLookupError):
+        with patch("botfarm.supervisor_recovery.os.kill", side_effect=ProcessLookupError):
             sup._check_timeouts()
 
         assert sm.get_slot("test-project", 1).status == "failed"
@@ -2367,7 +2367,7 @@ class TestCheckTimeouts:
         )
         sup._conn.commit()
 
-        with patch("botfarm.supervisor.os.kill") as mock_kill:
+        with patch("botfarm.supervisor_recovery.os.kill") as mock_kill:
             sup._check_timeouts()
             # Should have sent SIGTERM because 25 > 20 (override limit)
             mock_kill.assert_called_once_with(99999, signal.SIGTERM)
@@ -2402,7 +2402,7 @@ class TestCheckTimeouts:
         slot.stage_started_at = (now - timedelta(minutes=25)).isoformat()
         slot.pid = 99999
 
-        with patch("botfarm.supervisor.os.kill") as mock_kill:
+        with patch("botfarm.supervisor_recovery.os.kill") as mock_kill:
             sup._check_timeouts()
             # Should NOT timeout — default is 120 and we're at 25 minutes
             mock_kill.assert_not_called()
@@ -2436,7 +2436,7 @@ class TestRecoverOnStartup:
         supervisor._conn.commit()
 
         with (
-            patch("botfarm.supervisor._is_pid_alive", return_value=False),
+            patch("botfarm.supervisor_recovery._is_pid_alive", return_value=False),
             patch.object(supervisor, "_check_pr_status", return_value=(None, None)),
         ):
             supervisor._recover_on_startup()
@@ -2464,7 +2464,7 @@ class TestRecoverOnStartup:
         supervisor._conn.commit()
 
         with (
-            patch("botfarm.supervisor._is_pid_alive", return_value=False),
+            patch("botfarm.supervisor_recovery._is_pid_alive", return_value=False),
             patch.object(supervisor, "_check_pr_status", return_value=("merged", "https://github.com/test/repo/pull/1")),
         ):
             supervisor._recover_on_startup()
@@ -2492,7 +2492,7 @@ class TestRecoverOnStartup:
         supervisor._conn.commit()
 
         with (
-            patch("botfarm.supervisor._is_pid_alive", return_value=False),
+            patch("botfarm.supervisor_recovery._is_pid_alive", return_value=False),
             patch.object(supervisor, "_check_pr_status", return_value=("open", "https://github.com/test/repo/pull/1")),
             patch.object(supervisor, "_resume_recovered_worker") as mock_resume,
         ):
@@ -2521,7 +2521,7 @@ class TestRecoverOnStartup:
         supervisor._conn.commit()
 
         with (
-            patch("botfarm.supervisor._is_pid_alive", return_value=False),
+            patch("botfarm.supervisor_recovery._is_pid_alive", return_value=False),
             patch.object(supervisor, "_check_pr_status", return_value=("closed", "https://github.com/test/repo/pull/1")),
         ):
             supervisor._recover_on_startup()
@@ -2541,7 +2541,7 @@ class TestRecoverOnStartup:
         slot = sm.get_slot("test-project", 1)
         slot.pid = 99999
 
-        with patch("botfarm.supervisor._is_pid_alive", return_value=True):
+        with patch("botfarm.supervisor_recovery._is_pid_alive", return_value=True):
             supervisor._recover_on_startup()
 
         assert sm.get_slot("test-project", 1).status == "busy"
@@ -2595,7 +2595,7 @@ class TestRecoverOnStartup:
         supervisor._conn.commit()
 
         with (
-            patch("botfarm.supervisor._is_pid_alive", return_value=True),
+            patch("botfarm.supervisor_recovery._is_pid_alive", return_value=True),
             patch("os.kill") as mock_kill,
         ):
             supervisor._recover_on_startup()
@@ -2645,7 +2645,7 @@ class TestRecoverOnStartup:
         slot.pid = 99999
 
         with (
-            patch("botfarm.supervisor._is_pid_alive", return_value=False),
+            patch("botfarm.supervisor_recovery._is_pid_alive", return_value=False),
             patch.object(supervisor, "_check_pr_status", return_value=(None, None)),
         ):
             supervisor._recover_on_startup()
@@ -2669,7 +2669,7 @@ class TestRecoverOnStartup:
         sm.get_slot("test-project", 2).pid = 99999
 
         with (
-            patch("botfarm.supervisor._is_pid_alive", return_value=False),
+            patch("botfarm.supervisor_recovery._is_pid_alive", return_value=False),
             patch.object(supervisor, "_check_pr_status", return_value=(None, None)),
         ):
             supervisor._recover_on_startup()
@@ -2714,7 +2714,7 @@ class TestRecoverOnStartup:
         supervisor._conn.commit()
 
         with (
-            patch("botfarm.supervisor._is_pid_alive", return_value=False),
+            patch("botfarm.supervisor_recovery._is_pid_alive", return_value=False),
             patch.object(supervisor, "_check_pr_status", return_value=("open", "https://github.com/test/repo/pull/1")),
             patch.object(supervisor, "_resume_recovered_worker") as mock_resume,
         ):
@@ -2741,7 +2741,7 @@ class TestRecoverOnStartup:
         supervisor._conn.commit()
 
         with (
-            patch("botfarm.supervisor._is_pid_alive", return_value=False),
+            patch("botfarm.supervisor_recovery._is_pid_alive", return_value=False),
             patch.object(supervisor, "_check_pr_status", return_value=("open", "https://github.com/test/repo/pull/1")),
             patch.object(supervisor, "_resume_recovered_worker") as mock_resume,
         ):
@@ -2768,7 +2768,7 @@ class TestRecoverOnStartup:
         supervisor._conn.commit()
 
         with (
-            patch("botfarm.supervisor._is_pid_alive", return_value=False),
+            patch("botfarm.supervisor_recovery._is_pid_alive", return_value=False),
             patch.object(supervisor, "_check_pr_status", return_value=("open", "https://github.com/test/repo/pull/1")),
             patch.object(supervisor, "_resume_recovered_worker") as mock_resume,
         ):
@@ -2795,7 +2795,7 @@ class TestRecoverOnStartup:
         supervisor._conn.commit()
 
         with (
-            patch("botfarm.supervisor._is_pid_alive", return_value=False),
+            patch("botfarm.supervisor_recovery._is_pid_alive", return_value=False),
             patch.object(supervisor, "_check_pr_status", return_value=("merged", "https://github.com/test/repo/pull/1")),
         ):
             supervisor._recover_on_startup()
@@ -2824,7 +2824,7 @@ class TestRecoverOnStartup:
         supervisor._conn.commit()
 
         with (
-            patch("botfarm.supervisor._is_pid_alive", return_value=False),
+            patch("botfarm.supervisor_recovery._is_pid_alive", return_value=False),
             patch.object(supervisor, "_check_pr_status", return_value=("merged", "https://github.com/test/repo/pull/1")),
         ):
             supervisor._recover_on_startup()
@@ -2853,7 +2853,7 @@ class TestRecoverOnStartup:
         supervisor._conn.commit()
 
         with (
-            patch("botfarm.supervisor._is_pid_alive", return_value=False),
+            patch("botfarm.supervisor_recovery._is_pid_alive", return_value=False),
             patch.object(supervisor, "_check_pr_status", return_value=("open", "https://github.com/test/repo/pull/1")),
             patch.object(supervisor, "_resume_recovered_worker") as mock_resume,
         ):
@@ -3028,7 +3028,7 @@ class TestExternallyDoneTicket:
         poller = supervisor._pollers["test-project"]
         poller.is_issue_terminal.return_value = True
 
-        with patch("botfarm.supervisor._is_pid_alive", return_value=False):
+        with patch("botfarm.supervisor_recovery._is_pid_alive", return_value=False):
             supervisor._recover_on_startup()
 
         assert sm.get_slot("test-project", 1).status == "completed_pending_cleanup"
@@ -3057,7 +3057,7 @@ class TestExternallyDoneTicket:
         poller.is_issue_terminal.return_value = True
 
         with (
-            patch("botfarm.supervisor._is_pid_alive", return_value=True),
+            patch("botfarm.supervisor_recovery._is_pid_alive", return_value=True),
             patch("os.kill") as mock_kill,
         ):
             supervisor._recover_on_startup()
@@ -3112,7 +3112,7 @@ class TestExternallyDoneTicket:
         poller.is_issue_terminal.return_value = False
 
         with (
-            patch("botfarm.supervisor._is_pid_alive", return_value=False),
+            patch("botfarm.supervisor_recovery._is_pid_alive", return_value=False),
             patch.object(supervisor, "_check_pr_status", return_value=(None, None)),
         ):
             supervisor._recover_on_startup()
@@ -3511,7 +3511,7 @@ class TestCheckPrStatus:
         mock_proc.returncode = 0
         mock_proc.stdout = "MERGED\n"
 
-        with patch("botfarm.supervisor.subprocess.run", return_value=mock_proc):
+        with patch("botfarm.supervisor_recovery.subprocess.run", return_value=mock_proc):
             result = Supervisor._gh_pr_state("https://github.com/org/repo/pull/1")
 
         assert result == "merged"
@@ -3522,7 +3522,7 @@ class TestCheckPrStatus:
         mock_proc.returncode = 0
         mock_proc.stdout = "OPEN\n"
 
-        with patch("botfarm.supervisor.subprocess.run", return_value=mock_proc):
+        with patch("botfarm.supervisor_recovery.subprocess.run", return_value=mock_proc):
             result = Supervisor._gh_pr_state("https://github.com/org/repo/pull/1")
 
         assert result == "open"
@@ -3533,7 +3533,7 @@ class TestCheckPrStatus:
         mock_proc.returncode = 1
         mock_proc.stdout = ""
 
-        with patch("botfarm.supervisor.subprocess.run", return_value=mock_proc):
+        with patch("botfarm.supervisor_recovery.subprocess.run", return_value=mock_proc):
             result = Supervisor._gh_pr_state("https://github.com/org/repo/pull/1")
 
         assert result is None
@@ -3544,7 +3544,7 @@ class TestCheckPrStatus:
         mock_proc.returncode = 0
         mock_proc.stdout = "https://github.com/org/repo/pull/42\n"
 
-        with patch("botfarm.supervisor.subprocess.run", return_value=mock_proc):
+        with patch("botfarm.supervisor_recovery.subprocess.run", return_value=mock_proc):
             result = Supervisor._gh_pr_url_for_branch("my-branch", "/tmp/repo")
 
         assert result == "https://github.com/org/repo/pull/42"
@@ -3555,7 +3555,7 @@ class TestCheckPrStatus:
         mock_proc.returncode = 1
         mock_proc.stdout = ""
 
-        with patch("botfarm.supervisor.subprocess.run", return_value=mock_proc):
+        with patch("botfarm.supervisor_recovery.subprocess.run", return_value=mock_proc):
             result = Supervisor._gh_pr_url_for_branch("my-branch", "/tmp/repo")
 
         assert result is None
@@ -3566,7 +3566,7 @@ class TestCheckPrStatus:
         mock_proc.returncode = 0
         mock_proc.stdout = "CLOSED\n"
 
-        with patch("botfarm.supervisor.subprocess.run", return_value=mock_proc):
+        with patch("botfarm.supervisor_recovery.subprocess.run", return_value=mock_proc):
             result = Supervisor._gh_pr_state("https://github.com/org/repo/pull/1")
 
         assert result == "closed"
@@ -6132,7 +6132,7 @@ class TestStopSlotKillWorker:
         supervisor._workers[("test-project", 1)] = mock_proc
 
         with (
-            patch("botfarm.supervisor._is_pid_alive", return_value=True),
+            patch("botfarm.supervisor_ops._is_pid_alive", return_value=True),
             patch("os.killpg") as mock_killpg,
         ):
             supervisor._stop_slot_kill_worker(slot)
@@ -6157,9 +6157,9 @@ class TestStopSlotKillWorker:
         supervisor._workers[("test-project", 1)] = mock_proc
 
         with (
-            patch("botfarm.supervisor._is_pid_alive", return_value=True),
+            patch("botfarm.supervisor_ops._is_pid_alive", return_value=True),
             patch("os.killpg") as mock_killpg,
-            patch("botfarm.supervisor._kill_process_tree") as mock_kill_tree,
+            patch("botfarm.supervisor_ops._kill_process_tree") as mock_kill_tree,
         ):
             supervisor._stop_slot_kill_worker(slot)
 
@@ -6178,7 +6178,7 @@ class TestStopSlotKillWorker:
         slot.pid = 12345
 
         with (
-            patch("botfarm.supervisor._is_pid_alive", return_value=False),
+            patch("botfarm.supervisor_ops._is_pid_alive", return_value=False),
             patch("os.kill") as mock_kill,
         ):
             supervisor._stop_slot_kill_worker(slot)
