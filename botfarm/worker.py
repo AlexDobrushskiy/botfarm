@@ -23,7 +23,7 @@ from pathlib import Path
 
 from botfarm.codex import CodexResult, run_codex_streaming
 from botfarm.config import IdentitiesConfig
-from botfarm.db import delete_stage_run, get_task, insert_event, insert_stage_run, is_extra_usage_active, update_stage_run_context_fill, update_task
+from botfarm.db import delete_stage_run, get_task, insert_event, insert_stage_run, is_extra_usage_active, read_runtime_config, update_stage_run_context_fill, update_task
 from botfarm.process import terminate_process_group as _terminate_process_group
 from botfarm.slots import update_slot_stage
 from botfarm.workflow import (
@@ -1593,6 +1593,10 @@ def run_pipeline(
             model=codex_reviewer_model,
             timeout_minutes=codex_reviewer_timeout_minutes,
         ),
+        max_review_iterations=eff_max_review_iterations,
+        max_ci_retries=eff_max_ci_retries,
+        max_merge_conflict_retries=eff_max_merge_conflict_retries,
+        _refreshable_limits=_compute_refreshable_limits(pipeline_tpl),
     )
 
     # Build main-stage list: skip loop-managed stages (they're handled
@@ -1624,12 +1628,12 @@ def run_pipeline(
             pipeline.paused = True
             return pipeline
 
+        # Re-read runtime config so dashboard changes propagate mid-pipeline
+        ctx._refresh_runtime_config()
+
         should_stop, pr_url = _dispatch_pipeline_stage(
             ctx, stage,
             pr_url=pr_url,
-            eff_max_review_iterations=eff_max_review_iterations,
-            eff_max_ci_retries=eff_max_ci_retries,
-            eff_max_merge_conflict_retries=eff_max_merge_conflict_retries,
         )
         if should_stop:
             return pipeline
@@ -1759,14 +1763,48 @@ def _load_pipeline_config(
             eff_max_merge_conflict_retries, loop_managed_stages, pipeline_tpl)
 
 
+# Mapping from loop start-stage to the _PipelineContext field it controls.
+_LOOP_STAGE_TO_LIMIT_FIELD: dict[str, str] = {
+    "review": "max_review_iterations",
+    "ci_fix": "max_ci_retries",
+    "resolve_conflict": "max_merge_conflict_retries",
+}
+
+
+def _to_bool(v: object) -> bool:
+    """Convert a value to bool, handling string representations safely."""
+    if isinstance(v, str):
+        return v.lower() in ("true", "1", "yes")
+    return bool(v)
+
+
+def _compute_refreshable_limits(
+    pipeline_tpl: PipelineTemplate | None,
+) -> frozenset[str]:
+    """Determine which limit fields should be refreshed from runtime config.
+
+    A field is refreshable only when the pipeline template's loop for that
+    stage has a ``config_key`` that matches the corresponding runtime-config
+    field name.  Loops with ``config_key=None`` (fixed iteration count) or
+    a custom/unknown ``config_key`` are not refreshable.
+    """
+    all_fields = {"max_review_iterations", "max_ci_retries", "max_merge_conflict_retries"}
+    if pipeline_tpl is None:
+        return frozenset(all_fields)
+
+    for stage_name, field_name in _LOOP_STAGE_TO_LIMIT_FIELD.items():
+        loop = get_loop_for_stage(pipeline_tpl, stage_name)
+        if loop is not None and loop.config_key != field_name:
+            all_fields.discard(field_name)
+
+    return frozenset(all_fields)
+
+
 def _dispatch_pipeline_stage(
     ctx: "_PipelineContext",
     stage: str,
     *,
     pr_url: str | None,
-    eff_max_review_iterations: int,
-    eff_max_ci_retries: int,
-    eff_max_merge_conflict_retries: int = 2,
 ) -> tuple[bool, str | None]:
     """Dispatch a single stage in the pipeline main loop.
 
@@ -1777,7 +1815,7 @@ def _dispatch_pipeline_stage(
     # ----- Review iteration loop -----
     if stage == "review":
         success = _run_review_fix_loop(
-            ctx, pr_url=pr_url, max_iterations=eff_max_review_iterations,
+            ctx, pr_url=pr_url, max_iterations=ctx.max_review_iterations,
         )
         if not success:
             return True, pr_url
@@ -1792,14 +1830,14 @@ def _dispatch_pipeline_stage(
 
     if stage == "fix":
         should_stop = _handle_fix_resume(
-            ctx, pr_url=pr_url, max_iterations=eff_max_review_iterations,
+            ctx, pr_url=pr_url, max_iterations=ctx.max_review_iterations,
         )
         return should_stop, pr_url
 
     # ----- CI retry loop -----
     if stage == "pr_checks":
         return _handle_pr_checks_stage(
-            ctx, pr_url=pr_url, max_ci_retries=eff_max_ci_retries,
+            ctx, pr_url=pr_url, max_ci_retries=ctx.max_ci_retries,
         )
 
     # ----- Resolve conflict (resume mid-merge-conflict-loop) -----
@@ -1807,9 +1845,6 @@ def _dispatch_pipeline_stage(
         return _handle_resolve_conflict_resume(
             ctx,
             pr_url=pr_url,
-            eff_max_review_iterations=eff_max_review_iterations,
-            eff_max_ci_retries=eff_max_ci_retries,
-            eff_max_merge_conflict_retries=eff_max_merge_conflict_retries,
         )
 
     # ----- Merge with conflict retry loop -----
@@ -1817,9 +1852,7 @@ def _dispatch_pipeline_stage(
         return _handle_merge_stage(
             ctx,
             pr_url=pr_url,
-            max_merge_conflict_retries=eff_max_merge_conflict_retries,
-            eff_max_review_iterations=eff_max_review_iterations,
-            eff_max_ci_retries=eff_max_ci_retries,
+            max_merge_conflict_retries=ctx.max_merge_conflict_retries,
         )
 
     # ----- Normal stages (implement, etc.) -----
@@ -1892,14 +1925,18 @@ def _handle_pr_checks_stage(
     if result is not None:
         return False, pr_url  # CI passed on first try
 
-    if max_ci_retries > 0:
+    # Re-read in case the budget was changed while pr_checks was running
+    ctx._refresh_runtime_config()
+    eff_max_ci_retries = ctx.max_ci_retries
+
+    if eff_max_ci_retries > 0:
         ci_failure_output = ctx.pipeline.failure_reason or "CI checks failed"
         _reset_for_retry(ctx)
         success = _run_ci_retry_loop(
             ctx,
             pr_url=pr_url,
             ci_failure_output=ci_failure_output,
-            max_retries=max_ci_retries,
+            max_retries=eff_max_ci_retries,
         )
         if not success:
             return True, pr_url
@@ -1915,9 +1952,6 @@ def _handle_resolve_conflict_resume(
     ctx: "_PipelineContext",
     *,
     pr_url: str | None,
-    eff_max_review_iterations: int,
-    eff_max_ci_retries: int,
-    eff_max_merge_conflict_retries: int,
 ) -> tuple[bool, str | None]:
     """Handle resuming from the resolve_conflict stage.
 
@@ -1934,14 +1968,14 @@ def _handle_resolve_conflict_resume(
 
     # Re-run review→fix loop on the conflict-resolved code
     success = _run_review_fix_loop(
-        ctx, pr_url=pr_url, max_iterations=eff_max_review_iterations,
+        ctx, pr_url=pr_url, max_iterations=ctx.max_review_iterations,
     )
     if not success:
         return True, pr_url
 
     # Re-run pr_checks (with CI retry support)
     checks_stop, pr_url = _handle_pr_checks_stage(
-        ctx, pr_url=pr_url, max_ci_retries=eff_max_ci_retries,
+        ctx, pr_url=pr_url, max_ci_retries=ctx.max_ci_retries,
     )
     if checks_stop:
         return True, pr_url
@@ -1950,9 +1984,7 @@ def _handle_resolve_conflict_resume(
     return _handle_merge_stage(
         ctx,
         pr_url=pr_url,
-        max_merge_conflict_retries=eff_max_merge_conflict_retries,
-        eff_max_review_iterations=eff_max_review_iterations,
-        eff_max_ci_retries=eff_max_ci_retries,
+        max_merge_conflict_retries=ctx.max_merge_conflict_retries,
     )
 
 
@@ -1961,8 +1993,6 @@ def _handle_merge_stage(
     *,
     pr_url: str | None,
     max_merge_conflict_retries: int,
-    eff_max_review_iterations: int,
-    eff_max_ci_retries: int,
 ) -> tuple[bool, str | None]:
     """Handle the merge stage with conflict retry loop.
 
@@ -1972,8 +2002,12 @@ def _handle_merge_stage(
     if result is not None:
         return False, pr_url  # merge succeeded
 
+    # Re-read in case the budget was changed while merge was running
+    ctx._refresh_runtime_config()
+    eff_max_merge_conflict_retries = ctx.max_merge_conflict_retries
+
     merge_error = ctx.pipeline.failure_reason or "merge failed"
-    if max_merge_conflict_retries > 0 and _is_merge_conflict(
+    if eff_max_merge_conflict_retries > 0 and _is_merge_conflict(
         merge_error, pr_url or "", ctx.cwd,
         env={**os.environ, **(ctx.coder_env or {})},
     ):
@@ -1981,9 +2015,7 @@ def _handle_merge_stage(
         success = _run_merge_conflict_loop(
             ctx,
             pr_url=pr_url,
-            max_retries=max_merge_conflict_retries,
-            eff_max_review_iterations=eff_max_review_iterations,
-            eff_max_ci_retries=eff_max_ci_retries,
+            max_retries=eff_max_merge_conflict_retries,
         )
         if not success:
             return True, pr_url
@@ -2000,8 +2032,6 @@ def _run_merge_conflict_loop(
     *,
     pr_url: str | None,
     max_retries: int,
-    eff_max_review_iterations: int,
-    eff_max_ci_retries: int,
 ) -> bool:
     """Resolve merge conflicts and re-run review→fix→pr_checks→merge.
 
@@ -2013,7 +2043,20 @@ def _run_merge_conflict_loop(
     task_row = get_task(ctx.conn, ctx.task_id)
     already_used = (task_row["merge_conflict_retries"] if task_row else 0) or 0
 
+    actual_retries = already_used
     for retry in range(already_used + 1, max_retries + 1):
+        ctx._refresh_runtime_config()
+        # Note: only limit reductions take effect mid-loop; increases
+        # require a new loop entry because the range upper bound is fixed.
+        if retry > ctx.max_merge_conflict_retries:
+            logger.info(
+                "max_merge_conflict_retries reduced to %d — stopping merge conflict loop at retry %d",
+                ctx.max_merge_conflict_retries, retry,
+            )
+            break
+
+        actual_retries = retry
+
         insert_event(
             ctx.conn,
             task_id=ctx.task_id,
@@ -2032,7 +2075,7 @@ def _run_merge_conflict_loop(
 
         # --- RE-RUN REVIEW→FIX LOOP (code diff changed) ---
         success = _run_review_fix_loop(
-            ctx, pr_url=pr_url, max_iterations=eff_max_review_iterations,
+            ctx, pr_url=pr_url, max_iterations=ctx.max_review_iterations,
         )
         if not success:
             return False
@@ -2041,14 +2084,14 @@ def _run_merge_conflict_loop(
         checks_result = ctx.run_and_record("pr_checks", pr_url=pr_url, iteration=retry)
         if checks_result is None:
             # CI failed — attempt CI retries within this conflict retry
-            if eff_max_ci_retries > 0:
+            if ctx.max_ci_retries > 0:
                 ci_failure_output = ctx.pipeline.failure_reason or "CI checks failed"
                 _reset_for_retry(ctx)
                 ci_success = _run_ci_retry_loop(
                     ctx,
                     pr_url=pr_url,
                     ci_failure_output=ci_failure_output,
-                    max_retries=eff_max_ci_retries,
+                    max_retries=ctx.max_ci_retries,
                 )
                 if not ci_success:
                     return False
@@ -2082,21 +2125,22 @@ def _run_merge_conflict_loop(
 
         _reset_for_retry(ctx)
 
-    # Max retries exhausted
+    # Max retries exhausted (or limit reduced mid-loop)
+    effective_limit = min(ctx.max_merge_conflict_retries, max_retries)
     insert_event(
         ctx.conn,
         task_id=ctx.task_id,
         event_type="max_merge_conflict_retries_reached",
-        detail=f"retries={max_retries}",
+        detail=f"retries={actual_retries}, limit={effective_limit}",
     )
     ctx.conn.commit()
     logger.warning(
         "Max merge conflict retries (%d) reached for %s — marking as failed",
-        max_retries, ctx.ticket_id,
+        effective_limit, ctx.ticket_id,
     )
     ctx.pipeline.failure_stage = "merge"
     ctx.pipeline.failure_reason = (
-        f"Merge conflicts could not be resolved after {max_retries} retries"
+        f"Merge conflicts could not be resolved after {actual_retries} retries (limit={effective_limit})"
     )
     _record_failure(ctx.conn, ctx.task_id, ctx.pipeline)
     return False
@@ -2216,6 +2260,70 @@ class _PipelineContext:
     coder_env: dict[str, str] | None = None
     reviewer_env: dict[str, str] | None = None
     codex_config: _CodexReviewerConfig = field(default_factory=_CodexReviewerConfig)
+    max_review_iterations: int = 3
+    max_ci_retries: int = 2
+    max_merge_conflict_retries: int = 2
+    # Which limit fields are driven by runtime config (vs fixed by pipeline template).
+    # Fields NOT in this set were set by a pipeline loop whose config_key does
+    # not match the runtime-config field and should not be overwritten.
+    _refreshable_limits: frozenset[str] = field(
+        default_factory=lambda: frozenset({"max_review_iterations", "max_ci_retries", "max_merge_conflict_retries"}),
+    )
+
+    def _refresh_runtime_config(self) -> None:
+        """Re-read runtime config from DB and update mutable fields.
+
+        Called before each pipeline stage so dashboard config changes
+        propagate to running workers.  Emits a ``runtime_config_refreshed``
+        task event when any value actually changes.
+        """
+        try:
+            rt = read_runtime_config(self.conn)
+        except Exception:
+            logger.debug("Could not read runtime_config — keeping current values", exc_info=True)
+            return
+        if not rt:
+            return  # empty table → keep frozen defaults
+
+        changes: list[str] = []
+
+        for attr in ("max_review_iterations", "max_ci_retries", "max_merge_conflict_retries"):
+            if attr in rt and attr in self._refreshable_limits:
+                try:
+                    new_val = int(rt[attr])
+                except (ValueError, TypeError):
+                    logger.warning("Invalid runtime config value for %s: %r", attr, rt[attr])
+                    continue
+                if getattr(self, attr) != new_val:
+                    changes.append(f"{attr}: {getattr(self, attr)} -> {new_val}")
+                    setattr(self, attr, new_val)
+
+        codex_fields = {
+            "codex_reviewer_enabled": ("enabled", _to_bool),
+            "codex_reviewer_model": ("model", str),
+            "codex_reviewer_timeout_minutes": ("timeout_minutes", int),
+        }
+        for db_key, (codex_attr, cast) in codex_fields.items():
+            if db_key in rt:
+                try:
+                    new_val = cast(rt[db_key])
+                except (ValueError, TypeError):
+                    logger.warning("Invalid runtime config value for %s: %r", db_key, rt[db_key])
+                    continue
+                if getattr(self.codex_config, codex_attr) != new_val:
+                    changes.append(f"{db_key}: {getattr(self.codex_config, codex_attr)} -> {new_val}")
+                    setattr(self.codex_config, codex_attr, new_val)
+
+        if changes:
+            detail = "; ".join(changes)
+            insert_event(
+                self.conn,
+                task_id=self.task_id,
+                event_type="runtime_config_refreshed",
+                detail=detail,
+            )
+            self.conn.commit()
+            logger.info("Runtime config refreshed for %s: %s", self.ticket_id, detail)
 
     def _env_for_stage(self, stage: str) -> dict[str, str] | None:
         """Return the appropriate env dict for a given stage."""
@@ -2546,7 +2654,20 @@ def _run_review_fix_loop(
     reached — pipeline should proceed to pr_checks) and ``False`` if a
     stage failed (failure already recorded by ``run_and_record``).
     """
+    actual_iterations = start_iteration - 1
     for iteration in range(start_iteration, max_iterations + 1):
+        ctx._refresh_runtime_config()
+        # Note: only limit reductions take effect mid-loop; increases
+        # require a new loop entry because the range upper bound is fixed.
+        if iteration > ctx.max_review_iterations:
+            logger.info(
+                "max_review_iterations reduced to %d — stopping review loop at iteration %d",
+                ctx.max_review_iterations, iteration,
+            )
+            break
+
+        actual_iterations = iteration
+
         insert_event(
             ctx.conn,
             task_id=ctx.task_id,
@@ -2588,17 +2709,18 @@ def _run_review_fix_loop(
         update_task(ctx.conn, ctx.task_id, review_iterations=iteration)
         ctx.conn.commit()
 
-    # Max iterations reached — proceed to pr_checks regardless
+    # Max iterations reached (or limit reduced mid-loop) — proceed to pr_checks regardless
+    effective_limit = min(ctx.max_review_iterations, max_iterations)
     insert_event(
         ctx.conn,
         task_id=ctx.task_id,
         event_type="max_iterations_reached",
-        detail=f"iterations={max_iterations}",
+        detail=f"iterations={actual_iterations}, limit={effective_limit}",
     )
     ctx.conn.commit()
     logger.warning(
         "Max review iterations (%d) reached for %s — proceeding to pr_checks",
-        max_iterations, ctx.ticket_id,
+        effective_limit, ctx.ticket_id,
     )
     return True
 
@@ -2629,7 +2751,20 @@ def _run_ci_retry_loop(
     fix stage fails or max retries are exhausted (failure already
     recorded by ``run_and_record`` or recorded here).
     """
+    actual_retries = 0
     for retry in range(1, max_retries + 1):
+        ctx._refresh_runtime_config()
+        # Note: only limit reductions take effect mid-loop; increases
+        # require a new loop entry because the range upper bound is fixed.
+        if retry > ctx.max_ci_retries:
+            logger.info(
+                "max_ci_retries reduced to %d — stopping CI retry loop at retry %d",
+                ctx.max_ci_retries, retry,
+            )
+            break
+
+        actual_retries = retry
+
         insert_event(
             ctx.conn,
             task_id=ctx.task_id,
@@ -2708,20 +2843,21 @@ def _run_ci_retry_loop(
         ci_failure_output = ctx.pipeline.failure_reason or ci_failure_output
         _reset_for_retry(ctx)
 
-    # Max retries exhausted
+    # Max retries exhausted (or limit reduced mid-loop)
+    effective_limit = min(ctx.max_ci_retries, max_retries)
     insert_event(
         ctx.conn,
         task_id=ctx.task_id,
         event_type="max_ci_retries_reached",
-        detail=f"retries={max_retries}",
+        detail=f"retries={actual_retries}, limit={effective_limit}",
     )
     ctx.conn.commit()
     logger.warning(
         "Max CI retries (%d) reached for %s — marking as failed",
-        max_retries, ctx.ticket_id,
+        effective_limit, ctx.ticket_id,
     )
     ctx.pipeline.failure_stage = "pr_checks"
-    ctx.pipeline.failure_reason = f"CI checks failed after {max_retries} retries"
+    ctx.pipeline.failure_reason = f"CI checks failed after {actual_retries} retries (limit={effective_limit})"
     _record_failure(ctx.conn, ctx.task_id, ctx.pipeline)
     return False
 
