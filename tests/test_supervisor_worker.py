@@ -1951,3 +1951,65 @@ class TestRefactoringAnalysisNotification:
         sup._maybe_send_refactoring_notification(slot)
 
         sup._notifier.notify_refactoring_all_clear.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Base dir verification
+# ---------------------------------------------------------------------------
+
+
+class TestVerifyBaseDirClean:
+    """Tests for _verify_base_dir_clean() guardrail."""
+
+    def test_resets_base_dir_to_main(self, supervisor, tmp_path):
+        """If the base dir is on a feature branch, reset it to main."""
+        base_dir = tmp_path / "repo"
+        base_dir.mkdir(exist_ok=True)
+        # Initialize a git repo so git branch --show-current works
+        import subprocess
+        subprocess.run(["git", "init"], cwd=str(base_dir), capture_output=True)
+        subprocess.run(["git", "checkout", "-b", "main"], cwd=str(base_dir), capture_output=True)
+        subprocess.run(["git", "commit", "--allow-empty", "-m", "init"], cwd=str(base_dir), capture_output=True)
+        subprocess.run(["git", "checkout", "-b", "feature-branch"], cwd=str(base_dir), capture_output=True)
+
+        supervisor._verify_base_dir_clean("test-project")
+
+        result = subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=str(base_dir), capture_output=True, text=True,
+        )
+        assert result.stdout.strip() == "main"
+
+        # Verify event was logged
+        events = get_events(supervisor._conn)
+        base_dir_events = [e for e in events if e["event_type"] == "base_dir_reset"]
+        assert len(base_dir_events) == 1
+        assert "was_on=feature-branch" in base_dir_events[0]["detail"]
+
+    def test_no_reset_when_on_main(self, supervisor, tmp_path):
+        """No reset or event when base dir is already on main."""
+        base_dir = tmp_path / "repo"
+        base_dir.mkdir(exist_ok=True)
+        import subprocess
+        subprocess.run(["git", "init"], cwd=str(base_dir), capture_output=True)
+        subprocess.run(["git", "checkout", "-b", "main"], cwd=str(base_dir), capture_output=True)
+        subprocess.run(["git", "commit", "--allow-empty", "-m", "init"], cwd=str(base_dir), capture_output=True)
+
+        supervisor._verify_base_dir_clean("test-project")
+
+        events = get_events(supervisor._conn)
+        base_dir_events = [e for e in events if e["event_type"] == "base_dir_reset"]
+        assert len(base_dir_events) == 0
+
+    def test_unknown_project_is_noop(self, supervisor):
+        """Unknown project name should not raise."""
+        supervisor._verify_base_dir_clean("nonexistent-project")
+
+    def test_missing_base_dir_is_noop(self, supervisor, tmp_path):
+        """Missing base dir path should not raise."""
+        # Remove the base dir
+        base_dir = tmp_path / "repo"
+        if base_dir.exists():
+            import shutil
+            shutil.rmtree(base_dir)
+        supervisor._verify_base_dir_clean("test-project")
