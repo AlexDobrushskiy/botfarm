@@ -23,7 +23,7 @@ from pathlib import Path
 
 from botfarm.codex import CodexResult, run_codex_streaming
 from botfarm.config import IdentitiesConfig
-from botfarm.db import delete_stage_run, get_task, insert_event, insert_stage_run, is_extra_usage_active, update_stage_run_context_fill, update_task
+from botfarm.db import delete_stage_run, get_task, insert_event, insert_stage_run, is_extra_usage_active, read_runtime_config, update_stage_run_context_fill, update_task
 from botfarm.process import terminate_process_group as _terminate_process_group
 from botfarm.slots import update_slot_stage
 from botfarm.workflow import (
@@ -1593,6 +1593,8 @@ def run_pipeline(
             model=codex_reviewer_model,
             timeout_minutes=codex_reviewer_timeout_minutes,
         ),
+        max_review_iterations=eff_max_review_iterations,
+        max_ci_retries=eff_max_ci_retries,
     )
 
     # Build main-stage list: skip loop-managed stages (they're handled
@@ -1624,11 +1626,12 @@ def run_pipeline(
             pipeline.paused = True
             return pipeline
 
+        # Re-read runtime config so dashboard changes propagate mid-pipeline
+        ctx._refresh_runtime_config()
+
         should_stop, pr_url = _dispatch_pipeline_stage(
             ctx, stage,
             pr_url=pr_url,
-            eff_max_review_iterations=eff_max_review_iterations,
-            eff_max_ci_retries=eff_max_ci_retries,
             eff_max_merge_conflict_retries=eff_max_merge_conflict_retries,
         )
         if should_stop:
@@ -1764,8 +1767,6 @@ def _dispatch_pipeline_stage(
     stage: str,
     *,
     pr_url: str | None,
-    eff_max_review_iterations: int,
-    eff_max_ci_retries: int,
     eff_max_merge_conflict_retries: int = 2,
 ) -> tuple[bool, str | None]:
     """Dispatch a single stage in the pipeline main loop.
@@ -1777,7 +1778,7 @@ def _dispatch_pipeline_stage(
     # ----- Review iteration loop -----
     if stage == "review":
         success = _run_review_fix_loop(
-            ctx, pr_url=pr_url, max_iterations=eff_max_review_iterations,
+            ctx, pr_url=pr_url, max_iterations=ctx.max_review_iterations,
         )
         if not success:
             return True, pr_url
@@ -1792,14 +1793,14 @@ def _dispatch_pipeline_stage(
 
     if stage == "fix":
         should_stop = _handle_fix_resume(
-            ctx, pr_url=pr_url, max_iterations=eff_max_review_iterations,
+            ctx, pr_url=pr_url, max_iterations=ctx.max_review_iterations,
         )
         return should_stop, pr_url
 
     # ----- CI retry loop -----
     if stage == "pr_checks":
         return _handle_pr_checks_stage(
-            ctx, pr_url=pr_url, max_ci_retries=eff_max_ci_retries,
+            ctx, pr_url=pr_url, max_ci_retries=ctx.max_ci_retries,
         )
 
     # ----- Resolve conflict (resume mid-merge-conflict-loop) -----
@@ -1807,8 +1808,8 @@ def _dispatch_pipeline_stage(
         return _handle_resolve_conflict_resume(
             ctx,
             pr_url=pr_url,
-            eff_max_review_iterations=eff_max_review_iterations,
-            eff_max_ci_retries=eff_max_ci_retries,
+            eff_max_review_iterations=ctx.max_review_iterations,
+            eff_max_ci_retries=ctx.max_ci_retries,
             eff_max_merge_conflict_retries=eff_max_merge_conflict_retries,
         )
 
@@ -1818,8 +1819,8 @@ def _dispatch_pipeline_stage(
             ctx,
             pr_url=pr_url,
             max_merge_conflict_retries=eff_max_merge_conflict_retries,
-            eff_max_review_iterations=eff_max_review_iterations,
-            eff_max_ci_retries=eff_max_ci_retries,
+            eff_max_review_iterations=ctx.max_review_iterations,
+            eff_max_ci_retries=ctx.max_ci_retries,
         )
 
     # ----- Normal stages (implement, etc.) -----
@@ -2216,6 +2217,55 @@ class _PipelineContext:
     coder_env: dict[str, str] | None = None
     reviewer_env: dict[str, str] | None = None
     codex_config: _CodexReviewerConfig = field(default_factory=_CodexReviewerConfig)
+    max_review_iterations: int = 3
+    max_ci_retries: int = 2
+
+    def _refresh_runtime_config(self) -> None:
+        """Re-read runtime config from DB and update mutable fields.
+
+        Called before each pipeline stage so dashboard config changes
+        propagate to running workers.  Emits a ``runtime_config_refreshed``
+        task event when any value actually changes.
+        """
+        try:
+            rt = read_runtime_config(self.conn)
+        except Exception:
+            logger.debug("Could not read runtime_config — keeping current values", exc_info=True)
+            return
+        if not rt:
+            return  # empty table → keep frozen defaults
+
+        changes: list[str] = []
+
+        for attr in ("max_review_iterations", "max_ci_retries"):
+            if attr in rt:
+                new_val = int(rt[attr])
+                if getattr(self, attr) != new_val:
+                    changes.append(f"{attr}: {getattr(self, attr)} -> {new_val}")
+                    setattr(self, attr, new_val)
+
+        codex_fields = {
+            "codex_reviewer_enabled": ("enabled", bool),
+            "codex_reviewer_model": ("model", str),
+            "codex_reviewer_timeout_minutes": ("timeout_minutes", int),
+        }
+        for db_key, (codex_attr, cast) in codex_fields.items():
+            if db_key in rt:
+                new_val = cast(rt[db_key])
+                if getattr(self.codex_config, codex_attr) != new_val:
+                    changes.append(f"{db_key}: {getattr(self.codex_config, codex_attr)} -> {new_val}")
+                    setattr(self.codex_config, codex_attr, new_val)
+
+        if changes:
+            detail = "; ".join(changes)
+            insert_event(
+                self.conn,
+                task_id=self.task_id,
+                event_type="runtime_config_refreshed",
+                detail=detail,
+            )
+            self.conn.commit()
+            logger.info("Runtime config refreshed for %s: %s", self.ticket_id, detail)
 
     def _env_for_stage(self, stage: str) -> dict[str, str] | None:
         """Return the appropriate env dict for a given stage."""
@@ -2547,6 +2597,8 @@ def _run_review_fix_loop(
     stage failed (failure already recorded by ``run_and_record``).
     """
     for iteration in range(start_iteration, max_iterations + 1):
+        ctx._refresh_runtime_config()
+
         insert_event(
             ctx.conn,
             task_id=ctx.task_id,
@@ -2630,6 +2682,8 @@ def _run_ci_retry_loop(
     recorded by ``run_and_record`` or recorded here).
     """
     for retry in range(1, max_retries + 1):
+        ctx._refresh_runtime_config()
+
         insert_event(
             ctx.conn,
             task_id=ctx.task_id,
