@@ -165,6 +165,27 @@ mutation AssignIssue($issueId: String!, $assigneeId: String!) {
 }
 """
 
+ISSUE_LABELS_QUERY = """
+query IssueLabels($issueId: String!) {
+  issue(id: $issueId) {
+    labels {
+      nodes {
+        id
+        name
+      }
+    }
+  }
+}
+"""
+
+ADD_LABELS_MUTATION = """
+mutation AddLabels($issueId: String!, $labelIds: [String!]!) {
+  issueUpdate(id: $issueId, input: { labelIds: $labelIds }) {
+    success
+  }
+}
+"""
+
 ISSUE_STATE_QUERY = """
 query IssueState($identifier: String!) {
   issue(id: $identifier) {
@@ -658,6 +679,34 @@ class LinearClient:
                 f"Failed to assign issue {issue_id} to user {assignee_id}"
             )
 
+    def add_labels(self, issue_id: str, label_ids: list[str]) -> None:
+        """Add labels to an issue, preserving existing labels.
+
+        Fetches the issue's current label IDs, merges with the new ones,
+        and updates the issue.
+        """
+        # Fetch current labels
+        data = self._execute(ISSUE_LABELS_QUERY, {"issueId": issue_id})
+        issue = data.get("issue")
+        current_ids: list[str] = []
+        if issue:
+            for label in issue.get("labels", {}).get("nodes", []):
+                current_ids.append(label["id"])
+        # Merge: add new label IDs that aren't already present
+        merged = list(current_ids)
+        for lid in label_ids:
+            if lid not in merged:
+                merged.append(lid)
+        # Update
+        result = self._execute(
+            ADD_LABELS_MUTATION,
+            {"issueId": issue_id, "labelIds": merged},
+        )
+        if not result.get("issueUpdate", {}).get("success"):
+            raise LinearAPIError(
+                f"Failed to add labels to issue {issue_id}"
+            )
+
     def fetch_issue_state_type(self, identifier: str) -> str | None:
         """Fetch the workflow state type of a single issue by identifier.
 
@@ -1038,6 +1087,15 @@ class LinearPoller:
             issue_labels = set(
                 label.lower() for label in (issue.labels or [])
             )
+            # Defense-in-depth: always skip issues with "Failed" label
+            # even if it's not in exclude_tags config.
+            if "failed" in issue_labels:
+                logger.debug(
+                    "Skipping %s: has 'Failed' label (defense-in-depth)",
+                    issue.identifier,
+                )
+                continue
+
             if issue_labels & self._exclude_tags:
                 logger.debug(
                     "Skipping %s: excluded label(s) %s",
@@ -1149,6 +1207,15 @@ class LinearPoller:
     def add_comment(self, issue_id: str, body: str) -> None:
         """Add a comment to an issue (uses coder client)."""
         self._coder_client.add_comment(issue_id, body)
+
+    def add_labels(self, issue_id: str, label_names: list[str]) -> None:
+        """Add labels by name to an issue (uses coder client). Creates labels if needed."""
+        label_ids = [
+            self._coder_client.get_or_create_label(self._project.linear_team, name)
+            for name in label_names
+        ]
+        self._coder_client.add_labels(issue_id, label_ids)
+        logger.info("Added labels %s to issue %s", label_names, issue_id)
 
     def add_comment_as_owner(self, issue_id: str, body: str) -> None:
         """Add a comment using the owner's client (for system-level notifications)."""

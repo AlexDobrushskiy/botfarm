@@ -710,7 +710,6 @@ def test_load_config_linear_status_defaults(tmp_path):
     assert config.linear.in_progress_status == "In Progress"
     assert config.linear.done_status == "Done"
     assert config.linear.in_review_status == "In Review"
-    assert config.linear.failed_status == "Todo"
 
 
 def test_load_config_linear_status_custom(tmp_path):
@@ -722,7 +721,6 @@ def test_load_config_linear_status_custom(tmp_path):
             "in_progress_status": "Working",
             "done_status": "Shipped",
             "in_review_status": "Review",
-            "failed_status": "Needs Attention",
         },
     }
     config_path = _write_config(tmp_path, data)
@@ -731,7 +729,20 @@ def test_load_config_linear_status_custom(tmp_path):
     assert config.linear.in_progress_status == "Working"
     assert config.linear.done_status == "Shipped"
     assert config.linear.in_review_status == "Review"
-    assert config.linear.failed_status == "Needs Attention"
+
+
+def test_load_config_failed_status_deprecated(tmp_path):
+    """Setting failed_status in config should not error — it's just ignored."""
+    data = {
+        **MINIMAL_CONFIG,
+        "linear": {
+            "api_key": "test-key",
+            "failed_status": "Needs Attention",
+        },
+    }
+    config_path = _write_config(tmp_path, data)
+    config = load_config(config_path)
+    assert not hasattr(config.linear, "failed_status")
 
 
 def test_load_config_comment_defaults(tmp_path):
@@ -777,7 +788,7 @@ def test_default_config_template_includes_status_and_comment_fields():
     assert "todo_status:" in DEFAULT_CONFIG_TEMPLATE
     assert "in_progress_status:" in DEFAULT_CONFIG_TEMPLATE
     assert "done_status:" in DEFAULT_CONFIG_TEMPLATE
-    assert "failed_status:" in DEFAULT_CONFIG_TEMPLATE
+    assert "failed_status:" not in DEFAULT_CONFIG_TEMPLATE
     assert "comment_on_failure:" in DEFAULT_CONFIG_TEMPLATE
     assert "comment_on_completion:" in DEFAULT_CONFIG_TEMPLATE
     assert "comment_on_limit_pause:" in DEFAULT_CONFIG_TEMPLATE

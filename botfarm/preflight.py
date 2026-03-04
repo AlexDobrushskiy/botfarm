@@ -217,7 +217,6 @@ def check_linear_api(config: BotfarmConfig) -> list[CheckResult]:
             "in_progress_status": config.linear.in_progress_status,
             "done_status": config.linear.done_status,
             "in_review_status": config.linear.in_review_status,
-            "failed_status": config.linear.failed_status,
         }
         for field, status_name in configured_statuses.items():
             if status_name not in team_states:

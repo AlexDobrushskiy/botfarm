@@ -153,17 +153,15 @@ class OperationsMixin:
                     slot.project, slot.slot_id, slot.ticket_id,
                 )
             else:
-                target_status = linear_cfg.failed_status
+                # Don't move the ticket — keep it in its current status.
+                # Add "Failed" and "Human" labels so the poller skips it
+                # (Human is in exclude_tags) and humans can triage.
                 try:
-                    poller.move_issue(slot.ticket_id, target_status)
-                    logger.info(
-                        "Moved %s to '%s' after failure",
-                        slot.ticket_id, target_status,
-                    )
+                    poller.add_labels(slot.ticket_id, ["Failed", "Human"])
                 except Exception:
                     logger.exception(
-                        "Failed to move %s to '%s'",
-                        slot.ticket_id, target_status,
+                        "Failed to add failure labels to %s",
+                        slot.ticket_id,
                     )
 
                 if linear_cfg.comment_on_failure:
@@ -208,12 +206,19 @@ class OperationsMixin:
             if task and task["failure_reason"]:
                 reason = task["failure_reason"]
 
+        review_iter = slot.stage_iteration if slot.stage in ("review", "fix") else None
+
         lines = [
-            "**Bot outcome: failed**",
+            "**Bot outcome: failed** — requires manual attention",
             "",
             f"- **Stage:** `{stage}`",
             f"- **Failure reason:** {reason}",
         ]
+
+        if review_iter is not None:
+            lines.append(f"- **Review iteration:** {review_iter}")
+        if slot.pr_url:
+            lines.append(f"- **PR:** {slot.pr_url}")
 
         result_text = self._pending_result_texts.get(
             (slot.project, slot.slot_id)

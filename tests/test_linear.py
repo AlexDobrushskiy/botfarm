@@ -848,6 +848,29 @@ class TestLinearPollerPoll:
         result = poller.poll()
         assert len(result.candidates) == 1
 
+    def test_filters_failed_label_defense_in_depth(self):
+        """Issues with 'Failed' label are always skipped, even without exclude_tags."""
+        poller = self._make_poller(exclude_tags=[])
+        poller._client.fetch_team_issues.return_value = [
+            make_issue(id="a", identifier="SMA-1", labels=["Bug"]),
+            make_issue(id="b", identifier="SMA-2", labels=["Failed"]),
+            make_issue(id="c", identifier="SMA-3", labels=["Feature", "Failed"]),
+        ]
+        result = poller.poll()
+        assert len(result.candidates) == 1
+        assert result.candidates[0].identifier == "SMA-1"
+
+    def test_filters_failed_label_case_insensitive(self):
+        """'Failed' label filter is case-insensitive."""
+        poller = self._make_poller(exclude_tags=[])
+        poller._client.fetch_team_issues.return_value = [
+            make_issue(id="a", identifier="SMA-1", labels=["FAILED"]),
+            make_issue(id="b", identifier="SMA-2", labels=["Feature"]),
+        ]
+        result = poller.poll()
+        assert len(result.candidates) == 1
+        assert result.candidates[0].identifier == "SMA-2"
+
     def test_properties(self):
         poller = self._make_poller()
         assert poller.project_name == "proj-a"

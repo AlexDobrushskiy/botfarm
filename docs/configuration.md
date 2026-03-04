@@ -83,7 +83,8 @@ linear:
   in_progress_status: In Progress   # Set when a worker picks up a ticket (default: "In Progress")
   done_status: Done                 # Set on successful completion (default: "Done")
   in_review_status: In Review       # Set when a PR is created (default: "In Review")
-  failed_status: Todo               # Set when a worker fails (default: "Todo")
+  # Note: failed_status has been removed. Failed tickets now keep their
+  # current status and receive "Failed" + "Human" labels instead.
 
   # Comment posting on Linear tickets
   comment_on_failure: true          # Post a comment when a task fails (default: true)
