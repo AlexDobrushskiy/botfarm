@@ -50,7 +50,7 @@ from botfarm.db import (
 from botfarm.linear import LinearClient, LinearPoller, create_pollers
 from botfarm.notifications import Notifier
 from botfarm.preflight import CheckResult, log_preflight_summary, run_preflight_checks
-from botfarm.slots import SlotManager, SlotState
+from botfarm.slots import SlotManager, SlotState, _is_pid_alive
 from botfarm.usage import DEFAULT_PAUSE_5H_THRESHOLD, DEFAULT_PAUSE_7D_THRESHOLD, UsagePoller
 from botfarm.worker import STAGES, PipelineResult, build_git_env, run_pipeline
 
@@ -95,6 +95,7 @@ __all__ = [
     "_WorkerResult",
     "_check_limit_hit",
     "_collect_descendant_pids",
+    "_is_pid_alive",
     "_kill_descendant_sessions",
     "_kill_pids",
     "_kill_process_tree",
