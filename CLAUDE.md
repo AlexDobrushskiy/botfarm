@@ -30,6 +30,7 @@ Docs under `docs/`:
 - `improvements.md` — Planned improvements and ideas
 - `competitors.md` — Competitor analysis
 - `codex-cli.md` — Codex CLI automation, approval, and non-interactive behavior
+- `refactoring-analysis.md` — Periodic refactoring analysis procedure for agents
 
 Key patterns:
 - Workers run as subprocesses; communicate results via `multiprocessing.Queue`
@@ -101,6 +102,10 @@ Review/fix loop happens via Linear comments (not GitHub).
 - For machine-readable output: `codex --dangerously-bypass-approvals-and-sandbox exec --json "<prompt>"`
 - `--full-auto` is not fully autonomous; it maps to `-a on-request --sandbox workspace-write`
 - See `docs/codex-cli.md` for details and examples
+
+## Refactoring Analysis
+Botfarm runs periodic codebase refactoring analysis via auto-created Investigation tickets.
+See `docs/refactoring-analysis.md` for the full procedure, decision framework, and thresholds.
 
 ## PR Process
 - Clear, concise description
