@@ -140,6 +140,7 @@ class TestRefreshRuntimeConfig:
             "codex_reviewer_enabled": True,
             "codex_reviewer_model": "o3",
             "codex_reviewer_timeout_minutes": 30,
+            "codex_reviewer_skip_on_reiteration": False,
         })
 
         ctx._refresh_runtime_config()
@@ -150,6 +151,7 @@ class TestRefreshRuntimeConfig:
         assert ctx.codex_config.enabled is True
         assert ctx.codex_config.model == "o3"
         assert ctx.codex_config.timeout_minutes == 30
+        assert ctx.codex_config.skip_on_reiteration is False
 
     def test_noop_when_table_empty(self, conn):
         ctx = _make_ctx(
