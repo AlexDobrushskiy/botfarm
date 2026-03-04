@@ -66,7 +66,7 @@ class TestRuntimeConfigBatch:
 
 
 class TestSyncAgentConfigToDb:
-    """sync_agent_config_to_db verifies all 5 keys written."""
+    """sync_agent_config_to_db verifies all keys written."""
 
     def test_all_keys_written(self, conn):
         agents = AgentsConfig(
@@ -76,6 +76,7 @@ class TestSyncAgentConfigToDb:
             codex_reviewer_enabled=True,
             codex_reviewer_model="o3",
             codex_reviewer_timeout_minutes=20,
+            codex_reviewer_skip_on_reiteration=False,
         )
         sync_agent_config_to_db(conn, agents)
         result = read_runtime_config(conn)
@@ -86,6 +87,7 @@ class TestSyncAgentConfigToDb:
         assert result["codex_reviewer_enabled"] is True
         assert result["codex_reviewer_model"] == "o3"
         assert result["codex_reviewer_timeout_minutes"] == 20
+        assert result["codex_reviewer_skip_on_reiteration"] is False
 
 
 class TestRuntimeConfigEmpty:
