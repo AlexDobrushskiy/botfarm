@@ -23,8 +23,6 @@ from types import FrameType
 
 from botfarm.config import IdentitiesConfig, resolve_stage_timeout
 from botfarm.db import (
-    get_task,
-    increment_limit_interruptions,
     init_db,
     insert_event,
     read_runtime_config,
