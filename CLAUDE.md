@@ -78,10 +78,9 @@ Review/fix loop happens via Linear comments (not GitHub).
 ## Testing
 - Run tests in a subagent that returns ONLY: pass/fail summary + failing test details
 - Exception: 1-2 individual tests can run in main thread
-- Command: `python -m pytest tests/ -v` (use .venv virtualenv)
+- Command: `python -m pytest tests/ ` (use .venv virtualenv)
   - Tests run in parallel via pytest-xdist (`-n auto` is configured in pyproject.toml addopts)
   - Playwright tests are excluded by default via addopts marker filter
-- No Playwright / no frontend tests
 - Run tests: before work, after implementation, after test changes, before push
 - Pre-commit hook: `.githooks/pre-commit` — activate with `git config core.hooksPath .githooks`
 - Test isolation (required for parallel execution):
@@ -93,7 +92,7 @@ Review/fix loop happens via Linear comments (not GitHub).
 - New packages → add to requirements.txt FIRST, then `pip install -r requirements.txt` (in .venv)
 - Install editable: `pip install -e .`
 - Validate with: `botfarm --help`
-- Branch protection: NEVER delete `main` or `slot-1-placeholder`
+- Branch protection: NEVER delete `main` or `slot-X-placeholder`
 
 ## Codex CLI Quick Reference
 - `codex exec` is the Codex equivalent of Claude's non-interactive `claude -p`
