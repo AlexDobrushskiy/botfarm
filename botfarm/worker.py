@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from botfarm.codex import CodexResult
+from botfarm.codex import CodexResult, run_codex_streaming as run_codex_streaming
 from botfarm.config import IdentitiesConfig
 from botfarm.db import delete_stage_run, get_task, insert_event, insert_stage_run, is_extra_usage_active, read_runtime_config, update_stage_run_context_fill, update_task
 from botfarm.slots import update_slot_stage
@@ -74,6 +74,7 @@ from botfarm.workflow import (
     get_loop_for_stage,
     get_stage,
     load_pipeline,
+    render_prompt as render_prompt,
     resolve_max_iterations,
 )
 

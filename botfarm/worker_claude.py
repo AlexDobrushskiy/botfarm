@@ -22,7 +22,7 @@ from botfarm.process import terminate_process_group as _terminate_process_group
 
 logger = logging.getLogger(__name__)
 
-# Truncation limits (re-exported from the main worker module for convenience)
+# Truncation limits (characters) for error messages and subprocess output
 RESULT_TRUNCATE_CHARS = 200
 DETAIL_TRUNCATE_CHARS = 500
 CI_OUTPUT_TRUNCATE_CHARS = 2000
