@@ -395,7 +395,7 @@ def _make_stream_ndjson(
 
 
 class TestRunClaudeStreaming:
-    @patch("botfarm.worker.subprocess.Popen")
+    @patch("botfarm.worker_claude.subprocess.Popen")
     def test_success_parses_result(self, mock_popen, tmp_path):
         ndjson = _make_stream_ndjson()
         mock_proc = MagicMock()
@@ -417,7 +417,7 @@ class TestRunClaudeStreaming:
         assert "stream-json" in cmd
         assert "--verbose" in cmd
 
-    @patch("botfarm.worker.subprocess.Popen")
+    @patch("botfarm.worker_claude.subprocess.Popen")
     def test_start_new_session_enabled(self, mock_popen, tmp_path):
         """Popen is called with start_new_session=True for process group control."""
         ndjson = _make_stream_ndjson()
@@ -432,7 +432,7 @@ class TestRunClaudeStreaming:
         run_claude_streaming("do stuff", cwd=tmp_path, max_turns=10)
         assert mock_popen.call_args.kwargs["start_new_session"] is True
 
-    @patch("botfarm.worker.subprocess.Popen")
+    @patch("botfarm.worker_claude.subprocess.Popen")
     def test_invokes_context_fill_callback(self, mock_popen, tmp_path):
         ndjson = _make_stream_ndjson()
         mock_proc = MagicMock()
@@ -461,7 +461,7 @@ class TestRunClaudeStreaming:
         for turn, pct in callback_calls:
             assert pct > 0
 
-    @patch("botfarm.worker.subprocess.Popen")
+    @patch("botfarm.worker_claude.subprocess.Popen")
     def test_nonzero_exit_raises(self, mock_popen, tmp_path):
         mock_proc = MagicMock()
         mock_proc.stdin = MagicMock()
@@ -474,7 +474,7 @@ class TestRunClaudeStreaming:
         with pytest.raises(subprocess.CalledProcessError):
             run_claude_streaming("do stuff", cwd=tmp_path, max_turns=10)
 
-    @patch("botfarm.worker.subprocess.Popen")
+    @patch("botfarm.worker_claude.subprocess.Popen")
     def test_no_result_message_raises(self, mock_popen, tmp_path):
         """If stream ends without a result message, raises RuntimeError."""
         ndjson = json.dumps({"type": "system", "subtype": "init"}) + "\n"
@@ -489,7 +489,7 @@ class TestRunClaudeStreaming:
         with pytest.raises(RuntimeError, match="no result message"):
             run_claude_streaming("do stuff", cwd=tmp_path, max_turns=10)
 
-    @patch("botfarm.worker.subprocess.Popen")
+    @patch("botfarm.worker_claude.subprocess.Popen")
     def test_writes_log_file(self, mock_popen, tmp_path):
         ndjson = _make_stream_ndjson()
         mock_proc = MagicMock()
@@ -509,7 +509,7 @@ class TestRunClaudeStreaming:
         assert "sess-stream" in content
         assert "some warning" in content
 
-    @patch("botfarm.worker.subprocess.Popen")
+    @patch("botfarm.worker_claude.subprocess.Popen")
     def test_callback_exception_does_not_crash(self, mock_popen, tmp_path):
         """Callback errors are logged but don't stop the stream."""
         ndjson = _make_stream_ndjson()
@@ -531,7 +531,7 @@ class TestRunClaudeStreaming:
         )
         assert result.session_id == "sess-stream"
 
-    @patch("botfarm.worker.subprocess.Popen")
+    @patch("botfarm.worker_claude.subprocess.Popen")
     def test_env_passed_to_subprocess(self, mock_popen, tmp_path):
         ndjson = _make_stream_ndjson()
         mock_proc = MagicMock()
@@ -550,7 +550,7 @@ class TestRunClaudeStreaming:
 
     @patch("botfarm.worker.os.killpg")
     @patch("botfarm.worker.os.getpgid", return_value=12345)
-    @patch("botfarm.worker.subprocess.Popen")
+    @patch("botfarm.worker_claude.subprocess.Popen")
     def test_timeout_kills_process(self, mock_popen, mock_getpgid, mock_killpg, tmp_path):
         """When the process exceeds the timeout, the process group is killed and TimeoutError is raised."""
         import threading
@@ -582,7 +582,7 @@ class TestRunClaudeStreaming:
             )
         mock_killpg.assert_called()
 
-    @patch("botfarm.worker.subprocess.Popen")
+    @patch("botfarm.worker_claude.subprocess.Popen")
     def test_no_timeout_when_process_completes(self, mock_popen, tmp_path):
         """Normal completion with a timeout set should not raise."""
         ndjson = _make_stream_ndjson()
@@ -600,7 +600,7 @@ class TestRunClaudeStreaming:
         assert result.session_id == "sess-stream"
         mock_proc.kill.assert_not_called()
 
-    @patch("botfarm.worker.subprocess.Popen")
+    @patch("botfarm.worker_claude.subprocess.Popen")
     def test_realtime_log_writing(self, mock_popen, tmp_path):
         """Log file is written line-by-line during streaming, not post-hoc."""
         ndjson = _make_stream_ndjson()
@@ -630,7 +630,7 @@ class TestRunClaudeStreaming:
         assert "--- STDERR ---" in content
         assert "some warning" in content
 
-    @patch("botfarm.worker.subprocess.Popen")
+    @patch("botfarm.worker_claude.subprocess.Popen")
     def test_realtime_log_no_stderr_section_when_empty(self, mock_popen, tmp_path):
         """No STDERR section in log when stderr is empty."""
         ndjson = _make_stream_ndjson()
@@ -653,7 +653,7 @@ class TestRunClaudeStreaming:
 
     @patch("botfarm.worker.os.killpg")
     @patch("botfarm.worker.os.getpgid", return_value=12345)
-    @patch("botfarm.worker.subprocess.Popen")
+    @patch("botfarm.worker_claude.subprocess.Popen")
     def test_timeout_with_log_file(self, mock_popen, mock_getpgid, mock_killpg, tmp_path):
         """Timeout still writes partial log and closes the file handle."""
         import threading
@@ -689,7 +689,7 @@ class TestRunClaudeStreaming:
         content = log_file.read_text()
         assert "system" in content or "init" in content
 
-    @patch("botfarm.worker.subprocess.Popen")
+    @patch("botfarm.worker_claude.subprocess.Popen")
     def test_stdout_loop_exits_after_result(self, mock_popen, tmp_path):
         """After receiving a result message, the stdout loop breaks immediately
         without waiting for EOF — the fix for MCP server children holding the pipe."""
@@ -822,7 +822,7 @@ PR_URL = "https://github.com/owner/repo/pull/42"
 
 
 class TestRunImplement:
-    @patch("botfarm.worker.run_claude_streaming")
+    @patch("botfarm.worker_claude.run_claude_streaming")
     def test_success_with_pr_url(self, mock_claude, tmp_path):
         mock_claude.return_value = ClaudeResult(
             session_id="s1",
@@ -837,7 +837,7 @@ class TestRunImplement:
         assert result.pr_url == PR_URL
         assert result.claude_result.num_turns == 10
 
-    @patch("botfarm.worker.run_claude_streaming")
+    @patch("botfarm.worker_claude.run_claude_streaming")
     def test_success_without_pr_url(self, mock_claude, tmp_path):
         mock_claude.return_value = ClaudeResult(
             session_id="s1",
@@ -850,7 +850,7 @@ class TestRunImplement:
         assert result.success is True
         assert result.pr_url is None
 
-    @patch("botfarm.worker.run_claude_streaming")
+    @patch("botfarm.worker_claude.run_claude_streaming")
     def test_is_error_returns_failure(self, mock_claude, tmp_path):
         mock_claude.return_value = ClaudeResult(
             session_id="s1",
@@ -866,7 +866,7 @@ class TestRunImplement:
 
 
 class TestRunReview:
-    @patch("botfarm.worker.run_claude_streaming")
+    @patch("botfarm.worker_claude.run_claude_streaming")
     def test_success(self, mock_claude, tmp_path):
         mock_claude.return_value = ClaudeResult(
             session_id="s2",
@@ -879,7 +879,7 @@ class TestRunReview:
         assert result.success is True
         assert result.stage == "review"
 
-    @patch("botfarm.worker.run_claude_streaming")
+    @patch("botfarm.worker_claude.run_claude_streaming")
     def test_is_error_returns_failure(self, mock_claude, tmp_path):
         mock_claude.return_value = ClaudeResult(
             session_id="s2",
@@ -895,7 +895,7 @@ class TestRunReview:
 
 
 class TestRunFix:
-    @patch("botfarm.worker.run_claude_streaming")
+    @patch("botfarm.worker_claude.run_claude_streaming")
     def test_success(self, mock_claude, tmp_path):
         mock_claude.return_value = ClaudeResult(
             session_id="s3",
@@ -908,7 +908,7 @@ class TestRunFix:
         assert result.success is True
         assert result.stage == "fix"
 
-    @patch("botfarm.worker.run_claude_streaming")
+    @patch("botfarm.worker_claude.run_claude_streaming")
     def test_is_error_returns_failure(self, mock_claude, tmp_path):
         mock_claude.return_value = ClaudeResult(
             session_id="s3",
@@ -924,7 +924,7 @@ class TestRunFix:
 
 
 class TestRunPrChecks:
-    @patch("botfarm.worker.subprocess.run")
+    @patch("botfarm.worker_stages.subprocess.run")
     def test_checks_pass(self, mock_run, tmp_path):
         mock_run.return_value = subprocess.CompletedProcess(
             args=["gh"], returncode=0, stdout="All checks passed", stderr=""
@@ -934,7 +934,7 @@ class TestRunPrChecks:
         assert result.stage == "pr_checks"
         assert result.claude_result is None
 
-    @patch("botfarm.worker.subprocess.run")
+    @patch("botfarm.worker_stages.subprocess.run")
     def test_checks_fail(self, mock_run, tmp_path):
         mock_run.return_value = subprocess.CompletedProcess(
             args=["gh"], returncode=1, stdout="Check X failed", stderr=""
@@ -943,7 +943,7 @@ class TestRunPrChecks:
         assert result.success is False
         assert "CI checks failed" in result.error
 
-    @patch("botfarm.worker.subprocess.run")
+    @patch("botfarm.worker_stages.subprocess.run")
     def test_timeout(self, mock_run, tmp_path):
         mock_run.side_effect = subprocess.TimeoutExpired(cmd="gh", timeout=5)
         result = _run_pr_checks(PR_URL, cwd=tmp_path, timeout=5)
@@ -952,7 +952,7 @@ class TestRunPrChecks:
 
 
 class TestRunMerge:
-    @patch("botfarm.worker.subprocess.run")
+    @patch("botfarm.worker_stages.subprocess.run")
     def test_merge_success(self, mock_run, tmp_path):
         mock_run.return_value = subprocess.CompletedProcess(
             args=["gh"], returncode=0, stdout="Merged", stderr=""
@@ -961,7 +961,7 @@ class TestRunMerge:
         assert result.success is True
         assert result.stage == "merge"
 
-    @patch("botfarm.worker.subprocess.run")
+    @patch("botfarm.worker_stages.subprocess.run")
     def test_merge_failure(self, mock_run, tmp_path):
         mock_run.return_value = subprocess.CompletedProcess(
             args=["gh"], returncode=1, stdout="", stderr="merge conflict"
@@ -970,8 +970,8 @@ class TestRunMerge:
         assert result.success is False
         assert "merge conflict" in result.error
 
-    @patch("botfarm.worker._check_pr_merged", return_value=True)
-    @patch("botfarm.worker.subprocess.run")
+    @patch("botfarm.worker_stages._check_pr_merged", return_value=True)
+    @patch("botfarm.worker_stages.subprocess.run")
     def test_merge_failure_but_pr_actually_merged(self, mock_run, mock_check, tmp_path):
         """When gh pr merge fails but PR is actually merged, return success."""
         mock_run.return_value = subprocess.CompletedProcess(
@@ -983,8 +983,8 @@ class TestRunMerge:
         assert result.stage == "merge"
         mock_check.assert_called_once_with(PR_URL, tmp_path, env=None)
 
-    @patch("botfarm.worker._check_pr_merged", return_value=False)
-    @patch("botfarm.worker.subprocess.run")
+    @patch("botfarm.worker_stages._check_pr_merged", return_value=False)
+    @patch("botfarm.worker_stages.subprocess.run")
     def test_merge_failure_pr_not_merged(self, mock_run, mock_check, tmp_path):
         """When gh pr merge fails and PR is not merged, return failure."""
         mock_run.return_value = subprocess.CompletedProcess(
@@ -994,7 +994,7 @@ class TestRunMerge:
         assert result.success is False
         assert "merge conflict" in result.error
 
-    @patch("botfarm.worker.subprocess.run")
+    @patch("botfarm.worker_stages.subprocess.run")
     def test_merge_does_not_use_delete_branch_flag(self, mock_run, tmp_path):
         """Merge command must not include --delete-branch (handled by GitHub repo setting)."""
         mock_run.return_value = subprocess.CompletedProcess(
@@ -1005,7 +1005,7 @@ class TestRunMerge:
         merge_call_args = mock_run.call_args_list[1][0][0]
         assert "--delete-branch" not in merge_call_args
 
-    @patch("botfarm.worker.subprocess.run")
+    @patch("botfarm.worker_stages.subprocess.run")
     def test_merge_deletes_local_feature_branch(self, mock_run, tmp_path):
         """After merge and checkout, the local feature branch is deleted."""
         def side_effect(cmd, **kwargs):
@@ -1023,7 +1023,7 @@ class TestRunMerge:
         delete_call = mock_run.call_args_list[3][0][0]
         assert delete_call == ["git", "branch", "-D", "feat/my-feature"]
 
-    @patch("botfarm.worker.subprocess.run")
+    @patch("botfarm.worker_stages.subprocess.run")
     def test_merge_skips_branch_delete_when_rev_parse_fails(self, mock_run, tmp_path):
         """When current branch cannot be determined, no branch deletion is attempted."""
         def side_effect(cmd, **kwargs):
@@ -1040,7 +1040,7 @@ class TestRunMerge:
         # 3 calls: git rev-parse (fail), gh pr merge, git checkout (no branch -D)
         assert mock_run.call_count == 3
 
-    @patch("botfarm.worker.subprocess.run")
+    @patch("botfarm.worker_stages.subprocess.run")
     def test_merge_branch_delete_failure_does_not_block_pipeline(self, mock_run, tmp_path):
         """Branch deletion failure logs a warning but returns success."""
         def side_effect(cmd, **kwargs):
@@ -1062,7 +1062,7 @@ class TestRunMerge:
         )
         assert result.success is True
 
-    @patch("botfarm.worker.subprocess.run")
+    @patch("botfarm.worker_stages.subprocess.run")
     def test_merge_refuses_to_delete_protected_branch(self, mock_run, tmp_path):
         """Protected branches (main, slot-*-placeholder) must never be deleted."""
         def side_effect(cmd, **kwargs):
@@ -1098,28 +1098,28 @@ class TestIsProtectedBranch:
 
 
 class TestCheckPrMerged:
-    @patch("botfarm.worker.subprocess.run")
+    @patch("botfarm.worker_claude.subprocess.run")
     def test_pr_merged(self, mock_run, tmp_path):
         mock_run.return_value = subprocess.CompletedProcess(
             args=["gh"], returncode=0, stdout="MERGED\n", stderr=""
         )
         assert _check_pr_merged(PR_URL, tmp_path) is True
 
-    @patch("botfarm.worker.subprocess.run")
+    @patch("botfarm.worker_claude.subprocess.run")
     def test_pr_open(self, mock_run, tmp_path):
         mock_run.return_value = subprocess.CompletedProcess(
             args=["gh"], returncode=0, stdout="OPEN\n", stderr=""
         )
         assert _check_pr_merged(PR_URL, tmp_path) is False
 
-    @patch("botfarm.worker.subprocess.run")
+    @patch("botfarm.worker_claude.subprocess.run")
     def test_pr_check_fails(self, mock_run, tmp_path):
         mock_run.return_value = subprocess.CompletedProcess(
             args=["gh"], returncode=1, stdout="", stderr="error"
         )
         assert _check_pr_merged(PR_URL, tmp_path) is False
 
-    @patch("botfarm.worker.subprocess.run")
+    @patch("botfarm.worker_claude.subprocess.run")
     def test_pr_check_timeout(self, mock_run, tmp_path):
         mock_run.side_effect = subprocess.TimeoutExpired(cmd="gh", timeout=15)
         assert _check_pr_merged(PR_URL, tmp_path) is False
@@ -1915,7 +1915,7 @@ class TestRunPipelinePauseEvent:
 
 
 class TestRecoverPrUrl:
-    @patch("botfarm.worker.subprocess.run")
+    @patch("botfarm.worker_claude.subprocess.run")
     def test_recovers_url_from_gh(self, mock_run, conn, task_id, tmp_path):
         mock_run.return_value = subprocess.CompletedProcess(
             args=["gh"],
@@ -1926,7 +1926,7 @@ class TestRecoverPrUrl:
         url = _recover_pr_url(conn, task_id, tmp_path)
         assert url == "https://github.com/owner/repo/pull/42"
 
-    @patch("botfarm.worker.subprocess.run")
+    @patch("botfarm.worker_claude.subprocess.run")
     def test_returns_none_on_gh_failure(self, mock_run, conn, task_id, tmp_path):
         mock_run.return_value = subprocess.CompletedProcess(
             args=["gh"],
@@ -1937,7 +1937,7 @@ class TestRecoverPrUrl:
         url = _recover_pr_url(conn, task_id, tmp_path)
         assert url is None
 
-    @patch("botfarm.worker.subprocess.run")
+    @patch("botfarm.worker_claude.subprocess.run")
     def test_returns_none_on_exception(self, mock_run, conn, task_id, tmp_path):
         mock_run.side_effect = FileNotFoundError("gh not found")
         url = _recover_pr_url(conn, task_id, tmp_path)
@@ -2311,7 +2311,7 @@ class TestReviewIterationLoop:
 
 
 class TestRunCiFix:
-    @patch("botfarm.worker.run_claude_streaming")
+    @patch("botfarm.worker_claude.run_claude_streaming")
     def test_success(self, mock_claude, tmp_path):
         mock_claude.return_value = ClaudeResult(
             session_id="s-ci",
@@ -2332,7 +2332,7 @@ class TestRunCiFix:
         assert "CI checks" in prompt
         assert "test_foo FAILED" in prompt
 
-    @patch("botfarm.worker.run_claude_streaming")
+    @patch("botfarm.worker_claude.run_claude_streaming")
     def test_is_error_returns_failure(self, mock_claude, tmp_path):
         mock_claude.return_value = ClaudeResult(
             session_id="s-ci",
@@ -2348,7 +2348,7 @@ class TestRunCiFix:
         assert result.success is False
         assert "Claude reported error" in result.error
 
-    @patch("botfarm.worker.run_claude_streaming")
+    @patch("botfarm.worker_claude.run_claude_streaming")
     def test_ci_output_truncated_at_2000_chars(self, mock_claude, tmp_path):
         mock_claude.return_value = ClaudeResult(
             session_id="s-ci",
@@ -2607,7 +2607,7 @@ class TestCiRetryLoop:
 class TestIsMergeConflict:
     """Unit tests for _is_merge_conflict()."""
 
-    @patch("botfarm.worker.subprocess.run")
+    @patch("botfarm.worker_stages.subprocess.run")
     def test_conflict_detected(self, mock_run):
         """Regex match + gh pr view confirms CONFLICTING → True."""
         mock_run.return_value = MagicMock(
@@ -2617,7 +2617,7 @@ class TestIsMergeConflict:
             "Pull request isn't mergeable", PR_URL, "/tmp",
         ) is True
 
-    @patch("botfarm.worker.subprocess.run")
+    @patch("botfarm.worker_stages.subprocess.run")
     def test_no_conflict_keyword(self, mock_run):
         """Error without conflict keywords → False (no gh call)."""
         assert _is_merge_conflict(
@@ -2625,7 +2625,7 @@ class TestIsMergeConflict:
         ) is False
         mock_run.assert_not_called()
 
-    @patch("botfarm.worker.subprocess.run")
+    @patch("botfarm.worker_stages.subprocess.run")
     def test_conflict_keyword_but_mergeable(self, mock_run):
         """Regex matches but gh pr view says MERGEABLE → False."""
         mock_run.return_value = MagicMock(
@@ -2635,7 +2635,7 @@ class TestIsMergeConflict:
             "not mergeable right now", PR_URL, "/tmp",
         ) is False
 
-    @patch("botfarm.worker.subprocess.run")
+    @patch("botfarm.worker_stages.subprocess.run")
     def test_conflict_keyword_gh_timeout(self, mock_run):
         """Regex matches but gh pr view times out → True (fallback)."""
         mock_run.side_effect = subprocess.TimeoutExpired(cmd="gh", timeout=30)
@@ -2643,7 +2643,7 @@ class TestIsMergeConflict:
             "conflict detected", PR_URL, "/tmp",
         ) is True
 
-    @patch("botfarm.worker.subprocess.run")
+    @patch("botfarm.worker_stages.subprocess.run")
     def test_case_insensitive(self, mock_run):
         """Conflict keyword matching is case-insensitive."""
         mock_run.return_value = MagicMock(
@@ -2842,7 +2842,7 @@ class TestParsePrUrl:
 class TestPromptContent:
     """Verify that review and fix prompts contain expected substrings."""
 
-    @patch("botfarm.worker.run_claude_streaming")
+    @patch("botfarm.worker_claude.run_claude_streaming")
     def test_review_prompt_contains_inline_comment_api(self, mock_claude, tmp_path):
         mock_claude.return_value = ClaudeResult(
             session_id="s", num_turns=1, duration_seconds=1.0,
@@ -2854,7 +2854,7 @@ class TestPromptContent:
         assert "inline" in prompt
         assert "{{" not in prompt
 
-    @patch("botfarm.worker.run_claude_streaming")
+    @patch("botfarm.worker_claude.run_claude_streaming")
     def test_review_prompt_contains_verdict_instruction(self, mock_claude, tmp_path):
         mock_claude.return_value = ClaudeResult(
             session_id="s", num_turns=1, duration_seconds=1.0,
@@ -2865,7 +2865,7 @@ class TestPromptContent:
         assert "VERDICT: APPROVED" in prompt
         assert "VERDICT: CHANGES_REQUESTED" in prompt
 
-    @patch("botfarm.worker.run_claude_streaming")
+    @patch("botfarm.worker_claude.run_claude_streaming")
     def test_review_prompt_requires_changes_requested_for_inline_comments(
         self, mock_claude, tmp_path,
     ):
@@ -2879,7 +2879,7 @@ class TestPromptContent:
         assert "ZERO actionable inline comments" in prompt
         assert "MUST use --request-changes" in prompt
 
-    @patch("botfarm.worker.run_claude_streaming")
+    @patch("botfarm.worker_claude.run_claude_streaming")
     def test_fix_prompt_contains_inline_comment_api(self, mock_claude, tmp_path):
         mock_claude.return_value = ClaudeResult(
             session_id="s", num_turns=1, duration_seconds=1.0,
@@ -2890,7 +2890,7 @@ class TestPromptContent:
         assert "gh api repos/owner/repo/pulls/42/comments" in prompt
         assert "{{" not in prompt
 
-    @patch("botfarm.worker.run_claude_streaming")
+    @patch("botfarm.worker_claude.run_claude_streaming")
     def test_fix_prompt_instructs_reply_to_comments(self, mock_claude, tmp_path):
         mock_claude.return_value = ClaudeResult(
             session_id="s", num_turns=1, duration_seconds=1.0,
@@ -2901,7 +2901,7 @@ class TestPromptContent:
         assert "comments/COMMENT_ID/replies" in prompt
         assert "Fixed" in prompt
 
-    @patch("botfarm.worker.run_claude_streaming")
+    @patch("botfarm.worker_claude.run_claude_streaming")
     def test_fix_prompt_multi_reviewer(self, mock_claude, tmp_path):
         mock_claude.return_value = ClaudeResult(
             session_id="s", num_turns=1, duration_seconds=1.0,
@@ -2913,7 +2913,7 @@ class TestPromptContent:
         assert "CODEX: " in prompt
         assert "Address all comments regardless of source" in prompt
 
-    @patch("botfarm.worker.run_claude_streaming")
+    @patch("botfarm.worker_claude.run_claude_streaming")
     def test_fix_prompt_single_reviewer(self, mock_claude, tmp_path):
         mock_claude.return_value = ClaudeResult(
             session_id="s", num_turns=1, duration_seconds=1.0,
@@ -2988,7 +2988,7 @@ class TestBuildImplementPrompt:
 
 
 class TestRunImplementWithLabels:
-    @patch("botfarm.worker.run_claude_streaming")
+    @patch("botfarm.worker_claude.run_claude_streaming")
     def test_standard_ticket_uses_pr_prompt(self, mock_claude, tmp_path):
         mock_claude.return_value = ClaudeResult(
             session_id="s1", num_turns=10, duration_seconds=30.0,
@@ -2998,7 +2998,7 @@ class TestRunImplementWithLabels:
         prompt = mock_claude.call_args.args[0]
         assert "PR creation" in prompt
 
-    @patch("botfarm.worker.run_claude_streaming")
+    @patch("botfarm.worker_claude.run_claude_streaming")
     def test_investigation_ticket_uses_investigation_prompt(self, mock_claude, tmp_path):
         mock_claude.return_value = ClaudeResult(
             session_id="s1", num_turns=10, duration_seconds=30.0,
@@ -3196,7 +3196,7 @@ class TestPipelineContextEnvForStage:
 
 
 class TestPrChecksEnvPropagation:
-    @patch("botfarm.worker.subprocess.run")
+    @patch("botfarm.worker_stages.subprocess.run")
     def test_env_propagated_to_subprocess(self, mock_run, tmp_path):
         """_run_pr_checks should pass merged env to subprocess.run."""
         mock_run.return_value = subprocess.CompletedProcess(
@@ -3209,7 +3209,7 @@ class TestPrChecksEnvPropagation:
         assert call_kwargs["env"] is not None
         assert call_kwargs["env"]["GH_TOKEN"] == "test-token"
 
-    @patch("botfarm.worker.subprocess.run")
+    @patch("botfarm.worker_stages.subprocess.run")
     def test_no_env_passes_none(self, mock_run, tmp_path):
         """When env is None, subprocess_env should be None."""
         mock_run.return_value = subprocess.CompletedProcess(
@@ -3222,7 +3222,7 @@ class TestPrChecksEnvPropagation:
 
 
 class TestMergeEnvPropagation:
-    @patch("botfarm.worker.subprocess.run")
+    @patch("botfarm.worker_stages.subprocess.run")
     def test_env_propagated_to_all_subprocess_calls(self, mock_run, tmp_path):
         """_run_merge should pass env to all subprocess.run calls."""
         mock_run.return_value = subprocess.CompletedProcess(
@@ -3236,7 +3236,7 @@ class TestMergeEnvPropagation:
             assert call_kwargs["env"] is not None
             assert call_kwargs["env"]["GH_TOKEN"] == "merge-token"
 
-    @patch("botfarm.worker.subprocess.run")
+    @patch("botfarm.worker_stages.subprocess.run")
     def test_no_env_passes_none(self, mock_run, tmp_path):
         """When env is None, subprocess calls get env=None."""
         mock_run.return_value = subprocess.CompletedProcess(
@@ -3297,7 +3297,7 @@ class TestBuildTurnsCfg:
 
 
 class TestRunClaudeStage:
-    @patch("botfarm.worker._invoke_claude")
+    @patch("botfarm.worker_stages._invoke_claude")
     def test_uses_render_prompt(self, mock_invoke, conn):
         pipeline = load_pipeline(conn, [])
         stage_tpl = get_stage(pipeline, "implement")
@@ -3315,7 +3315,7 @@ class TestRunClaudeStage:
         assert "SMA-42" in called_prompt
         assert "{ticket_id}" not in called_prompt
 
-    @patch("botfarm.worker._invoke_claude")
+    @patch("botfarm.worker_stages._invoke_claude")
     def test_pr_url_result_parser(self, mock_invoke, conn):
         pipeline = load_pipeline(conn, [])
         stage_tpl = get_stage(pipeline, "implement")
@@ -3332,7 +3332,7 @@ class TestRunClaudeStage:
         assert result.pr_url == "https://github.com/org/repo/pull/42"
         assert result.success is True
 
-    @patch("botfarm.worker._invoke_claude")
+    @patch("botfarm.worker_stages._invoke_claude")
     def test_review_verdict_result_parser(self, mock_invoke, conn):
         pipeline = load_pipeline(conn, [])
         stage_tpl = get_stage(pipeline, "review")
@@ -3354,7 +3354,7 @@ class TestRunClaudeStage:
         assert result.review_approved is True
         assert result.success is True
 
-    @patch("botfarm.worker._invoke_claude")
+    @patch("botfarm.worker_stages._invoke_claude")
     def test_error_result(self, mock_invoke, conn):
         pipeline = load_pipeline(conn, [])
         stage_tpl = get_stage(pipeline, "implement")
@@ -3373,7 +3373,7 @@ class TestRunClaudeStage:
 
 
 class TestExecuteStageWithTemplate:
-    @patch("botfarm.worker._invoke_claude")
+    @patch("botfarm.worker_stages._invoke_claude")
     def test_claude_executor_routes_correctly(self, mock_invoke, conn):
         """executor_type='claude' uses _run_claude_stage."""
         pipeline = load_pipeline(conn, [])
@@ -3390,7 +3390,7 @@ class TestExecuteStageWithTemplate:
         assert result.success is True
         assert mock_invoke.called
 
-    @patch("botfarm.worker.subprocess.run")
+    @patch("botfarm.worker_stages.subprocess.run")
     def test_shell_executor_routes_to_pr_checks(self, mock_run, conn, tmp_path):
         """executor_type='shell' routes to _run_pr_checks."""
         pipeline = load_pipeline(conn, [])
@@ -3405,7 +3405,7 @@ class TestExecuteStageWithTemplate:
         )
         assert result.success is True
 
-    @patch("botfarm.worker.subprocess.run")
+    @patch("botfarm.worker_stages.subprocess.run")
     def test_internal_executor_routes_to_merge(self, mock_run, conn, tmp_path):
         """executor_type='internal' routes to _run_merge."""
         pipeline = load_pipeline(conn, [])
