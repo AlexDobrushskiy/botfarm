@@ -213,12 +213,19 @@ class OperationsMixin:
         if not base.exists():
             return
         try:
+            # Strip GIT_* env vars so subprocesses target the correct repo,
+            # not a parent repo whose vars leaked into the environment.
+            clean_env = {
+                k: v for k, v in os.environ.items()
+                if not k.startswith("GIT_")
+            }
             result = subprocess.run(
                 ["git", "branch", "--show-current"],
                 cwd=str(base),
                 capture_output=True,
                 text=True,
                 timeout=10,
+                env=clean_env,
             )
             branch = result.stdout.strip()
             if branch and branch != "main":
@@ -233,6 +240,7 @@ class OperationsMixin:
                     capture_output=True,
                     text=True,
                     timeout=30,
+                    env=clean_env,
                 )
                 if checkout.returncode == 0:
                     insert_event(
