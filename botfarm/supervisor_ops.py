@@ -122,10 +122,11 @@ class OperationsMixin:
         )
         self._conn.commit()
 
+        ticket_id = slot.ticket_id
         self._slot_manager.free_slot(project, slot.slot_id)
         self._cleanup_slot_db(project, slot.slot_id)
-        if slot.ticket_id:
-            self._cleanup_shared_mem(slot.ticket_id)
+        if ticket_id:
+            self._cleanup_shared_mem(ticket_id)
         self._pending_result_texts.pop((project, slot.slot_id), None)
         logger.info("Freed slot %s/%d after completion", project, slot.slot_id)
 
@@ -190,10 +191,11 @@ class OperationsMixin:
         )
         self._conn.commit()
 
+        ticket_id = slot.ticket_id
         self._slot_manager.free_slot(project, slot.slot_id)
         self._cleanup_slot_db(project, slot.slot_id)
-        if slot.ticket_id:
-            self._cleanup_shared_mem(slot.ticket_id)
+        if ticket_id:
+            self._cleanup_shared_mem(ticket_id)
         self._pending_result_texts.pop((project, slot.slot_id), None)
         logger.info("Freed slot %s/%d after failure", project, slot.slot_id)
 

@@ -1327,14 +1327,14 @@ def _run_ci_fix(
 
     if result.is_error:
         return StageResult(
-            stage="fix",
+            stage="ci_fix",
             success=False,
             claude_result=result,
             error=f"Claude reported error: {result.result_text[:RESULT_TRUNCATE_CHARS]}",
         )
 
     return StageResult(
-        stage="fix",
+        stage="ci_fix",
         success=True,
         claude_result=result,
     )
@@ -3039,6 +3039,9 @@ def _execute_stage(
                     owner=owner,
                     repo=repo,
                 )
+            # shared_mem_dir is injected via both prompt_vars (so templates
+            # can reference {shared_mem_dir} for the path) and prompt_suffix
+            # (appends full instruction block after template rendering).
             prompt_suffix = ""
             if shared_mem_dir:
                 prompt_vars["shared_mem_dir"] = shared_mem_dir

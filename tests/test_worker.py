@@ -2324,7 +2324,7 @@ class TestRunCiFix:
             PR_URL, ci_failure_output="test_foo FAILED", cwd=tmp_path, max_turns=100,
         )
         assert result.success is True
-        assert result.stage == "fix"
+        assert result.stage == "ci_fix"
         assert result.claude_result.session_id == "s-ci"
 
         # Verify prompt includes CI failure output
