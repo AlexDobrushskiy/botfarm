@@ -2676,7 +2676,11 @@ Follow the Refactoring Analysis Procedure documented in CLAUDE.md (or docs/refac
         # Also check Linear directly for any open tickets with the label
         # (catches manually created tickets or ones from before DB tracking)
         any_check_succeeded = False
+        checked_teams: set[str] = set()
         for poller in self._pollers.values():
+            if poller.team_key in checked_teams:
+                continue
+            checked_teams.add(poller.team_key)
             try:
                 open_issues = self._linear_client.fetch_open_issues_with_label(
                     poller.team_key,
@@ -2743,9 +2747,17 @@ Follow the Refactoring Analysis Procedure documented in CLAUDE.md (or docs/refac
                     )
                 except Exception:
                     logger.warning(
-                        "Failed to resolve project '%s' — creating without project",
+                        "Failed to resolve project '%s' — skipping ticket creation",
                         first_project.linear_project,
                     )
+                    return
+                if project_id is None:
+                    logger.warning(
+                        "Project '%s' not found in Linear — skipping "
+                        "refactoring analysis ticket creation",
+                        first_project.linear_project,
+                    )
+                    return
 
             # Resolve the configured todo state so the ticket is picked up
             state_id: str | None = None
@@ -2755,9 +2767,19 @@ Follow the Refactoring Analysis Procedure documented in CLAUDE.md (or docs/refac
                 state_id = states.get(todo_status)
             except Exception:
                 logger.warning(
-                    "Failed to resolve todo state '%s' — using team default",
+                    "Failed to resolve todo state '%s' — skipping ticket creation",
                     todo_status,
                 )
+                return
+
+            if state_id is None:
+                logger.warning(
+                    "Todo state '%s' not found in team '%s' — skipping "
+                    "refactoring analysis ticket creation",
+                    todo_status,
+                    team_key,
+                )
+                return
 
             description = self._REFACTORING_ANALYSIS_TICKET_TEMPLATE
 

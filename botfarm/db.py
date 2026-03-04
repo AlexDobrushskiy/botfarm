@@ -627,13 +627,20 @@ def get_events(
 # ---------------------------------------------------------------------------
 
 
-def get_last_refactoring_analysis_date(conn: sqlite3.Connection) -> datetime | None:
-    """Return the timestamp of the most recent refactoring_analysis_scheduled event."""
-    row = conn.execute(
-        "SELECT created_at FROM task_events "
+def _get_last_refactoring_analysis_event(
+    conn: sqlite3.Connection,
+) -> sqlite3.Row | None:
+    """Return the most recent refactoring_analysis_scheduled event row, or None."""
+    return conn.execute(
+        "SELECT created_at, detail FROM task_events "
         "WHERE event_type = 'refactoring_analysis_scheduled' "
         "ORDER BY created_at DESC LIMIT 1"
     ).fetchone()
+
+
+def get_last_refactoring_analysis_date(conn: sqlite3.Connection) -> datetime | None:
+    """Return the timestamp of the most recent refactoring_analysis_scheduled event."""
+    row = _get_last_refactoring_analysis_event(conn)
     if row is None:
         return None
     return datetime.fromisoformat(row["created_at"].replace("Z", "+00:00"))
@@ -648,11 +655,7 @@ def get_last_scheduled_refactoring_ticket(
     has been scheduled yet.  The caller is responsible for checking whether
     the ticket is still open via the poller.
     """
-    row = conn.execute(
-        "SELECT detail FROM task_events "
-        "WHERE event_type = 'refactoring_analysis_scheduled' "
-        "ORDER BY created_at DESC LIMIT 1"
-    ).fetchone()
+    row = _get_last_refactoring_analysis_event(conn)
     if row is None:
         return None
     return row["detail"]

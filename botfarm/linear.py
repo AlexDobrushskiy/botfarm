@@ -858,7 +858,12 @@ class LinearClient:
         return data.get("issueUnarchive", {}).get("success", False)
 
     def get_team_id(self, team_key: str) -> str:
-        """Return the internal UUID for a team given its key."""
+        """Return the internal UUID for a team given its key.
+
+        Reuses TEAM_STATES_QUERY (which also fetches workflow states) since
+        there is no lighter team-by-key query defined. The extra state data
+        is simply ignored.
+        """
         data = self._execute(TEAM_STATES_QUERY, {"teamKey": team_key})
         teams = data.get("teams", {}).get("nodes", [])
         if not teams:
@@ -902,7 +907,7 @@ class LinearClient:
         team_id: str,
         title: str,
         description: str = "",
-        priority: int = 0,
+        priority: int | None = None,
         label_ids: list[str] | None = None,
         project_id: str | None = None,
         state_id: str | None = None,
@@ -914,7 +919,7 @@ class LinearClient:
         }
         if description:
             input_data["description"] = description
-        if priority:
+        if priority is not None:
             input_data["priority"] = priority
         if label_ids:
             input_data["labelIds"] = label_ids

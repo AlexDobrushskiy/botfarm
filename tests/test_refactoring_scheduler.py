@@ -507,6 +507,68 @@ class TestRefactoringScheduler:
         assert call_kwargs["project_id"] == "project-uuid"
         assert call_kwargs["state_id"] == "todo-state-id"
 
+    def test_skips_when_project_not_found(self, tmp_path, monkeypatch):
+        """Skips ticket creation when configured project is not found in Linear."""
+        config = _make_config(tmp_path)
+        config.projects[0].linear_project = "Nonexistent Project"
+        sup, _ = _make_supervisor(tmp_path, monkeypatch, config)
+
+        sup._linear_client.get_team_id = MagicMock(return_value="team-uuid")
+        sup._linear_client.get_or_create_label = MagicMock(
+            return_value="label-uuid"
+        )
+        sup._linear_client.get_team_states = MagicMock(
+            return_value={"Todo": "todo-state-id"}
+        )
+        sup._linear_client.get_project_id = MagicMock(return_value=None)
+        sup._linear_client.fetch_open_issues_with_label = MagicMock(
+            return_value=[]
+        )
+
+        with patch.object(sup._linear_client, "create_issue") as mock_create:
+            sup._maybe_create_refactoring_analysis_ticket()
+            mock_create.assert_not_called()
+
+    def test_skips_when_todo_state_not_found(self, tmp_path, monkeypatch):
+        """Skips ticket creation when configured todo state doesn't exist."""
+        sup, _ = _make_supervisor(tmp_path, monkeypatch)
+
+        sup._linear_client.get_team_id = MagicMock(return_value="team-uuid")
+        sup._linear_client.get_or_create_label = MagicMock(
+            return_value="label-uuid"
+        )
+        sup._linear_client.get_team_states = MagicMock(
+            return_value={"Backlog": "backlog-state-id"}  # No "Todo" state
+        )
+        sup._linear_client.fetch_open_issues_with_label = MagicMock(
+            return_value=[]
+        )
+
+        with patch.object(sup._linear_client, "create_issue") as mock_create:
+            sup._maybe_create_refactoring_analysis_ticket()
+            mock_create.assert_not_called()
+
+    def test_skips_when_project_api_fails(self, tmp_path, monkeypatch):
+        """Skips ticket creation when project lookup raises an exception."""
+        config = _make_config(tmp_path)
+        config.projects[0].linear_project = "My Project"
+        sup, _ = _make_supervisor(tmp_path, monkeypatch, config)
+
+        sup._linear_client.get_team_id = MagicMock(return_value="team-uuid")
+        sup._linear_client.get_or_create_label = MagicMock(
+            return_value="label-uuid"
+        )
+        sup._linear_client.get_project_id = MagicMock(
+            side_effect=Exception("API error")
+        )
+        sup._linear_client.fetch_open_issues_with_label = MagicMock(
+            return_value=[]
+        )
+
+        with patch.object(sup._linear_client, "create_issue") as mock_create:
+            sup._maybe_create_refactoring_analysis_ticket()
+            mock_create.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # Linear client method tests
@@ -564,6 +626,31 @@ class TestLinearClientMethods:
         input_data = mock_exec.call_args[0][1]["input"]
         assert input_data["projectId"] == "proj-uuid"
         assert input_data["stateId"] == "state-uuid"
+
+    def test_create_issue_includes_priority_zero(self):
+        from botfarm.linear import LinearClient
+
+        client = LinearClient(api_key="test")
+        mock_response = {
+            "issueCreate": {
+                "success": True,
+                "issue": {
+                    "id": "uuid",
+                    "identifier": "TST-PRI0",
+                    "url": "https://linear.app/test/TST-PRI0",
+                },
+            }
+        }
+        with patch.object(client, "_execute", return_value=mock_response) as mock_exec:
+            client.create_issue(
+                team_id="team-1",
+                title="Test",
+                priority=0,
+            )
+
+        input_data = mock_exec.call_args[0][1]["input"]
+        assert "priority" in input_data
+        assert input_data["priority"] == 0
 
     def test_create_issue_raises_on_failure(self):
         from botfarm.linear import LinearClient
