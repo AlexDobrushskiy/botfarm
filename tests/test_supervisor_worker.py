@@ -588,7 +588,9 @@ class TestSlotWorktreeCwd:
         poller = supervisor._pollers["test-project"]
 
         with patch("botfarm.supervisor.Path.home", return_value=tmp_path), \
-             patch("botfarm.supervisor.multiprocessing.Process") as MockProc:
+             patch("botfarm.supervisor.multiprocessing.Process") as MockProc, \
+             patch("botfarm.worker.ensure_shared_mem_dir", return_value=tmp_path / "shared-mem" / "TST-1"), \
+             patch("botfarm.worker.cleanup_shared_mem"):
             mock_proc = MagicMock()
             mock_proc.pid = 12345
             MockProc.return_value = mock_proc
@@ -607,7 +609,8 @@ class TestSlotWorktreeCwd:
         poller = supervisor._pollers["test-project"]
 
         with patch("botfarm.supervisor.multiprocessing.Process") as MockProc, \
-             patch("botfarm.worker.cleanup_shared_mem") as mock_cleanup:
+             patch("botfarm.worker.cleanup_shared_mem") as mock_cleanup, \
+             patch("botfarm.worker.ensure_shared_mem_dir", return_value=tmp_path / "shared-mem" / "TST-1"):
             mock_proc = MagicMock()
             mock_proc.pid = 12345
             MockProc.return_value = mock_proc
@@ -644,6 +647,7 @@ class TestSlotWorktreeCwd:
             patch.object(supervisor._usage_poller, "force_poll"),
             patch("botfarm.supervisor.multiprocessing.Process") as MockProc,
             patch("botfarm.worker.cleanup_shared_mem") as mock_cleanup,
+            patch("botfarm.worker.ensure_shared_mem_dir", return_value=tmp_path / "shared-mem" / "TST-1"),
         ):
             mock_proc = MagicMock()
             mock_proc.pid = 555

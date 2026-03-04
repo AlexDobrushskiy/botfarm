@@ -69,7 +69,7 @@
                     {{ slot.stage | replace("_", " ") }}
                     {% if slot.stage_iteration > 1 %}
                         <span class="slot-iter-badge">
-                            {%- if slot.stage == "fix" -%}loop {{ slot.stage_iteration }}
+                            {%- if slot.stage in ("fix", "ci_fix") -%}loop {{ slot.stage_iteration }}
                             {%- elif slot.stage == "pr_checks" -%}retry {{ slot.stage_iteration }}
                             {%- else -%}iter {{ slot.stage_iteration }}
                             {%- endif -%}

@@ -2907,7 +2907,7 @@ def _run_ci_retry_loop(
         ci_fix_stage_run_id = insert_stage_run(
             ctx.conn,
             task_id=ctx.task_id,
-            stage="fix",
+            stage="ci_fix",
             iteration=retry,
             log_file_path=str(log_file) if log_file else None,
             on_extra_usage=ci_fix_extra_usage,
@@ -2932,13 +2932,13 @@ def _run_ci_retry_loop(
         except Exception as exc:
             logger.error("CI fix stage raised: %s", exc)
             delete_stage_run(ctx.conn, ci_fix_stage_run_id)
-            ctx.pipeline.failure_stage = "fix"
+            ctx.pipeline.failure_stage = "ci_fix"
             ctx.pipeline.failure_reason = str(exc)[:DETAIL_TRUNCATE_CHARS]
             _record_failure(ctx.conn, ctx.task_id, ctx.pipeline)
             return False
 
         fix_result = ctx.run_and_record_result(
-            "fix", fix_result, wall_start=wall_start, iteration=retry,
+            "ci_fix", fix_result, wall_start=wall_start, iteration=retry,
             stage_run_id=ci_fix_stage_run_id,
             log_file=log_file,
             on_extra_usage=ci_fix_extra_usage,
