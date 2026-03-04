@@ -433,8 +433,6 @@ class RecoveryMixin:
         2. Slot state (``slot.pr_url``)
         3. ``gh pr view`` branch lookup in the project working directory
         """
-        from botfarm.supervisor import Supervisor
-
         pr_ref: str | None = None
         source: str | None = None
 
@@ -456,7 +454,7 @@ class RecoveryMixin:
         if not pr_ref:
             project_cfg = self._projects.get(slot.project)
             if project_cfg:
-                cwd = Supervisor._slot_worktree_cwd(project_cfg, slot.slot_id)
+                cwd = self._slot_worktree_cwd(project_cfg, slot.slot_id)
                 pr_ref = self._gh_pr_url_for_branch(slot.branch, cwd, env=self._git_env)
                 if pr_ref:
                     source = "gh_branch_lookup"

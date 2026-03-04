@@ -11,7 +11,6 @@ import logging
 import os
 import queue
 import re
-import shutil
 import signal
 import subprocess
 import time
@@ -764,8 +763,6 @@ Note: The supervisor handles status transitions automatically — do not move th
 
     def stop_slot(self, project: str, slot_id: int) -> StopSlotResult:
         """Stop a single slot: kill worker, clean up git/PR/Linear, free slot."""
-        from botfarm.supervisor import Supervisor
-
         slot = self._slot_manager.get_slot(project, slot_id)
         if slot is None:
             return StopSlotResult(
@@ -922,8 +919,6 @@ Note: The supervisor handles status transitions automatically — do not move th
 
     def _stop_slot_pr_cleanup(self, slot: SlotState) -> tuple[bool, bool]:
         """Close PR if open, detect if merged. Returns (pr_was_merged, pr_closed)."""
-        from botfarm.supervisor import Supervisor
-
         pr_status, resolved_pr_url = self._check_pr_status(slot)
         if pr_status is None:
             return False, False
@@ -937,7 +932,7 @@ Note: The supervisor handles status transitions automatically — do not move th
             if pr_url:
                 project_cfg = self._projects.get(slot.project)
                 if project_cfg:
-                    cwd = Supervisor._slot_worktree_cwd(project_cfg, slot.slot_id)
+                    cwd = self._slot_worktree_cwd(project_cfg, slot.slot_id)
                     subprocess_env = self._subprocess_env()
                     try:
                         result = subprocess.run(
@@ -966,13 +961,11 @@ Note: The supervisor handles status transitions automatically — do not move th
         self, project: str, slot_id: int, branch: str | None,
     ) -> bool:
         """Reset worktree to placeholder branch and delete feature branch."""
-        from botfarm.supervisor import Supervisor
-
         project_cfg = self._projects.get(project)
         if not project_cfg:
             return False
-        cwd = Supervisor._slot_worktree_cwd(project_cfg, slot_id)
-        placeholder = Supervisor._slot_placeholder_branch(slot_id)
+        cwd = self._slot_worktree_cwd(project_cfg, slot_id)
+        placeholder = self._slot_placeholder_branch(slot_id)
         subprocess_env = self._subprocess_env()
 
         lock_file = Path(cwd) / ".git" / "index.lock"
