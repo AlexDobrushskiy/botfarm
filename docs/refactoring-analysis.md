@@ -64,15 +64,14 @@ When no refactoring is needed:
 
    Summary:
    - Largest file: {file} ({lines} lines) — within acceptable range
-   - {N} files checked, {M} exceeded soft thresholds but complexity is justified
+   - {N} files checked, {M} exceeded action thresholds but complexity is justified
    - No significant duplication or structural concerns identified
    - Notable growth since last analysis: {file} grew by {N} lines (still manageable)
 
    Next scheduled analysis: ~{date based on cadence}
    ```
 
-2. Send notification: "Refactoring analysis complete — code quality is good enough, no action needed"
-3. Move ticket to Done
+2. End with a final summary that includes the phrase **"No refactoring needed"** or **"No action needed"** so the supervisor can parse it and send the appropriate notification automatically. Status transitions are handled by the supervisor — do not move the ticket manually.
 
 ## 3. "Refactoring Needed" Outcome
 
@@ -89,8 +88,7 @@ When refactoring is warranted:
    - Set dependencies between tickets where appropriate
 
 3. Post a comment on the Investigation ticket linking to the parent ticket
-4. Send notification: "Refactoring analysis complete — {N} tickets created under {parent-id}"
-5. Move Investigation ticket to Done
+4. End with a final summary that includes the phrase **"Created {N} refactoring tickets under {parent-id}"** (e.g., "Created 3 refactoring tickets under SMA-456. Top concerns: supervisor.py complexity, duplicate config parsing"). The supervisor parses this to send the appropriate notification automatically. Status transitions are handled by the supervisor — do not move the ticket manually.
 
 ## 4. What NOT to Flag
 
