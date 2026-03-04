@@ -515,3 +515,43 @@ class TestCodexEventsRecorded:
         events = get_events(conn, task_id=task_id)
         codex_events = [e for e in events if "codex" in e["event_type"]]
         assert codex_events == []
+
+    @patch("botfarm.worker._execute_stage")
+    def test_codex_skipped_on_iteration_2(self, mock_exec, conn, task_id, tmp_path):
+        """Codex review skipped on iteration 2+ with appropriate event."""
+        codex_res = make_codex_result("VERDICT: CHANGES_REQUESTED")
+        mock_exec.side_effect = [
+            _mock_stage_result("implement", pr_url=PR_URL),
+            _mock_stage_result(
+                "review",
+                review_approved=False,
+                codex_result=codex_res,
+            ),
+            _mock_stage_result("fix"),
+            _mock_stage_result("review", review_approved=True),
+            _mock_stage_result("pr_checks"),
+            _mock_stage_result("merge"),
+        ]
+        run_pipeline(
+            ticket_id="SMA-99",
+            task_id=task_id,
+            cwd=tmp_path,
+            conn=conn,
+            max_review_iterations=3,
+            codex_reviewer_enabled=True,
+        )
+
+        # Iteration 1 review should have codex kwargs
+        review_call_1 = mock_exec.call_args_list[1]
+        assert review_call_1.kwargs.get("codex_enabled") is True
+
+        # Iteration 2 review should NOT have codex kwargs
+        review_call_2 = mock_exec.call_args_list[3]
+        assert "codex_enabled" not in review_call_2.kwargs
+
+        # Verify codex_review_skipped event for iteration 2
+        events = get_events(conn, task_id=task_id)
+        skipped = [e for e in events if e["event_type"] == "codex_review_skipped"
+                   and "iteration" in (e["detail"] or "")]
+        assert len(skipped) == 1
+        assert "iteration 2" in skipped[0]["detail"]

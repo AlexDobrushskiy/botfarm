@@ -1174,6 +1174,7 @@ RUNTIME_CONFIG_KEYS: frozenset[str] = frozenset({
     "codex_reviewer_enabled",
     "codex_reviewer_model",
     "codex_reviewer_timeout_minutes",
+    "codex_reviewer_skip_on_reiteration",
 })
 
 

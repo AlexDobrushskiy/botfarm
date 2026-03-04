@@ -1497,6 +1497,7 @@ def run_pipeline(
     codex_reviewer_enabled: bool = False,
     codex_reviewer_model: str = "",
     codex_reviewer_timeout_minutes: int = 15,
+    codex_reviewer_skip_on_reiteration: bool = True,
 ) -> PipelineResult:
     """Execute the full implement→review→fix→pr_checks→merge pipeline.
 
@@ -1592,6 +1593,7 @@ def run_pipeline(
             enabled=codex_reviewer_enabled,
             model=codex_reviewer_model,
             timeout_minutes=codex_reviewer_timeout_minutes,
+            skip_on_reiteration=codex_reviewer_skip_on_reiteration,
         ),
         max_review_iterations=eff_max_review_iterations,
         max_ci_retries=eff_max_ci_retries,
@@ -2211,6 +2213,7 @@ class _CodexReviewerConfig:
     enabled: bool = False
     model: str = ""
     timeout_minutes: int = 15
+    skip_on_reiteration: bool = True
 
 
 def _env_for_stage(
@@ -2302,6 +2305,7 @@ class _PipelineContext:
             "codex_reviewer_enabled": ("enabled", _to_bool),
             "codex_reviewer_model": ("model", str),
             "codex_reviewer_timeout_minutes": ("timeout_minutes", int),
+            "codex_reviewer_skip_on_reiteration": ("skip_on_reiteration", _to_bool),
         }
         for db_key, (codex_attr, cast) in codex_fields.items():
             if db_key in rt:
@@ -2496,9 +2500,15 @@ class _PipelineContext:
             def on_context_fill(turn: int, fill_pct: float) -> None:
                 update_stage_run_context_fill(_conn, _sr_id, fill_pct)
 
-        # Codex reviewer params (only relevant for review stage)
+        # Codex reviewer params — when skip_on_reiteration is set (default),
+        # only run codex on the first review iteration.  This is an explicit
+        # policy: Claude's review covers subsequent iterations and codex adds
+        # diminishing value after the first pass (~5 min saved per iteration).
         codex_kwargs: dict = {}
-        if stage == "review" and self.codex_config.enabled:
+        skip_codex = (
+            self.codex_config.skip_on_reiteration and iteration > 1
+        )
+        if stage == "review" and self.codex_config.enabled and not skip_codex:
             codex_kwargs = {
                 "codex_enabled": True,
                 "codex_model": self.codex_config.model or None,
@@ -2508,6 +2518,18 @@ class _PipelineContext:
                 ),
                 "review_iteration": iteration,
             }
+        elif stage == "review" and self.codex_config.enabled and skip_codex:
+            logger.info(
+                "Skipping Codex review on iteration %d (only runs on first iteration)",
+                iteration,
+            )
+            insert_event(
+                self.conn,
+                task_id=self.task_id,
+                event_type="codex_review_skipped",
+                detail=f"iteration {iteration} (only runs on first)",
+            )
+            self.conn.commit()
 
         try:
             result = _execute_stage(
