@@ -906,6 +906,12 @@ class Supervisor(RecoveryMixin, OperationsMixin):
                 "Cleaned up slot DB for %s/%d: %s", project_name, slot_id, slot_dir,
             )
 
+    @staticmethod
+    def _cleanup_shared_mem(ticket_id: str) -> None:
+        """Remove the shared memory directory for a ticket."""
+        from botfarm.worker import cleanup_shared_mem
+        cleanup_shared_mem(ticket_id)
+
     # ------------------------------------------------------------------
     # Tick summary
     # ------------------------------------------------------------------

@@ -188,6 +188,7 @@ def _worker_entry(
     codex_reviewer_model: str = "",
     codex_reviewer_timeout_minutes: int = 15,
     codex_reviewer_skip_on_reiteration: bool = True,
+    shared_mem_dir: str | None = None,
 ) -> None:
     """Entry point for a worker subprocess.
 
@@ -266,6 +267,7 @@ def _worker_entry(
             codex_reviewer_model=codex_reviewer_model,
             codex_reviewer_timeout_minutes=codex_reviewer_timeout_minutes,
             codex_reviewer_skip_on_reiteration=codex_reviewer_skip_on_reiteration,
+            shared_mem_dir=shared_mem_dir,
         )
         if result.paused:
             result_queue.put(_WorkerResult(
@@ -458,6 +460,10 @@ class WorkerLifecycleManager:
         if slot_db is None:
             slot_db = self._sup._seed_slot_db(project_name, slot_id)
 
+        # Create shared memory directory for cross-stage context sharing
+        from botfarm.worker import ensure_shared_mem_dir
+        shared_mem_path = str(ensure_shared_mem_dir(ticket_id))
+
         pause_event = multiprocessing.Event()
         key = (project_name, slot_id)
         self._pause_events[key] = pause_event
@@ -490,6 +496,7 @@ class WorkerLifecycleManager:
                 "codex_reviewer_model": self._config.agents.codex_reviewer_model,
                 "codex_reviewer_timeout_minutes": self._config.agents.codex_reviewer_timeout_minutes,
                 "codex_reviewer_skip_on_reiteration": self._config.agents.codex_reviewer_skip_on_reiteration,
+                "shared_mem_dir": shared_mem_path,
             },
             daemon=False,
         )

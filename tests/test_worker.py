@@ -3420,6 +3420,130 @@ class TestExecuteStageWithTemplate:
         )
         assert result.success is True
 
+    @patch("botfarm.worker._invoke_claude")
+    def test_db_implement_appends_shared_mem_instruction(self, mock_invoke, conn):
+        """DB-backed implement stage appends shared memory write instruction."""
+        pipeline = load_pipeline(conn, [])
+        stage_tpl = get_stage(pipeline, "implement")
+        mock_invoke.return_value = ClaudeResult(
+            session_id="s1", num_turns=5, duration_seconds=10.0,
+            exit_subtype="tool_use", result_text="PR https://github.com/o/r/pull/1",
+        )
+        from botfarm.worker import _execute_stage
+        _execute_stage(
+            "implement", ticket_id="SMA-42", pr_url=None, cwd="/tmp",
+            max_turns=100, pr_checks_timeout=600, stage_tpl=stage_tpl,
+            shared_mem_dir="/tmp/shared",
+        )
+        prompt = mock_invoke.call_args[0][0]
+        assert "/tmp/shared/implementer.md" in prompt
+        assert "Shared Memory" in prompt
+
+    @patch("botfarm.worker._invoke_claude")
+    def test_db_fix_appends_shared_mem_instruction(self, mock_invoke, conn):
+        """DB-backed fix stage appends warm start instruction."""
+        pipeline = load_pipeline(conn, [])
+        stage_tpl = get_stage(pipeline, "fix")
+        mock_invoke.return_value = ClaudeResult(
+            session_id="s1", num_turns=5, duration_seconds=10.0,
+            exit_subtype="tool_use", result_text="done",
+        )
+        from botfarm.worker import _execute_stage
+        _execute_stage(
+            "fix", ticket_id="SMA-42", pr_url=PR_URL, cwd="/tmp",
+            max_turns=100, pr_checks_timeout=600, stage_tpl=stage_tpl,
+            shared_mem_dir="/tmp/shared",
+        )
+        prompt = mock_invoke.call_args[0][0]
+        assert "/tmp/shared/implementer.md" in prompt
+        assert "Warm Start" in prompt
+
+    @patch("botfarm.worker._invoke_claude")
+    def test_db_implement_no_shared_mem_when_none(self, mock_invoke, conn):
+        """DB-backed implement stage omits shared memory when not provided."""
+        pipeline = load_pipeline(conn, [])
+        stage_tpl = get_stage(pipeline, "implement")
+        mock_invoke.return_value = ClaudeResult(
+            session_id="s1", num_turns=5, duration_seconds=10.0,
+            exit_subtype="tool_use", result_text="PR https://github.com/o/r/pull/1",
+        )
+        from botfarm.worker import _execute_stage
+        _execute_stage(
+            "implement", ticket_id="SMA-42", pr_url=None, cwd="/tmp",
+            max_turns=100, pr_checks_timeout=600, stage_tpl=stage_tpl,
+        )
+        prompt = mock_invoke.call_args[0][0]
+        assert "Shared Memory" not in prompt
+
+    @patch("botfarm.worker._invoke_claude")
+    def test_db_implement_investigation_skips_shared_mem(self, mock_invoke, conn):
+        """DB-backed implement stage skips shared mem for investigation tickets."""
+        pipeline = load_pipeline(conn, ["Investigation"])
+        stage_tpl = get_stage(pipeline, "implement")
+        mock_invoke.return_value = ClaudeResult(
+            session_id="s1", num_turns=5, duration_seconds=10.0,
+            exit_subtype="tool_use", result_text="Posted findings",
+        )
+        from botfarm.worker import _execute_stage
+        _execute_stage(
+            "implement", ticket_id="SMA-42", ticket_labels=["Investigation"],
+            pr_url=None, cwd="/tmp",
+            max_turns=100, pr_checks_timeout=600, stage_tpl=stage_tpl,
+            shared_mem_dir="/tmp/shared",
+        )
+        prompt = mock_invoke.call_args[0][0]
+        assert "Shared Memory" not in prompt
+
+    @patch("botfarm.worker._invoke_claude")
+    def test_run_implement_db_path_appends_suffix(self, mock_invoke, conn):
+        """_run_implement with stage_tpl appends shared mem prompt_suffix."""
+        pipeline = load_pipeline(conn, [])
+        stage_tpl = get_stage(pipeline, "implement")
+        mock_invoke.return_value = ClaudeResult(
+            session_id="s1", num_turns=5, duration_seconds=10.0,
+            exit_subtype="tool_use", result_text="PR https://github.com/o/r/pull/1",
+        )
+        _run_implement(
+            "SMA-42", cwd="/tmp", max_turns=100,
+            stage_tpl=stage_tpl, shared_mem_dir="/tmp/shared",
+        )
+        prompt = mock_invoke.call_args[0][0]
+        assert "/tmp/shared/implementer.md" in prompt
+        assert "Shared Memory" in prompt
+
+    @patch("botfarm.worker._invoke_claude")
+    def test_run_implement_db_path_investigation_skips_suffix(self, mock_invoke, conn):
+        """_run_implement with stage_tpl skips suffix for investigation tickets."""
+        pipeline = load_pipeline(conn, ["Investigation"])
+        stage_tpl = get_stage(pipeline, "implement")
+        mock_invoke.return_value = ClaudeResult(
+            session_id="s1", num_turns=5, duration_seconds=10.0,
+            exit_subtype="tool_use", result_text="Posted findings",
+        )
+        _run_implement(
+            "SMA-42", ticket_labels=["Investigation"], cwd="/tmp", max_turns=100,
+            stage_tpl=stage_tpl, shared_mem_dir="/tmp/shared",
+        )
+        prompt = mock_invoke.call_args[0][0]
+        assert "Shared Memory" not in prompt
+
+    @patch("botfarm.worker._invoke_claude")
+    def test_run_fix_db_path_appends_suffix(self, mock_invoke, conn):
+        """_run_fix with stage_tpl appends shared mem prompt_suffix."""
+        pipeline = load_pipeline(conn, [])
+        stage_tpl = get_stage(pipeline, "fix")
+        mock_invoke.return_value = ClaudeResult(
+            session_id="s1", num_turns=5, duration_seconds=10.0,
+            exit_subtype="tool_use", result_text="done",
+        )
+        _run_fix(
+            PR_URL, cwd="/tmp", max_turns=100,
+            stage_tpl=stage_tpl, shared_mem_dir="/tmp/shared",
+        )
+        prompt = mock_invoke.call_args[0][0]
+        assert "/tmp/shared/implementer.md" in prompt
+        assert "Warm Start" in prompt
+
 
 class TestPipelineDbDriven:
     @patch("botfarm.worker._execute_stage")
@@ -3623,3 +3747,117 @@ class TestRunPipelineNoPrNeeded:
         )
         assert result.success is False
         assert result.failure_stage == "implement"
+
+
+# ---------------------------------------------------------------------------
+# Shared memory between stages
+# ---------------------------------------------------------------------------
+
+
+class TestSharedMemory:
+    """Tests for shared memory directory management and prompt integration."""
+
+    def test_shared_mem_dir_for_ticket(self):
+        from botfarm.worker import shared_mem_dir_for_ticket, SHARED_MEM_BASE
+        path = shared_mem_dir_for_ticket("SMA-42")
+        assert path == SHARED_MEM_BASE / "SMA-42"
+
+    def test_ensure_shared_mem_dir_creates(self, tmp_path, monkeypatch):
+        from botfarm.worker import ensure_shared_mem_dir, SHARED_MEM_BASE
+        monkeypatch.setattr("botfarm.worker.SHARED_MEM_BASE", tmp_path / "shared-mem")
+        result = ensure_shared_mem_dir("SMA-42")
+        assert result.exists()
+        assert result.is_dir()
+        assert result == tmp_path / "shared-mem" / "SMA-42"
+
+    def test_ensure_shared_mem_dir_idempotent(self, tmp_path, monkeypatch):
+        from botfarm.worker import ensure_shared_mem_dir
+        monkeypatch.setattr("botfarm.worker.SHARED_MEM_BASE", tmp_path / "shared-mem")
+        first = ensure_shared_mem_dir("SMA-42")
+        # Write a file to verify it persists
+        (first / "test.md").write_text("hello")
+        second = ensure_shared_mem_dir("SMA-42")
+        assert second == first
+        assert (second / "test.md").read_text() == "hello"
+
+    def test_cleanup_shared_mem(self, tmp_path, monkeypatch):
+        from botfarm.worker import cleanup_shared_mem, ensure_shared_mem_dir
+        monkeypatch.setattr("botfarm.worker.SHARED_MEM_BASE", tmp_path / "shared-mem")
+        d = ensure_shared_mem_dir("SMA-42")
+        (d / "implementer.md").write_text("summary")
+        assert d.exists()
+        cleanup_shared_mem("SMA-42")
+        assert not d.exists()
+
+    def test_cleanup_shared_mem_nonexistent(self, tmp_path, monkeypatch):
+        """Cleanup should not raise if directory doesn't exist."""
+        from botfarm.worker import cleanup_shared_mem
+        monkeypatch.setattr("botfarm.worker.SHARED_MEM_BASE", tmp_path / "shared-mem")
+        cleanup_shared_mem("SMA-NONEXISTENT")  # Should not raise
+
+    def test_implement_prompt_includes_shared_mem_instruction(self):
+        prompt = _build_implement_prompt("SMA-42", None, shared_mem_dir="/tmp/shared")
+        assert "/tmp/shared/implementer.md" in prompt
+        assert "Shared Memory" in prompt
+
+    def test_implement_prompt_no_shared_mem_when_none(self):
+        prompt = _build_implement_prompt("SMA-42", None)
+        assert "Shared Memory" not in prompt
+
+    def test_implement_prompt_investigation_ignores_shared_mem(self):
+        prompt = _build_implement_prompt("SMA-42", ["Investigation"], shared_mem_dir="/tmp/shared")
+        assert "Shared Memory" not in prompt
+
+    def test_fix_prompt_includes_shared_mem_instruction(self):
+        """Legacy fix prompt should include warm start instruction."""
+        with patch("botfarm.worker._invoke_claude") as mock:
+            mock.return_value = ClaudeResult(
+                session_id="s1", num_turns=1, duration_seconds=1.0,
+                exit_subtype="", result_text="done", is_error=False,
+            )
+            _run_fix(
+                "https://github.com/owner/repo/pull/1",
+                cwd="/tmp",
+                max_turns=10,
+                shared_mem_dir="/tmp/shared",
+            )
+            prompt = mock.call_args[0][0]
+            assert "/tmp/shared/implementer.md" in prompt
+            assert "Warm Start" in prompt
+
+    def test_fix_prompt_no_shared_mem_when_none(self):
+        """Legacy fix prompt should not include warm start without shared_mem_dir."""
+        with patch("botfarm.worker._invoke_claude") as mock:
+            mock.return_value = ClaudeResult(
+                session_id="s1", num_turns=1, duration_seconds=1.0,
+                exit_subtype="", result_text="done", is_error=False,
+            )
+            _run_fix(
+                "https://github.com/owner/repo/pull/1",
+                cwd="/tmp",
+                max_turns=10,
+            )
+            prompt = mock.call_args[0][0]
+            assert "Warm Start" not in prompt
+
+    def test_pipeline_passes_shared_mem_dir_to_execute_stage(self, conn, task_id, tmp_path):
+        """run_pipeline should pass shared_mem_dir through to _execute_stage."""
+        with patch("botfarm.worker._execute_stage") as mock_exec:
+            mock_exec.return_value = StageResult(
+                stage="implement", success=True,
+                claude_result=ClaudeResult(
+                    session_id="s1", num_turns=5, duration_seconds=60.0,
+                    exit_subtype="", result_text="PR: https://github.com/o/r/pull/1",
+                ),
+                pr_url="https://github.com/o/r/pull/1",
+            )
+            run_pipeline(
+                ticket_id="SMA-99",
+                task_id=task_id,
+                cwd=tmp_path,
+                conn=conn,
+                shared_mem_dir="/tmp/test-shared-mem",
+            )
+            # Verify shared_mem_dir was passed to _execute_stage
+            call_kwargs = mock_exec.call_args[1]
+            assert call_kwargs["shared_mem_dir"] == "/tmp/test-shared-mem"

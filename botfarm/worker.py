@@ -628,7 +628,64 @@ def _is_investigation(labels: list[str] | None) -> bool:
     return any(lbl.lower() == _INVESTIGATION_LABEL for lbl in labels)
 
 
-def _build_implement_prompt(ticket_id: str, labels: list[str] | None) -> str:
+# ---------------------------------------------------------------------------
+# Shared memory between stages
+# ---------------------------------------------------------------------------
+
+SHARED_MEM_BASE = Path.home() / ".botfarm" / "shared-mem"
+
+
+def shared_mem_dir_for_ticket(ticket_id: str) -> Path:
+    """Return the shared memory directory path for a ticket."""
+    return SHARED_MEM_BASE / ticket_id
+
+
+def ensure_shared_mem_dir(ticket_id: str) -> Path:
+    """Create and return the shared memory directory for a ticket."""
+    d = shared_mem_dir_for_ticket(ticket_id)
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def cleanup_shared_mem(ticket_id: str) -> None:
+    """Remove the shared memory directory for a ticket."""
+    import shutil
+
+    d = shared_mem_dir_for_ticket(ticket_id)
+    if d.exists():
+        shutil.rmtree(str(d), ignore_errors=True)
+        logger.info("Cleaned up shared-mem for %s: %s", ticket_id, d)
+
+
+_IMPLEMENTER_SHARED_MEM_INSTRUCTION = """
+
+IMPORTANT — Shared Memory for Downstream Stages:
+Before finishing, write a brief implementation summary to {shared_mem_dir}/implementer.md.
+This file will be read by subsequent stages (e.g. the fixer) so they don't have to
+re-discover the codebase from scratch.
+
+The summary MUST contain:
+* Files created or modified (with brief description of changes)
+* Key architectural decisions made
+* Areas of the codebase that are relevant to the change
+* Any gotchas or non-obvious implementation details
+
+Use the Write tool to create the file. Keep it concise (under 100 lines)."""
+
+_FIXER_SHARED_MEM_INSTRUCTION = """
+
+IMPORTANT — Warm Start from Implementer Notes:
+Before starting work, read the implementer's summary at {shared_mem_dir}/implementer.md
+(if it exists). This contains context about what files were changed, architectural
+decisions, and relevant areas of the codebase. Use this to orient yourself quickly
+instead of re-discovering the codebase from scratch."""
+
+
+def _build_implement_prompt(
+    ticket_id: str,
+    labels: list[str] | None,
+    shared_mem_dir: str | None = None,
+) -> str:
     """Build the implement-stage prompt, varying by ticket labels.
 
     .. deprecated::
@@ -647,7 +704,7 @@ def _build_implement_prompt(ticket_id: str, labels: list[str] | None) -> str:
             "order. Do not just mention dependencies in the description \u2014 set them as "
             "actual Linear relations."
         )
-    return (
+    prompt = (
         f"Work on Linear ticket {ticket_id}. "
         "Follow the Linear Tickets workflow in CLAUDE.md. "
         "Complete all steps through PR creation. Do not stop until the PR is created. "
@@ -656,6 +713,9 @@ def _build_implement_prompt(ticket_id: str, labels: list[str] | None) -> str:
         "then output NO_PR_NEEDED: <explanation> as your final message. "
         "Do not create a branch or PR in that case."
     )
+    if shared_mem_dir:
+        prompt += _IMPLEMENTER_SHARED_MEM_INSTRUCTION.format(shared_mem_dir=shared_mem_dir)
+    return prompt
 
 
 def _run_claude_stage(
@@ -664,12 +724,13 @@ def _run_claude_stage(
     cwd: str | Path,
     max_turns: int,
     prompt_vars: dict[str, str],
+    prompt_suffix: str = "",
     log_file: Path | None = None,
     env: dict[str, str] | None = None,
     on_context_fill: ContextFillCallback | None = None,
 ) -> StageResult:
     """Generic runner for any claude-executor stage using its DB template."""
-    prompt = render_prompt(stage_tpl, **prompt_vars)
+    prompt = render_prompt(stage_tpl, **prompt_vars) + prompt_suffix
     result = _invoke_claude(
         prompt, cwd=cwd, max_turns=max_turns, log_file=log_file,
         env=env, on_context_fill=on_context_fill,
@@ -710,16 +771,26 @@ def _run_implement(
     env: dict[str, str] | None = None,
     on_context_fill: ContextFillCallback | None = None,
     stage_tpl: StageTemplate | None = None,
+    shared_mem_dir: str | None = None,
 ) -> StageResult:
     """IMPLEMENT stage — Claude Code implements the ticket and creates a PR."""
     if stage_tpl is not None:
+        prompt_vars = {"ticket_id": ticket_id}
+        prompt_suffix = ""
+        if shared_mem_dir:
+            prompt_vars["shared_mem_dir"] = shared_mem_dir
+            if not _is_investigation(ticket_labels):
+                prompt_suffix = _IMPLEMENTER_SHARED_MEM_INSTRUCTION.format(
+                    shared_mem_dir=shared_mem_dir,
+                )
         return _run_claude_stage(
             stage_tpl, cwd=cwd, max_turns=max_turns,
-            prompt_vars={"ticket_id": ticket_id},
+            prompt_vars=prompt_vars,
+            prompt_suffix=prompt_suffix,
             log_file=log_file, env=env, on_context_fill=on_context_fill,
         )
     # Legacy fallback
-    prompt = _build_implement_prompt(ticket_id, ticket_labels)
+    prompt = _build_implement_prompt(ticket_id, ticket_labels, shared_mem_dir=shared_mem_dir)
     result = _invoke_claude(
         prompt, cwd=cwd, max_turns=max_turns, log_file=log_file,
         env=env, on_context_fill=on_context_fill,
@@ -1102,18 +1173,27 @@ def _run_fix(
     on_context_fill: ContextFillCallback | None = None,
     stage_tpl: StageTemplate | None = None,
     codex_enabled: bool = False,
+    shared_mem_dir: str | None = None,
 ) -> StageResult:
     """FIX stage — Fresh Claude Code addresses review comments and pushes fixes."""
     owner, repo, number = _parse_pr_url(pr_url)
     if stage_tpl is not None:
+        prompt_vars = {
+            "pr_url": pr_url,
+            "pr_number": number,
+            "owner": owner,
+            "repo": repo,
+        }
+        prompt_suffix = ""
+        if shared_mem_dir:
+            prompt_vars["shared_mem_dir"] = shared_mem_dir
+            prompt_suffix = _FIXER_SHARED_MEM_INSTRUCTION.format(
+                shared_mem_dir=shared_mem_dir,
+            )
         return _run_claude_stage(
             stage_tpl, cwd=cwd, max_turns=max_turns,
-            prompt_vars={
-                "pr_url": pr_url,
-                "pr_number": number,
-                "owner": owner,
-                "repo": repo,
-            },
+            prompt_vars=prompt_vars,
+            prompt_suffix=prompt_suffix,
             log_file=log_file, env=env, on_context_fill=on_context_fill,
         )
     # Legacy fallback
@@ -1140,6 +1220,8 @@ def _run_fix(
         "- If fixed but clarification helps: reply \"Fixed — [what changed]\"\n"
         "- If intentionally not fixed: reply with a brief explanation why"
     )
+    if shared_mem_dir:
+        prompt += _FIXER_SHARED_MEM_INSTRUCTION.format(shared_mem_dir=shared_mem_dir)
     result = _invoke_claude(
         prompt, cwd=cwd, max_turns=max_turns, log_file=log_file,
         env=env, on_context_fill=on_context_fill,
@@ -1209,15 +1291,24 @@ def _run_ci_fix(
     env: dict[str, str] | None = None,
     on_context_fill: ContextFillCallback | None = None,
     stage_tpl: StageTemplate | None = None,
+    shared_mem_dir: str | None = None,
 ) -> StageResult:
     """CI FIX stage — Claude Code fixes CI failures using CI output context."""
     if stage_tpl is not None:
+        prompt_vars: dict[str, str] = {
+            "pr_url": pr_url,
+            "ci_failure_output": ci_failure_output[:CI_OUTPUT_TRUNCATE_CHARS],
+        }
+        prompt_suffix = ""
+        if shared_mem_dir:
+            prompt_vars["shared_mem_dir"] = shared_mem_dir
+            prompt_suffix = _FIXER_SHARED_MEM_INSTRUCTION.format(
+                shared_mem_dir=shared_mem_dir,
+            )
         return _run_claude_stage(
             stage_tpl, cwd=cwd, max_turns=max_turns,
-            prompt_vars={
-                "pr_url": pr_url,
-                "ci_failure_output": ci_failure_output[:CI_OUTPUT_TRUNCATE_CHARS],
-            },
+            prompt_vars=prompt_vars,
+            prompt_suffix=prompt_suffix,
             log_file=log_file, env=env, on_context_fill=on_context_fill,
         )
     # Legacy fallback
@@ -1227,6 +1318,8 @@ def _run_ci_fix(
         "then run tests locally, commit and push the fixes.\n\n"
         f"CI failure output:\n{ci_failure_output[:CI_OUTPUT_TRUNCATE_CHARS]}"
     )
+    if shared_mem_dir:
+        prompt += _FIXER_SHARED_MEM_INSTRUCTION.format(shared_mem_dir=shared_mem_dir)
     result = _invoke_claude(
         prompt, cwd=cwd, max_turns=max_turns, log_file=log_file,
         env=env, on_context_fill=on_context_fill,
@@ -1498,6 +1591,7 @@ def run_pipeline(
     codex_reviewer_model: str = "",
     codex_reviewer_timeout_minutes: int = 15,
     codex_reviewer_skip_on_reiteration: bool = True,
+    shared_mem_dir: str | None = None,
 ) -> PipelineResult:
     """Execute the full implement→review→fix→pr_checks→merge pipeline.
 
@@ -1598,6 +1692,7 @@ def run_pipeline(
         max_review_iterations=eff_max_review_iterations,
         max_ci_retries=eff_max_ci_retries,
         max_merge_conflict_retries=eff_max_merge_conflict_retries,
+        shared_mem_dir=shared_mem_dir,
         _refreshable_limits=_compute_refreshable_limits(pipeline_tpl),
     )
 
@@ -2266,6 +2361,7 @@ class _PipelineContext:
     max_review_iterations: int = 3
     max_ci_retries: int = 2
     max_merge_conflict_retries: int = 2
+    shared_mem_dir: str | None = None
     # Which limit fields are driven by runtime config (vs fixed by pipeline template).
     # Fields NOT in this set were set by a pipeline loop whose config_key does
     # not match the runtime-config field and should not be overwritten.
@@ -2545,6 +2641,7 @@ class _PipelineContext:
                 env=self._env_for_stage(stage),
                 on_context_fill=on_context_fill,
                 stage_tpl=stage_tpl,
+                shared_mem_dir=self.shared_mem_dir,
                 **codex_kwargs,
             )
         except Exception as exc:
@@ -2824,6 +2921,7 @@ def _run_ci_retry_loop(
                 log_file=log_file, env=ctx._env_for_stage("ci_fix") or ctx._env_for_stage("fix"),
                 on_context_fill=_ci_fix_on_fill,
                 stage_tpl=ci_fix_tpl,
+                shared_mem_dir=ctx.shared_mem_dir,
             )
         except Exception as exc:
             logger.error("CI fix stage raised: %s", exc)
@@ -2903,6 +3001,7 @@ def _execute_stage(
     codex_timeout: float | None = None,
     codex_log_file: Path | None = None,
     review_iteration: int = 1,
+    shared_mem_dir: str | None = None,
 ) -> StageResult:
     """Dispatch to the appropriate stage runner.
 
@@ -2940,9 +3039,21 @@ def _execute_stage(
                     owner=owner,
                     repo=repo,
                 )
+            prompt_suffix = ""
+            if shared_mem_dir:
+                prompt_vars["shared_mem_dir"] = shared_mem_dir
+                if stage == "implement" and not _is_investigation(ticket_labels):
+                    prompt_suffix = _IMPLEMENTER_SHARED_MEM_INSTRUCTION.format(
+                        shared_mem_dir=shared_mem_dir,
+                    )
+                elif stage in ("fix", "ci_fix"):
+                    prompt_suffix = _FIXER_SHARED_MEM_INSTRUCTION.format(
+                        shared_mem_dir=shared_mem_dir,
+                    )
             return _run_claude_stage(
                 stage_tpl, cwd=cwd, max_turns=max_turns,
                 prompt_vars=prompt_vars,
+                prompt_suffix=prompt_suffix,
                 log_file=log_file, env=env, on_context_fill=on_context_fill,
             )
         elif stage_tpl.executor_type == "shell":
@@ -2965,6 +3076,7 @@ def _execute_stage(
             ticket_id, ticket_labels=ticket_labels,
             cwd=cwd, max_turns=max_turns, log_file=log_file,
             env=env, on_context_fill=on_context_fill,
+            shared_mem_dir=shared_mem_dir,
         )
     elif stage == "review":
         if not pr_url:
@@ -2985,6 +3097,7 @@ def _execute_stage(
             pr_url, cwd=cwd, max_turns=max_turns, log_file=log_file,
             env=env, on_context_fill=on_context_fill,
             codex_enabled=codex_enabled,
+            shared_mem_dir=shared_mem_dir,
         )
     elif stage == "pr_checks":
         if not pr_url:
