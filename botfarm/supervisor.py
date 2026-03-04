@@ -18,6 +18,7 @@ import logging.handlers
 import multiprocessing
 import os
 import queue as queue_mod
+import re
 import shutil
 import signal
 import sqlite3
@@ -2132,6 +2133,15 @@ class Supervisor:
             # Stash result_text for terminal comment posting
             if wr.result_text:
                 self._pending_result_texts[(wr.project, wr.slot_id)] = wr.result_text
+                # Persist to DB so it survives supervisor restarts
+                ticket_id_for_rt = slot.ticket_id if slot else None
+                rt_task_id = self._find_task_id(ticket_id_for_rt)
+                if rt_task_id is not None:
+                    update_task(
+                        self._conn, rt_task_id,
+                        result_text=wr.result_text,
+                    )
+                    self._conn.commit()
             # Clean up pause event for this worker regardless of outcome
             self._pause_events.pop((wr.project, wr.slot_id), None)
 
@@ -2240,6 +2250,9 @@ class Supervisor:
 
         # Webhook notification
         self._notify_task_completed(slot)
+
+        # Refactoring analysis notification (if applicable)
+        self._maybe_send_refactoring_notification(slot)
 
         # Capture ticket history at completion
         if slot.ticket_id:
@@ -2534,6 +2547,93 @@ class Supervisor:
             failure_reason=reason,
             review_summary=self._build_review_summary(task_id),
         )
+
+    _REFACTORING_ANALYSIS_LABEL = "refactoring analysis"
+
+    def _maybe_send_refactoring_notification(self, slot: SlotState) -> None:
+        """Send a refactoring-analysis-specific notification if applicable.
+
+        Checks whether the completed ticket has the "Refactoring Analysis"
+        label, then inspects the agent's result text to decide between
+        the "all clear" and "action needed" notification templates.
+        """
+        labels = slot.ticket_labels or []
+        if not any(lbl.lower() == self._REFACTORING_ANALYSIS_LABEL for lbl in labels):
+            return
+
+        ticket_id = slot.ticket_id or "unknown"
+        workspace = self._config.linear.workspace
+        if workspace:
+            linear_url = f"https://linear.app/{workspace}/issue/{ticket_id}"
+        else:
+            linear_url = ticket_id
+
+        now = datetime.now(timezone.utc)
+        month = now.strftime("%B")
+        year = now.year
+
+        result_text = self._pending_result_texts.get(
+            (slot.project, slot.slot_id), ""
+        )
+        # Fall back to persisted result_text (survives supervisor restarts)
+        if not result_text and slot.ticket_id:
+            task_id = self._find_task_id(slot.ticket_id)
+            if task_id is not None:
+                task = get_task(self._conn, task_id)
+                if task and task["result_text"]:
+                    result_text = task["result_text"]
+
+        # Detect "action needed" by looking for ticket-creation signals
+        # in the agent's result text.
+        ticket_count_match = re.search(
+            r"(\d+)\s+refactoring\s+ticket", result_text, re.IGNORECASE
+        )
+        num_tickets = int(ticket_count_match.group(1)) if ticket_count_match else 0
+
+        if num_tickets > 0:
+            # Extract parent ticket ID from "under X-123" pattern;
+            # fall back to the current ticket's own ID.
+            parent_match = re.search(
+                r"under\s+([A-Z]+-\d+)", result_text, re.IGNORECASE
+            )
+            parent_id = parent_match.group(1) if parent_match else ticket_id
+
+            # Extract brief list of concerns — look for "Top concerns: ..."
+            # or fall back to a generic message.
+            concerns_match = re.search(
+                r"[Tt]op concerns?:\s*(.+?)(?:\.\s*[A-Z]|\n|$)", result_text
+            )
+            brief_list = (
+                concerns_match.group(1).strip().rstrip(".")
+                if concerns_match
+                else "see ticket for details"
+            )
+
+            self._notifier.notify_refactoring_action_needed(
+                month=month,
+                year=year,
+                num_tickets=num_tickets,
+                parent_ticket_id=parent_id,
+                brief_list=brief_list,
+                linear_ticket_url=linear_url,
+            )
+        elif re.search(
+            r"no action needed|no refactoring needed|all clear|"
+            r"code quality is (?:good|acceptable|satisfactory|sufficient|healthy|fine)",
+            result_text,
+            re.IGNORECASE,
+        ):
+            self._notifier.notify_refactoring_all_clear(
+                month=month,
+                year=year,
+                linear_ticket_url=linear_url,
+            )
+        else:
+            logger.warning(
+                "Refactoring analysis ticket %s completed but result text "
+                "could not be classified — skipping notification",
+                ticket_id,
+            )
 
     # ------------------------------------------------------------------
     # Limit interruption handling

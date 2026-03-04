@@ -187,6 +187,38 @@ class Notifier:
         """Notify that all slots are idle (no more work)."""
         self._send("all_idle", "*All slots idle* — no more work to dispatch", rate_limited=True)
 
+    def notify_refactoring_all_clear(
+        self,
+        *,
+        month: str,
+        year: int,
+        linear_ticket_url: str,
+    ) -> None:
+        """Notify that a refactoring analysis found no action needed."""
+        self._send(
+            "refactoring_all_clear",
+            f"Refactoring Analysis ({month} {year}): Code quality is good enough "
+            f"— no action needed. Details: {linear_ticket_url}",
+        )
+
+    def notify_refactoring_action_needed(
+        self,
+        *,
+        month: str,
+        year: int,
+        num_tickets: int,
+        parent_ticket_id: str,
+        brief_list: str,
+        linear_ticket_url: str,
+    ) -> None:
+        """Notify that a refactoring analysis created follow-up tickets."""
+        self._send(
+            "refactoring_action_needed",
+            f"Refactoring Analysis ({month} {year}): {num_tickets} refactoring "
+            f"tickets created under {parent_ticket_id}. "
+            f"Top concerns: {brief_list}. Details: {linear_ticket_url}",
+        )
+
     def notify_supervisor_shutdown(self, *, reason: str) -> None:
         """Notify that the supervisor is shutting down unexpectedly."""
         self._send(
