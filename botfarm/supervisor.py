@@ -18,6 +18,7 @@ import logging.handlers
 import multiprocessing
 import os
 import queue as queue_mod
+import re
 import shutil
 import signal
 import sqlite3
@@ -2219,6 +2220,9 @@ class Supervisor:
         # Webhook notification
         self._notify_task_completed(slot)
 
+        # Refactoring analysis notification (if applicable)
+        self._maybe_send_refactoring_notification(slot)
+
         # Capture ticket history at completion
         if slot.ticket_id:
             client = poller._client if poller else None
@@ -2512,6 +2516,69 @@ class Supervisor:
             failure_reason=reason,
             review_summary=self._build_review_summary(task_id),
         )
+
+    _REFACTORING_ANALYSIS_LABEL = "refactoring analysis"
+
+    def _maybe_send_refactoring_notification(self, slot: SlotState) -> None:
+        """Send a refactoring-analysis-specific notification if applicable.
+
+        Checks whether the completed ticket has the "Refactoring Analysis"
+        label, then inspects the agent's result text to decide between
+        the "all clear" and "action needed" notification templates.
+        """
+        labels = slot.ticket_labels or []
+        if not any(lbl.lower() == self._REFACTORING_ANALYSIS_LABEL for lbl in labels):
+            return
+
+        ticket_id = slot.ticket_id or "unknown"
+        workspace = self._config.linear.workspace
+        linear_url = f"https://linear.app/{workspace}/issue/{ticket_id}"
+
+        now = datetime.now(timezone.utc)
+        month = now.strftime("%B")
+        year = now.year
+
+        result_text = self._pending_result_texts.get(
+            (slot.project, slot.slot_id), ""
+        )
+
+        # Detect "action needed" by looking for ticket-creation signals
+        # in the agent's result text.
+        ticket_count_match = re.search(
+            r"(\d+)\s+refactoring\s+ticket", result_text, re.IGNORECASE
+        )
+        if ticket_count_match:
+            num_tickets = int(ticket_count_match.group(1))
+            # Extract parent ticket ID (the investigation ticket itself
+            # is typically the parent, or the agent may mention one).
+            parent_match = re.search(r"(SMA-\d+)", result_text)
+            parent_id = parent_match.group(1) if parent_match else ticket_id
+
+            # Extract brief list of concerns — look for "Top concerns: ..."
+            # or fall back to a generic message.
+            concerns_match = re.search(
+                r"[Tt]op concerns?:\s*(.+?)(?:\.\s*[A-Z]|\n|$)", result_text
+            )
+            brief_list = (
+                concerns_match.group(1).strip().rstrip(".")
+                if concerns_match
+                else "see ticket for details"
+            )
+
+            self._notifier.notify_refactoring_action_needed(
+                month=month,
+                year=year,
+                num_tickets=num_tickets,
+                parent_ticket_id=parent_id,
+                brief_list=brief_list,
+                linear_ticket_url=linear_url,
+            )
+        else:
+            self._notifier.notify_refactoring_all_clear(
+                month=month,
+                year=year,
+                linear_ticket_url=linear_url,
+            )
 
     # ------------------------------------------------------------------
     # Limit interruption handling
