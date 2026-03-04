@@ -129,11 +129,12 @@ class TestRefreshRuntimeConfig:
     """_PipelineContext._refresh_runtime_config updates fields from DB."""
 
     def test_fields_update_when_db_changes(self, conn):
-        ctx = _make_ctx(conn, max_review_iterations=3, max_ci_retries=2)
+        ctx = _make_ctx(conn, max_review_iterations=3, max_ci_retries=2, max_merge_conflict_retries=2)
 
         write_runtime_config_batch(conn, {
             "max_review_iterations": 5,
             "max_ci_retries": 4,
+            "max_merge_conflict_retries": 5,
             "codex_reviewer_enabled": True,
             "codex_reviewer_model": "o3",
             "codex_reviewer_timeout_minutes": 30,
@@ -143,6 +144,7 @@ class TestRefreshRuntimeConfig:
 
         assert ctx.max_review_iterations == 5
         assert ctx.max_ci_retries == 4
+        assert ctx.max_merge_conflict_retries == 5
         assert ctx.codex_config.enabled is True
         assert ctx.codex_config.model == "o3"
         assert ctx.codex_config.timeout_minutes == 30
@@ -208,3 +210,89 @@ class TestRefreshRuntimeConfig:
 
         events = get_events(conn, task_id=ctx.task_id, event_type="runtime_config_refreshed")
         assert len(events) == 0
+
+    def test_non_refreshable_field_not_overwritten(self, conn):
+        """Fields not in _refreshable_limits are preserved (pipeline-fixed loops)."""
+        ctx = _make_ctx(
+            conn,
+            max_review_iterations=7,
+            max_ci_retries=2,
+            _refreshable_limits=frozenset({"max_ci_retries", "max_merge_conflict_retries"}),
+        )
+
+        write_runtime_config_batch(conn, {
+            "max_review_iterations": 3,
+            "max_ci_retries": 5,
+        })
+
+        ctx._refresh_runtime_config()
+
+        # max_review_iterations is NOT refreshable → stays at pipeline value
+        assert ctx.max_review_iterations == 7
+        # max_ci_retries IS refreshable → updated
+        assert ctx.max_ci_retries == 5
+
+    def test_merge_conflict_retries_refreshed(self, conn):
+        ctx = _make_ctx(conn, max_merge_conflict_retries=2)
+
+        write_runtime_config(conn, "max_merge_conflict_retries", 4)
+        conn.commit()
+
+        ctx._refresh_runtime_config()
+
+        assert ctx.max_merge_conflict_retries == 4
+
+
+class TestComputeRefreshableLimits:
+    """_compute_refreshable_limits respects pipeline loop config_key."""
+
+    def test_no_pipeline_all_refreshable(self):
+        from botfarm.worker import _compute_refreshable_limits
+
+        result = _compute_refreshable_limits(None)
+        assert result == frozenset({
+            "max_review_iterations", "max_ci_retries", "max_merge_conflict_retries",
+        })
+
+    def test_loop_with_config_key_stays_refreshable(self):
+        from botfarm.worker import _compute_refreshable_limits
+        from botfarm.workflow import PipelineTemplate, StageLoop, StageTemplate
+
+        tpl = PipelineTemplate(
+            id=1, name="test", description=None, ticket_label=None, is_default=False,
+            stages=[StageTemplate(
+                id=1, name="review", stage_order=0, executor_type="claude",
+                identity=None, prompt_template="", max_turns=5,
+                timeout_minutes=None, shell_command=None, result_parser=None,
+            )],
+            loops=[StageLoop(
+                id=1, name="review_loop", start_stage="review", end_stage="fix",
+                max_iterations=3, config_key="max_review_iterations",
+                exit_condition=None, on_failure_stage=None,
+            )],
+        )
+        result = _compute_refreshable_limits(tpl)
+        assert "max_review_iterations" in result
+
+    def test_loop_with_no_config_key_not_refreshable(self):
+        from botfarm.worker import _compute_refreshable_limits
+        from botfarm.workflow import PipelineTemplate, StageLoop, StageTemplate
+
+        tpl = PipelineTemplate(
+            id=1, name="test", description=None, ticket_label=None, is_default=False,
+            stages=[StageTemplate(
+                id=1, name="review", stage_order=0, executor_type="claude",
+                identity=None, prompt_template="", max_turns=5,
+                timeout_minutes=None, shell_command=None, result_parser=None,
+            )],
+            loops=[StageLoop(
+                id=1, name="review_loop", start_stage="review", end_stage="fix",
+                max_iterations=7, config_key=None,
+                exit_condition=None, on_failure_stage=None,
+            )],
+        )
+        result = _compute_refreshable_limits(tpl)
+        assert "max_review_iterations" not in result
+        # Other fields still refreshable
+        assert "max_ci_retries" in result
+        assert "max_merge_conflict_retries" in result

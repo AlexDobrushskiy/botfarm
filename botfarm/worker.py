@@ -1595,6 +1595,8 @@ def run_pipeline(
         ),
         max_review_iterations=eff_max_review_iterations,
         max_ci_retries=eff_max_ci_retries,
+        max_merge_conflict_retries=eff_max_merge_conflict_retries,
+        _refreshable_limits=_compute_refreshable_limits(pipeline_tpl),
     )
 
     # Build main-stage list: skip loop-managed stages (they're handled
@@ -1632,7 +1634,6 @@ def run_pipeline(
         should_stop, pr_url = _dispatch_pipeline_stage(
             ctx, stage,
             pr_url=pr_url,
-            eff_max_merge_conflict_retries=eff_max_merge_conflict_retries,
         )
         if should_stop:
             return pipeline
@@ -1762,12 +1763,40 @@ def _load_pipeline_config(
             eff_max_merge_conflict_retries, loop_managed_stages, pipeline_tpl)
 
 
+# Mapping from loop start-stage to the _PipelineContext field it controls.
+_LOOP_STAGE_TO_LIMIT_FIELD: dict[str, str] = {
+    "review": "max_review_iterations",
+    "ci_fix": "max_ci_retries",
+    "resolve_conflict": "max_merge_conflict_retries",
+}
+
+
+def _compute_refreshable_limits(
+    pipeline_tpl: PipelineTemplate | None,
+) -> frozenset[str]:
+    """Determine which limit fields should be refreshed from runtime config.
+
+    A field is refreshable unless the pipeline template defines a loop
+    with ``config_key=None`` for it, meaning the loop uses a fixed
+    iteration count that should not be overridden by runtime config.
+    """
+    all_fields = {"max_review_iterations", "max_ci_retries", "max_merge_conflict_retries"}
+    if pipeline_tpl is None:
+        return frozenset(all_fields)
+
+    for stage_name, field_name in _LOOP_STAGE_TO_LIMIT_FIELD.items():
+        loop = get_loop_for_stage(pipeline_tpl, stage_name)
+        if loop is not None and loop.config_key is None:
+            all_fields.discard(field_name)
+
+    return frozenset(all_fields)
+
+
 def _dispatch_pipeline_stage(
     ctx: "_PipelineContext",
     stage: str,
     *,
     pr_url: str | None,
-    eff_max_merge_conflict_retries: int = 2,
 ) -> tuple[bool, str | None]:
     """Dispatch a single stage in the pipeline main loop.
 
@@ -1810,7 +1839,7 @@ def _dispatch_pipeline_stage(
             pr_url=pr_url,
             eff_max_review_iterations=ctx.max_review_iterations,
             eff_max_ci_retries=ctx.max_ci_retries,
-            eff_max_merge_conflict_retries=eff_max_merge_conflict_retries,
+            eff_max_merge_conflict_retries=ctx.max_merge_conflict_retries,
         )
 
     # ----- Merge with conflict retry loop -----
@@ -1818,7 +1847,7 @@ def _dispatch_pipeline_stage(
         return _handle_merge_stage(
             ctx,
             pr_url=pr_url,
-            max_merge_conflict_retries=eff_max_merge_conflict_retries,
+            max_merge_conflict_retries=ctx.max_merge_conflict_retries,
             eff_max_review_iterations=ctx.max_review_iterations,
             eff_max_ci_retries=ctx.max_ci_retries,
         )
@@ -2219,6 +2248,13 @@ class _PipelineContext:
     codex_config: _CodexReviewerConfig = field(default_factory=_CodexReviewerConfig)
     max_review_iterations: int = 3
     max_ci_retries: int = 2
+    max_merge_conflict_retries: int = 2
+    # Which limit fields are driven by runtime config (vs fixed by pipeline template).
+    # Fields NOT in this set were set by a pipeline loop with config_key=None and
+    # should not be overwritten by dashboard/runtime config changes.
+    _refreshable_limits: frozenset[str] = field(
+        default_factory=lambda: frozenset({"max_review_iterations", "max_ci_retries", "max_merge_conflict_retries"}),
+    )
 
     def _refresh_runtime_config(self) -> None:
         """Re-read runtime config from DB and update mutable fields.
@@ -2237,8 +2273,8 @@ class _PipelineContext:
 
         changes: list[str] = []
 
-        for attr in ("max_review_iterations", "max_ci_retries"):
-            if attr in rt:
+        for attr in ("max_review_iterations", "max_ci_retries", "max_merge_conflict_retries"):
+            if attr in rt and attr in self._refreshable_limits:
                 new_val = int(rt[attr])
                 if getattr(self, attr) != new_val:
                     changes.append(f"{attr}: {getattr(self, attr)} -> {new_val}")
@@ -2598,6 +2634,12 @@ def _run_review_fix_loop(
     """
     for iteration in range(start_iteration, max_iterations + 1):
         ctx._refresh_runtime_config()
+        if iteration > ctx.max_review_iterations:
+            logger.info(
+                "max_review_iterations reduced to %d — stopping review loop at iteration %d",
+                ctx.max_review_iterations, iteration,
+            )
+            break
 
         insert_event(
             ctx.conn,
@@ -2683,6 +2725,12 @@ def _run_ci_retry_loop(
     """
     for retry in range(1, max_retries + 1):
         ctx._refresh_runtime_config()
+        if retry > ctx.max_ci_retries:
+            logger.info(
+                "max_ci_retries reduced to %d — stopping CI retry loop at retry %d",
+                ctx.max_ci_retries, retry,
+            )
+            break
 
         insert_event(
             ctx.conn,
