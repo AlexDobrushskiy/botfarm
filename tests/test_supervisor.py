@@ -6750,3 +6750,60 @@ class TestRefactoringAnalysisNotification:
 
         kwargs = supervisor._notifier.notify_refactoring_action_needed.call_args[1]
         assert kwargs["parent_ticket_id"] == "SMA-50"
+
+    def test_falls_back_to_db_result_text_on_restart(self, supervisor):
+        """After a restart, result_text is read from DB when not in memory."""
+        supervisor._notifier = MagicMock()
+        slot = supervisor.slot_manager.get_slot("test-project", 1)
+        slot.ticket_id = "SMA-50"
+        slot.ticket_labels = ["Refactoring Analysis"]
+
+        # Persist result_text to DB (simulating what _reconcile_workers does)
+        task_id = insert_task(
+            supervisor._conn,
+            ticket_id="SMA-50",
+            title="Refactoring analysis",
+            project="test-project",
+            slot=1,
+            status="completed",
+        )
+        update_task(supervisor._conn, task_id, result_text="No action needed.")
+        supervisor._conn.commit()
+
+        # _pending_result_texts is empty (simulating supervisor restart)
+        assert (slot.project, slot.slot_id) not in supervisor._pending_result_texts
+
+        supervisor._maybe_send_refactoring_notification(slot)
+
+        supervisor._notifier.notify_refactoring_all_clear.assert_called_once()
+
+    def test_falls_back_to_db_action_needed_on_restart(self, supervisor):
+        """After a restart, action-needed is correctly classified from DB."""
+        supervisor._notifier = MagicMock()
+        slot = supervisor.slot_manager.get_slot("test-project", 1)
+        slot.ticket_id = "SMA-50"
+        slot.ticket_labels = ["Refactoring Analysis"]
+
+        task_id = insert_task(
+            supervisor._conn,
+            ticket_id="SMA-50",
+            title="Refactoring analysis",
+            project="test-project",
+            slot=1,
+            status="completed",
+        )
+        update_task(
+            supervisor._conn, task_id,
+            result_text="Created 3 refactoring tickets under SMA-50. "
+                        "Top concerns: dead code, oversized modules.",
+        )
+        supervisor._conn.commit()
+
+        # No in-memory result text
+        assert (slot.project, slot.slot_id) not in supervisor._pending_result_texts
+
+        supervisor._maybe_send_refactoring_notification(slot)
+
+        supervisor._notifier.notify_refactoring_action_needed.assert_called_once()
+        kwargs = supervisor._notifier.notify_refactoring_action_needed.call_args[1]
+        assert kwargs["num_tickets"] == 3

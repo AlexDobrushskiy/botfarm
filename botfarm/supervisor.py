@@ -2111,6 +2111,15 @@ class Supervisor:
             # Stash result_text for terminal comment posting
             if wr.result_text:
                 self._pending_result_texts[(wr.project, wr.slot_id)] = wr.result_text
+                # Persist to DB so it survives supervisor restarts
+                ticket_id_for_rt = slot.ticket_id if slot else None
+                rt_task_id = self._find_task_id(ticket_id_for_rt)
+                if rt_task_id is not None:
+                    update_task(
+                        self._conn, rt_task_id,
+                        result_text=wr.result_text,
+                    )
+                    self._conn.commit()
             # Clean up pause event for this worker regardless of outcome
             self._pause_events.pop((wr.project, wr.slot_id), None)
 
@@ -2544,6 +2553,13 @@ class Supervisor:
         result_text = self._pending_result_texts.get(
             (slot.project, slot.slot_id), ""
         )
+        # Fall back to persisted result_text (survives supervisor restarts)
+        if not result_text and slot.ticket_id:
+            task_id = self._find_task_id(slot.ticket_id)
+            if task_id is not None:
+                task = get_task(self._conn, task_id)
+                if task and task["result_text"]:
+                    result_text = task["result_text"]
 
         # Detect "action needed" by looking for ticket-creation signals
         # in the agent's result text.
