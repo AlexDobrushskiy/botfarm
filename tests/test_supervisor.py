@@ -6624,7 +6624,7 @@ class TestRefactoringAnalysisNotification:
 
         supervisor._notifier.notify_refactoring_all_clear.assert_called_once()
         kwargs = supervisor._notifier.notify_refactoring_all_clear.call_args[1]
-        assert kwargs["linear_ticket_url"] == "https://linear.app//issue/SMA-50"
+        assert kwargs["linear_ticket_url"] == "SMA-50"
         supervisor._notifier.notify_refactoring_action_needed.assert_not_called()
 
     def test_action_needed_when_ticket_creation_detected(self, supervisor):
@@ -6719,3 +6719,34 @@ class TestRefactoringAnalysisNotification:
 
         supervisor._notifier.notify_refactoring_all_clear.assert_not_called()
         supervisor._notifier.notify_refactoring_action_needed.assert_not_called()
+
+    def test_negative_code_quality_does_not_send_all_clear(self, supervisor):
+        """'code quality is poor' should not trigger an all-clear notification."""
+        supervisor._notifier = MagicMock()
+        slot = supervisor.slot_manager.get_slot("test-project", 1)
+        slot.ticket_id = "SMA-50"
+        slot.ticket_labels = ["Refactoring Analysis"]
+        supervisor._pending_result_texts[("test-project", 1)] = (
+            "Analysis complete. Code quality is poor."
+        )
+
+        supervisor._maybe_send_refactoring_notification(slot)
+
+        supervisor._notifier.notify_refactoring_all_clear.assert_not_called()
+        supervisor._notifier.notify_refactoring_action_needed.assert_not_called()
+
+    def test_parent_id_extracted_from_under_pattern(self, supervisor):
+        """Parent ID is extracted from 'under X-123', not the first ticket ID."""
+        supervisor._notifier = MagicMock()
+        slot = supervisor.slot_manager.get_slot("test-project", 1)
+        slot.ticket_id = "SMA-50"
+        slot.ticket_labels = ["Refactoring Analysis"]
+        supervisor._pending_result_texts[("test-project", 1)] = (
+            "Created SMA-101, SMA-102. "
+            "Created 2 refactoring tickets under SMA-50."
+        )
+
+        supervisor._maybe_send_refactoring_notification(slot)
+
+        kwargs = supervisor._notifier.notify_refactoring_action_needed.call_args[1]
+        assert kwargs["parent_ticket_id"] == "SMA-50"

@@ -2532,7 +2532,10 @@ class Supervisor:
 
         ticket_id = slot.ticket_id or "unknown"
         workspace = self._config.linear.workspace
-        linear_url = f"https://linear.app/{workspace}/issue/{ticket_id}"
+        if workspace:
+            linear_url = f"https://linear.app/{workspace}/issue/{ticket_id}"
+        else:
+            linear_url = ticket_id
 
         now = datetime.now(timezone.utc)
         month = now.strftime("%B")
@@ -2550,9 +2553,11 @@ class Supervisor:
         num_tickets = int(ticket_count_match.group(1)) if ticket_count_match else 0
 
         if num_tickets > 0:
-            # Extract parent ticket ID (the investigation ticket itself
-            # is typically the parent, or the agent may mention one).
-            parent_match = re.search(r"([A-Z]+-\d+)", result_text)
+            # Extract parent ticket ID from "under X-123" pattern;
+            # fall back to the current ticket's own ID.
+            parent_match = re.search(
+                r"under\s+([A-Z]+-\d+)", result_text, re.IGNORECASE
+            )
             parent_id = parent_match.group(1) if parent_match else ticket_id
 
             # Extract brief list of concerns — look for "Top concerns: ..."
@@ -2576,7 +2581,7 @@ class Supervisor:
             )
         elif re.search(
             r"no action needed|no refactoring needed|all clear|"
-            r"code quality is \w+",
+            r"code quality is (?:good|acceptable|satisfactory|sufficient|healthy|fine)",
             result_text,
             re.IGNORECASE,
         ):
