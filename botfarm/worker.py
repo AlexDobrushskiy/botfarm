@@ -681,6 +681,21 @@ decisions, and relevant areas of the codebase. Use this to orient yourself quick
 instead of re-discovering the codebase from scratch."""
 
 
+def _shared_mem_suffix(
+    stage: str,
+    shared_mem_dir: str | None,
+    ticket_labels: list[str] | None = None,
+) -> str:
+    """Return the shared-mem instruction suffix for a given stage, or ''."""
+    if not shared_mem_dir:
+        return ""
+    if stage == "implement" and not _is_investigation(ticket_labels):
+        return _IMPLEMENTER_SHARED_MEM_INSTRUCTION.format(shared_mem_dir=shared_mem_dir)
+    if stage in ("fix", "ci_fix"):
+        return _FIXER_SHARED_MEM_INSTRUCTION.format(shared_mem_dir=shared_mem_dir)
+    return ""
+
+
 def _build_implement_prompt(
     ticket_id: str,
     labels: list[str] | None,
@@ -776,17 +791,12 @@ def _run_implement(
     """IMPLEMENT stage — Claude Code implements the ticket and creates a PR."""
     if stage_tpl is not None:
         prompt_vars = {"ticket_id": ticket_id}
-        prompt_suffix = ""
         if shared_mem_dir:
             prompt_vars["shared_mem_dir"] = shared_mem_dir
-            if not _is_investigation(ticket_labels):
-                prompt_suffix = _IMPLEMENTER_SHARED_MEM_INSTRUCTION.format(
-                    shared_mem_dir=shared_mem_dir,
-                )
         return _run_claude_stage(
             stage_tpl, cwd=cwd, max_turns=max_turns,
             prompt_vars=prompt_vars,
-            prompt_suffix=prompt_suffix,
+            prompt_suffix=_shared_mem_suffix("implement", shared_mem_dir, ticket_labels),
             log_file=log_file, env=env, on_context_fill=on_context_fill,
         )
     # Legacy fallback
@@ -1184,16 +1194,12 @@ def _run_fix(
             "owner": owner,
             "repo": repo,
         }
-        prompt_suffix = ""
         if shared_mem_dir:
             prompt_vars["shared_mem_dir"] = shared_mem_dir
-            prompt_suffix = _FIXER_SHARED_MEM_INSTRUCTION.format(
-                shared_mem_dir=shared_mem_dir,
-            )
         return _run_claude_stage(
             stage_tpl, cwd=cwd, max_turns=max_turns,
             prompt_vars=prompt_vars,
-            prompt_suffix=prompt_suffix,
+            prompt_suffix=_shared_mem_suffix("fix", shared_mem_dir),
             log_file=log_file, env=env, on_context_fill=on_context_fill,
         )
     # Legacy fallback
@@ -1295,20 +1301,20 @@ def _run_ci_fix(
 ) -> StageResult:
     """CI FIX stage — Claude Code fixes CI failures using CI output context."""
     if stage_tpl is not None:
+        owner, repo, number = _parse_pr_url(pr_url)
         prompt_vars: dict[str, str] = {
             "pr_url": pr_url,
+            "pr_number": number,
+            "owner": owner,
+            "repo": repo,
             "ci_failure_output": ci_failure_output[:CI_OUTPUT_TRUNCATE_CHARS],
         }
-        prompt_suffix = ""
         if shared_mem_dir:
             prompt_vars["shared_mem_dir"] = shared_mem_dir
-            prompt_suffix = _FIXER_SHARED_MEM_INSTRUCTION.format(
-                shared_mem_dir=shared_mem_dir,
-            )
         return _run_claude_stage(
             stage_tpl, cwd=cwd, max_turns=max_turns,
             prompt_vars=prompt_vars,
-            prompt_suffix=prompt_suffix,
+            prompt_suffix=_shared_mem_suffix("ci_fix", shared_mem_dir),
             log_file=log_file, env=env, on_context_fill=on_context_fill,
         )
     # Legacy fallback
@@ -3042,21 +3048,12 @@ def _execute_stage(
             # shared_mem_dir is injected via both prompt_vars (so templates
             # can reference {shared_mem_dir} for the path) and prompt_suffix
             # (appends full instruction block after template rendering).
-            prompt_suffix = ""
             if shared_mem_dir:
                 prompt_vars["shared_mem_dir"] = shared_mem_dir
-                if stage == "implement" and not _is_investigation(ticket_labels):
-                    prompt_suffix = _IMPLEMENTER_SHARED_MEM_INSTRUCTION.format(
-                        shared_mem_dir=shared_mem_dir,
-                    )
-                elif stage in ("fix", "ci_fix"):
-                    prompt_suffix = _FIXER_SHARED_MEM_INSTRUCTION.format(
-                        shared_mem_dir=shared_mem_dir,
-                    )
             return _run_claude_stage(
                 stage_tpl, cwd=cwd, max_turns=max_turns,
                 prompt_vars=prompt_vars,
-                prompt_suffix=prompt_suffix,
+                prompt_suffix=_shared_mem_suffix(stage, shared_mem_dir, ticket_labels),
                 log_file=log_file, env=env, on_context_fill=on_context_fill,
             )
         elif stage_tpl.executor_type == "shell":
