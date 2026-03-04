@@ -990,3 +990,25 @@ def write_structural_config_updates(config_path: Path, updates: dict) -> None:
                     target["linear_project"] = proj_update["linear_project"]
 
     write_yaml_atomic(config_path, data)
+
+
+# ---------------------------------------------------------------------------
+# Runtime config DB sync
+# ---------------------------------------------------------------------------
+
+
+def sync_agent_config_to_db(
+    conn: "sqlite3.Connection",
+    agents_config: AgentsConfig,
+) -> None:
+    """Extract runtime-relevant fields from AgentsConfig and write to DB."""
+    from botfarm.db import write_runtime_config_batch
+
+    settings: dict[str, object] = {
+        "max_review_iterations": agents_config.max_review_iterations,
+        "max_ci_retries": agents_config.max_ci_retries,
+        "codex_reviewer_enabled": agents_config.codex_reviewer_enabled,
+        "codex_reviewer_model": agents_config.codex_reviewer_model,
+        "codex_reviewer_timeout_minutes": agents_config.codex_reviewer_timeout_minutes,
+    }
+    write_runtime_config_batch(conn, settings)
