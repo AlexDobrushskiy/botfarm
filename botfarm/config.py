@@ -584,7 +584,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         timeout_grace_seconds=int(agents_data.get("timeout_grace_seconds", 10)),
         codex_reviewer_enabled=_parse_bool(agents_data, "codex_reviewer_enabled", False, section="agents"),
         codex_reviewer_model=str(agents_data.get("codex_reviewer_model", "")),
-        codex_reviewer_reasoning_effort=str(agents_data.get("codex_reviewer_reasoning_effort", "medium")),
+        codex_reviewer_reasoning_effort=str(agents_data.get("codex_reviewer_reasoning_effort", "medium") or ""),
         codex_reviewer_timeout_minutes=int(
             agents_data.get("codex_reviewer_timeout_minutes", 15)
         ),

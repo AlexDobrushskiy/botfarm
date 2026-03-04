@@ -1488,6 +1488,19 @@ def test_config_codex_defaults(tmp_path):
     assert config.agents.codex_reviewer_timeout_minutes == 15
 
 
+def test_config_codex_reasoning_effort_null(tmp_path):
+    """YAML null for reasoning effort normalizes to empty string, not 'None'."""
+    data = {
+        **MINIMAL_CONFIG,
+        "agents": {
+            "codex_reviewer_reasoning_effort": None,
+        },
+    }
+    config_path = _write_config(tmp_path, data)
+    config = load_config(config_path)
+    assert config.agents.codex_reviewer_reasoning_effort == ""
+
+
 def test_config_codex_editable():
     """Verify codex reviewer fields appear in EDITABLE_FIELDS."""
     from botfarm.config import EDITABLE_FIELDS
