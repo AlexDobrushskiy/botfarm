@@ -30,8 +30,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import FrameType
 
-from botfarm.config import BotfarmConfig, IdentitiesConfig, ProjectConfig, resolve_stage_timeout
-from botfarm.db import get_events, get_last_refactoring_analysis_date, get_task, get_last_scheduled_refactoring_ticket, init_db, insert_event, insert_task, record_refactoring_analysis_created, resolve_db_path, save_capacity_state, save_queue_entries, update_task, upsert_ticket_history
+from botfarm.config import BotfarmConfig, IdentitiesConfig, ProjectConfig, resolve_stage_timeout, sync_agent_config_to_db
+from botfarm.db import get_events, get_last_refactoring_analysis_date, get_task, get_last_scheduled_refactoring_ticket, init_db, insert_event, insert_task, read_runtime_config, record_refactoring_analysis_created, resolve_db_path, save_capacity_state, save_queue_entries, update_task, upsert_ticket_history
 from botfarm.linear import LinearClient, LinearPoller, create_pollers
 from botfarm.notifications import Notifier
 from botfarm.preflight import CheckResult, log_preflight_summary, run_preflight_checks
@@ -219,6 +219,25 @@ def _worker_entry(
 
     db_path = resolve_db_path()
     conn = init_db(db_path)
+
+    # Read latest runtime config from DB to pick up dashboard changes
+    # that occurred between supervisor snapshot and worker spawn.
+    try:
+        rt = read_runtime_config(conn)
+        if "max_review_iterations" in rt:
+            max_review_iterations = int(rt["max_review_iterations"])
+        if "max_ci_retries" in rt:
+            max_ci_retries = int(rt["max_ci_retries"])
+        if "codex_reviewer_enabled" in rt:
+            codex_reviewer_enabled = bool(rt["codex_reviewer_enabled"])
+        if "codex_reviewer_model" in rt:
+            codex_reviewer_model = str(rt["codex_reviewer_model"])
+        if "codex_reviewer_timeout_minutes" in rt:
+            codex_reviewer_timeout_minutes = int(rt["codex_reviewer_timeout_minutes"])
+        if "max_merge_conflict_retries" in rt:
+            max_merge_conflict_retries = int(rt["max_merge_conflict_retries"])
+    except Exception:
+        logger.debug("Could not read runtime config from DB, using defaults")
 
     try:
         result: PipelineResult = run_pipeline(
@@ -1138,6 +1157,9 @@ class Supervisor:
         db_path = resolve_db_path()
         self._db_path = str(db_path)
         self._conn: sqlite3.Connection = init_db(db_path, allow_migration=True)
+
+        # Seed runtime_config table with current agent settings
+        sync_agent_config_to_db(self._conn, config.agents)
 
         # Slot manager (shares the supervisor's DB connection)
         self._slot_manager = SlotManager(

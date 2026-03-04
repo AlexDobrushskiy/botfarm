@@ -1161,3 +1161,48 @@ def list_cleanup_batches(
         "SELECT * FROM cleanup_batches ORDER BY created_at DESC LIMIT ?",
         (limit,),
     ).fetchall()
+
+
+# ---------------------------------------------------------------------------
+# Runtime config helpers
+# ---------------------------------------------------------------------------
+
+RUNTIME_CONFIG_KEYS: frozenset[str] = frozenset({
+    "max_review_iterations",
+    "max_ci_retries",
+    "max_merge_conflict_retries",
+    "codex_reviewer_enabled",
+    "codex_reviewer_model",
+    "codex_reviewer_timeout_minutes",
+})
+
+
+def write_runtime_config(
+    conn: sqlite3.Connection, key: str, value: object,
+) -> None:
+    """Upsert a single runtime config key with a JSON-encoded value."""
+    conn.execute(
+        """
+        INSERT INTO runtime_config (key, value, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET
+            value=excluded.value,
+            updated_at=excluded.updated_at
+        """,
+        (key, json.dumps(value), _now_iso()),
+    )
+
+
+def write_runtime_config_batch(
+    conn: sqlite3.Connection, settings: dict[str, object],
+) -> None:
+    """Batch upsert runtime config keys and commit."""
+    for key, value in settings.items():
+        write_runtime_config(conn, key, value)
+    conn.commit()
+
+
+def read_runtime_config(conn: sqlite3.Connection) -> dict[str, object]:
+    """Read all runtime config keys, JSON-decoding values."""
+    rows = conn.execute("SELECT key, value FROM runtime_config").fetchall()
+    return {row["key"]: json.loads(row["value"]) for row in rows}
