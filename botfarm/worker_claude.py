@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from botfarm.codex import CodexResult
 from botfarm.process import terminate_process_group as _terminate_process_group
 
 logger = logging.getLogger(__name__)
