@@ -325,6 +325,9 @@ def run_pipeline(
     # Create shared-mem directory for inter-stage context passing.
     # The implementer writes a summary here; the fixer reads it for a warm start.
     shared_mem_dir = Path.home() / ".botfarm" / "shared-mem" / ticket_id
+    if resume_from_stage is None and shared_mem_dir.exists():
+        # Fresh run — clear stale notes from any previous attempt.
+        shutil.rmtree(shared_mem_dir, ignore_errors=True)
     shared_mem_dir.mkdir(parents=True, exist_ok=True)
     logger.info("Created shared-mem directory: %s", shared_mem_dir)
 
@@ -413,8 +416,9 @@ def run_pipeline(
 
         return pipeline
     finally:
-        # Clean up shared-mem directory
-        if shared_mem_dir.exists():
+        # Clean up shared-mem directory (but preserve on pause so a
+        # resumed pipeline can still use the implementer's notes).
+        if not pipeline.paused and shared_mem_dir.exists():
             shutil.rmtree(shared_mem_dir, ignore_errors=True)
             logger.info("Cleaned up shared-mem directory: %s", shared_mem_dir)
 

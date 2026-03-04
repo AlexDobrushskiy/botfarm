@@ -131,16 +131,29 @@ def _run_implement(
     env: dict[str, str] | None = None,
     on_context_fill: ContextFillCallback | None = None,
     stage_tpl: StageTemplate | None = None,
+    shared_mem_path: Path | None = None,
 ) -> StageResult:
     """IMPLEMENT stage — Claude Code implements the ticket and creates a PR."""
     if stage_tpl is not None:
+        prompt_vars: dict[str, str] = {"ticket_id": ticket_id}
+        if shared_mem_path:
+            prompt_vars["shared_mem_path"] = str(shared_mem_path)
         return _run_claude_stage(
             stage_tpl, cwd=cwd, max_turns=max_turns,
-            prompt_vars={"ticket_id": ticket_id},
+            prompt_vars=prompt_vars,
             log_file=log_file, env=env, on_context_fill=on_context_fill,
         )
     # Legacy fallback
     prompt = _build_implement_prompt(ticket_id, ticket_labels)
+    if shared_mem_path:
+        prompt += (
+            f"\n\nAfter completing your implementation, write a brief summary to "
+            f"{shared_mem_path}/implementer.md containing:\n"
+            "- Files created or modified (with brief description of changes)\n"
+            "- Key architectural decisions made\n"
+            "- Areas of the codebase that are relevant to the change\n"
+            "- Any gotchas or non-obvious implementation details"
+        )
     result = _invoke_claude(
         prompt, cwd=cwd, max_turns=max_turns, log_file=log_file,
         env=env, on_context_fill=on_context_fill,
@@ -523,18 +536,22 @@ def _run_fix(
     on_context_fill: ContextFillCallback | None = None,
     stage_tpl: StageTemplate | None = None,
     codex_enabled: bool = False,
+    shared_mem_path: Path | None = None,
 ) -> StageResult:
     """FIX stage — Fresh Claude Code addresses review comments and pushes fixes."""
     owner, repo, number = _parse_pr_url(pr_url)
     if stage_tpl is not None:
+        prompt_vars: dict[str, str] = {
+            "pr_url": pr_url,
+            "pr_number": number,
+            "owner": owner,
+            "repo": repo,
+        }
+        if shared_mem_path:
+            prompt_vars["shared_mem_path"] = str(shared_mem_path)
         return _run_claude_stage(
             stage_tpl, cwd=cwd, max_turns=max_turns,
-            prompt_vars={
-                "pr_url": pr_url,
-                "pr_number": number,
-                "owner": owner,
-                "repo": repo,
-            },
+            prompt_vars=prompt_vars,
             log_file=log_file, env=env, on_context_fill=on_context_fill,
         )
     # Legacy fallback
@@ -561,6 +578,12 @@ def _run_fix(
         "- If fixed but clarification helps: reply \"Fixed — [what changed]\"\n"
         "- If intentionally not fixed: reply with a brief explanation why"
     )
+    if shared_mem_path:
+        prompt += (
+            f"\n\nBefore starting, read {shared_mem_path}/implementer.md "
+            "(if it exists) for context from the implementer about what was "
+            "changed and why."
+        )
     result = _invoke_claude(
         prompt, cwd=cwd, max_turns=max_turns, log_file=log_file,
         env=env, on_context_fill=on_context_fill,
@@ -652,6 +675,12 @@ def _run_ci_fix(
         "then run tests locally, commit and push the fixes.\n\n"
         f"CI failure output:\n{ci_failure_output[:CI_OUTPUT_TRUNCATE_CHARS]}"
     )
+    if shared_mem_path:
+        prompt += (
+            f"\n\nBefore starting, read {shared_mem_path}/implementer.md "
+            "(if it exists) for context from the implementer about what was "
+            "changed and why."
+        )
     result = _invoke_claude(
         prompt, cwd=cwd, max_turns=max_turns, log_file=log_file,
         env=env, on_context_fill=on_context_fill,
@@ -931,9 +960,9 @@ def _execute_stage(
                     owner=owner,
                     repo=repo,
                 )
-            # Pass shared-mem path to implement and fix stages so they can
-            # share context (implementer writes summary, fixer reads it).
-            if shared_mem_path and stage in ("implement", "fix"):
+            # Pass shared-mem path so stages can share context
+            # (implementer writes summary, fixer/ci_fix reads it).
+            if shared_mem_path and stage in ("implement", "fix", "ci_fix"):
                 prompt_vars["shared_mem_path"] = str(shared_mem_path)
             return _run_claude_stage(
                 stage_tpl, cwd=cwd, max_turns=max_turns,
@@ -960,6 +989,7 @@ def _execute_stage(
             ticket_id, ticket_labels=ticket_labels,
             cwd=cwd, max_turns=max_turns, log_file=log_file,
             env=env, on_context_fill=on_context_fill,
+            shared_mem_path=shared_mem_path,
         )
     elif stage == "review":
         if not pr_url:
@@ -980,6 +1010,7 @@ def _execute_stage(
             pr_url, cwd=cwd, max_turns=max_turns, log_file=log_file,
             env=env, on_context_fill=on_context_fill,
             codex_enabled=codex_enabled,
+            shared_mem_path=shared_mem_path,
         )
     elif stage == "pr_checks":
         if not pr_url:
