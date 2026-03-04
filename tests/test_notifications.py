@@ -61,6 +61,15 @@ class TestNotifierDisabled:
         n.notify_capacity_cleared(count=890, limit=1000, percentage=89.0)
         n.notify_all_idle()
         n.notify_supervisor_shutdown(reason="test")
+        n.notify_refactoring_all_clear(
+            month="March", year=2026,
+            linear_ticket_url="https://linear.app/test/issue/X-1",
+        )
+        n.notify_refactoring_action_needed(
+            month="March", year=2026, num_tickets=2,
+            parent_ticket_id="X-1", brief_list="test",
+            linear_ticket_url="https://linear.app/test/issue/X-1",
+        )
         n.close()
 
 
@@ -512,3 +521,113 @@ class TestNotificationWithoutCodex:
         text = payload["text"]
         assert "SMA-1" in text
         assert "Review:" not in text
+
+
+# ---------------------------------------------------------------------------
+# Refactoring analysis notifications
+# ---------------------------------------------------------------------------
+
+
+class TestRefactoringAnalysisNotifications:
+    @pytest.fixture()
+    def notifier(self):
+        n = Notifier(NotificationsConfig(
+            webhook_url="https://hooks.slack.com/services/xxx",
+            webhook_format="slack",
+        ))
+        n._client = MagicMock()
+        response = MagicMock()
+        response.raise_for_status = MagicMock()
+        n._client.post.return_value = response
+        yield n
+        n.close()
+
+    def test_all_clear_message_format(self, notifier):
+        notifier.notify_refactoring_all_clear(
+            month="March",
+            year=2026,
+            linear_ticket_url="https://linear.app/test/issue/SMA-100",
+        )
+        notifier._client.post.assert_called_once()
+        payload = notifier._client.post.call_args[1]["json"]
+        text = payload["text"]
+        assert "Refactoring Analysis (March 2026)" in text
+        assert "no action needed" in text
+        assert "https://linear.app/test/issue/SMA-100" in text
+
+    def test_action_needed_message_format(self, notifier):
+        notifier.notify_refactoring_action_needed(
+            month="March",
+            year=2026,
+            num_tickets=3,
+            parent_ticket_id="SMA-100",
+            brief_list="duplicated auth logic, oversized utils module",
+            linear_ticket_url="https://linear.app/test/issue/SMA-100",
+        )
+        notifier._client.post.assert_called_once()
+        payload = notifier._client.post.call_args[1]["json"]
+        text = payload["text"]
+        assert "Refactoring Analysis (March 2026)" in text
+        assert "3 refactoring tickets" in text
+        assert "SMA-100" in text
+        assert "duplicated auth logic" in text
+        assert "https://linear.app/test/issue/SMA-100" in text
+
+    def test_all_clear_not_rate_limited(self, notifier):
+        notifier.notify_refactoring_all_clear(
+            month="March", year=2026,
+            linear_ticket_url="https://linear.app/test/issue/SMA-100",
+        )
+        notifier.notify_refactoring_all_clear(
+            month="April", year=2026,
+            linear_ticket_url="https://linear.app/test/issue/SMA-101",
+        )
+        assert notifier._client.post.call_count == 2
+
+    def test_action_needed_not_rate_limited(self, notifier):
+        notifier.notify_refactoring_action_needed(
+            month="March", year=2026, num_tickets=2,
+            parent_ticket_id="SMA-100", brief_list="test",
+            linear_ticket_url="https://linear.app/test/issue/SMA-100",
+        )
+        notifier.notify_refactoring_action_needed(
+            month="April", year=2026, num_tickets=1,
+            parent_ticket_id="SMA-101", brief_list="test2",
+            linear_ticket_url="https://linear.app/test/issue/SMA-101",
+        )
+        assert notifier._client.post.call_count == 2
+
+    def test_all_clear_discord_format(self):
+        n = Notifier(NotificationsConfig(
+            webhook_url="https://discord.com/api/webhooks/xxx",
+            webhook_format="discord",
+        ))
+        n._client = MagicMock()
+        response = MagicMock()
+        response.raise_for_status = MagicMock()
+        n._client.post.return_value = response
+
+        n.notify_refactoring_all_clear(
+            month="March", year=2026,
+            linear_ticket_url="https://linear.app/test/issue/SMA-100",
+        )
+        payload = n._client.post.call_args[1]["json"]
+        assert "content" in payload
+        assert "text" not in payload
+        assert "no action needed" in payload["content"]
+
+        n.close()
+
+    def test_disabled_notifier_noop(self):
+        n = Notifier(NotificationsConfig(webhook_url=""))
+        # Should not raise
+        n.notify_refactoring_all_clear(
+            month="March", year=2026,
+            linear_ticket_url="https://linear.app/test/issue/SMA-100",
+        )
+        n.notify_refactoring_action_needed(
+            month="March", year=2026, num_tickets=2,
+            parent_ticket_id="SMA-100", brief_list="test",
+            linear_ticket_url="https://linear.app/test/issue/SMA-100",
+        )
+        n.close()
