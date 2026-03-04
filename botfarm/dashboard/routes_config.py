@@ -13,12 +13,14 @@ from fastapi.responses import HTMLResponse
 from botfarm.config import (
     EDITABLE_FIELDS,
     apply_config_updates,
+    sync_agent_config_to_db,
     validate_config_updates,
     validate_structural_config_updates,
     write_config_updates,
     write_structural_config_updates,
     write_yaml_atomic,
 )
+from botfarm.db import init_db
 
 from .state import manual_pause_state, read_state, supervisor_status
 
@@ -239,6 +241,17 @@ async def config_update(request: Request):
                     "Changes will be lost on restart.</div>",
                     status_code=200,
                 )
+
+        # Sync agent settings to runtime_config DB table
+        if "agents" in runtime_updates:
+            try:
+                conn = init_db(app.state.db_path)
+                try:
+                    sync_agent_config_to_db(conn, cfg.agents)
+                finally:
+                    conn.close()
+            except Exception:
+                logger.exception("Failed to sync agent config to DB")
 
     # Write structural updates to YAML only (NOT in-memory)
     if structural_updates:

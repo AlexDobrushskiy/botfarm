@@ -1138,6 +1138,11 @@ class Supervisor:
         self._db_path = str(db_path)
         self._conn: sqlite3.Connection = init_db(db_path, allow_migration=True)
 
+        # Seed runtime_config table with current agent settings
+        from botfarm.config import sync_agent_config_to_db
+
+        sync_agent_config_to_db(self._conn, config.agents)
+
         # Slot manager (shares the supervisor's DB connection)
         self._slot_manager = SlotManager(
             db_path=self._db_path,
