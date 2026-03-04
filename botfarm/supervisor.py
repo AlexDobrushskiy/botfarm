@@ -31,7 +31,7 @@ from pathlib import Path
 from types import FrameType
 
 from botfarm.config import BotfarmConfig, IdentitiesConfig, ProjectConfig, resolve_stage_timeout
-from botfarm.db import get_events, get_last_refactoring_analysis_date, get_task, has_open_refactoring_analysis_ticket, init_db, insert_event, insert_task, record_refactoring_analysis_created, resolve_db_path, save_capacity_state, save_queue_entries, update_task, upsert_ticket_history
+from botfarm.db import get_events, get_last_refactoring_analysis_date, get_task, get_last_scheduled_refactoring_ticket, init_db, insert_event, insert_task, record_refactoring_analysis_created, resolve_db_path, save_capacity_state, save_queue_entries, update_task, upsert_ticket_history
 from botfarm.linear import LinearClient, LinearPoller, create_pollers
 from botfarm.notifications import Notifier
 from botfarm.preflight import CheckResult, log_preflight_summary, run_preflight_checks
@@ -2527,17 +2527,16 @@ class Supervisor:
             review_summary=self._build_review_summary(task_id),
         )
 
-    _REFACTORING_ANALYSIS_LABEL = "refactoring analysis"
-
     def _maybe_send_refactoring_notification(self, slot: SlotState) -> None:
         """Send a refactoring-analysis-specific notification if applicable.
 
-        Checks whether the completed ticket has the "Refactoring Analysis"
-        label, then inspects the agent's result text to decide between
-        the "all clear" and "action needed" notification templates.
+        Checks whether the completed ticket has the configured refactoring
+        analysis label, then inspects the agent's result text to decide
+        between the "all clear" and "action needed" notification templates.
         """
+        ra_label = self._config.refactoring_analysis.linear_label.lower()
         labels = slot.ticket_labels or []
-        if not any(lbl.lower() == self._REFACTORING_ANALYSIS_LABEL for lbl in labels):
+        if not any(lbl.lower() == ra_label for lbl in labels):
             return
 
         ticket_id = slot.ticket_id or "unknown"
@@ -2658,9 +2657,9 @@ Follow the Refactoring Analysis Procedure documented in CLAUDE.md (or docs/refac
             if days_since < ra_config.cadence_days:
                 return
 
-        # Check if there's already an open refactoring analysis ticket
-        has_open, last_ticket_id = has_open_refactoring_analysis_ticket(self._conn)
-        if has_open and last_ticket_id:
+        # Check if the most recently scheduled ticket is still open
+        last_ticket_id = get_last_scheduled_refactoring_ticket(self._conn)
+        if last_ticket_id:
             # Verify the ticket is still open in Linear before skipping
             for poller in self._pollers.values():
                 if poller.is_issue_terminal(last_ticket_id):
@@ -2676,12 +2675,14 @@ Follow the Refactoring Analysis Procedure documented in CLAUDE.md (or docs/refac
 
         # Also check Linear directly for any open tickets with the label
         # (catches manually created tickets or ones from before DB tracking)
+        any_check_succeeded = False
         for poller in self._pollers.values():
             try:
                 open_issues = self._linear_client.fetch_open_issues_with_label(
                     poller.team_key,
                     ra_config.linear_label,
                 )
+                any_check_succeeded = True
                 if open_issues:
                     logger.debug(
                         "Skipping refactoring analysis — found %d open ticket(s) "
@@ -2694,6 +2695,13 @@ Follow the Refactoring Analysis Procedure documented in CLAUDE.md (or docs/refac
                 logger.warning(
                     "Failed to check Linear for open refactoring analysis tickets"
                 )
+
+        if not any_check_succeeded:
+            logger.warning(
+                "Could not verify open refactoring analysis tickets — "
+                "skipping creation"
+            )
+            return
 
         # Create the ticket
         self._create_refactoring_analysis_ticket(now)
@@ -2726,6 +2734,31 @@ Follow the Refactoring Analysis Procedure documented in CLAUDE.md (or docs/refac
                         label_name,
                     )
 
+            # Resolve project ID so the ticket appears in the project filter
+            project_id: str | None = None
+            if first_project.linear_project:
+                try:
+                    project_id = self._linear_client.get_project_id(
+                        first_project.linear_project
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to resolve project '%s' — creating without project",
+                        first_project.linear_project,
+                    )
+
+            # Resolve the configured todo state so the ticket is picked up
+            state_id: str | None = None
+            todo_status = self._config.linear.todo_status
+            try:
+                states = self._linear_client.get_team_states(team_key)
+                state_id = states.get(todo_status)
+            except Exception:
+                logger.warning(
+                    "Failed to resolve todo state '%s' — using team default",
+                    todo_status,
+                )
+
             description = self._REFACTORING_ANALYSIS_TICKET_TEMPLATE
 
             issue = self._linear_client.create_issue(
@@ -2734,6 +2767,8 @@ Follow the Refactoring Analysis Procedure documented in CLAUDE.md (or docs/refac
                 description=description,
                 priority=ra_config.priority,
                 label_ids=label_ids or None,
+                project_id=project_id,
+                state_id=state_id,
             )
 
             identifier = issue.get("identifier", "unknown")
@@ -2745,12 +2780,6 @@ Follow the Refactoring Analysis Procedure documented in CLAUDE.md (or docs/refac
                 identifier,
                 issue.get("url", ""),
             )
-            insert_event(
-                self._conn,
-                event_type="refactoring_analysis_created",
-                detail=identifier,
-            )
-            self._conn.commit()
 
         except Exception:
             logger.exception("Failed to create refactoring analysis ticket")

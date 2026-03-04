@@ -379,6 +379,17 @@ query IssuesByLabel($teamKey: String!, $labelName: String!, $first: Int!) {
 }
 """
 
+PROJECT_BY_NAME_QUERY = """
+query ProjectByName($name: String!) {
+  projects(filter: { name: { eq: $name } }, first: 1) {
+    nodes {
+      id
+      name
+    }
+  }
+}
+"""
+
 ACTIVE_ISSUES_FOR_PROJECT_COUNT_QUERY = """
 query ActiveIssuesForProjectCount($first: Int!, $after: String, $projectName: String!) {
   issues(
@@ -854,6 +865,14 @@ class LinearClient:
             raise LinearAPIError(f"Team with key '{team_key}' not found")
         return teams[0]["id"]
 
+    def get_project_id(self, project_name: str) -> str | None:
+        """Return the internal UUID for a project given its name, or None."""
+        data = self._execute(PROJECT_BY_NAME_QUERY, {"name": project_name})
+        nodes = data.get("projects", {}).get("nodes", [])
+        if not nodes:
+            return None
+        return nodes[0]["id"]
+
     def get_label_id(self, team_key: str, label_name: str) -> str | None:
         """Look up a label by name (team-scoped or workspace-scoped). Returns id or None."""
         data = self._execute(TEAM_LABELS_QUERY, {"teamKey": team_key})
@@ -885,6 +904,8 @@ class LinearClient:
         description: str = "",
         priority: int = 0,
         label_ids: list[str] | None = None,
+        project_id: str | None = None,
+        state_id: str | None = None,
     ) -> dict:
         """Create a new issue. Returns dict with id, identifier, url."""
         input_data: dict = {
@@ -897,6 +918,10 @@ class LinearClient:
             input_data["priority"] = priority
         if label_ids:
             input_data["labelIds"] = label_ids
+        if project_id:
+            input_data["projectId"] = project_id
+        if state_id:
+            input_data["stateId"] = state_id
         data = self._execute(CREATE_ISSUE_MUTATION, {"input": input_data})
         result = data.get("issueCreate", {})
         if not result.get("success"):

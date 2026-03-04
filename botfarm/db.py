@@ -639,13 +639,14 @@ def get_last_refactoring_analysis_date(conn: sqlite3.Connection) -> datetime | N
     return datetime.fromisoformat(row["created_at"].replace("Z", "+00:00"))
 
 
-def has_open_refactoring_analysis_ticket(
+def get_last_scheduled_refactoring_ticket(
     conn: sqlite3.Connection,
-) -> tuple[bool, str | None]:
-    """Check if there's a previously scheduled refactoring analysis ticket still open.
+) -> str | None:
+    """Return the Linear identifier of the most recently scheduled refactoring ticket.
 
-    Returns (has_open, ticket_identifier) — ticket_identifier is the Linear
-    identifier stored in the event detail field, or None.
+    Returns the identifier (e.g. ``"SMA-123"``), or ``None`` if no ticket
+    has been scheduled yet.  The caller is responsible for checking whether
+    the ticket is still open via the poller.
     """
     row = conn.execute(
         "SELECT detail FROM task_events "
@@ -653,9 +654,8 @@ def has_open_refactoring_analysis_ticket(
         "ORDER BY created_at DESC LIMIT 1"
     ).fetchone()
     if row is None:
-        return False, None
-    # detail stores the Linear ticket identifier (e.g. "SMA-123")
-    return True, row["detail"]
+        return None
+    return row["detail"]
 
 
 def record_refactoring_analysis_created(

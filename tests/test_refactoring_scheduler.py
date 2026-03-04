@@ -17,7 +17,7 @@ from botfarm.config import (
 from botfarm.db import (
     get_events,
     get_last_refactoring_analysis_date,
-    has_open_refactoring_analysis_ticket,
+    get_last_scheduled_refactoring_ticket,
     init_db,
     insert_event,
     record_refactoring_analysis_created,
@@ -99,17 +99,15 @@ class TestDBHelpers:
         assert dt is not None
         assert (datetime.now(timezone.utc) - dt).total_seconds() < 10
 
-    def test_has_open_ticket_empty(self, conn):
-        has_open, ticket_id = has_open_refactoring_analysis_ticket(conn)
-        assert not has_open
-        assert ticket_id is None
+    def test_get_last_scheduled_ticket_empty(self, conn):
+        result = get_last_scheduled_refactoring_ticket(conn)
+        assert result is None
 
-    def test_has_open_ticket_after_record(self, conn):
+    def test_get_last_scheduled_ticket_after_record(self, conn):
         record_refactoring_analysis_created(conn, "TST-99")
         conn.commit()
-        has_open, ticket_id = has_open_refactoring_analysis_ticket(conn)
-        assert has_open
-        assert ticket_id == "TST-99"
+        result = get_last_scheduled_refactoring_ticket(conn)
+        assert result == "TST-99"
 
 
 # ---------------------------------------------------------------------------
@@ -249,6 +247,10 @@ class TestRefactoringScheduler:
         sup._linear_client.get_or_create_label = MagicMock(
             return_value="label-uuid"
         )
+        sup._linear_client.get_team_states = MagicMock(
+            return_value={"Todo": "todo-state-id"}
+        )
+        sup._linear_client.get_project_id = MagicMock(return_value=None)
         sup._linear_client.create_issue = MagicMock(
             return_value={
                 "id": "issue-uuid",
@@ -267,6 +269,7 @@ class TestRefactoringScheduler:
         assert call_kwargs["team_id"] == "team-uuid"
         assert "Refactoring Analysis" in call_kwargs["title"]
         assert call_kwargs["priority"] == 4
+        assert call_kwargs["state_id"] == "todo-state-id"
 
         # Verify DB tracking
         events = get_events(
@@ -309,6 +312,10 @@ class TestRefactoringScheduler:
         sup._linear_client.get_or_create_label = MagicMock(
             return_value="label-uuid"
         )
+        sup._linear_client.get_team_states = MagicMock(
+            return_value={"Todo": "todo-state-id"}
+        )
+        sup._linear_client.get_project_id = MagicMock(return_value=None)
         sup._linear_client.create_issue = MagicMock(
             return_value={
                 "id": "new-uuid",
@@ -380,6 +387,10 @@ class TestRefactoringScheduler:
         sup._linear_client.get_or_create_label = MagicMock(
             return_value="label-uuid"
         )
+        sup._linear_client.get_team_states = MagicMock(
+            return_value={"Todo": "todo-state-id"}
+        )
+        sup._linear_client.get_project_id = MagicMock(return_value=None)
         sup._linear_client.create_issue = MagicMock(
             return_value={
                 "id": "issue-uuid",
@@ -410,6 +421,10 @@ class TestRefactoringScheduler:
                 label_calls.append(name) or f"label-{name}"
             )
         )
+        sup._linear_client.get_team_states = MagicMock(
+            return_value={"Todo": "todo-state-id"}
+        )
+        sup._linear_client.get_project_id = MagicMock(return_value=None)
         sup._linear_client.create_issue = MagicMock(
             return_value={
                 "id": "issue-uuid",
@@ -447,6 +462,51 @@ class TestRefactoringScheduler:
         )
         assert len(events) == 0
 
+    def test_skips_when_all_linear_checks_fail(self, tmp_path, monkeypatch):
+        """Does not create a ticket if all Linear API checks fail."""
+        sup, _ = _make_supervisor(tmp_path, monkeypatch)
+
+        sup._linear_client.fetch_open_issues_with_label = MagicMock(
+            side_effect=Exception("API unreachable")
+        )
+
+        with patch.object(sup._linear_client, "create_issue") as mock_create:
+            sup._maybe_create_refactoring_analysis_ticket()
+            mock_create.assert_not_called()
+
+    def test_passes_project_id_when_configured(self, tmp_path, monkeypatch):
+        """Passes projectId to create_issue when linear_project is set."""
+        config = _make_config(tmp_path)
+        config.projects[0].linear_project = "My Project"
+        sup, _ = _make_supervisor(tmp_path, monkeypatch, config)
+
+        sup._linear_client.get_team_id = MagicMock(return_value="team-uuid")
+        sup._linear_client.get_or_create_label = MagicMock(
+            return_value="label-uuid"
+        )
+        sup._linear_client.get_team_states = MagicMock(
+            return_value={"Todo": "todo-state-id"}
+        )
+        sup._linear_client.get_project_id = MagicMock(
+            return_value="project-uuid"
+        )
+        sup._linear_client.create_issue = MagicMock(
+            return_value={
+                "id": "issue-uuid",
+                "identifier": "TST-400",
+                "url": "https://linear.app/test/TST-400",
+            }
+        )
+        sup._linear_client.fetch_open_issues_with_label = MagicMock(
+            return_value=[]
+        )
+
+        sup._maybe_create_refactoring_analysis_ticket()
+
+        call_kwargs = sup._linear_client.create_issue.call_args[1]
+        assert call_kwargs["project_id"] == "project-uuid"
+        assert call_kwargs["state_id"] == "todo-state-id"
+
 
 # ---------------------------------------------------------------------------
 # Linear client method tests
@@ -478,6 +538,32 @@ class TestLinearClientMethods:
             )
 
         assert result["identifier"] == "TST-1"
+
+    def test_create_issue_passes_project_and_state(self):
+        from botfarm.linear import LinearClient
+
+        client = LinearClient(api_key="test")
+        mock_response = {
+            "issueCreate": {
+                "success": True,
+                "issue": {
+                    "id": "uuid",
+                    "identifier": "TST-2",
+                    "url": "https://linear.app/test/TST-2",
+                },
+            }
+        }
+        with patch.object(client, "_execute", return_value=mock_response) as mock_exec:
+            client.create_issue(
+                team_id="team-1",
+                title="Test",
+                project_id="proj-uuid",
+                state_id="state-uuid",
+            )
+
+        input_data = mock_exec.call_args[0][1]["input"]
+        assert input_data["projectId"] == "proj-uuid"
+        assert input_data["stateId"] == "state-uuid"
 
     def test_create_issue_raises_on_failure(self):
         from botfarm.linear import LinearClient
