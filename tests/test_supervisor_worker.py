@@ -600,6 +600,60 @@ class TestSlotWorktreeCwd:
             assert "test-project-1" in slot_db
             assert slot_db.endswith("botfarm.db")
 
+    def test_fresh_dispatch_clears_stale_shared_mem(self, supervisor, tmp_path):
+        """Fresh dispatch (resume_from_stage=None) clears old shared-mem data."""
+        issue = make_issue()
+        slot = supervisor.slot_manager.get_slot("test-project", 1)
+        poller = supervisor._pollers["test-project"]
+
+        with patch("botfarm.supervisor.multiprocessing.Process") as MockProc, \
+             patch("botfarm.worker.cleanup_shared_mem") as mock_cleanup:
+            mock_proc = MagicMock()
+            mock_proc.pid = 12345
+            MockProc.return_value = mock_proc
+
+            supervisor._dispatch_worker("test-project", slot, issue, poller)
+
+            # cleanup_shared_mem should be called for fresh dispatch
+            mock_cleanup.assert_called_once_with(issue.identifier)
+
+    def test_resume_dispatch_preserves_shared_mem(self, supervisor, tmp_path):
+        """Resumed dispatch (resume_from_stage set) keeps existing shared-mem."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.update_stage("test-project", 1, stage="implement", session_id="sess-1")
+        sm.mark_paused_limit(
+            "test-project", 1,
+            resume_after="2020-01-01T00:00:00+00:00",
+        )
+
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        supervisor._usage_poller._state.utilization_5h = 0.10
+        supervisor._usage_poller._state.utilization_7d = 0.10
+
+        with (
+            patch.object(supervisor._usage_poller, "force_poll"),
+            patch("botfarm.supervisor.multiprocessing.Process") as MockProc,
+            patch("botfarm.worker.cleanup_shared_mem") as mock_cleanup,
+        ):
+            mock_proc = MagicMock()
+            mock_proc.pid = 555
+            MockProc.return_value = mock_proc
+
+            supervisor._handle_paused_slots()
+
+            # cleanup should NOT be called when resuming
+            mock_cleanup.assert_not_called()
+
     def test_cleanup_slot_db_removes_directory(self, supervisor, tmp_path):
         """_cleanup_slot_db removes the slot DB directory."""
         # Create the slot DB dir under tmp_path instead of real home

@@ -460,8 +460,13 @@ class WorkerLifecycleManager:
         if slot_db is None:
             slot_db = self._sup._seed_slot_db(project_name, slot_id)
 
-        # Create shared memory directory for cross-stage context sharing
-        from botfarm.worker import ensure_shared_mem_dir
+        # Create shared memory directory for cross-stage context sharing.
+        # On fresh dispatches (not resuming), clear any stale data from a
+        # previous crashed/stopped run so the fixer doesn't warm-start from
+        # outdated notes.
+        from botfarm.worker import ensure_shared_mem_dir, cleanup_shared_mem
+        if resume_from_stage is None:
+            cleanup_shared_mem(ticket_id)
         shared_mem_path = str(ensure_shared_mem_dir(ticket_id))
 
         pause_event = multiprocessing.Event()
