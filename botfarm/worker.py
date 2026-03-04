@@ -2496,9 +2496,10 @@ class _PipelineContext:
             def on_context_fill(turn: int, fill_pct: float) -> None:
                 update_stage_run_context_fill(_conn, _sr_id, fill_pct)
 
-        # Codex reviewer params (only relevant for review stage)
+        # Codex reviewer params (only on first review iteration — diminishing
+        # value on subsequent iterations and adds ~5 min each time)
         codex_kwargs: dict = {}
-        if stage == "review" and self.codex_config.enabled:
+        if stage == "review" and self.codex_config.enabled and iteration <= 1:
             codex_kwargs = {
                 "codex_enabled": True,
                 "codex_model": self.codex_config.model or None,
@@ -2508,6 +2509,18 @@ class _PipelineContext:
                 ),
                 "review_iteration": iteration,
             }
+        elif stage == "review" and self.codex_config.enabled and iteration > 1:
+            logger.info(
+                "Skipping Codex review on iteration %d (only runs on first iteration)",
+                iteration,
+            )
+            insert_event(
+                self.conn,
+                task_id=self.task_id,
+                event_type="codex_review_skipped",
+                detail=f"iteration {iteration} (only runs on first)",
+            )
+            self.conn.commit()
 
         try:
             result = _execute_stage(
