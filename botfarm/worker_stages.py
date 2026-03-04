@@ -869,6 +869,7 @@ def _run_merge(
 
     return StageResult(stage="merge", success=True)
 
+
 def _execute_stage(
     stage: str,
     *,
