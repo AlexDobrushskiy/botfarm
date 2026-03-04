@@ -86,7 +86,7 @@ When refactoring is warranted:
 2. Create child implementation tickets for each refactoring area:
    - Clear "What to Do" section with specific extraction/decomposition instructions
    - Constraints (tests must pass, no behavioral changes, etc.)
-   - Set dependencies between tickets where appropriate
+   - Set dependencies using real Linear `blockedBy`/`blocks` relations (not just text mentions) — the supervisor only respects actual relations for dispatch ordering
 
 3. Post a comment on the Investigation ticket with a findings summary and link to the parent ticket:
 
