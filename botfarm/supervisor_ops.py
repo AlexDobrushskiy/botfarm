@@ -51,8 +51,10 @@ class OperationsMixin:
         """Process completed and failed slots — update Linear, free slots."""
         for slot in self._slot_manager.all_slots():
             if slot.status == "completed_pending_cleanup":
+                self._verify_base_dir_clean(slot.project)
                 self._handle_completed_slot(slot)
             elif slot.status == "failed":
+                self._verify_base_dir_clean(slot.project)
                 self._handle_failed_slot(slot)
 
     def _handle_completed_slot(self, slot: SlotState) -> None:
@@ -194,6 +196,77 @@ class OperationsMixin:
         self._cleanup_slot_db(project, slot.slot_id)
         self._pending_result_texts.pop((project, slot.slot_id), None)
         logger.info("Freed slot %s/%d after failure", project, slot.slot_id)
+
+    # ------------------------------------------------------------------
+    # Base directory guardrail
+    # ------------------------------------------------------------------
+
+    def _verify_base_dir_clean(self, project: str) -> None:
+        """Check that the base repo directory is still on ``main``.
+
+        A misbehaving agent may ``cd`` into the base repo (discovered via
+        ``git rev-parse --git-common-dir``) and switch its branch.  If
+        detected, reset the base dir back to ``main`` and log a warning.
+        """
+        project_cfg = self._projects.get(project)
+        if not project_cfg:
+            return
+        base = Path(project_cfg.base_dir).expanduser()
+        if not base.exists():
+            return
+        try:
+            # Strip GIT_* env vars so subprocesses target the correct repo,
+            # not a parent repo whose vars leaked into the environment.
+            clean_env = {
+                k: v for k, v in os.environ.items()
+                if not k.startswith("GIT_")
+            }
+            result = subprocess.run(
+                ["git", "branch", "--show-current"],
+                cwd=str(base),
+                capture_output=True,
+                text=True,
+                timeout=10,
+                env=clean_env,
+            )
+            branch = result.stdout.strip()
+            if branch and branch != "main":
+                logger.warning(
+                    "Base dir %s is on branch '%s' (expected 'main') — "
+                    "resetting to main",
+                    base, branch,
+                )
+                checkout = subprocess.run(
+                    ["git", "checkout", "main"],
+                    cwd=str(base),
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    env=clean_env,
+                )
+                if checkout.returncode == 0:
+                    insert_event(
+                        self._conn,
+                        event_type="base_dir_reset",
+                        detail=f"project={project}, was_on={branch}",
+                    )
+                    self._conn.commit()
+                else:
+                    logger.error(
+                        "Failed to reset base dir %s to main: %s",
+                        base, checkout.stderr.strip(),
+                    )
+                    insert_event(
+                        self._conn,
+                        event_type="base_dir_reset_failed",
+                        detail=f"project={project}, was_on={branch}, error={checkout.stderr.strip()}",
+                    )
+                    self._conn.commit()
+        except Exception:
+            logger.debug(
+                "Could not verify base dir branch for %s", project,
+                exc_info=True,
+            )
 
     # ------------------------------------------------------------------
     # Linear comments

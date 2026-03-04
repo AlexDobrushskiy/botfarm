@@ -90,6 +90,9 @@ def _run_claude_stage(
     on_context_fill: ContextFillCallback | None = None,
 ) -> StageResult:
     """Generic runner for any claude-executor stage using its DB template."""
+    # Always inject worktree_path so prompt templates can anchor Claude
+    # to the correct working directory (prevents git ops in the base repo).
+    prompt_vars.setdefault("worktree_path", str(cwd))
     prompt = render_prompt(stage_tpl, **prompt_vars)
     result = _invoke_claude(
         prompt, cwd=cwd, max_turns=max_turns, log_file=log_file,
@@ -365,8 +368,12 @@ def _run_review(
             "pr_number": number,
             "owner": owner,
             "repo": repo,
+            "worktree_path": str(cwd),
         }
         if codex_enabled:
+            # NOTE: This path builds prompt_vars manually instead of going
+            # through _run_claude_stage(), so worktree_path (and any future
+            # vars injected there) must be added explicitly above.
             # Run Claude via the DB template with the multi-reviewer note
             prompt = render_prompt(stage_tpl, **prompt_vars)
             prompt += (

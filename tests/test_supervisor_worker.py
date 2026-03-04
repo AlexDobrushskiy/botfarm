@@ -1951,3 +1951,114 @@ class TestRefactoringAnalysisNotification:
         sup._maybe_send_refactoring_notification(slot)
 
         sup._notifier.notify_refactoring_all_clear.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Base dir verification
+# ---------------------------------------------------------------------------
+
+
+def _clean_git_env():
+    """Return env dict without git hook variables that interfere with test repos."""
+    import os
+    return {k: v for k, v in os.environ.items()
+            if k not in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE")}
+
+
+def _git(cmd, cwd):
+    """Run a git command in a clean environment (no inherited GIT_DIR etc.)."""
+    import subprocess
+    return subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True, env=_clean_git_env())
+
+
+class TestVerifyBaseDirClean:
+    """Tests for _verify_base_dir_clean() guardrail."""
+
+    def test_resets_base_dir_to_main(self, supervisor, monkeypatch):
+        """If the base dir is on a feature branch, reset it to main."""
+        base_dir = Path(supervisor._projects["test-project"].base_dir)
+        _git(["git", "init"], base_dir)
+        _git(["git", "config", "user.email", "test@test.com"], base_dir)
+        _git(["git", "config", "user.name", "Test"], base_dir)
+        _git(["git", "checkout", "-b", "main"], base_dir)
+        _git(["git", "commit", "--allow-empty", "-m", "init"], base_dir)
+        _git(["git", "checkout", "-b", "feature-branch"], base_dir)
+        # Ensure production code also uses clean env
+        monkeypatch.delenv("GIT_DIR", raising=False)
+        monkeypatch.delenv("GIT_WORK_TREE", raising=False)
+        monkeypatch.delenv("GIT_INDEX_FILE", raising=False)
+
+        supervisor._verify_base_dir_clean("test-project")
+
+        result = _git(["git", "branch", "--show-current"], base_dir)
+        assert result.stdout.strip() == "main"
+
+        # Verify event was logged
+        events = get_events(supervisor._conn)
+        base_dir_events = [e for e in events if e["event_type"] == "base_dir_reset"]
+        assert len(base_dir_events) == 1
+        assert "was_on=feature-branch" in base_dir_events[0]["detail"]
+
+    def test_no_reset_when_on_main(self, supervisor, monkeypatch):
+        """No reset or event when base dir is already on main."""
+        base_dir = Path(supervisor._projects["test-project"].base_dir)
+        _git(["git", "init"], base_dir)
+        _git(["git", "config", "user.email", "test@test.com"], base_dir)
+        _git(["git", "config", "user.name", "Test"], base_dir)
+        _git(["git", "checkout", "-b", "main"], base_dir)
+        _git(["git", "commit", "--allow-empty", "-m", "init"], base_dir)
+        monkeypatch.delenv("GIT_DIR", raising=False)
+        monkeypatch.delenv("GIT_WORK_TREE", raising=False)
+        monkeypatch.delenv("GIT_INDEX_FILE", raising=False)
+
+        supervisor._verify_base_dir_clean("test-project")
+
+        events = get_events(supervisor._conn)
+        base_dir_events = [e for e in events if e["event_type"] == "base_dir_reset"]
+        assert len(base_dir_events) == 0
+
+    def test_unknown_project_is_noop(self, supervisor):
+        """Unknown project name should not raise."""
+        supervisor._verify_base_dir_clean("nonexistent-project")
+
+    def test_missing_base_dir_is_noop(self, supervisor):
+        """Missing base dir path should not raise."""
+        # Remove the base dir
+        base_dir = Path(supervisor._projects["test-project"].base_dir)
+        if base_dir.exists():
+            import shutil
+            shutil.rmtree(base_dir)
+        supervisor._verify_base_dir_clean("test-project")
+
+    def test_checkout_failure_logs_failed_event(self, supervisor, monkeypatch):
+        """If git checkout main fails, log base_dir_reset_failed event."""
+        base_dir = Path(supervisor._projects["test-project"].base_dir)
+        _git(["git", "init"], base_dir)
+        _git(["git", "config", "user.email", "test@test.com"], base_dir)
+        _git(["git", "config", "user.name", "Test"], base_dir)
+        _git(["git", "checkout", "-b", "main"], base_dir)
+        _git(["git", "commit", "--allow-empty", "-m", "init"], base_dir)
+        _git(["git", "checkout", "-b", "feature-branch"], base_dir)
+        monkeypatch.delenv("GIT_DIR", raising=False)
+        monkeypatch.delenv("GIT_WORK_TREE", raising=False)
+        monkeypatch.delenv("GIT_INDEX_FILE", raising=False)
+
+        # Make checkout fail by patching subprocess.run for the checkout call
+        import subprocess
+        original_run = subprocess.run
+
+        def mock_run(cmd, **kwargs):
+            if cmd == ["git", "checkout", "main"]:
+                return subprocess.CompletedProcess(
+                    cmd, returncode=1, stdout="", stderr="error: dirty worktree"
+                )
+            return original_run(cmd, **kwargs)
+
+        with patch("botfarm.supervisor_ops.subprocess.run", side_effect=mock_run):
+            supervisor._verify_base_dir_clean("test-project")
+
+        events = get_events(supervisor._conn)
+        failed_events = [e for e in events if e["event_type"] == "base_dir_reset_failed"]
+        assert len(failed_events) == 1
+        assert "was_on=feature-branch" in failed_events[0]["detail"]
+        assert "dirty worktree" in failed_events[0]["detail"]

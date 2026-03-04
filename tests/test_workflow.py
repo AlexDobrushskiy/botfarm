@@ -1004,3 +1004,59 @@ class TestValidatePipeline:
         conn.commit()
         errors = validate_pipeline(conn, pid)
         assert len(errors) >= 2
+
+
+# ---------------------------------------------------------------------------
+# Worktree path in prompt templates (migration 025)
+# ---------------------------------------------------------------------------
+
+
+class TestWorktreePathInPrompts:
+    """Verify that stage templates include {worktree_path} after migration 025."""
+
+    def test_implement_template_has_worktree_placeholder(self, conn):
+        pipeline = load_pipeline_by_name(conn, "implementation")
+        stage = get_stage(pipeline, "implement")
+        assert "{worktree_path}" in stage.prompt_template
+
+    def test_review_template_has_worktree_placeholder(self, conn):
+        pipeline = load_pipeline_by_name(conn, "implementation")
+        stage = get_stage(pipeline, "review")
+        assert "{worktree_path}" in stage.prompt_template
+
+    def test_fix_template_has_worktree_placeholder(self, conn):
+        pipeline = load_pipeline_by_name(conn, "implementation")
+        stage = get_stage(pipeline, "fix")
+        assert "{worktree_path}" in stage.prompt_template
+
+    def test_ci_fix_template_has_worktree_placeholder(self, conn):
+        pipeline = load_pipeline_by_name(conn, "implementation")
+        stage = get_stage(pipeline, "ci_fix")
+        assert "{worktree_path}" in stage.prompt_template
+
+    def test_resolve_conflict_template_has_worktree_placeholder(self, conn):
+        pipeline = load_pipeline_by_name(conn, "implementation")
+        stage = get_stage(pipeline, "resolve_conflict")
+        assert "{worktree_path}" in stage.prompt_template
+
+    def test_investigation_implement_has_worktree_placeholder(self, conn):
+        pipeline = load_pipeline_by_name(conn, "investigation")
+        stage = get_stage(pipeline, "implement")
+        assert "{worktree_path}" in stage.prompt_template
+
+    def test_worktree_path_renders_correctly(self, conn):
+        pipeline = load_pipeline_by_name(conn, "implementation")
+        stage = get_stage(pipeline, "implement")
+        result = render_prompt(
+            stage, ticket_id="SMA-42",
+            worktree_path="/home/user/project-slot-1",
+        )
+        assert "/home/user/project-slot-1" in result
+        assert "{worktree_path}" not in result
+
+    def test_worktree_path_left_as_placeholder_when_not_provided(self, conn):
+        pipeline = load_pipeline_by_name(conn, "implementation")
+        stage = get_stage(pipeline, "implement")
+        result = render_prompt(stage, ticket_id="SMA-42")
+        # SafeDict leaves unknown keys unchanged
+        assert "{worktree_path}" in result
