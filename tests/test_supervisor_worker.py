@@ -1974,10 +1974,9 @@ def _git(cmd, cwd):
 class TestVerifyBaseDirClean:
     """Tests for _verify_base_dir_clean() guardrail."""
 
-    def test_resets_base_dir_to_main(self, supervisor, tmp_path, monkeypatch):
+    def test_resets_base_dir_to_main(self, supervisor, monkeypatch):
         """If the base dir is on a feature branch, reset it to main."""
-        base_dir = tmp_path / "repo"
-        base_dir.mkdir(exist_ok=True)
+        base_dir = Path(supervisor._projects["test-project"].base_dir)
         _git(["git", "init"], base_dir)
         _git(["git", "checkout", "-b", "main"], base_dir)
         _git(["git", "commit", "--allow-empty", "-m", "init"], base_dir)
@@ -1998,10 +1997,9 @@ class TestVerifyBaseDirClean:
         assert len(base_dir_events) == 1
         assert "was_on=feature-branch" in base_dir_events[0]["detail"]
 
-    def test_no_reset_when_on_main(self, supervisor, tmp_path, monkeypatch):
+    def test_no_reset_when_on_main(self, supervisor, monkeypatch):
         """No reset or event when base dir is already on main."""
-        base_dir = tmp_path / "repo"
-        base_dir.mkdir(exist_ok=True)
+        base_dir = Path(supervisor._projects["test-project"].base_dir)
         _git(["git", "init"], base_dir)
         _git(["git", "checkout", "-b", "main"], base_dir)
         _git(["git", "commit", "--allow-empty", "-m", "init"], base_dir)
@@ -2019,19 +2017,18 @@ class TestVerifyBaseDirClean:
         """Unknown project name should not raise."""
         supervisor._verify_base_dir_clean("nonexistent-project")
 
-    def test_missing_base_dir_is_noop(self, supervisor, tmp_path):
+    def test_missing_base_dir_is_noop(self, supervisor):
         """Missing base dir path should not raise."""
         # Remove the base dir
-        base_dir = tmp_path / "repo"
+        base_dir = Path(supervisor._projects["test-project"].base_dir)
         if base_dir.exists():
             import shutil
             shutil.rmtree(base_dir)
         supervisor._verify_base_dir_clean("test-project")
 
-    def test_checkout_failure_logs_failed_event(self, supervisor, tmp_path, monkeypatch):
+    def test_checkout_failure_logs_failed_event(self, supervisor, monkeypatch):
         """If git checkout main fails, log base_dir_reset_failed event."""
-        base_dir = tmp_path / "repo"
-        base_dir.mkdir(exist_ok=True)
+        base_dir = Path(supervisor._projects["test-project"].base_dir)
         _git(["git", "init"], base_dir)
         _git(["git", "checkout", "-b", "main"], base_dir)
         _git(["git", "commit", "--allow-empty", "-m", "init"], base_dir)
