@@ -990,3 +990,21 @@ def write_structural_config_updates(config_path: Path, updates: dict) -> None:
                     target["linear_project"] = proj_update["linear_project"]
 
     write_yaml_atomic(config_path, data)
+
+
+# ---------------------------------------------------------------------------
+# Runtime config DB sync
+# ---------------------------------------------------------------------------
+
+
+def sync_agent_config_to_db(
+    conn: "sqlite3.Connection",
+    agents_config: AgentsConfig,
+) -> None:
+    """Extract runtime-relevant fields from AgentsConfig and write to DB."""
+    from botfarm.db import RUNTIME_CONFIG_KEYS, write_runtime_config_batch
+
+    settings: dict[str, object] = {
+        key: getattr(agents_config, key) for key in RUNTIME_CONFIG_KEYS
+    }
+    write_runtime_config_batch(conn, settings)
