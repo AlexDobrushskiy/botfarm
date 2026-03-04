@@ -443,6 +443,8 @@ def _validate_config(config: BotfarmConfig) -> None:
         raise ConfigError("logging.ticket_log_retention_days must be at least 1")
 
     ra = config.refactoring_analysis
+    if not ra.linear_label:
+        raise ConfigError("refactoring_analysis.linear_label must not be empty")
     if ra.cadence_days < 1:
         raise ConfigError("refactoring_analysis.cadence_days must be at least 1")
     if ra.priority not in (0, 1, 2, 3, 4):
@@ -627,7 +629,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
     refactoring_analysis = RefactoringAnalysisConfig(
         enabled=_parse_bool(ra_data, "enabled", False, section="refactoring_analysis"),
         cadence_days=int(ra_data.get("cadence_days", 14)),
-        linear_label=str(ra_data.get("linear_label", "Refactoring Analysis")),
+        linear_label=str(ra_data.get("linear_label", "Refactoring Analysis")).strip(),
         priority=int(ra_data.get("priority", 4)),
     )
 

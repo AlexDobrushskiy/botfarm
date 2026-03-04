@@ -2632,14 +2632,14 @@ Follow the Refactoring Analysis Procedure documented in CLAUDE.md (or docs/refac
 **If code quality is "good enough":**
 1. Post a concise summary comment on this ticket (2-5 bullet points)
 2. Send a notification: "Refactoring analysis complete — no action needed"
-3. Move this ticket to Done
 
 **If refactoring is needed:**
 1. Create a parent ticket "Codebase Refactoring — MONTH YEAR" with findings summary
 2. Create child implementation tickets for each refactoring area with dependencies
 3. Post a summary comment on this investigation ticket linking to the parent
 4. Send a notification: "Refactoring analysis complete — N tickets created under PARENT-ID"
-5. Move this ticket to Done
+
+Note: The supervisor handles status transitions automatically — do not move this ticket manually.
 """
 
     def _maybe_create_refactoring_analysis_ticket(self) -> None:
@@ -2695,9 +2695,10 @@ Follow the Refactoring Analysis Procedure documented in CLAUDE.md (or docs/refac
                         ra_config.linear_label,
                     )
                     return
-            except Exception:
+            except Exception as exc:
                 logger.warning(
-                    "Failed to check Linear for open refactoring analysis tickets"
+                    "Failed to check Linear for open refactoring analysis tickets: %s",
+                    exc,
                 )
 
         if not any_check_succeeded:
@@ -2724,19 +2725,33 @@ Follow the Refactoring Analysis Procedure documented in CLAUDE.md (or docs/refac
         try:
             team_id = self._linear_client.get_team_id(team_key)
 
-            # Resolve label IDs — "Investigation" + configured label
+            # Resolve configured refactoring label (required for dedup/notifications)
             label_ids = []
-            for label_name in ("Investigation", ra_config.linear_label):
-                try:
-                    label_id = self._linear_client.get_or_create_label(
-                        team_key, label_name
-                    )
-                    label_ids.append(label_id)
-                except Exception:
-                    logger.warning(
-                        "Failed to resolve/create label '%s' — skipping",
-                        label_name,
-                    )
+            try:
+                ra_label_id = self._linear_client.get_or_create_label(
+                    team_key, ra_config.linear_label
+                )
+                label_ids.append(ra_label_id)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to resolve/create label '%s' — aborting ticket "
+                    "creation: %s",
+                    ra_config.linear_label,
+                    exc,
+                )
+                return
+
+            # Resolve optional "Investigation" label
+            try:
+                inv_label_id = self._linear_client.get_or_create_label(
+                    team_key, "Investigation"
+                )
+                label_ids.append(inv_label_id)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to resolve/create label 'Investigation': %s",
+                    exc,
+                )
 
             # Resolve project ID so the ticket appears in the project filter
             project_id: str | None = None
@@ -2745,10 +2760,11 @@ Follow the Refactoring Analysis Procedure documented in CLAUDE.md (or docs/refac
                     project_id = self._linear_client.get_project_id(
                         first_project.linear_project
                     )
-                except Exception:
+                except Exception as exc:
                     logger.warning(
-                        "Failed to resolve project '%s' — skipping ticket creation",
+                        "Failed to resolve project '%s': %s",
                         first_project.linear_project,
+                        exc,
                     )
                     return
                 if project_id is None:
@@ -2765,10 +2781,11 @@ Follow the Refactoring Analysis Procedure documented in CLAUDE.md (or docs/refac
             try:
                 states = self._linear_client.get_team_states(team_key)
                 state_id = states.get(todo_status)
-            except Exception:
+            except Exception as exc:
                 logger.warning(
-                    "Failed to resolve todo state '%s' — skipping ticket creation",
+                    "Failed to resolve todo state '%s': %s",
                     todo_status,
+                    exc,
                 )
                 return
 
@@ -2793,7 +2810,14 @@ Follow the Refactoring Analysis Procedure documented in CLAUDE.md (or docs/refac
                 state_id=state_id,
             )
 
-            identifier = issue.get("identifier", "unknown")
+            identifier = issue.get("identifier")
+            if not identifier:
+                logger.error(
+                    "Linear returned issue without identifier — "
+                    "cannot track ticket for dedup"
+                )
+                return
+
             record_refactoring_analysis_created(self._conn, identifier)
             self._conn.commit()
 

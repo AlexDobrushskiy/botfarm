@@ -202,6 +202,29 @@ class TestRefactoringAnalysisConfig:
         with pytest.raises(ConfigError, match="cadence_days"):
             load_config(path)
 
+    def test_validation_rejects_empty_label(self, tmp_path):
+        import yaml
+        from botfarm.config import ConfigError, load_config
+
+        data = {
+            "projects": [
+                {
+                    "name": "p",
+                    "linear_team": "T",
+                    "base_dir": "~/d",
+                    "worktree_prefix": "p-",
+                    "slots": [1],
+                }
+            ],
+            "linear": {"api_key": "key"},
+            "refactoring_analysis": {"linear_label": "  "},
+        }
+        path = tmp_path / "config.yaml"
+        path.write_text(yaml.dump(data))
+
+        with pytest.raises(ConfigError, match="linear_label"):
+            load_config(path)
+
     def test_validation_rejects_bad_priority(self, tmp_path):
         import yaml
         from botfarm.config import ConfigError, load_config
@@ -547,6 +570,85 @@ class TestRefactoringScheduler:
         with patch.object(sup._linear_client, "create_issue") as mock_create:
             sup._maybe_create_refactoring_analysis_ticket()
             mock_create.assert_not_called()
+
+    def test_aborts_when_ra_label_fails(self, tmp_path, monkeypatch):
+        """Aborts ticket creation when the refactoring analysis label fails."""
+        sup, _ = _make_supervisor(tmp_path, monkeypatch)
+
+        sup._linear_client.get_team_id = MagicMock(return_value="team-uuid")
+        sup._linear_client.get_or_create_label = MagicMock(
+            side_effect=Exception("label API down")
+        )
+        sup._linear_client.fetch_open_issues_with_label = MagicMock(
+            return_value=[]
+        )
+
+        with patch.object(sup._linear_client, "create_issue") as mock_create:
+            sup._maybe_create_refactoring_analysis_ticket()
+            mock_create.assert_not_called()
+
+    def test_continues_when_investigation_label_fails(
+        self, tmp_path, monkeypatch
+    ):
+        """Creates ticket even if Investigation label fails, as long as RA label succeeds."""
+        sup, _ = _make_supervisor(tmp_path, monkeypatch)
+
+        sup._linear_client.get_team_id = MagicMock(return_value="team-uuid")
+
+        def label_side_effect(team_key, name):
+            if name == "Investigation":
+                raise Exception("label API error")
+            return "ra-label-id"
+
+        sup._linear_client.get_or_create_label = MagicMock(
+            side_effect=label_side_effect
+        )
+        sup._linear_client.get_team_states = MagicMock(
+            return_value={"Todo": "todo-state-id"}
+        )
+        sup._linear_client.get_project_id = MagicMock(return_value=None)
+        sup._linear_client.create_issue = MagicMock(
+            return_value={
+                "id": "issue-uuid",
+                "identifier": "TST-500",
+                "url": "https://linear.app/test/TST-500",
+            }
+        )
+        sup._linear_client.fetch_open_issues_with_label = MagicMock(
+            return_value=[]
+        )
+
+        sup._maybe_create_refactoring_analysis_ticket()
+
+        sup._linear_client.create_issue.assert_called_once()
+        call_kwargs = sup._linear_client.create_issue.call_args[1]
+        assert call_kwargs["label_ids"] == ["ra-label-id"]
+
+    def test_skips_when_identifier_missing(self, tmp_path, monkeypatch):
+        """Does not record event when Linear returns no identifier."""
+        sup, _ = _make_supervisor(tmp_path, monkeypatch)
+
+        sup._linear_client.get_team_id = MagicMock(return_value="team-uuid")
+        sup._linear_client.get_or_create_label = MagicMock(
+            return_value="label-uuid"
+        )
+        sup._linear_client.get_team_states = MagicMock(
+            return_value={"Todo": "todo-state-id"}
+        )
+        sup._linear_client.get_project_id = MagicMock(return_value=None)
+        sup._linear_client.create_issue = MagicMock(
+            return_value={"id": "issue-uuid"}  # No "identifier" key
+        )
+        sup._linear_client.fetch_open_issues_with_label = MagicMock(
+            return_value=[]
+        )
+
+        sup._maybe_create_refactoring_analysis_ticket()
+
+        events = get_events(
+            sup._conn, event_type="refactoring_analysis_scheduled"
+        )
+        assert len(events) == 0
 
     def test_skips_when_project_api_fails(self, tmp_path, monkeypatch):
         """Skips ticket creation when project lookup raises an exception."""
