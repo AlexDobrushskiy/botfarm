@@ -129,7 +129,11 @@ class OperationsMixin:
 
     def _handle_failed_slot(self, slot: SlotState) -> None:
         """Update Linear for a failed slot and free it."""
-        pr_status, _pr_url = self._check_pr_status(slot)
+        pr_status, resolved_pr_url = self._check_pr_status(slot)
+        # Persist the resolved PR URL so failure comment and history capture
+        # can reference it (slot.pr_url may be empty if worker didn't set it).
+        if resolved_pr_url and not slot.pr_url:
+            slot.pr_url = resolved_pr_url
         if pr_status == "merged":
             logger.info(
                 "Failed slot %s/%d has a merged PR — treating as completed",
@@ -149,7 +153,7 @@ class OperationsMixin:
             if poller.is_issue_terminal(slot.ticket_id):
                 logger.info(
                     "Failed slot %s/%d: ticket %s already in terminal state "
-                    "— skipping status move",
+                    "— skipping label update",
                     slot.project, slot.slot_id, slot.ticket_id,
                 )
             else:
