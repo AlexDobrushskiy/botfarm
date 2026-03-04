@@ -1012,7 +1012,7 @@ class TestValidatePipeline:
 
 
 class TestWorktreePathInPrompts:
-    """Verify that stage templates include {worktree_path} after migration 021."""
+    """Verify that stage templates include {worktree_path} after migration 025."""
 
     def test_implement_template_has_worktree_placeholder(self, conn):
         pipeline = load_pipeline_by_name(conn, "implementation")
@@ -1032,6 +1032,11 @@ class TestWorktreePathInPrompts:
     def test_ci_fix_template_has_worktree_placeholder(self, conn):
         pipeline = load_pipeline_by_name(conn, "implementation")
         stage = get_stage(pipeline, "ci_fix")
+        assert "{worktree_path}" in stage.prompt_template
+
+    def test_resolve_conflict_template_has_worktree_placeholder(self, conn):
+        pipeline = load_pipeline_by_name(conn, "implementation")
+        stage = get_stage(pipeline, "resolve_conflict")
         assert "{worktree_path}" in stage.prompt_template
 
     def test_investigation_implement_has_worktree_placeholder(self, conn):

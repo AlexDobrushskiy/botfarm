@@ -371,6 +371,9 @@ def _run_review(
             "worktree_path": str(cwd),
         }
         if codex_enabled:
+            # NOTE: This path builds prompt_vars manually instead of going
+            # through _run_claude_stage(), so worktree_path (and any future
+            # vars injected there) must be added explicitly above.
             # Run Claude via the DB template with the multi-reviewer note
             prompt = render_prompt(stage_tpl, **prompt_vars)
             prompt += (

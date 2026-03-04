@@ -1,4 +1,4 @@
--- Migration 021: Add worktree anchoring to stage prompt templates.
+-- Migration 025: Add worktree anchoring to stage prompt templates.
 --
 -- Claude agents discover the base repository via git internals (e.g.
 -- git rev-parse --git-common-dir) and switch all git operations there.
@@ -32,6 +32,13 @@ SET prompt_template = prompt_template || '
 
 IMPORTANT: Your working directory is {worktree_path} — this is a git worktree. Never cd to any other directory for git operations. All git, test, and build commands must run in {worktree_path}. Do NOT use the base repository directory.'
 WHERE name = 'ci_fix' AND pipeline_id = 1 AND executor_type = 'claude';
+
+-- Implementation pipeline: resolve_conflict stage
+UPDATE stage_templates
+SET prompt_template = prompt_template || '
+
+IMPORTANT: Your working directory is {worktree_path} — this is a git worktree. Never cd to any other directory for git operations. All git, test, and build commands must run in {worktree_path}. Do NOT use the base repository directory.'
+WHERE name = 'resolve_conflict' AND pipeline_id = 1 AND executor_type = 'claude';
 
 -- Investigation pipeline: implement stage
 UPDATE stage_templates

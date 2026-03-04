@@ -227,19 +227,31 @@ class OperationsMixin:
                     "resetting to main",
                     base, branch,
                 )
-                subprocess.run(
+                checkout = subprocess.run(
                     ["git", "checkout", "main"],
                     cwd=str(base),
                     capture_output=True,
                     text=True,
                     timeout=30,
                 )
-                insert_event(
-                    self._conn,
-                    event_type="base_dir_reset",
-                    detail=f"project={project}, was_on={branch}",
-                )
-                self._conn.commit()
+                if checkout.returncode == 0:
+                    insert_event(
+                        self._conn,
+                        event_type="base_dir_reset",
+                        detail=f"project={project}, was_on={branch}",
+                    )
+                    self._conn.commit()
+                else:
+                    logger.error(
+                        "Failed to reset base dir %s to main: %s",
+                        base, checkout.stderr.strip(),
+                    )
+                    insert_event(
+                        self._conn,
+                        event_type="base_dir_reset_failed",
+                        detail=f"project={project}, was_on={branch}, error={checkout.stderr.strip()}",
+                    )
+                    self._conn.commit()
         except Exception:
             logger.debug(
                 "Could not verify base dir branch for %s", project,
