@@ -37,10 +37,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import FrameType
 
-from botfarm.config import BotfarmConfig, ProjectConfig, sync_agent_config_to_db
+from botfarm.config import BotfarmConfig, ProjectConfig, resolve_stage_timeout, sync_agent_config_to_db
 from botfarm.db import (
+    get_task,
     init_db,
     insert_event,
+    read_runtime_config,
     resolve_db_path,
     save_capacity_state,
     save_queue_entries,
@@ -49,8 +51,8 @@ from botfarm.linear import LinearClient, LinearPoller, create_pollers
 from botfarm.notifications import Notifier
 from botfarm.preflight import CheckResult, log_preflight_summary, run_preflight_checks
 from botfarm.slots import SlotManager, SlotState
-from botfarm.usage import UsagePoller
-from botfarm.worker import build_git_env
+from botfarm.usage import DEFAULT_PAUSE_5H_THRESHOLD, UsagePoller
+from botfarm.worker import STAGES, PipelineResult, build_git_env, run_pipeline
 
 # Import mixin classes
 from botfarm.supervisor_ops import OperationsMixin
@@ -83,6 +85,9 @@ DEFAULT_LOG_DIR = Path.home() / ".botfarm" / "logs"
 #   )
 __all__ = [
     "DEFAULT_LOG_DIR",
+    "DEFAULT_PAUSE_5H_THRESHOLD",
+    "PipelineResult",
+    "STAGES",
     "StopSlotResult",
     "Supervisor",
     "_StallInfo",
@@ -95,6 +100,10 @@ __all__ = [
     "_setup_worker_logging",
     "_truncate_for_comment",
     "_worker_entry",
+    "get_task",
+    "read_runtime_config",
+    "resolve_stage_timeout",
+    "run_pipeline",
     "setup_logging",
 ]
 

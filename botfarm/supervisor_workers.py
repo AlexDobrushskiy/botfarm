@@ -19,7 +19,6 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from types import FrameType
 
 from botfarm.config import IdentitiesConfig, resolve_stage_timeout
 from botfarm.db import (
