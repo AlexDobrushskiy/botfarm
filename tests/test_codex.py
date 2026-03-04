@@ -248,6 +248,47 @@ class TestRunCodexStreaming:
         model_idx = call_args.index("-m")
         assert call_args[model_idx + 1] == "o3"
 
+    def test_reasoning_effort_flag_passed(self, tmp_path):
+        proc = _make_fake_popen([], returncode=0)
+
+        with patch("botfarm.codex.subprocess.Popen", return_value=proc) as mock_popen:
+            run_codex_streaming(
+                "Review this code",
+                cwd=tmp_path,
+                reasoning_effort="medium",
+            )
+
+        call_args = mock_popen.call_args[0][0]
+        assert "-c" in call_args
+        c_idx = call_args.index("-c")
+        assert call_args[c_idx + 1] == "model_reasoning_effort=medium"
+
+    def test_reasoning_effort_empty_not_passed(self, tmp_path):
+        proc = _make_fake_popen([], returncode=0)
+
+        with patch("botfarm.codex.subprocess.Popen", return_value=proc) as mock_popen:
+            run_codex_streaming(
+                "Review this code",
+                cwd=tmp_path,
+                reasoning_effort="",
+            )
+
+        call_args = mock_popen.call_args[0][0]
+        assert "model_reasoning_effort" not in " ".join(call_args)
+
+    def test_reasoning_effort_none_not_passed(self, tmp_path):
+        proc = _make_fake_popen([], returncode=0)
+
+        with patch("botfarm.codex.subprocess.Popen", return_value=proc) as mock_popen:
+            run_codex_streaming(
+                "Review this code",
+                cwd=tmp_path,
+                reasoning_effort=None,
+            )
+
+        call_args = mock_popen.call_args[0][0]
+        assert "model_reasoning_effort" not in " ".join(call_args)
+
     def test_env_passed_to_subprocess(self, tmp_path):
         proc = _make_fake_popen([], returncode=0)
 

@@ -248,6 +248,7 @@ def run_pipeline(
     identities: IdentitiesConfig | None = None,
     codex_reviewer_enabled: bool = False,
     codex_reviewer_model: str = "",
+    codex_reviewer_reasoning_effort: str = "medium",
     codex_reviewer_timeout_minutes: int = 15,
     codex_reviewer_skip_on_reiteration: bool = True,
 ) -> PipelineResult:
@@ -354,6 +355,7 @@ def run_pipeline(
         codex_config=_CodexReviewerConfig(
             enabled=codex_reviewer_enabled,
             model=codex_reviewer_model,
+            reasoning_effort=codex_reviewer_reasoning_effort,
             timeout_minutes=codex_reviewer_timeout_minutes,
             skip_on_reiteration=codex_reviewer_skip_on_reiteration,
         ),
@@ -981,6 +983,7 @@ class _CodexReviewerConfig:
 
     enabled: bool = False
     model: str = ""
+    reasoning_effort: str = "medium"
     timeout_minutes: int = 15
     skip_on_reiteration: bool = True
 
@@ -1074,6 +1077,7 @@ class _PipelineContext:
         codex_fields = {
             "codex_reviewer_enabled": ("enabled", _to_bool),
             "codex_reviewer_model": ("model", str),
+            "codex_reviewer_reasoning_effort": ("reasoning_effort", str),
             "codex_reviewer_timeout_minutes": ("timeout_minutes", int),
             "codex_reviewer_skip_on_reiteration": ("skip_on_reiteration", _to_bool),
         }
@@ -1282,6 +1286,7 @@ class _PipelineContext:
             codex_kwargs = {
                 "codex_enabled": True,
                 "codex_model": self.codex_config.model or None,
+                "codex_reasoning_effort": self.codex_config.reasoning_effort or None,
                 "codex_timeout": self.codex_config.timeout_minutes * 60.0,
                 "codex_log_file": _make_stage_log_path(
                     self.log_dir, "codex_review", iteration,

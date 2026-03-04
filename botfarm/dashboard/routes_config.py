@@ -79,6 +79,7 @@ def _full_config_values(app) -> dict:
             "timeout_grace_seconds": cfg.agents.timeout_grace_seconds,
             "codex_reviewer_enabled": cfg.agents.codex_reviewer_enabled,
             "codex_reviewer_model": cfg.agents.codex_reviewer_model,
+            "codex_reviewer_reasoning_effort": cfg.agents.codex_reviewer_reasoning_effort,
             "codex_reviewer_timeout_minutes": cfg.agents.codex_reviewer_timeout_minutes,
         },
         "usage_limits": {
@@ -130,6 +131,7 @@ def _config_values(app) -> dict:
             "timeout_grace_seconds": cfg.agents.timeout_grace_seconds,
             "codex_reviewer_enabled": cfg.agents.codex_reviewer_enabled,
             "codex_reviewer_model": cfg.agents.codex_reviewer_model,
+            "codex_reviewer_reasoning_effort": cfg.agents.codex_reviewer_reasoning_effort,
             "codex_reviewer_timeout_minutes": cfg.agents.codex_reviewer_timeout_minutes,
         },
         "notifications": {

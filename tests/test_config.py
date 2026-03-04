@@ -1466,6 +1466,7 @@ def test_config_codex_fields(tmp_path):
         "agents": {
             "codex_reviewer_enabled": True,
             "codex_reviewer_model": "o3",
+            "codex_reviewer_reasoning_effort": "low",
             "codex_reviewer_timeout_minutes": 20,
         },
     }
@@ -1473,6 +1474,7 @@ def test_config_codex_fields(tmp_path):
     config = load_config(config_path)
     assert config.agents.codex_reviewer_enabled is True
     assert config.agents.codex_reviewer_model == "o3"
+    assert config.agents.codex_reviewer_reasoning_effort == "low"
     assert config.agents.codex_reviewer_timeout_minutes == 20
 
 
@@ -1482,7 +1484,21 @@ def test_config_codex_defaults(tmp_path):
     config = load_config(config_path)
     assert config.agents.codex_reviewer_enabled is False
     assert config.agents.codex_reviewer_model == ""
+    assert config.agents.codex_reviewer_reasoning_effort == "medium"
     assert config.agents.codex_reviewer_timeout_minutes == 15
+
+
+def test_config_codex_reasoning_effort_null(tmp_path):
+    """YAML null for reasoning effort normalizes to empty string, not 'None'."""
+    data = {
+        **MINIMAL_CONFIG,
+        "agents": {
+            "codex_reviewer_reasoning_effort": None,
+        },
+    }
+    config_path = _write_config(tmp_path, data)
+    config = load_config(config_path)
+    assert config.agents.codex_reviewer_reasoning_effort == ""
 
 
 def test_config_codex_editable():
@@ -1491,9 +1507,11 @@ def test_config_codex_editable():
 
     assert ("agents", "codex_reviewer_enabled") in EDITABLE_FIELDS
     assert ("agents", "codex_reviewer_model") in EDITABLE_FIELDS
+    assert ("agents", "codex_reviewer_reasoning_effort") in EDITABLE_FIELDS
     assert ("agents", "codex_reviewer_timeout_minutes") in EDITABLE_FIELDS
     assert EDITABLE_FIELDS[("agents", "codex_reviewer_enabled")]["type"] == "bool"
     assert EDITABLE_FIELDS[("agents", "codex_reviewer_model")]["type"] == "str"
+    assert EDITABLE_FIELDS[("agents", "codex_reviewer_reasoning_effort")]["type"] == "str"
     assert EDITABLE_FIELDS[("agents", "codex_reviewer_timeout_minutes")]["type"] == "int"
 
 
@@ -1526,6 +1544,7 @@ def test_config_codex_editable_validation():
         "agents": {
             "codex_reviewer_enabled": True,
             "codex_reviewer_model": "o4-mini",
+            "codex_reviewer_reasoning_effort": "high",
             "codex_reviewer_timeout_minutes": 10,
         },
     }) == []
@@ -1553,6 +1572,7 @@ def test_default_config_template_includes_codex_fields():
     from botfarm.config import DEFAULT_CONFIG_TEMPLATE
     assert "codex_reviewer_enabled:" in DEFAULT_CONFIG_TEMPLATE
     assert "codex_reviewer_model:" in DEFAULT_CONFIG_TEMPLATE
+    assert "codex_reviewer_reasoning_effort:" in DEFAULT_CONFIG_TEMPLATE
     assert "codex_reviewer_timeout_minutes:" in DEFAULT_CONFIG_TEMPLATE
 
 

@@ -58,6 +58,7 @@ class TestRuntimeConfigBatch:
             "max_merge_conflict_retries": 2,
             "codex_reviewer_enabled": False,
             "codex_reviewer_model": "o4-mini",
+            "codex_reviewer_reasoning_effort": "medium",
             "codex_reviewer_timeout_minutes": 15,
         }
         write_runtime_config_batch(conn, settings)
@@ -75,6 +76,7 @@ class TestSyncAgentConfigToDb:
             max_merge_conflict_retries=5,
             codex_reviewer_enabled=True,
             codex_reviewer_model="o3",
+            codex_reviewer_reasoning_effort="low",
             codex_reviewer_timeout_minutes=20,
             codex_reviewer_skip_on_reiteration=False,
         )
@@ -86,6 +88,7 @@ class TestSyncAgentConfigToDb:
         assert result["max_merge_conflict_retries"] == 5
         assert result["codex_reviewer_enabled"] is True
         assert result["codex_reviewer_model"] == "o3"
+        assert result["codex_reviewer_reasoning_effort"] == "low"
         assert result["codex_reviewer_timeout_minutes"] == 20
         assert result["codex_reviewer_skip_on_reiteration"] is False
 
@@ -139,6 +142,7 @@ class TestRefreshRuntimeConfig:
             "max_merge_conflict_retries": 5,
             "codex_reviewer_enabled": True,
             "codex_reviewer_model": "o3",
+            "codex_reviewer_reasoning_effort": "low",
             "codex_reviewer_timeout_minutes": 30,
             "codex_reviewer_skip_on_reiteration": False,
         })
@@ -150,6 +154,7 @@ class TestRefreshRuntimeConfig:
         assert ctx.max_merge_conflict_retries == 5
         assert ctx.codex_config.enabled is True
         assert ctx.codex_config.model == "o3"
+        assert ctx.codex_config.reasoning_effort == "low"
         assert ctx.codex_config.timeout_minutes == 30
         assert ctx.codex_config.skip_on_reiteration is False
 

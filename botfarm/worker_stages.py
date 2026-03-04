@@ -375,6 +375,7 @@ def _run_review(
     codex_log_file: Path | None = None,
     codex_timeout: float | None = None,
     codex_model: str | None = None,
+    codex_reasoning_effort: str | None = None,
     review_iteration: int = 1,
 ) -> StageResult:
     """REVIEW stage — Claude Code reviews the PR and posts comments.
@@ -470,6 +471,7 @@ def _run_review(
             env=env,
             timeout=codex_timeout,
             codex_model=codex_model,
+            codex_reasoning_effort=codex_reasoning_effort,
         )
         codex_result_obj = codex_stage_result.codex_result
 
@@ -522,6 +524,7 @@ def _run_codex_review(
     env: dict[str, str] | None = None,
     timeout: float | None = None,
     codex_model: str | None = None,
+    codex_reasoning_effort: str | None = None,
 ) -> StageResult:
     """CODEX_REVIEW stage — Codex reviews the PR and posts inline comments.
 
@@ -537,6 +540,7 @@ def _run_codex_review(
         prompt,
         cwd=cwd,
         model=codex_model,
+        reasoning_effort=codex_reasoning_effort,
         log_file=log_file,
         env=env,
         timeout=timeout,
@@ -954,6 +958,7 @@ def _execute_stage(
     shared_mem_path: Path | None = None,
     codex_enabled: bool = False,
     codex_model: str | None = None,
+    codex_reasoning_effort: str | None = None,
     codex_timeout: float | None = None,
     codex_log_file: Path | None = None,
     review_iteration: int = 1,
@@ -980,6 +985,7 @@ def _execute_stage(
                     codex_log_file=codex_log_file,
                     codex_timeout=codex_timeout,
                     codex_model=codex_model,
+                    codex_reasoning_effort=codex_reasoning_effort,
                     review_iteration=review_iteration,
                 )
             # Other claude stages use the generic runner
@@ -1035,6 +1041,7 @@ def _execute_stage(
             codex_log_file=codex_log_file,
             codex_timeout=codex_timeout,
             codex_model=codex_model,
+            codex_reasoning_effort=codex_reasoning_effort,
             review_iteration=review_iteration,
         )
     elif stage == "fix":

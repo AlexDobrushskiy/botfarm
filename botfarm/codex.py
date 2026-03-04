@@ -121,6 +121,7 @@ def run_codex_streaming(
     *,
     cwd: str | Path,
     model: str | None = None,
+    reasoning_effort: str | None = None,
     log_file: Path | None = None,
     env: dict[str, str] | None = None,
     timeout: float | None = None,
@@ -144,6 +145,8 @@ def run_codex_streaming(
     ]
     if model:
         cmd.extend(["-m", model])
+    if reasoning_effort:
+        cmd.extend(["-c", f"model_reasoning_effort={reasoning_effort}"])
     cmd.extend(["-C", str(cwd), "exec", "--ephemeral", "--json", "-"])
 
     logger.info("Running codex (streaming) in %s", cwd)

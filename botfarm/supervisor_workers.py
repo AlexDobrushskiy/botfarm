@@ -186,6 +186,7 @@ def _worker_entry(
     identities: IdentitiesConfig | None = None,
     codex_reviewer_enabled: bool = False,
     codex_reviewer_model: str = "",
+    codex_reviewer_reasoning_effort: str = "medium",
     codex_reviewer_timeout_minutes: int = 15,
     codex_reviewer_skip_on_reiteration: bool = True,
 ) -> None:
@@ -232,6 +233,8 @@ def _worker_entry(
             codex_reviewer_enabled = bool(rt["codex_reviewer_enabled"])
         if "codex_reviewer_model" in rt:
             codex_reviewer_model = str(rt["codex_reviewer_model"])
+        if "codex_reviewer_reasoning_effort" in rt:
+            codex_reviewer_reasoning_effort = str(rt["codex_reviewer_reasoning_effort"])
         if "codex_reviewer_timeout_minutes" in rt:
             codex_reviewer_timeout_minutes = int(rt["codex_reviewer_timeout_minutes"])
         if "codex_reviewer_skip_on_reiteration" in rt:
@@ -264,6 +267,7 @@ def _worker_entry(
             identities=identities,
             codex_reviewer_enabled=codex_reviewer_enabled,
             codex_reviewer_model=codex_reviewer_model,
+            codex_reviewer_reasoning_effort=codex_reviewer_reasoning_effort,
             codex_reviewer_timeout_minutes=codex_reviewer_timeout_minutes,
             codex_reviewer_skip_on_reiteration=codex_reviewer_skip_on_reiteration,
         )
@@ -488,6 +492,7 @@ class WorkerLifecycleManager:
                 "identities": self._config.identities,
                 "codex_reviewer_enabled": self._config.agents.codex_reviewer_enabled,
                 "codex_reviewer_model": self._config.agents.codex_reviewer_model,
+                "codex_reviewer_reasoning_effort": self._config.agents.codex_reviewer_reasoning_effort,
                 "codex_reviewer_timeout_minutes": self._config.agents.codex_reviewer_timeout_minutes,
                 "codex_reviewer_skip_on_reiteration": self._config.agents.codex_reviewer_skip_on_reiteration,
             },
