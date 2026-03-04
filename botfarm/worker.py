@@ -11,6 +11,7 @@ import logging
 import multiprocessing
 import os
 import re
+import shutil
 import sqlite3
 import time
 from dataclasses import dataclass, field
@@ -321,6 +322,15 @@ def run_pipeline(
     # Determine which stages to skip when resuming
     skipping = resume_from_stage is not None
 
+    # Create shared-mem directory for inter-stage context passing.
+    # The implementer writes a summary here; the fixer reads it for a warm start.
+    shared_mem_dir = Path.home() / ".botfarm" / "shared-mem" / ticket_id
+    if resume_from_stage is None and shared_mem_dir.exists():
+        # Fresh run — clear stale notes from any previous attempt.
+        shutil.rmtree(shared_mem_dir, ignore_errors=True)
+    shared_mem_dir.mkdir(parents=True, exist_ok=True)
+    logger.info("Created shared-mem directory: %s", shared_mem_dir)
+
     # Shared context for _run_and_record helper
     ctx = _PipelineContext(
         ticket_id=ticket_id,
@@ -340,6 +350,7 @@ def run_pipeline(
         placeholder_branch=placeholder_branch,
         coder_env=coder_env,
         reviewer_env=reviewer_env,
+        shared_mem_path=shared_mem_dir,
         codex_config=_CodexReviewerConfig(
             enabled=codex_reviewer_enabled,
             model=codex_reviewer_model,
@@ -357,52 +368,59 @@ def run_pipeline(
     resume_include = {resume_from_stage} if resume_from_stage and resume_from_stage in loop_managed_stages else set()
     main_stages = [s for s in stages if s not in loop_managed_stages or s in resume_include]
 
-    for stage in main_stages:
-        if skipping:
-            if stage == resume_from_stage:
-                skipping = False
-                logger.info(
-                    "Resuming pipeline at stage '%s' for %s", stage, ticket_id,
-                )
+    try:
+        for stage in main_stages:
+            if skipping:
+                if stage == resume_from_stage:
+                    skipping = False
+                    logger.info(
+                        "Resuming pipeline at stage '%s' for %s", stage, ticket_id,
+                    )
+                else:
+                    pipeline.stages_completed.append(stage)
+                    logger.info("Skipping already-completed stage '%s' for %s", stage, ticket_id)
+                    continue
             else:
-                pipeline.stages_completed.append(stage)
-                logger.info("Skipping already-completed stage '%s' for %s", stage, ticket_id)
-                continue
-        else:
-            logger.info("Starting stage '%s' for %s", stage, ticket_id)
+                logger.info("Starting stage '%s' for %s", stage, ticket_id)
 
-        # Check for manual pause request between stages
-        if pause_event is not None and pause_event.is_set():
-            logger.info(
-                "Manual pause requested — exiting pipeline after stage '%s' for %s",
-                pipeline.stages_completed[-1] if pipeline.stages_completed else "(none)",
-                ticket_id,
+            # Check for manual pause request between stages
+            if pause_event is not None and pause_event.is_set():
+                logger.info(
+                    "Manual pause requested — exiting pipeline after stage '%s' for %s",
+                    pipeline.stages_completed[-1] if pipeline.stages_completed else "(none)",
+                    ticket_id,
+                )
+                pipeline.paused = True
+                return pipeline
+
+            # Re-read runtime config so dashboard changes propagate mid-pipeline
+            ctx._refresh_runtime_config()
+
+            should_stop, pr_url = _dispatch_pipeline_stage(
+                ctx, stage,
+                pr_url=pr_url,
             )
-            pipeline.paused = True
-            return pipeline
+            if should_stop:
+                return pipeline
 
-        # Re-read runtime config so dashboard changes propagate mid-pipeline
-        ctx._refresh_runtime_config()
-
-        should_stop, pr_url = _dispatch_pipeline_stage(
-            ctx, stage,
-            pr_url=pr_url,
+        # All stages passed
+        pipeline.success = True
+        update_task(
+            conn,
+            task_id,
+            status="completed",
+            turns=pipeline.total_turns,
+            completed_at=datetime.now(timezone.utc).isoformat(),
         )
-        if should_stop:
-            return pipeline
+        conn.commit()
 
-    # All stages passed
-    pipeline.success = True
-    update_task(
-        conn,
-        task_id,
-        status="completed",
-        turns=pipeline.total_turns,
-        completed_at=datetime.now(timezone.utc).isoformat(),
-    )
-    conn.commit()
-
-    return pipeline
+        return pipeline
+    finally:
+        # Clean up shared-mem directory (but preserve on pause so a
+        # resumed pipeline can still use the implementer's notes).
+        if not pipeline.paused and shared_mem_dir.exists():
+            shutil.rmtree(shared_mem_dir, ignore_errors=True)
+            logger.info("Cleaned up shared-mem directory: %s", shared_mem_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -1013,6 +1031,7 @@ class _PipelineContext:
     placeholder_branch: str | None = None
     coder_env: dict[str, str] | None = None
     reviewer_env: dict[str, str] | None = None
+    shared_mem_path: Path | None = None
     codex_config: _CodexReviewerConfig = field(default_factory=_CodexReviewerConfig)
     max_review_iterations: int = 3
     max_ci_retries: int = 2
@@ -1296,6 +1315,7 @@ class _PipelineContext:
                 env=self._env_for_stage(stage),
                 on_context_fill=on_context_fill,
                 stage_tpl=stage_tpl,
+                shared_mem_path=self.shared_mem_path,
                 **codex_kwargs,
             )
         except Exception as exc:
@@ -1575,6 +1595,7 @@ def _run_ci_retry_loop(
                 log_file=log_file, env=ctx._env_for_stage("ci_fix") or ctx._env_for_stage("fix"),
                 on_context_fill=_ci_fix_on_fill,
                 stage_tpl=ci_fix_tpl,
+                shared_mem_path=ctx.shared_mem_path,
             )
         except Exception as exc:
             logger.error("CI fix stage raised: %s", exc)

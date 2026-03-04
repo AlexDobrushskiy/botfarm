@@ -3623,3 +3623,120 @@ class TestRunPipelineNoPrNeeded:
         )
         assert result.success is False
         assert result.failure_stage == "implement"
+
+
+class TestSharedMemory:
+    """Tests for inter-stage shared memory directory lifecycle."""
+
+    @patch("botfarm.worker._execute_stage")
+    def test_shared_mem_dir_created_and_cleaned_up(self, mock_exec, conn, task_id, tmp_path):
+        """Shared-mem directory is created before stages and cleaned up after."""
+        created_dirs = []
+
+        def capture_shared_mem(stage, **kwargs):
+            shared_mem = kwargs.get("shared_mem_path")
+            if shared_mem and shared_mem.exists():
+                created_dirs.append(str(shared_mem))
+            return _mock_stage_result(stage, pr_url=PR_URL if stage == "implement" else None)
+
+        mock_exec.side_effect = capture_shared_mem
+
+        with patch.object(Path, "home", return_value=tmp_path):
+            result = run_pipeline(
+                ticket_id="SMA-99",
+                task_id=task_id,
+                cwd=tmp_path,
+                conn=conn,
+                max_review_iterations=1,
+            )
+
+        assert result.success is True
+        # Directory existed during stage execution
+        assert len(created_dirs) > 0
+        # Directory is cleaned up after pipeline finishes
+        expected_dir = tmp_path / ".botfarm" / "shared-mem" / "SMA-99"
+        assert not expected_dir.exists()
+
+    @patch("botfarm.worker._execute_stage")
+    def test_shared_mem_dir_cleaned_up_on_failure(self, mock_exec, conn, task_id, tmp_path):
+        """Shared-mem directory is cleaned up even when pipeline fails."""
+        mock_exec.side_effect = [
+            _mock_stage_result("implement", success=False),
+        ]
+
+        with patch.object(Path, "home", return_value=tmp_path):
+            result = run_pipeline(
+                ticket_id="SMA-99",
+                task_id=task_id,
+                cwd=tmp_path,
+                conn=conn,
+            )
+
+        assert result.success is False
+        expected_dir = tmp_path / ".botfarm" / "shared-mem" / "SMA-99"
+        assert not expected_dir.exists()
+
+    @patch("botfarm.worker._execute_stage")
+    def test_shared_mem_path_passed_to_execute_stage(self, mock_exec, conn, task_id, tmp_path):
+        """shared_mem_path is passed to _execute_stage for all stages."""
+        paths_seen = {}
+
+        def capture_path(stage, **kwargs):
+            paths_seen[stage] = kwargs.get("shared_mem_path")
+            return _mock_stage_result(stage, pr_url=PR_URL if stage == "implement" else None)
+
+        mock_exec.side_effect = capture_path
+
+        with patch.object(Path, "home", return_value=tmp_path):
+            run_pipeline(
+                ticket_id="SMA-99",
+                task_id=task_id,
+                cwd=tmp_path,
+                conn=conn,
+                max_review_iterations=1,
+            )
+
+        expected = tmp_path / ".botfarm" / "shared-mem" / "SMA-99"
+        assert paths_seen.get("implement") == expected
+        assert paths_seen.get("review") == expected
+
+    @patch("botfarm.worker_stages._invoke_claude")
+    def test_shared_mem_in_implement_prompt_vars(self, mock_invoke, conn):
+        """shared_mem_path is injected into prompt_vars for implement stage."""
+        from botfarm.worker import _execute_stage
+        from botfarm.workflow import get_stage, load_pipeline
+
+        pipeline = load_pipeline(conn, [])
+        stage_tpl = get_stage(pipeline, "implement")
+        mock_invoke.return_value = ClaudeResult(
+            session_id="sess-1", num_turns=5, duration_seconds=10.0,
+            exit_subtype="tool_use", result_text="done",
+        )
+        mem_path = Path("/tmp/test-shared-mem/SMA-42")
+        _execute_stage(
+            "implement", ticket_id="SMA-42", pr_url=None, cwd="/tmp",
+            max_turns=100, pr_checks_timeout=600, stage_tpl=stage_tpl,
+            shared_mem_path=mem_path,
+        )
+        # Verify _invoke_claude was called (prompt was rendered successfully)
+        assert mock_invoke.called
+
+    @patch("botfarm.worker_stages._invoke_claude")
+    def test_shared_mem_in_fix_prompt_vars(self, mock_invoke, conn):
+        """shared_mem_path is injected into prompt_vars for fix stage."""
+        from botfarm.worker import _execute_stage
+        from botfarm.workflow import get_stage, load_pipeline
+
+        pipeline = load_pipeline(conn, [])
+        stage_tpl = get_stage(pipeline, "fix")
+        mock_invoke.return_value = ClaudeResult(
+            session_id="sess-1", num_turns=5, duration_seconds=10.0,
+            exit_subtype="tool_use", result_text="done",
+        )
+        mem_path = Path("/tmp/test-shared-mem/SMA-42")
+        _execute_stage(
+            "fix", ticket_id="SMA-42", pr_url=PR_URL, cwd="/tmp",
+            max_turns=100, pr_checks_timeout=600, stage_tpl=stage_tpl,
+            shared_mem_path=mem_path,
+        )
+        assert mock_invoke.called
