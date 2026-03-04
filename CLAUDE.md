@@ -77,9 +77,15 @@ Review/fix loop happens via Linear comments (not GitHub).
 - Run tests in a subagent that returns ONLY: pass/fail summary + failing test details
 - Exception: 1-2 individual tests can run in main thread
 - Command: `python -m pytest tests/ -v` (use .venv virtualenv)
+  - Tests run in parallel via pytest-xdist (`-n auto` is configured in pyproject.toml addopts)
+  - Playwright tests are excluded by default via addopts marker filter
 - No Playwright / no frontend tests
 - Run tests: before work, after implementation, after test changes, before push
 - Pre-commit hook: `.githooks/pre-commit` — activate with `git config core.hooksPath .githooks`
+- Test isolation (required for parallel execution):
+  - Never use shared global state between tests
+  - Always use `tmp_path` for file system operations and `monkeypatch` for environment variables
+  - Never use `os.environ` directly in tests — use `monkeypatch.setenv`/`monkeypatch.delenv`
 
 ## Development
 - New packages → add to requirements.txt FIRST, then `pip install -r requirements.txt` (in .venv)
