@@ -52,6 +52,7 @@ class TestRuntimeConfigBatch:
         settings = {
             "max_review_iterations": 3,
             "max_ci_retries": 2,
+            "max_merge_conflict_retries": 2,
             "codex_reviewer_enabled": False,
             "codex_reviewer_model": "o4-mini",
             "codex_reviewer_timeout_minutes": 15,
@@ -68,6 +69,7 @@ class TestSyncAgentConfigToDb:
         agents = AgentsConfig(
             max_review_iterations=4,
             max_ci_retries=3,
+            max_merge_conflict_retries=5,
             codex_reviewer_enabled=True,
             codex_reviewer_model="o3",
             codex_reviewer_timeout_minutes=20,
@@ -77,6 +79,7 @@ class TestSyncAgentConfigToDb:
         assert set(result.keys()) == RUNTIME_CONFIG_KEYS
         assert result["max_review_iterations"] == 4
         assert result["max_ci_retries"] == 3
+        assert result["max_merge_conflict_retries"] == 5
         assert result["codex_reviewer_enabled"] is True
         assert result["codex_reviewer_model"] == "o3"
         assert result["codex_reviewer_timeout_minutes"] == 20

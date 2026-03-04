@@ -29,8 +29,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import FrameType
 
-from botfarm.config import BotfarmConfig, IdentitiesConfig, ProjectConfig, resolve_stage_timeout
-from botfarm.db import get_events, get_task, init_db, insert_event, insert_task, resolve_db_path, save_capacity_state, save_queue_entries, update_task, upsert_ticket_history
+from botfarm.config import BotfarmConfig, IdentitiesConfig, ProjectConfig, resolve_stage_timeout, sync_agent_config_to_db
+from botfarm.db import get_events, get_task, init_db, insert_event, insert_task, read_runtime_config, resolve_db_path, save_capacity_state, save_queue_entries, update_task, upsert_ticket_history
 from botfarm.linear import LinearClient, LinearPoller, create_pollers
 from botfarm.notifications import Notifier
 from botfarm.preflight import CheckResult, log_preflight_summary, run_preflight_checks
@@ -222,7 +222,6 @@ def _worker_entry(
     # Read latest runtime config from DB to pick up dashboard changes
     # that occurred between supervisor snapshot and worker spawn.
     try:
-        from botfarm.db import read_runtime_config
         rt = read_runtime_config(conn)
         if "max_review_iterations" in rt:
             max_review_iterations = int(rt["max_review_iterations"])
@@ -234,6 +233,8 @@ def _worker_entry(
             codex_reviewer_model = str(rt["codex_reviewer_model"])
         if "codex_reviewer_timeout_minutes" in rt:
             codex_reviewer_timeout_minutes = int(rt["codex_reviewer_timeout_minutes"])
+        if "max_merge_conflict_retries" in rt:
+            max_merge_conflict_retries = int(rt["max_merge_conflict_retries"])
     except Exception:
         logger.debug("Could not read runtime config from DB, using defaults")
 
@@ -1157,8 +1158,6 @@ class Supervisor:
         self._conn: sqlite3.Connection = init_db(db_path, allow_migration=True)
 
         # Seed runtime_config table with current agent settings
-        from botfarm.config import sync_agent_config_to_db
-
         sync_agent_config_to_db(self._conn, config.agents)
 
         # Slot manager (shares the supervisor's DB connection)

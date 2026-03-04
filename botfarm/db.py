@@ -1114,6 +1114,7 @@ def list_cleanup_batches(
 RUNTIME_CONFIG_KEYS: frozenset[str] = frozenset({
     "max_review_iterations",
     "max_ci_retries",
+    "max_merge_conflict_retries",
     "codex_reviewer_enabled",
     "codex_reviewer_model",
     "codex_reviewer_timeout_minutes",

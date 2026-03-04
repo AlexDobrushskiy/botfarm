@@ -1002,13 +1002,9 @@ def sync_agent_config_to_db(
     agents_config: AgentsConfig,
 ) -> None:
     """Extract runtime-relevant fields from AgentsConfig and write to DB."""
-    from botfarm.db import write_runtime_config_batch
+    from botfarm.db import RUNTIME_CONFIG_KEYS, write_runtime_config_batch
 
     settings: dict[str, object] = {
-        "max_review_iterations": agents_config.max_review_iterations,
-        "max_ci_retries": agents_config.max_ci_retries,
-        "codex_reviewer_enabled": agents_config.codex_reviewer_enabled,
-        "codex_reviewer_model": agents_config.codex_reviewer_model,
-        "codex_reviewer_timeout_minutes": agents_config.codex_reviewer_timeout_minutes,
+        key: getattr(agents_config, key) for key in RUNTIME_CONFIG_KEYS
     }
     write_runtime_config_batch(conn, settings)

@@ -252,6 +252,12 @@ async def config_update(request: Request):
                     conn.close()
             except Exception:
                 logger.exception("Failed to sync agent config to DB")
+                return HTMLResponse(
+                    '<div class="config-feedback warning" role="alert">'
+                    "Applied to running config but failed to sync to DB. "
+                    "New workers may use stale values until next successful sync.</div>",
+                    status_code=200,
+                )
 
     # Write structural updates to YAML only (NOT in-memory)
     if structural_updates:
