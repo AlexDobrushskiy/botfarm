@@ -1978,6 +1978,8 @@ class TestVerifyBaseDirClean:
         """If the base dir is on a feature branch, reset it to main."""
         base_dir = Path(supervisor._projects["test-project"].base_dir)
         _git(["git", "init"], base_dir)
+        _git(["git", "config", "user.email", "test@test.com"], base_dir)
+        _git(["git", "config", "user.name", "Test"], base_dir)
         _git(["git", "checkout", "-b", "main"], base_dir)
         _git(["git", "commit", "--allow-empty", "-m", "init"], base_dir)
         _git(["git", "checkout", "-b", "feature-branch"], base_dir)
@@ -2001,6 +2003,8 @@ class TestVerifyBaseDirClean:
         """No reset or event when base dir is already on main."""
         base_dir = Path(supervisor._projects["test-project"].base_dir)
         _git(["git", "init"], base_dir)
+        _git(["git", "config", "user.email", "test@test.com"], base_dir)
+        _git(["git", "config", "user.name", "Test"], base_dir)
         _git(["git", "checkout", "-b", "main"], base_dir)
         _git(["git", "commit", "--allow-empty", "-m", "init"], base_dir)
         monkeypatch.delenv("GIT_DIR", raising=False)
@@ -2030,6 +2034,8 @@ class TestVerifyBaseDirClean:
         """If git checkout main fails, log base_dir_reset_failed event."""
         base_dir = Path(supervisor._projects["test-project"].base_dir)
         _git(["git", "init"], base_dir)
+        _git(["git", "config", "user.email", "test@test.com"], base_dir)
+        _git(["git", "config", "user.name", "Test"], base_dir)
         _git(["git", "checkout", "-b", "main"], base_dir)
         _git(["git", "commit", "--allow-empty", "-m", "init"], base_dir)
         _git(["git", "checkout", "-b", "feature-branch"], base_dir)
