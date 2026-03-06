@@ -373,6 +373,18 @@ class TestUnitContentSemantics:
         unit = generate_unit(env_files=[Path("/home/user/.botfarm/.env")])
         assert "EnvironmentFile=-" in unit
 
+    def test_kill_mode_process(self, tmp_path, monkeypatch):
+        """KillMode=process sends SIGTERM only to supervisor, not workers."""
+        monkeypatch.chdir(tmp_path)
+        unit = generate_unit()
+        assert "KillMode=process" in unit
+
+    def test_timeout_stop_sec(self, tmp_path, monkeypatch):
+        """TimeoutStopSec gives workers time to finish after supervisor exits."""
+        monkeypatch.chdir(tmp_path)
+        unit = generate_unit()
+        assert "TimeoutStopSec=300" in unit
+
     def test_path_captured_from_environment(self, tmp_path, monkeypatch):
         """Unit captures the user's PATH so child processes find binaries."""
         monkeypatch.chdir(tmp_path)
@@ -416,11 +428,39 @@ class TestCheckInstalledUnitStale:
         assert "Environment=PATH=" in msg
         assert "install-service" in msg
 
+    def test_stale_unit_missing_kill_mode(self, tmp_path, monkeypatch):
+        unit = tmp_path / "botfarm.service"
+        unit.write_text(
+            "[Service]\nExecStart=/usr/bin/botfarm run\n"
+            "Environment=PATH=/usr/local/bin:/usr/bin:/bin\n"
+            "TimeoutStopSec=300\n"
+        )
+        monkeypatch.setattr("botfarm.systemd_service.UNIT_PATH", unit)
+        is_stale, msg = check_installed_unit_stale()
+        assert is_stale
+        assert "KillMode=process" in msg
+        assert "install-service" in msg
+
+    def test_stale_unit_missing_timeout_stop_sec(self, tmp_path, monkeypatch):
+        unit = tmp_path / "botfarm.service"
+        unit.write_text(
+            "[Service]\nExecStart=/usr/bin/botfarm run\n"
+            "Environment=PATH=/usr/local/bin:/usr/bin:/bin\n"
+            "KillMode=process\n"
+        )
+        monkeypatch.setattr("botfarm.systemd_service.UNIT_PATH", unit)
+        is_stale, msg = check_installed_unit_stale()
+        assert is_stale
+        assert "TimeoutStopSec" in msg
+        assert "install-service" in msg
+
     def test_current_unit_not_stale(self, tmp_path, monkeypatch):
         unit = tmp_path / "botfarm.service"
         unit.write_text(
             "[Service]\nExecStart=/usr/bin/botfarm run\n"
             "Environment=PATH=/usr/local/bin:/usr/bin:/bin\n"
+            "KillMode=process\n"
+            "TimeoutStopSec=300\n"
         )
         monkeypatch.setattr("botfarm.systemd_service.UNIT_PATH", unit)
         is_stale, msg = check_installed_unit_stale()

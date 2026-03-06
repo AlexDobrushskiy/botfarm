@@ -32,6 +32,8 @@ ExecStart={exec_start}
 WorkingDirectory={working_dir}
 Restart=on-failure
 RestartSec=5
+KillMode=process
+TimeoutStopSec=300
 Environment=PATH={path}
 {env_file_lines}
 [Install]
@@ -150,8 +152,10 @@ def check_installed_unit_stale() -> tuple[bool, str]:
 
     Returns ``(is_stale, message)``.  A unit is considered stale if it
     still contains ``--no-auto-restart`` (prevents dashboard-triggered
-    updates) or is missing an ``Environment=PATH=`` directive (child
-    processes may not find binaries like codex, claude, or gh).
+    updates), is missing an ``Environment=PATH=`` directive (child
+    processes may not find binaries like codex, claude, or gh), or is
+    missing ``KillMode=process`` / ``TimeoutStopSec`` directives
+    (workers would be killed immediately on stop without cleanup).
     """
     if not UNIT_PATH.exists():
         return False, "no installed unit file"
@@ -169,6 +173,18 @@ def check_installed_unit_stale() -> tuple[bool, str]:
         return True, (
             f"installed unit {UNIT_PATH} is missing Environment=PATH= directive — "
             "child processes may not find binaries like codex, claude, or gh. "
+            "Run 'botfarm install-service' to regenerate the unit file."
+        )
+    if "KillMode=process" not in content:
+        return True, (
+            f"installed unit {UNIT_PATH} is missing KillMode=process — "
+            "systemctl stop will kill workers immediately without cleanup. "
+            "Run 'botfarm install-service' to regenerate the unit file."
+        )
+    if "TimeoutStopSec=" not in content:
+        return True, (
+            f"installed unit {UNIT_PATH} is missing TimeoutStopSec — "
+            "workers may not have enough time to finish after supervisor exits. "
             "Run 'botfarm install-service' to regenerate the unit file."
         )
     return False, "OK"
