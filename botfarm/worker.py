@@ -932,12 +932,14 @@ def _handle_implement_result(
     # Investigation: short-circuit success
     if _is_investigation(ctx.ticket_labels):
         ctx.pipeline.success = True
+        ctx.pipeline.no_pr_reason = "Investigation ticket — no PR created"
         update_task(
             ctx.conn,
             ctx.task_id,
             status="completed",
             turns=ctx.pipeline.total_turns,
             completed_at=datetime.now(timezone.utc).isoformat(),
+            comments=f"NO_PR_NEEDED: {ctx.pipeline.no_pr_reason}",
         )
         ctx.conn.commit()
         return True
