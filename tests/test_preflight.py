@@ -25,6 +25,7 @@ from botfarm.db import SCHEMA_VERSION
 from botfarm.linear import LinearAPIError
 from botfarm.preflight import (
     CheckResult,
+    _LANGUAGE_MARKERS,
     _describe_identity,
     _resolve_remote_url,
     check_claude_plugins,
@@ -39,6 +40,8 @@ from botfarm.preflight import (
     check_identity_ssh_key,
     check_linear_api,
     check_notifications_webhook,
+    check_project_claude_md,
+    check_project_runtimes,
     check_systemd_unit,
     check_worktree_dirs,
     log_preflight_summary,
@@ -1064,6 +1067,7 @@ class TestRunPreflightChecks:
         base = tmp_path / "repo"
         base.mkdir()
         (base / ".git").mkdir()
+        (base / "CLAUDE.md").write_text("# Instructions")
         monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "test.db"))
         config = _make_config(tmp_path, projects=[ProjectConfig(
             name="p1", linear_team="TST", base_dir=str(base),
@@ -1103,6 +1107,7 @@ class TestRunPreflightChecks:
         assert "linear_team" in names
         assert "claude_credentials" in names
         assert "claude_plugins" in names
+        assert "project_claude_md" in names
 
         # All should pass
         assert all(r.passed for r in results)
@@ -1201,3 +1206,266 @@ class TestCheckSystemdUnit:
         )
         results = check_systemd_unit()
         assert results == []
+
+
+# ---------------------------------------------------------------------------
+# check_project_claude_md
+# ---------------------------------------------------------------------------
+
+
+class TestCheckProjectClaudeMd:
+    def test_claude_md_exists(self, tmp_path):
+        base = tmp_path / "repo"
+        base.mkdir()
+        (base / ".git").mkdir()
+        (base / "CLAUDE.md").write_text("# Instructions")
+        config = _make_config(tmp_path, projects=[ProjectConfig(
+            name="my-project",
+            linear_team="TST",
+            base_dir=str(base),
+            worktree_prefix="my-slot-",
+            slots=[1],
+        )])
+        results = check_project_claude_md(config)
+        assert len(results) == 1
+        assert results[0].passed
+        assert not results[0].critical
+        assert "my-project" not in results[0].message  # no warning text
+
+    def test_claude_md_missing(self, tmp_path):
+        base = tmp_path / "repo"
+        base.mkdir()
+        (base / ".git").mkdir()
+        config = _make_config(tmp_path, projects=[ProjectConfig(
+            name="my-project",
+            linear_team="TST",
+            base_dir=str(base),
+            worktree_prefix="my-slot-",
+            slots=[1],
+        )])
+        results = check_project_claude_md(config)
+        assert len(results) == 1
+        assert not results[0].passed
+        assert not results[0].critical
+        assert "my-project" in results[0].message
+        assert "CLAUDE.md" in results[0].message
+
+    def test_multiple_projects(self, tmp_path):
+        base1 = tmp_path / "repo1"
+        base1.mkdir()
+        (base1 / ".git").mkdir()
+        (base1 / "CLAUDE.md").write_text("# Yes")
+
+        base2 = tmp_path / "repo2"
+        base2.mkdir()
+        (base2 / ".git").mkdir()
+        # No CLAUDE.md for repo2
+
+        config = _make_config(tmp_path, projects=[
+            ProjectConfig(
+                name="proj1", linear_team="TST",
+                base_dir=str(base1), worktree_prefix="p1-slot-", slots=[1],
+            ),
+            ProjectConfig(
+                name="proj2", linear_team="TST",
+                base_dir=str(base2), worktree_prefix="p2-slot-", slots=[1],
+            ),
+        ])
+        results = check_project_claude_md(config)
+        assert len(results) == 2
+        assert results[0].passed  # proj1 has CLAUDE.md
+        assert not results[1].passed  # proj2 missing
+
+
+# ---------------------------------------------------------------------------
+# check_project_runtimes
+# ---------------------------------------------------------------------------
+
+
+class TestCheckProjectRuntimes:
+    def test_python_detected_and_available(self, tmp_path):
+        base = tmp_path / "repo"
+        base.mkdir()
+        (base / "requirements.txt").write_text("flask\n")
+        config = _make_config(tmp_path, projects=[ProjectConfig(
+            name="py-project",
+            linear_team="TST",
+            base_dir=str(base),
+            worktree_prefix="py-slot-",
+            slots=[1],
+        )])
+        mock_proc = subprocess.CompletedProcess(
+            args=["python3", "--version"],
+            returncode=0,
+            stdout="Python 3.12.0\n",
+            stderr="",
+        )
+        with patch("botfarm.preflight.subprocess.run", return_value=mock_proc):
+            results = check_project_runtimes(config)
+        assert len(results) == 1
+        assert results[0].passed
+        assert "Python 3.12.0" in results[0].message
+        assert results[0].name == "project_runtime:py-project/Python"
+
+    def test_python_not_installed(self, tmp_path):
+        base = tmp_path / "repo"
+        base.mkdir()
+        (base / "pyproject.toml").write_text("[project]\n")
+        config = _make_config(tmp_path, projects=[ProjectConfig(
+            name="py-project",
+            linear_team="TST",
+            base_dir=str(base),
+            worktree_prefix="py-slot-",
+            slots=[1],
+        )])
+        with patch("botfarm.preflight.subprocess.run",
+                    side_effect=FileNotFoundError("python3")):
+            results = check_project_runtimes(config)
+        assert len(results) == 1
+        assert not results[0].passed
+        assert not results[0].critical
+        assert "python3" in results[0].message
+        assert "not found in PATH" in results[0].message
+
+    def test_no_marker_files(self, tmp_path):
+        base = tmp_path / "repo"
+        base.mkdir()
+        config = _make_config(tmp_path, projects=[ProjectConfig(
+            name="empty-project",
+            linear_team="TST",
+            base_dir=str(base),
+            worktree_prefix="e-slot-",
+            slots=[1],
+        )])
+        results = check_project_runtimes(config)
+        assert results == []
+
+    def test_multiple_python_markers_only_checked_once(self, tmp_path):
+        """requirements.txt + pyproject.toml should only trigger one Python check."""
+        base = tmp_path / "repo"
+        base.mkdir()
+        (base / "requirements.txt").write_text("flask\n")
+        (base / "pyproject.toml").write_text("[project]\n")
+        config = _make_config(tmp_path, projects=[ProjectConfig(
+            name="py-project",
+            linear_team="TST",
+            base_dir=str(base),
+            worktree_prefix="py-slot-",
+            slots=[1],
+        )])
+        mock_proc = subprocess.CompletedProcess(
+            args=["python3", "--version"],
+            returncode=0,
+            stdout="Python 3.12.0\n",
+            stderr="",
+        )
+        with patch("botfarm.preflight.subprocess.run", return_value=mock_proc):
+            results = check_project_runtimes(config)
+        assert len(results) == 1  # Only one check, not two
+
+    def test_node_detected_and_available(self, tmp_path):
+        base = tmp_path / "repo"
+        base.mkdir()
+        (base / "package.json").write_text("{}\n")
+        config = _make_config(tmp_path, projects=[ProjectConfig(
+            name="js-project",
+            linear_team="TST",
+            base_dir=str(base),
+            worktree_prefix="js-slot-",
+            slots=[1],
+        )])
+        mock_proc = subprocess.CompletedProcess(
+            args=["node", "--version"],
+            returncode=0,
+            stdout="v20.11.0\n",
+            stderr="",
+        )
+        with patch("botfarm.preflight.subprocess.run", return_value=mock_proc):
+            results = check_project_runtimes(config)
+        assert len(results) == 1
+        assert results[0].passed
+        assert "v20.11.0" in results[0].message
+        assert results[0].name == "project_runtime:js-project/Node.js"
+
+    def test_go_runtime_not_found(self, tmp_path):
+        base = tmp_path / "repo"
+        base.mkdir()
+        (base / "go.mod").write_text("module example.com/foo\n")
+        config = _make_config(tmp_path, projects=[ProjectConfig(
+            name="go-project",
+            linear_team="TST",
+            base_dir=str(base),
+            worktree_prefix="go-slot-",
+            slots=[1],
+        )])
+        with patch("botfarm.preflight.subprocess.run",
+                    side_effect=FileNotFoundError("go")):
+            results = check_project_runtimes(config)
+        assert len(results) == 1
+        assert not results[0].passed
+        assert "Go" in results[0].message
+        assert "go.mod" in results[0].message
+
+    def test_runtime_timeout(self, tmp_path):
+        base = tmp_path / "repo"
+        base.mkdir()
+        (base / "Cargo.toml").write_text("[package]\n")
+        config = _make_config(tmp_path, projects=[ProjectConfig(
+            name="rust-project",
+            linear_team="TST",
+            base_dir=str(base),
+            worktree_prefix="rs-slot-",
+            slots=[1],
+        )])
+        with patch("botfarm.preflight.subprocess.run",
+                    side_effect=subprocess.TimeoutExpired("cargo", 10)):
+            results = check_project_runtimes(config)
+        assert len(results) == 1
+        assert not results[0].passed
+        assert not results[0].critical
+        assert "timed out" in results[0].message
+
+    def test_runtime_nonzero_exit(self, tmp_path):
+        base = tmp_path / "repo"
+        base.mkdir()
+        (base / "Gemfile").write_text("source 'https://rubygems.org'\n")
+        config = _make_config(tmp_path, projects=[ProjectConfig(
+            name="ruby-project",
+            linear_team="TST",
+            base_dir=str(base),
+            worktree_prefix="rb-slot-",
+            slots=[1],
+        )])
+        mock_proc = subprocess.CompletedProcess(
+            args=["ruby", "--version"],
+            returncode=1,
+            stdout="",
+            stderr="error\n",
+        )
+        with patch("botfarm.preflight.subprocess.run", return_value=mock_proc):
+            results = check_project_runtimes(config)
+        assert len(results) == 1
+        assert not results[0].passed
+        assert "exit code" in results[0].message
+
+    def test_multi_language_project(self, tmp_path):
+        base = tmp_path / "repo"
+        base.mkdir()
+        (base / "requirements.txt").write_text("flask\n")
+        (base / "package.json").write_text("{}\n")
+        config = _make_config(tmp_path, projects=[ProjectConfig(
+            name="multi-project",
+            linear_team="TST",
+            base_dir=str(base),
+            worktree_prefix="m-slot-",
+            slots=[1],
+        )])
+        mock_proc = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="version info\n", stderr="",
+        )
+        with patch("botfarm.preflight.subprocess.run", return_value=mock_proc):
+            results = check_project_runtimes(config)
+        assert len(results) == 2
+        names = {r.name for r in results}
+        assert "project_runtime:multi-project/Python" in names
+        assert "project_runtime:multi-project/Node.js" in names
