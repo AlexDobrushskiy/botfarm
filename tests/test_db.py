@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 
 import pytest
 
@@ -111,22 +112,21 @@ class TestInitDb:
     def test_resolve_db_path_expands_tilde(self, monkeypatch):
         """resolve_db_path expands ~ in the path."""
         monkeypatch.setenv("BOTFARM_DB_PATH", "~/.botfarm/botfarm.db")
-        from pathlib import Path
         result = resolve_db_path()
         assert "~" not in str(result)
         assert result == Path.home() / ".botfarm" / "botfarm.db"
 
-    def test_resolve_db_path_raises_when_unset(self, monkeypatch):
-        """resolve_db_path raises RuntimeError when env var is missing."""
+    def test_resolve_db_path_defaults_when_unset(self, monkeypatch):
+        """resolve_db_path returns default path when env var is missing."""
         monkeypatch.delenv("BOTFARM_DB_PATH", raising=False)
-        with pytest.raises(RuntimeError, match="BOTFARM_DB_PATH"):
-            resolve_db_path()
+        result = resolve_db_path()
+        assert result == Path.home() / ".botfarm" / "botfarm.db"
 
-    def test_resolve_db_path_raises_when_empty(self, monkeypatch):
-        """resolve_db_path raises RuntimeError when env var is empty."""
+    def test_resolve_db_path_defaults_when_empty(self, monkeypatch):
+        """resolve_db_path returns default path when env var is empty."""
         monkeypatch.setenv("BOTFARM_DB_PATH", "")
-        with pytest.raises(RuntimeError, match="BOTFARM_DB_PATH"):
-            resolve_db_path()
+        result = resolve_db_path()
+        assert result == Path.home() / ".botfarm" / "botfarm.db"
 
     def test_init_db_uses_provided_path(self, tmp_path, monkeypatch):
         """init_db uses the explicitly provided path, not BOTFARM_DB_PATH."""

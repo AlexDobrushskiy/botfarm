@@ -265,19 +265,11 @@ def check_credentials() -> list[CheckResult]:
 def check_database(config: BotfarmConfig) -> list[CheckResult]:
     """Verify DB file path is writable and schema version matches.
 
-    The database path is resolved from the ``BOTFARM_DB_PATH`` environment
-    variable via :func:`resolve_db_path`.
+    The database path is resolved via :func:`resolve_db_path`, which
+    defaults to ``~/.botfarm/botfarm.db`` when ``BOTFARM_DB_PATH`` is unset.
     """
     results: list[CheckResult] = []
-    try:
-        db_path = resolve_db_path()
-    except RuntimeError as exc:
-        results.append(CheckResult(
-            name="database",
-            passed=False,
-            message=str(exc),
-        ))
-        return results
+    db_path = resolve_db_path()
     db_dir = db_path.parent
 
     if not db_dir.exists():

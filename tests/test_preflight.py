@@ -468,13 +468,13 @@ class TestCheckCredentials:
 
 
 class TestCheckDatabase:
-    def test_fail_env_not_set(self, tmp_path, monkeypatch):
+    def test_defaults_when_env_not_set(self, tmp_path, monkeypatch):
         monkeypatch.delenv("BOTFARM_DB_PATH", raising=False)
+        monkeypatch.setattr(Path, "expanduser", lambda self: tmp_path / self.name)
         config = _make_config(tmp_path)
         results = check_database(config)
         assert len(results) == 1
-        assert not results[0].passed
-        assert "BOTFARM_DB_PATH" in results[0].message
+        assert results[0].passed
 
     def test_pass_new_db(self, tmp_path, monkeypatch):
         monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "new.db"))

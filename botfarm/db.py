@@ -37,21 +37,19 @@ class SchemaVersionError(RuntimeError):
     """Raised when the database schema version does not match the expected version."""
 
 
+DEFAULT_DB_PATH = Path("~/.botfarm/botfarm.db")
+
+
 def resolve_db_path() -> Path:
-    """Resolve the database path from the ``BOTFARM_DB_PATH`` environment variable.
+    """Resolve the database path, defaulting to ``~/.botfarm/botfarm.db``.
 
     Every process (supervisor, worker, CLI) must call this to obtain the
-    authoritative database path.  The variable is typically loaded from a
-    ``.env`` file in the working directory via ``python-dotenv``.
-
-    Raises ``RuntimeError`` if the variable is not set or is empty.
+    authoritative database path.  The ``BOTFARM_DB_PATH`` environment
+    variable can override the default location for non-standard setups.
     """
     db_path = os.environ.get("BOTFARM_DB_PATH")
     if not db_path:
-        raise RuntimeError(
-            "BOTFARM_DB_PATH environment variable is not set. "
-            "Add it to your .env file (e.g. BOTFARM_DB_PATH=~/.botfarm/botfarm.db)."
-        )
+        return DEFAULT_DB_PATH.expanduser()
     return Path(db_path).expanduser()
 
 
