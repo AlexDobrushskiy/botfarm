@@ -607,7 +607,7 @@ def _generate_config_yaml(
     """Generate a config.yaml string with values filled in from the interactive flow."""
     project_block = ""
     if project_name:
-        project_block = f"\n    linear_project: {project_name}"
+        project_block = f'\n    linear_project: "{project_name}"'
 
     return f"""\
 # Botfarm configuration
@@ -615,14 +615,14 @@ def _generate_config_yaml(
 
 projects:
   - name: my-project
-    linear_team: {team_key}
+    linear_team: {team_key}  # {team_name}
     base_dir: ~/my-project
     worktree_prefix: my-project-slot-{project_block}
     slots: [1, 2]
 
 linear:
   api_key: ${{LINEAR_API_KEY}}
-  workspace: {workspace}
+  workspace: "{workspace}"
   poll_interval_seconds: 30
   exclude_tags:
     - Human
@@ -678,7 +678,7 @@ def _run_interactive_init(
 
     # Step 1: Get Linear API key
     console.print("Enter your Linear API key (find it at linear.app → Settings → API).")
-    api_key = Prompt.ask("Linear API key").strip()
+    api_key = Prompt.ask("Linear API key", password=True).strip()
     if not api_key:
         console.print("[red]API key cannot be empty.[/red]")
         return False
@@ -837,20 +837,18 @@ def init(path, non_interactive):
     # Interactive flow
     console = Console()
 
-    if config_path.exists():
-        console.print(
-            f"[yellow]Config file already exists:[/yellow] {config_path}"
-        )
-        from rich.prompt import Confirm
-        if not Confirm.ask("Overwrite?", default=False):
-            return
-
     env_path = ENV_FILE_PATH
+    existing = []
+    if config_path.exists():
+        existing.append(str(config_path))
     if env_path.exists():
-        console.print(
-            f"[yellow].env file already exists:[/yellow] {env_path}"
-        )
+        existing.append(str(env_path))
+
+    if existing:
         from rich.prompt import Confirm
+        console.print(
+            f"[yellow]Already exists:[/yellow] {', '.join(existing)}"
+        )
         if not Confirm.ask("Overwrite?", default=False):
             return
 

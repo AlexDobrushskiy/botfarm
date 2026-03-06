@@ -122,8 +122,8 @@ class TestGenerateConfigYaml:
             project_name="Bot farm",
         )
         assert "linear_team: ENG" in content
-        assert "workspace: my-ws" in content
-        assert "linear_project: Bot farm" in content
+        assert 'workspace: "my-ws"' in content
+        assert 'linear_project: "Bot farm"' in content
         assert "${LINEAR_API_KEY}" in content
 
     def test_generates_without_project(self):
@@ -212,8 +212,8 @@ class TestInteractiveInit:
 
         config_content = config_path.read_text()
         assert "linear_team: SMA" in config_content
-        assert "workspace: smart-ai-coach" in config_content
-        assert "linear_project: Bot farm" in config_content
+        assert 'workspace: "smart-ai-coach"' in config_content
+        assert 'linear_project: "Bot farm"' in config_content
 
         env_content = env_path.read_text()
         assert "LINEAR_API_KEY=lin_api_test123" in env_content
@@ -244,7 +244,7 @@ class TestInteractiveInit:
         assert result.exit_code == 0, result.output
         config_content = config_path.read_text()
         assert "linear_team: SMA" in config_content
-        assert "linear_project: Web app" in config_content
+        assert 'linear_project: "Web app"' in config_content
 
     @patch("botfarm.cli.LinearClient")
     def test_interactive_no_project_filter(self, mock_cls, tmp_path, monkeypatch):
@@ -334,7 +334,7 @@ class TestInteractiveInit:
         )
         assert result.exit_code == 0, result.output
         config_content = config_path.read_text()
-        assert "workspace: my-manual-ws" in config_content
+        assert 'workspace: "my-manual-ws"' in config_content
 
     def test_interactive_existing_config_decline_overwrite(self, tmp_path, monkeypatch):
         from click.testing import CliRunner
