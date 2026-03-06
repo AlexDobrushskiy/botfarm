@@ -493,11 +493,17 @@ class TestCountdownTimers:
         if timestamps.count() == 0:
             pytest.skip("No timestamp elements on page")
 
-        # The JS should have converted ISO timestamps to "Xh ago" format
+        # The JS should have converted ISO timestamps to a human-readable format.
+        # timeago() returns: "just now", "Xm ago", "Xh ago", "Xd ago", or "Mon DD"
+        # for dates older than 7 days.
         first_text = timestamps.first.inner_text()
-        # After DOMContentLoaded, timeago() should have run
-        assert "ago" in first_text.lower() or "just now" in first_text.lower(), \
-            f"Expected timeago format, got: {first_text!r}"
+        import re
+        is_timeago = (
+            "ago" in first_text.lower()
+            or "just now" in first_text.lower()
+            or re.match(r"^[A-Z][a-z]{2} \d{1,2}$", first_text)  # "Feb 27"
+        )
+        assert is_timeago, f"Expected timeago format, got: {first_text!r}"
 
     def test_countdown_updates_via_javascript(self, live_server, page):
         """P1: updateCountdowns() function is callable and updates elements."""
