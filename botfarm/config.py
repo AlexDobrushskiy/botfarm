@@ -16,6 +16,8 @@ logger = logging.getLogger(__name__)
 DEFAULT_CONFIG_DIR = Path.home() / ".botfarm"
 DEFAULT_CONFIG_PATH = DEFAULT_CONFIG_DIR / "config.yaml"
 
+# Note: _generate_config_yaml() in cli.py has a parallel template for interactive init.
+# Keep both in sync when adding/removing fields.
 DEFAULT_CONFIG_TEMPLATE = """\
 # Botfarm configuration
 # See documentation for full reference.

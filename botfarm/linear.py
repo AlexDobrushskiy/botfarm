@@ -424,6 +424,40 @@ query ProjectByName($name: String!) {
 }
 """
 
+LIST_TEAMS_QUERY = """
+query ListTeams {
+  teams {
+    nodes {
+      id
+      name
+      key
+    }
+  }
+}
+"""
+
+LIST_TEAM_PROJECTS_QUERY = """
+query ListTeamProjects($teamId: ID!) {
+  team(id: $teamId) {
+    projects {
+      nodes {
+        id
+        name
+      }
+    }
+  }
+}
+"""
+
+ORGANIZATION_QUERY = """
+query Organization {
+  organization {
+    urlKey
+    name
+  }
+}
+"""
+
 ACTIVE_ISSUES_FOR_PROJECT_COUNT_QUERY = """
 query ActiveIssuesForProjectCount($first: Int!, $after: String, $projectName: String!) {
   issues(
@@ -1028,6 +1062,42 @@ class LinearClient:
             {"teamKey": team_key, "labelName": label_name, "first": 50},
         )
         return data.get("issues", {}).get("nodes", [])
+
+    def list_teams(self) -> list[dict]:
+        """List all teams accessible by the API key.
+
+        Returns list of dicts with 'id', 'name', 'key'.
+
+        Note: does not paginate — returns only the first page of results.
+        Fine for the init wizard; most workspaces have fewer than 50 teams.
+        """
+        data = self._execute(LIST_TEAMS_QUERY)
+        return data.get("teams", {}).get("nodes", [])
+
+    def list_team_projects(self, team_id: str) -> list[dict]:
+        """List all projects for a given team.
+
+        Returns list of dicts with 'id', 'name'.
+
+        Note: does not paginate — returns only the first page of results.
+        Sufficient for the init wizard where full enumeration isn't critical.
+        """
+        data = self._execute(LIST_TEAM_PROJECTS_QUERY, {"teamId": team_id})
+        team = data.get("team")
+        if not team:
+            return []
+        return team.get("projects", {}).get("nodes", [])
+
+    def get_organization(self) -> dict:
+        """Get the organization info (urlKey, name).
+
+        Returns a dict with 'urlKey' and 'name'.
+        """
+        data = self._execute(ORGANIZATION_QUERY)
+        org = data.get("organization")
+        if not org:
+            raise LinearAPIError("Failed to retrieve organization info")
+        return org
 
     def count_active_issues_for_project(self, project_name: str) -> int | None:
         """Count all non-archived issues for a specific project.

@@ -590,6 +590,245 @@ def create_default_env(env_path: Path = ENV_FILE_PATH) -> Path:
     return env_path
 
 
+def _write_env_with_key(env_path: Path, api_key: str) -> None:
+    """Write a .env file with the Linear API key filled in."""
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    content = (
+        f"# Botfarm environment variables\n"
+        f"LINEAR_API_KEY={api_key}\n"
+        f"# BOTFARM_DB_PATH=~/.botfarm/botfarm.db  # uncomment to override default\n"
+    )
+    env_path.write_text(content)
+
+
+def _generate_config_yaml(
+    *,
+    team_key: str,
+    team_name: str,
+    workspace: str,
+    project_name: str = "",
+) -> str:
+    """Generate a config.yaml string with values filled in from the interactive flow."""
+    project_block = ""
+    if project_name:
+        project_block = f'\n    linear_project: "{project_name}"'
+
+    return f"""\
+# Botfarm configuration
+# See documentation for full reference.
+
+projects:
+  - name: my-project
+    linear_team: {team_key}  # {team_name}
+    base_dir: ~/my-project
+    worktree_prefix: my-project-slot-{project_block}
+    slots: [1, 2]
+
+linear:
+  api_key: ${{LINEAR_API_KEY}}
+  workspace: "{workspace}"
+  poll_interval_seconds: 30
+  exclude_tags:
+    - Human
+  issue_limit: 250
+  todo_status: Todo
+  in_progress_status: In Progress
+  done_status: Done
+  in_review_status: In Review
+  comment_on_failure: true
+  comment_on_completion: false
+  comment_on_limit_pause: false
+  capacity_monitoring:
+    enabled: true
+    warning_threshold: 0.70
+    critical_threshold: 0.85
+    pause_threshold: 0.95
+    resume_threshold: 0.90
+
+database:
+  path: ""
+
+usage_limits:
+  enabled: true
+  pause_five_hour_threshold: 0.85
+  pause_seven_day_threshold: 0.90
+
+dashboard:
+  enabled: false
+  host: 0.0.0.0
+  port: 8420
+
+agents:
+  max_review_iterations: 3
+  max_ci_retries: 2
+  timeout_minutes:
+    implement: 120
+    review: 30
+    fix: 60
+  # timeout_overrides (first matching label wins; order matters):
+  #   Investigation:
+  #     implement: 30
+  timeout_grace_seconds: 10
+  codex_reviewer_enabled: false
+  codex_reviewer_model: ""              # e.g. "o3", "o4-mini", or empty for default
+  codex_reviewer_reasoning_effort: "medium"  # none, low, medium, high, xhigh — or empty for default
+  codex_reviewer_timeout_minutes: 15    # separate from Claude review timeout
+  codex_reviewer_skip_on_reiteration: true  # skip codex on review iterations 2+
+
+# identities:
+#   coder:
+#     github_token: ${{CODER_GITHUB_TOKEN}}
+#     ssh_key_path: ~/.botfarm/coder_id_ed25519
+#     git_author_name: "Coder Bot"
+#     git_author_email: "coder-bot@example.com"
+#     linear_api_key: ${{CODER_LINEAR_API_KEY}}
+#   reviewer:
+#     github_token: ${{REVIEWER_GITHUB_TOKEN}}
+#     linear_api_key: ${{REVIEWER_LINEAR_API_KEY}}
+
+# Periodic refactoring analysis — auto-creates investigation tickets
+# on a configurable cadence. Disabled by default.
+# refactoring_analysis:
+#   enabled: true
+#   cadence_days: 14
+#   linear_label: "Refactoring Analysis"
+#   priority: 4  # Low priority — doesn't preempt feature work
+
+# Note: this template should stay in sync with DEFAULT_CONFIG_TEMPLATE in config.py.
+start_paused: true
+
+# notifications:
+#   webhook_url: https://hooks.slack.com/services/...
+#   webhook_format: slack  # or "discord"
+#   rate_limit_seconds: 300
+
+# Daily work summary — sends a Claude-generated digest of the last 24h.
+# daily_summary:
+#   enabled: true
+#   send_hour: 18  # UTC hour (0-23)
+#   min_tasks_for_summary: 0  # 0 = always send
+#   webhook_url: ""  # Falls back to notifications.webhook_url
+"""
+
+
+def _run_interactive_init(
+    config_path: Path, env_path: Path, console: Console,
+) -> bool:
+    """Run the interactive init flow. Returns True if files were created."""
+    from rich.prompt import Prompt
+
+    console.print("\n[bold]Botfarm Setup[/bold]\n")
+
+    # Step 1: Get Linear API key
+    console.print("Enter your Linear API key (find it at linear.app → Settings → API).")
+    api_key = Prompt.ask("Linear API key", password=True).strip()
+    if not api_key:
+        console.print("[red]API key cannot be empty.[/red]")
+        return False
+
+    # Step 2: Validate key and fetch teams
+    console.print("\nValidating API key...", end=" ")
+    client = LinearClient(api_key=api_key)
+    try:
+        teams = client.list_teams()
+    except LinearAPIError as exc:
+        console.print(f"[red]Failed![/red]\n  {exc}")
+        return False
+
+    if not teams:
+        console.print("[red]No teams found for this API key.[/red]")
+        return False
+    console.print("[green]OK[/green]")
+
+    # Step 3: Select team
+    console.print(f"\n[bold]Teams ({len(teams)}):[/bold]")
+    for i, team in enumerate(teams, 1):
+        console.print(f"  {i}. {team['name']} ({team['key']})")
+
+    if len(teams) == 1:
+        selected_team = teams[0]
+        console.print(f"\nAuto-selected: [bold]{selected_team['name']}[/bold]")
+    else:
+        choice = Prompt.ask(
+            "Select team",
+            choices=[str(i) for i in range(1, len(teams) + 1)],
+        )
+        selected_team = teams[int(choice) - 1]
+
+    team_key = selected_team["key"]
+    team_name = selected_team["name"]
+
+    # Step 4: Fetch and select project
+    console.print("\nFetching projects...", end=" ")
+    try:
+        projects = client.list_team_projects(selected_team["id"])
+    except LinearAPIError as exc:
+        console.print(f"[red]Failed![/red]\n  {exc}")
+        return False
+    console.print("[green]OK[/green]")
+
+    project_name = ""
+    if projects:
+        console.print(f"\n[bold]Projects ({len(projects)}):[/bold]")
+        for i, proj in enumerate(projects, 1):
+            console.print(f"  {i}. {proj['name']}")
+        console.print(f"  {len(projects) + 1}. (no project filter)")
+
+        if len(projects) == 1:
+            selected_project = projects[0]
+            console.print(
+                f"\nAuto-selected: [bold]{selected_project['name']}[/bold]"
+            )
+            project_name = selected_project["name"]
+        else:
+            choice = Prompt.ask(
+                "Select project",
+                choices=[str(i) for i in range(1, len(projects) + 2)],
+            )
+            idx = int(choice)
+            if idx <= len(projects):
+                project_name = projects[idx - 1]["name"]
+    else:
+        console.print("\nNo projects found for this team.")
+
+    # Step 5: Auto-detect workspace slug
+    console.print("\nDetecting workspace...", end=" ")
+    try:
+        org = client.get_organization()
+        workspace = org["urlKey"]
+        console.print(f"[green]{workspace}[/green]")
+    except (LinearAPIError, KeyError):
+        console.print("[yellow]could not auto-detect[/yellow]")
+        workspace = Prompt.ask("Enter your Linear workspace slug")
+
+    # Step 6: Generate files
+    config_content = _generate_config_yaml(
+        team_key=team_key,
+        team_name=team_name,
+        workspace=workspace,
+        project_name=project_name,
+    )
+
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(config_content)
+    console.print(f"\n[green]Created config:[/green] {config_path}")
+
+    _write_env_with_key(env_path, api_key)
+    console.print(f"[green]Created .env:[/green]  {env_path}")
+
+    # Summary
+    console.print(f"\n[bold]Configuration summary:[/bold]")
+    console.print(f"  Team:      {team_name} ({team_key})")
+    if project_name:
+        console.print(f"  Project:   {project_name}")
+    console.print(f"  Workspace: {workspace}")
+    console.print(
+        "\n[dim]Next: edit the 'projects' section in config.yaml to set "
+        "your base_dir, worktree_prefix, and slots.[/dim]"
+    )
+    return True
+
+
 @main.command()
 @click.option(
     "--path",
@@ -597,30 +836,67 @@ def create_default_env(env_path: Path = ENV_FILE_PATH) -> Path:
     default=None,
     help="Path for the config file.",
 )
-def init(path):
-    """Create a default configuration file and .env file."""
+@click.option(
+    "--non-interactive",
+    is_flag=True,
+    default=False,
+    help="Skip the interactive flow and just create template files.",
+)
+def init(path, non_interactive):
+    """Set up botfarm configuration interactively.
+
+    Connects to the Linear API to discover teams, projects, and workspace
+    slug, then generates config.yaml and .env with the correct values.
+
+    Use --non-interactive to just create template files without API calls.
+    """
     config_path = DEFAULT_CONFIG_PATH if path is None else Path(path)
-    created_config = False
-    created_env = False
 
+    if non_interactive:
+        # Original non-interactive behavior
+        created_config = False
+        created_env = False
+
+        if config_path.exists():
+            click.echo(f"Config file already exists: {config_path}")
+        else:
+            create_default_config(config_path)
+            click.echo(f"Created default config at: {config_path}")
+            created_config = True
+
+        if ENV_FILE_PATH.exists():
+            click.echo(f".env file already exists: {ENV_FILE_PATH}")
+        else:
+            create_default_env(ENV_FILE_PATH)
+            click.echo(f"Created default .env at: {ENV_FILE_PATH}")
+            created_env = True
+
+        if created_config or created_env:
+            click.echo(
+                f"\nNext step: set your Linear API key in {ENV_FILE_PATH}"
+            )
+        return
+
+    # Interactive flow
+    console = Console()
+
+    env_path = ENV_FILE_PATH
+    existing = []
     if config_path.exists():
-        click.echo(f"Config file already exists: {config_path}")
-    else:
-        create_default_config(config_path)
-        click.echo(f"Created default config at: {config_path}")
-        created_config = True
+        existing.append(str(config_path))
+    if env_path.exists():
+        existing.append(str(env_path))
 
-    if ENV_FILE_PATH.exists():
-        click.echo(f".env file already exists: {ENV_FILE_PATH}")
-    else:
-        create_default_env(ENV_FILE_PATH)
-        click.echo(f"Created default .env at: {ENV_FILE_PATH}")
-        created_env = True
-
-    if created_config or created_env:
-        click.echo(
-            f"\nNext step: set your Linear API key in {ENV_FILE_PATH}"
+    if existing:
+        from rich.prompt import Confirm
+        console.print(
+            f"[yellow]Already exists:[/yellow] {', '.join(existing)}"
         )
+        if not Confirm.ask("Overwrite?", default=False):
+            return
+
+    if not _run_interactive_init(config_path, env_path, console):
+        raise SystemExit(1)
 
 
 # ---------------------------------------------------------------------------
