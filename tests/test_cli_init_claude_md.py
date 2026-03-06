@@ -3,7 +3,7 @@
 import pytest
 from click.testing import CliRunner
 
-from botfarm.cli import _CLAUDE_MD_TEMPLATE, _detect_project, main
+from botfarm.cli import _detect_project, main
 
 
 @pytest.fixture()
