@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
@@ -23,6 +24,18 @@ from .state import (
 )
 
 router = APIRouter()
+
+
+def _apply_resume_transition(app_state, pause_state: str) -> str:
+    """Override pause_state to 'resuming' while resume is in flight."""
+    resume_at = getattr(app_state, "resume_requested_at", 0.0)
+    if pause_state in ("start_paused", "paused") and resume_at:
+        if time.monotonic() - resume_at < 10:
+            return "resuming"
+        app_state.resume_requested_at = 0.0
+    elif pause_state == "running" and resume_at:
+        app_state.resume_requested_at = 0.0
+    return pause_state
 
 
 @router.get("/partials/slots", response_class=HTMLResponse)
@@ -69,23 +82,10 @@ def partial_supervisor_badge(request: Request):
 
 @router.get("/partials/start-paused-banner", response_class=HTMLResponse)
 def partial_start_paused_banner(request: Request):
-    import time
-
     app = request.app
     templates = app.state.templates
     state = read_state(app)
-    pause_state = manual_pause_state(state)
-    # Show transitional "resuming" state for a few seconds after resume is
-    # requested, until the supervisor processes the event and updates the DB.
-    resume_at = getattr(app.state, "resume_requested_at", 0.0)
-    if pause_state in ("start_paused", "paused") and resume_at:
-        if time.monotonic() - resume_at < 10:
-            pause_state = "resuming"
-        else:
-            app.state.resume_requested_at = 0.0
-    elif pause_state == "running" and resume_at:
-        # Supervisor has caught up — clear the flag
-        app.state.resume_requested_at = 0.0
+    pause_state = _apply_resume_transition(app.state, manual_pause_state(state))
     return templates.TemplateResponse("partials/start_paused_banner.html", {
         "request": request,
         "pause_state": pause_state,
@@ -164,21 +164,10 @@ def partial_tickets(request: Request):
 
 @router.get("/partials/supervisor-controls", response_class=HTMLResponse)
 def partial_supervisor_controls(request: Request):
-    import time
-
     app = request.app
     templates = request.app.state.templates
     state = read_state(app)
-    pause_state = manual_pause_state(state)
-    # Show transitional "resuming" state until supervisor updates DB
-    resume_at = getattr(app.state, "resume_requested_at", 0.0)
-    if pause_state in ("start_paused", "paused") and resume_at:
-        if time.monotonic() - resume_at < 10:
-            pause_state = "resuming"
-        else:
-            app.state.resume_requested_at = 0.0
-    elif pause_state == "running" and resume_at:
-        app.state.resume_requested_at = 0.0
+    pause_state = _apply_resume_transition(app.state, manual_pause_state(state))
     busy_slots = [
         s for s in state.get("slots", []) if s["status"] == "busy"
     ] if pause_state.startswith("pausing") else []
