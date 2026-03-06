@@ -32,7 +32,7 @@ ExecStart={exec_start}
 WorkingDirectory={working_dir}
 Restart=on-failure
 RestartSec=5
-KillMode=process
+KillMode=mixed
 TimeoutStopSec=300
 Environment=PATH={path}
 {env_file_lines}
@@ -154,7 +154,7 @@ def check_installed_unit_stale() -> tuple[bool, str]:
     still contains ``--no-auto-restart`` (prevents dashboard-triggered
     updates), is missing an ``Environment=PATH=`` directive (child
     processes may not find binaries like codex, claude, or gh), or is
-    missing ``KillMode=process`` / ``TimeoutStopSec`` directives
+    missing ``KillMode=mixed`` / ``TimeoutStopSec`` directives
     (workers would be killed immediately on stop without cleanup).
     """
     if not UNIT_PATH.exists():
@@ -175,9 +175,9 @@ def check_installed_unit_stale() -> tuple[bool, str]:
             "child processes may not find binaries like codex, claude, or gh. "
             "Run 'botfarm install-service' to regenerate the unit file."
         )
-    if "KillMode=process" not in content:
+    if "KillMode=mixed" not in content:
         return True, (
-            f"installed unit {UNIT_PATH} is missing KillMode=process — "
+            f"installed unit {UNIT_PATH} is missing KillMode=mixed — "
             "systemctl stop will kill workers immediately without cleanup. "
             "Run 'botfarm install-service' to regenerate the unit file."
         )

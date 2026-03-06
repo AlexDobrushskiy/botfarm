@@ -373,11 +373,11 @@ class TestUnitContentSemantics:
         unit = generate_unit(env_files=[Path("/home/user/.botfarm/.env")])
         assert "EnvironmentFile=-" in unit
 
-    def test_kill_mode_process(self, tmp_path, monkeypatch):
-        """KillMode=process sends SIGTERM only to supervisor, not workers."""
+    def test_kill_mode_mixed(self, tmp_path, monkeypatch):
+        """KillMode=mixed sends SIGTERM to supervisor, SIGKILL to workers after timeout."""
         monkeypatch.chdir(tmp_path)
         unit = generate_unit()
-        assert "KillMode=process" in unit
+        assert "KillMode=mixed" in unit
 
     def test_timeout_stop_sec(self, tmp_path, monkeypatch):
         """TimeoutStopSec gives workers time to finish after supervisor exits."""
@@ -438,7 +438,7 @@ class TestCheckInstalledUnitStale:
         monkeypatch.setattr("botfarm.systemd_service.UNIT_PATH", unit)
         is_stale, msg = check_installed_unit_stale()
         assert is_stale
-        assert "KillMode=process" in msg
+        assert "KillMode=mixed" in msg
         assert "install-service" in msg
 
     def test_stale_unit_missing_timeout_stop_sec(self, tmp_path, monkeypatch):
@@ -446,7 +446,7 @@ class TestCheckInstalledUnitStale:
         unit.write_text(
             "[Service]\nExecStart=/usr/bin/botfarm run\n"
             "Environment=PATH=/usr/local/bin:/usr/bin:/bin\n"
-            "KillMode=process\n"
+            "KillMode=mixed\n"
         )
         monkeypatch.setattr("botfarm.systemd_service.UNIT_PATH", unit)
         is_stale, msg = check_installed_unit_stale()
@@ -459,7 +459,7 @@ class TestCheckInstalledUnitStale:
         unit.write_text(
             "[Service]\nExecStart=/usr/bin/botfarm run\n"
             "Environment=PATH=/usr/local/bin:/usr/bin:/bin\n"
-            "KillMode=process\n"
+            "KillMode=mixed\n"
             "TimeoutStopSec=300\n"
         )
         monkeypatch.setattr("botfarm.systemd_service.UNIT_PATH", unit)
