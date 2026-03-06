@@ -55,6 +55,10 @@
     var container = document.getElementById("log-container");
     var scrollBtn = document.getElementById("scroll-toggle");
     var autoScroll = true;
+    var streamDone = false;
+    var reconnectDelay = 1000;
+    var maxReconnectDelay = 30000;
+    var reconnectTimer = null;
 
     function scrollToBottom() {
         if (autoScroll) {
@@ -77,8 +81,6 @@
         }
     });
 
-    var evtSource = new EventSource("/api/logs/{{ ticket_id }}/{{ current_stage }}/stream");
-
     function appendLine(text, cls) {
         var span = document.createElement("span");
         span.className = "log-line log-line-" + cls;
@@ -87,25 +89,61 @@
         scrollToBottom();
     }
 
-    // Listen for all formatted event types from the SSE stream
-    var eventTypes = ["assistant", "tool_use", "tool_result", "result", "system", "log"];
-    eventTypes.forEach(function(t) {
-        evtSource.addEventListener(t, function(e) { appendLine(e.data, t); });
-    });
-
-    evtSource.addEventListener("done", function(e) {
-        evtSource.close();
-        var badge = document.querySelector(".log-live-badge");
+    function showReconnecting() {
+        var badge = document.querySelector(".log-live-badge, .log-reconnecting-badge");
         if (badge) {
-            badge.textContent = "COMPLETED";
-            badge.classList.remove("log-live-badge");
-            badge.classList.add("log-done-badge");
+            badge.textContent = "RECONNECTING...";
+            badge.className = "log-reconnecting-badge";
         }
-    });
+    }
 
-    evtSource.addEventListener("error", function(e) {
-        evtSource.close();
-    });
+    function showLive() {
+        var badge = document.querySelector(".log-reconnecting-badge, .log-live-badge");
+        if (badge) {
+            badge.textContent = "LIVE";
+            badge.className = "log-live-badge";
+        }
+        reconnectDelay = 1000;
+    }
+
+    function connect() {
+        var evtSource = new EventSource("/api/logs/{{ ticket_id }}/{{ current_stage }}/stream");
+
+        // Listen for all formatted event types from the SSE stream
+        var eventTypes = ["assistant", "tool_use", "tool_result", "result", "system", "log"];
+        eventTypes.forEach(function(t) {
+            evtSource.addEventListener(t, function(e) {
+                showLive();
+                appendLine(e.data, t);
+            });
+        });
+
+        evtSource.addEventListener("heartbeat", function() {
+            showLive();
+        });
+
+        evtSource.addEventListener("done", function(e) {
+            streamDone = true;
+            evtSource.close();
+            var badge = document.querySelector(".log-live-badge, .log-reconnecting-badge");
+            if (badge) {
+                badge.textContent = "COMPLETED";
+                badge.className = "log-done-badge";
+            }
+        });
+
+        evtSource.addEventListener("error", function(e) {
+            evtSource.close();
+            if (streamDone) return;
+            showReconnecting();
+            reconnectTimer = setTimeout(function() {
+                connect();
+            }, reconnectDelay);
+            reconnectDelay = Math.min(reconnectDelay * 2, maxReconnectDelay);
+        });
+    }
+
+    connect();
 
     // Initial scroll to bottom
     scrollToBottom();

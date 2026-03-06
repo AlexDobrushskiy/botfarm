@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 MAX_LOG_DISPLAY = 2 * 1024 * 1024  # 2 MB
+SSE_HEARTBEAT_INTERVAL = 15  # seconds — keep SSE connections alive
 
 
 def _read_log_file(path: Path) -> str:
@@ -229,10 +230,12 @@ async def stream_log(request: Request, ticket_id: str, stage: str):
 
     async def event_generator():
         try:
+            idle_elapsed = 0.0
             with open(log_file, errors="replace") as f:
                 while True:
                     line = await asyncio.to_thread(f.readline)
                     if line:
+                        idle_elapsed = 0.0
                         event_type, formatted = line_formatter(line)
                         if formatted:
                             yield {
@@ -246,6 +249,10 @@ async def stream_log(request: Request, ticket_id: str, stage: str):
                             yield {"event": "done", "data": ""}
                             break
                         await asyncio.sleep(0.5)
+                        idle_elapsed += 0.5
+                        if idle_elapsed >= SSE_HEARTBEAT_INTERVAL:
+                            idle_elapsed = 0.0
+                            yield {"event": "heartbeat", "data": ""}
         except OSError:
             yield {"event": "error", "data": "Failed to read log file"}
 
