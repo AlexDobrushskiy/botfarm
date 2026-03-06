@@ -1011,6 +1011,73 @@ def _append_project_to_config(config_path: Path, project_dict: dict) -> None:
     write_yaml_atomic(config_path, data)
 
 
+def _extract_repo_name(repo_url: str) -> str:
+    """Extract a project name from a git repo URL.
+
+    Handles SSH (git@github.com:user/repo.git) and HTTPS
+    (https://github.com/user/repo.git) URLs.
+    """
+    import re
+
+    url = repo_url.rstrip("/")
+    if url.endswith(".git"):
+        url = url[:-4]
+    match = re.search(r"[:/]([^/]+)$", url)
+    if match:
+        return match.group(1)
+    return url.split("/")[-1] or "my-project"
+
+
+def _clone_repo(repo_url: str, target_dir: Path) -> None:
+    """Clone a git repository to the target directory.
+
+    Raises click.ClickException on failure.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "clone", repo_url, str(target_dir)],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        if result.returncode != 0:
+            raise click.ClickException(
+                f"git clone failed:\n{result.stderr.strip()}"
+            )
+    except FileNotFoundError:
+        raise click.ClickException("git is not installed or not in PATH")
+    except subprocess.TimeoutExpired:
+        raise click.ClickException("git clone timed out after 5 minutes")
+
+
+def _create_worktree(repo_dir: Path, worktree_path: Path, branch_name: str) -> None:
+    """Create a git worktree with a new branch.
+
+    Raises click.ClickException on failure.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "git", "-C", str(repo_dir),
+                "worktree", "add",
+                "-b", branch_name,
+                str(worktree_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            raise click.ClickException(
+                f"Failed to create worktree at {worktree_path}:\n"
+                f"{result.stderr.strip()}"
+            )
+    except subprocess.TimeoutExpired:
+        raise click.ClickException(
+            f"git worktree add timed out for {worktree_path}"
+        )
+
+
 @main.command("add-project")
 @click.option(
     "--config",
@@ -1020,7 +1087,7 @@ def _append_project_to_config(config_path: Path, project_dict: dict) -> None:
     help="Path to config file (default: ~/.botfarm/config.yaml).",
 )
 def add_project(config_path):
-    """Interactively add a new project to the configuration."""
+    """Interactively add a new project with repo clone, worktrees, and config."""
     cfg_path = config_path or DEFAULT_CONFIG_PATH
     console = Console()
 
@@ -1038,136 +1105,151 @@ def add_project(config_path):
         p["name"] for p in existing_projects if isinstance(p, dict) and "name" in p
     }
 
+    # Load the Linear API key from environment
+    linear_api_key = os.environ.get("LINEAR_API_KEY", "")
+
     console.print("\n[bold]Add a new project to botfarm[/bold]\n")
 
-    # --- Prompt for fields ---
-    cwd = Path.cwd()
+    # --- 1. Repo URL ---
+    repo_url = click.prompt("GitHub repo URL (SSH or HTTPS)")
 
-    # base_dir
-    base_dir = click.prompt(
-        "Git repository path",
-        default=str(cwd),
-    )
-    base_dir = str(Path(base_dir).expanduser().resolve())
+    # --- 2. Project name (auto-suggest from repo URL) ---
+    suggested_name = _extract_repo_name(repo_url)
+    name = click.prompt("Project name", default=suggested_name)
 
-    # name
-    default_name = Path(base_dir).name
-    name = click.prompt("Project name", default=default_name)
-
-    # Check duplicate names
     if name in existing_names:
         raise click.ClickException(
             f"Project '{name}' already exists in config. Choose a different name."
         )
 
-    # linear_team
-    linear_team = click.prompt("Linear team key (e.g., SMA)")
+    # --- 3. Linear team selection ---
+    linear_team = ""
+    selected_team = None
+    client = None
+    if linear_api_key:
+        try:
+            client = LinearClient(api_key=linear_api_key)
+            teams = client.list_teams()
+            if teams:
+                console.print("\n[bold]Available Linear teams:[/bold]")
+                for i, team in enumerate(teams, 1):
+                    console.print(f"  {i}. {team['name']} ({team['key']})")
+                choice = click.prompt(
+                    "\nSelect team number",
+                    type=click.IntRange(1, len(teams)),
+                )
+                selected_team = teams[choice - 1]
+                linear_team = selected_team["key"]
+            else:
+                linear_team = click.prompt("Linear team key (e.g. SMA)")
+        except LinearAPIError as exc:
+            click.echo(f"Warning: Could not fetch teams from Linear: {exc}")
+            linear_team = click.prompt("Linear team key (e.g. SMA)")
+    else:
+        click.echo("Warning: LINEAR_API_KEY not set. Linear selection will be manual.")
+        linear_team = click.prompt("Linear team key (e.g. SMA)")
 
-    # worktree_prefix
-    default_prefix = f"{name}-slot-"
-    worktree_prefix = click.prompt(
-        "Worktree directory prefix",
-        default=default_prefix,
-    )
+    # --- 4. Linear project selection (optional) ---
+    linear_project = ""
+    if client and selected_team:
+        try:
+            projects = client.list_team_projects(selected_team["id"])
+            if projects:
+                console.print("\n[bold]Available Linear projects:[/bold]")
+                console.print("  0. (none — use all projects in team)")
+                for i, proj in enumerate(projects, 1):
+                    console.print(f"  {i}. {proj['name']}")
+                choice = click.prompt(
+                    "\nSelect project number",
+                    type=click.IntRange(0, len(projects)),
+                    default=0,
+                )
+                if choice > 0:
+                    linear_project = projects[choice - 1]["name"]
+        except LinearAPIError as exc:
+            click.echo(f"Warning: Could not fetch projects from Linear: {exc}")
 
-    # slots
-    slots_input = click.prompt(
-        "Slot IDs (comma-separated)",
-        default="1",
-    )
-    try:
-        slots = [int(s.strip()) for s in slots_input.split(",")]
-        if len(slots) != len(set(slots)):
-            raise click.ClickException("Slot IDs must be unique.")
-    except ValueError:
+    # --- 5. Number of slots ---
+    num_slots = click.prompt("Number of slots", type=click.IntRange(1, 20), default=1)
+    slots = list(range(1, num_slots + 1))
+
+    # --- Summary and confirmation ---
+    projects_dir = DEFAULT_CONFIG_DIR / "projects" / name
+    repo_dir = projects_dir / "repo"
+    worktree_prefix = f"{name}-slot-"
+
+    console.print("\n[bold]Summary:[/bold]")
+    console.print(f"  Repo URL:       {repo_url}")
+    console.print(f"  Project name:   {name}")
+    console.print(f"  Linear team:    {linear_team}")
+    if linear_project:
+        console.print(f"  Linear project: {linear_project}")
+    console.print(f"  Slots:          {num_slots}")
+    console.print(f"  Clone to:       {repo_dir}")
+    console.print(f"  Worktrees:      {projects_dir}/{worktree_prefix}<N>")
+
+    if not click.confirm("\nProceed?", default=True):
+        console.print("Aborted.")
+        return
+
+    # --- 6. Clone the repo ---
+    if repo_dir.exists():
         raise click.ClickException(
-            f"Invalid slot IDs: {slots_input!r}. Must be comma-separated integers."
+            f"Directory already exists: {repo_dir}\n"
+            f"Remove it first or choose a different project name."
         )
 
-    # linear_project (optional)
-    linear_project = click.prompt(
-        "Linear project filter (optional, press Enter to skip)",
-        default="",
-    )
+    projects_dir.mkdir(parents=True, exist_ok=True)
+    console.print(f"\n[bold]Cloning repository...[/bold]")
+    _clone_repo(repo_url, repo_dir)
+    console.print(f"  Cloned to {repo_dir}")
 
+    # --- 7. Create worktrees and placeholder branches ---
+    console.print(f"\n[bold]Creating {num_slots} worktree(s)...[/bold]")
+    for slot_id in slots:
+        branch_name = f"slot-{slot_id}-placeholder"
+        worktree_path = projects_dir / f"{worktree_prefix}{slot_id}"
+        _create_worktree(repo_dir, worktree_path, branch_name)
+        console.print(f"  Slot {slot_id}: {worktree_path} (branch: {branch_name})")
+
+    # --- 8. Update config.yaml ---
+    console.print(f"\n[bold]Updating config...[/bold]")
     project_dict = {
         "name": name,
         "linear_team": linear_team,
-        "base_dir": base_dir,
-        "worktree_prefix": worktree_prefix,
+        "base_dir": str(repo_dir),
+        "worktree_prefix": str(projects_dir) + "/" + worktree_prefix,
         "slots": slots,
         "linear_project": linear_project,
     }
 
-    # --- Run validation ---
-    console.print("\n[bold]Validating...[/bold]")
-
-    has_errors = False
-
-    # Validate git repo
-    git_errors = _validate_project_dir(base_dir)
-    if git_errors:
-        has_errors = True
-        for err in git_errors:
-            console.print(f"  [red]FAIL[/red] {err}")
-    else:
-        console.print(f"  [green]OK[/green]   Git repository: {base_dir}")
-
-    # Validate worktree parent
-    wt_errors = _validate_worktree_parent(base_dir)
-    if wt_errors:
-        has_errors = True
-        for err in wt_errors:
-            console.print(f"  [red]FAIL[/red] {err}")
-    else:
-        base = Path(base_dir).expanduser().resolve()
-        console.print(f"  [green]OK[/green]   Worktree parent writable: {base.parent}")
-
-    if has_errors:
-        if not click.confirm(
-            "\nValidation failed. Add project anyway?", default=False
-        ):
-            console.print("Aborted.")
-            return
-
-    # --- Run readiness checks (non-blocking) ---
-    readiness = _run_readiness_checks(project_dict)
-    warnings = [r for r in readiness if r[0] == "warning"]
-    for level, msg in readiness:
-        if level == "ok":
-            console.print(f"  [green]OK[/green]   {msg}")
-        else:
-            console.print(f"  [yellow]WARN[/yellow] {msg}")
-
-    # --- Write to config ---
     try:
         _append_project_to_config(cfg_path, project_dict)
     except (ConfigError, OSError) as exc:
         raise click.ClickException(f"Failed to write config: {exc}") from exc
 
-    # --- Summary ---
-    console.print(f"\n[bold green]Project '{name}' added to {cfg_path}[/bold green]\n")
-    console.print("  Configuration:")
-    console.print(f"    name:            {name}")
-    console.print(f"    base_dir:        {base_dir}")
-    console.print(f"    linear_team:     {linear_team}")
-    console.print(f"    worktree_prefix: {worktree_prefix}")
-    console.print(f"    slots:           {slots}")
-    if linear_project:
-        console.print(f"    linear_project:  {linear_project}")
+    console.print(f"  Updated {cfg_path}")
 
-    if warnings:
-        console.print(f"\n  [yellow]{len(warnings)} warning(s) — see above[/yellow]")
+    # --- Readiness checks (informational) ---
+    readiness = _run_readiness_checks(project_dict)
+    warnings = [r for r in readiness if r[0] == "warning"]
+    if readiness:
+        console.print(f"\n[bold]Readiness checks:[/bold]")
+        for level, msg in readiness:
+            if level == "ok":
+                console.print(f"  [green]OK[/green]   {msg}")
+            else:
+                console.print(f"  [yellow]WARN[/yellow] {msg}")
 
-    # Next steps
+    # --- Done ---
+    console.print(f"\n[bold green]Project '{name}' added successfully![/bold green]")
     console.print("\n  Next steps:")
-    base = Path(base_dir).expanduser().resolve()
-    claude_md = base / "CLAUDE.md"
+    claude_md = repo_dir / "CLAUDE.md"
     if not claude_md.exists():
         console.print(
-            f"    - Create a CLAUDE.md: botfarm init-claude-md {base}"
+            f"    - Create a CLAUDE.md: botfarm init-claude-md {repo_dir}"
         )
-    console.print("    - Restart the supervisor to pick up changes")
+    console.print("    - Start or restart the supervisor: botfarm run")
 
 
 # ---------------------------------------------------------------------------
