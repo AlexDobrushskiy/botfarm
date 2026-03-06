@@ -269,9 +269,9 @@ How each field is used:
 | `coder.ssh_key_path` | Used in `GIT_SSH_COMMAND` for git push (must be an absolute or `~`-prefixed path) |
 | `coder.git_author_name` | Set as `GIT_AUTHOR_NAME` and `GIT_COMMITTER_NAME` on commits during implement/fix/pr_checks/merge stages |
 | `coder.git_author_email` | Set as `GIT_AUTHOR_EMAIL` and `GIT_COMMITTER_EMAIL` on commits during implement/fix/pr_checks/merge stages |
-| `coder.linear_api_key` | Optional separate Linear key for the coder (rarely needed) |
+| `coder.linear_api_key` | Optional separate Linear key for the coder (rarely needed; not shown in config template) |
 | `reviewer.github_token` | Set as `GH_TOKEN` for `gh` CLI during review stages |
-| `reviewer.linear_api_key` | Optional separate Linear key for the reviewer |
+| `reviewer.linear_api_key` | Optional separate Linear key for the reviewer (rarely needed; not shown in config template) |
 
 You can configure identities incrementally — any field left empty falls back to the system-level default (your `gh auth` login, global git config, etc.).
 
@@ -280,10 +280,10 @@ You can configure identities incrementally — any field left empty falls back t
 When identities are configured, `botfarm run` automatically validates them at startup:
 
 - SSH key file exists (critical — blocks startup)
-- SSH key has correct permissions, 0600 (warning only — does not block startup)
-- SSH key can connect to GitHub (`ssh -T git@github.com`)
-- GitHub tokens are valid (`gh api user`)
-- Coder and reviewer tokens are not identical (should be different accounts)
+- SSH key has correct permissions, 0600 (warning — does not block startup)
+- SSH key can connect to GitHub (warning — does not block startup)
+- GitHub tokens are valid (critical — blocks startup)
+- Coder and reviewer tokens are not identical (warning — does not block startup)
 
 ---
 
