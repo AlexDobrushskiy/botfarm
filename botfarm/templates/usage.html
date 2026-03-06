@@ -58,7 +58,6 @@
                 { label: "7-day %", data: data7d, borderColor: "#f59e0b", backgroundColor: "rgba(245,158,11,0.1)", fill: true, tension: 0.3, pointRadius: showLabels ? 4 : 2 },
             ]
         },
-        plugins: [ChartDataLabels],
         options: {
             responsive: true,
             interaction: { intersect: false, mode: "index" },
@@ -99,6 +98,7 @@
             scales: { y: { min: 0, title: { display: true, text: "USD ($)" } } },
             plugins: {
                 tooltip: { callbacks: { label: ctx => ctx.dataset.label + ": $" + (ctx.parsed.y != null ? ctx.parsed.y.toFixed(2) : "N/A") } },
+                datalabels: { display: false },
             },
         }
     });

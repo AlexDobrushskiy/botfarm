@@ -428,7 +428,6 @@ class TestUsagePage:
         resp = client.get("/usage")
         body = resp.text
         assert "chartjs-plugin-datalabels" in body
-        assert "ChartDataLabels" in body
 
     def test_no_low_data_message_with_high_values(self, client):
         """No 'not enough data' message when utilization values are high."""
