@@ -127,6 +127,21 @@ def test_load_config_invalid_yaml(tmp_path):
         load_config(config_path)
 
 
+def test_load_config_yaml_syntax_error(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("projects:\n  - name: test\n    bad: [unclosed")
+    with pytest.raises(ConfigError, match="YAML syntax error") as exc_info:
+        load_config(config_path)
+    assert "line" in str(exc_info.value)
+
+
+def test_load_config_yaml_syntax_error_tab(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("projects:\n\t- name: test\n")
+    with pytest.raises(ConfigError, match="YAML syntax error"):
+        load_config(config_path)
+
+
 def test_load_config_missing_projects(tmp_path):
     config_path = _write_config(tmp_path, {"linear": {"api_key": "k"}})
     with pytest.raises(ConfigError, match="projects"):

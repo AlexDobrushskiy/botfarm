@@ -129,7 +129,21 @@ def status(config_path):
     db_path, _ = _resolve_paths(config_path)
 
     if not db_path.exists():
-        click.echo("No database found. Is the supervisor running?")
+        cfg_path = config_path or DEFAULT_CONFIG_PATH
+        if not cfg_path.exists():
+            click.echo(
+                "No database found and no config file found.\n"
+                "Run `botfarm init` to create a default configuration."
+            )
+            return
+        try:
+            load_config(cfg_path)
+        except ConfigError as exc:
+            click.echo(f"Config error: {exc}")
+            return
+        click.echo(
+            "Config valid. No database yet — run `botfarm run` to start the supervisor."
+        )
         return
 
     try:
