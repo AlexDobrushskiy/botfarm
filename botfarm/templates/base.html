@@ -422,6 +422,23 @@
             border-radius: var(--pico-border-radius);
         }
 
+        /* Failure category badges */
+        .failure-category-badge {
+            display: inline-block;
+            padding: 0.15rem 0.5rem;
+            border-radius: 0.75rem;
+            font-size: 0.8rem;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+        .failure-cat-code_failure { background: var(--pico-del-color); color: #fff; }
+        .failure-cat-timeout { background: #eab308; color: #000; }
+        .failure-cat-limit_hit { background: #c084fc; color: #000; }
+        .failure-cat-env_missing_runtime { background: #f97316; color: #000; }
+        .failure-cat-env_missing_package { background: #f97316; color: #000; }
+        .failure-cat-env_missing_service { background: #f97316; color: #000; }
+        .failure-cat-env_missing_config { background: #f97316; color: #000; }
+
         /* Context fill color coding */
         .ctx-fill-green  { color: #22c55e; }
         .ctx-fill-yellow { color: #eab308; }

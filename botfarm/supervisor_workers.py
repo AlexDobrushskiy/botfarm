@@ -371,18 +371,85 @@ def _setup_worker_logging(
     root.addHandler(handler)
 
 
-def _check_limit_hit(result: PipelineResult) -> bool:
-    """Heuristic: detect if a pipeline failure was caused by a usage limit.
+def _classify_failure(failure_reason: str | None) -> str:
+    """Classify a pipeline failure reason into a category.
 
-    Matches specific limit-related strings in the failure reason.
+    Categories:
+    - ``limit_hit``: Usage or rate limit errors
+    - ``timeout``: Timeout errors
+    - ``env_missing_runtime``: Missing runtime binaries
+    - ``env_missing_package``: Missing Python/Node packages
+    - ``env_missing_service``: Database or service connection errors
+    - ``env_missing_config``: Missing environment variables or config files
+    - ``code_failure``: Default for non-environment failures
     """
-    reason = (result.failure_reason or "").lower()
+    reason = (failure_reason or "").lower()
+
+    # Limit hit patterns (existing _check_limit_hit logic)
     limit_indicators = [
         "rate limit",
         "usage limit",
         "max_tokens_exceeded",
     ]
-    return any(indicator in reason for indicator in limit_indicators)
+    if any(indicator in reason for indicator in limit_indicators):
+        return "limit_hit"
+
+    # Timeout patterns
+    timeout_indicators = [
+        "timeouterror",
+        "timed out",
+        "timeout in stage",
+    ]
+    if any(indicator in reason for indicator in timeout_indicators):
+        return "timeout"
+
+    # Environment: missing runtime binaries
+    if "command not found" in reason or "no such file or directory" in reason:
+        return "env_missing_runtime"
+
+    # Environment: missing packages
+    package_indicators = [
+        "modulenotfounderror",
+        "cannot find module",
+        "importerror",
+        "no module named",
+    ]
+    if any(indicator in reason for indicator in package_indicators):
+        return "env_missing_package"
+
+    # Environment: missing services (databases, connections)
+    if any(ind in reason for ind in ["econnrefused", "connection refused"]):
+        return "env_missing_service"
+    if ("role \"" in reason or "database \"" in reason) and "does not exist" in reason:
+        return "env_missing_service"
+
+    # Environment: missing config
+    if ".env file not found" in reason:
+        return "env_missing_config"
+    if ("environment variable" in reason or "env var" in reason) and "not set" in reason:
+        return "env_missing_config"
+
+    return "code_failure"
+
+
+# Valid failure categories for reference
+FAILURE_CATEGORIES = (
+    "code_failure",
+    "env_missing_runtime",
+    "env_missing_package",
+    "env_missing_service",
+    "env_missing_config",
+    "limit_hit",
+    "timeout",
+)
+
+
+def _check_limit_hit(result: PipelineResult) -> bool:
+    """Heuristic: detect if a pipeline failure was caused by a usage limit.
+
+    Delegates to :func:`_classify_failure` and checks for the ``limit_hit`` category.
+    """
+    return _classify_failure(result.failure_reason) == "limit_hit"
 
 
 # ---------------------------------------------------------------------------
@@ -902,6 +969,7 @@ class WorkerLifecycleManager:
                 task_id,
                 status="failed",
                 failure_reason=reason,
+                failure_category="timeout",
             )
         self._conn.commit()
 

@@ -126,12 +126,49 @@
 </div>
 {% endif %}
 
-{% if metrics.failure_reasons %}
-<h2>Common Failure Reasons</h2>
+{% if metrics.failure_categories %}
+<h2>Failures by Category</h2>
 <figure>
 <table>
     <thead>
         <tr>
+            <th>Category</th>
+            <th>Count</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for fc in metrics.failure_categories %}
+        <tr>
+            <td><span class="failure-category-badge failure-cat-{{ fc.category }}">{{ fc.category | replace("_", " ") }}</span></td>
+            <td>{{ fc.count }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+</figure>
+{% endif %}
+
+{% if metrics.failure_reasons %}
+<h2>Common Failure Reasons</h2>
+{% if metrics.failure_categories|length > 1 %}
+<form method="get" action="/metrics" style="max-width:300px; margin-bottom:1rem;">
+    {% if filter_project %}<input type="hidden" name="project" value="{{ filter_project }}">{% endif %}
+    <fieldset role="group">
+        <select name="failure_category" aria-label="Filter by failure category">
+            <option value="">All Categories</option>
+            {% for fc in metrics.failure_categories %}
+            <option value="{{ fc.category }}" {% if filter_failure_category == fc.category %}selected{% endif %}>{{ fc.category | replace("_", " ") }}</option>
+            {% endfor %}
+        </select>
+        <button type="submit">Filter</button>
+    </fieldset>
+</form>
+{% endif %}
+<figure>
+<table>
+    <thead>
+        <tr>
+            <th>Category</th>
             <th>Reason</th>
             <th>Count</th>
         </tr>
@@ -139,6 +176,7 @@
     <tbody>
         {% for fr in metrics.failure_reasons %}
         <tr>
+            <td><span class="failure-category-badge failure-cat-{{ fr.category }}">{{ fr.category | replace("_", " ") }}</span></td>
             <td class="failure-reason" title="{{ fr.reason }}">
                 {% if fr.reason|length > 120 %}
                 <details>

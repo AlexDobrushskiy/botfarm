@@ -343,6 +343,8 @@ class RecoveryMixin:
         self, slot: SlotState, *, reason: str, failure_msg: str,
     ) -> None:
         """Mark a recovered slot as failed and record the event."""
+        from botfarm.supervisor_workers import _classify_failure
+
         self._slot_manager.mark_failed(slot.project, slot.slot_id, reason=failure_msg)
         task_id = self._find_task_id(slot.ticket_id)
         if task_id is not None:
@@ -350,6 +352,7 @@ class RecoveryMixin:
                 self._conn, task_id,
                 status="failed",
                 failure_reason=failure_msg,
+                failure_category=_classify_failure(failure_msg),
             )
         insert_event(
             self._conn,
@@ -402,6 +405,7 @@ class RecoveryMixin:
                 self._conn, task_id,
                 status="failed",
                 failure_reason=reason,
+                failure_category="timeout",
             )
         insert_event(
             self._conn,
@@ -604,7 +608,10 @@ class RecoveryMixin:
                     )
                     self._handle_limit_hit(wr)
                 else:
+                    from botfarm.supervisor_workers import _classify_failure
+
                     reason = f"{wr.failure_stage}: {wr.failure_reason}"
+                    category = _classify_failure(wr.failure_reason)
                     slot = self._slot_manager.get_slot(wr.project, wr.slot_id)
                     ticket_id = slot.ticket_id if slot else None
                     self._slot_manager.mark_failed(
@@ -616,11 +623,12 @@ class RecoveryMixin:
                             self._conn, task_id,
                             status="failed",
                             failure_reason=reason,
+                            failure_category=category,
                         )
                         self._conn.commit()
                     logger.warning(
-                        "Worker result: %s/%d failed — %s",
-                        wr.project, wr.slot_id, reason,
+                        "Worker result: %s/%d failed [%s] — %s",
+                        wr.project, wr.slot_id, category, reason,
                     )
             # Stash result_text for terminal comment posting
             if wr.result_text:
