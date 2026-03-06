@@ -12,8 +12,9 @@ from dotenv import load_dotenv
 from rich.console import Console
 from rich.table import Table
 
-from botfarm import __version__
 import yaml
+
+from botfarm import __version__
 
 from botfarm.config import (
     DEFAULT_CONFIG_DIR,
@@ -695,8 +696,11 @@ def _run_readiness_checks(project_dict: dict) -> list[tuple[str, str]]:
     # Runtime detection check
     from botfarm.preflight import detect_runtimes
 
-    for level, _language, message in detect_runtimes(base):
-        results.append((level, message))
+    for level, language, message in detect_runtimes(base):
+        if level == "ok":
+            results.append(("ok", f"{language} runtime: {message}"))
+        else:
+            results.append(("warning", message))
 
     return results
 

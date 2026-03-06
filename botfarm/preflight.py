@@ -755,7 +755,7 @@ def detect_runtimes(base_dir: Path) -> list[tuple[str, str, str]]:
             )
             if proc.returncode == 0:
                 version = proc.stdout.strip() or proc.stderr.strip()
-                results.append(("ok", language, f"{language} runtime: {version}"))
+                results.append(("ok", language, version))
             else:
                 results.append((
                     "warning",
