@@ -281,8 +281,8 @@ When identities are configured, `botfarm run` automatically validates them at st
 
 - SSH key file exists and has correct permissions (0600)
 - SSH key can connect to GitHub (`ssh -T git@github.com`)
-- GitHub tokens are valid (`gh auth status`)
-- Coder and reviewer tokens belong to different accounts
+- GitHub tokens are valid (`gh api user`)
+- Coder and reviewer tokens are not identical (should be different accounts)
 
 ---
 
