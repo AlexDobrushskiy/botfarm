@@ -239,6 +239,32 @@ class Notifier:
         event_key = f"human_blocker:{blocker_id}"
         self._send(event_key, message, rate_limit_seconds=self._config.human_blocker_cooldown_seconds)
 
+    def notify_daily_summary(
+        self,
+        headline: str,
+        body: str,
+        *,
+        webhook_url: str = "",
+    ) -> None:
+        """Send a daily work summary digest. NOT rate-limited.
+
+        If *webhook_url* is provided, the summary is sent to that URL
+        instead of the main configured webhook (allows routing summaries
+        to a different channel).
+        """
+        message = f"*{headline}*\n{body}"
+        url = webhook_url or self._url
+        if not url:
+            return
+        try:
+            fmt = _detect_format(url, "") if webhook_url else self._format
+            payload = {"content": message} if fmt == "discord" else {"text": message}
+            resp = self._client.post(url, json=payload)
+            resp.raise_for_status()
+            logger.debug("Sent daily_summary notification")
+        except Exception:
+            logger.debug("Failed to send daily_summary notification", exc_info=True)
+
     def notify_supervisor_shutdown(self, *, reason: str) -> None:
         """Notify that the supervisor is shutting down unexpectedly."""
         self._send(

@@ -108,6 +108,13 @@ start_paused: true
 #   webhook_url: https://hooks.slack.com/services/...
 #   webhook_format: slack  # or "discord"
 #   rate_limit_seconds: 300
+
+# Daily work summary — sends a Claude-generated digest of the last 24h.
+# daily_summary:
+#   enabled: true
+#   send_hour: 18  # UTC hour (0-23)
+#   min_tasks_for_summary: 0  # 0 = always send
+#   webhook_url: ""  # Falls back to notifications.webhook_url
 """
 
 
@@ -232,6 +239,14 @@ class IdentitiesConfig:
 
 
 @dataclass
+class DailySummaryConfig:
+    enabled: bool = False
+    send_hour: int = 18  # UTC hour (0-23)
+    min_tasks_for_summary: int = 0  # 0 = always send, even on quiet days
+    webhook_url: str = ""  # Falls back to main notifications.webhook_url
+
+
+@dataclass
 class BotfarmConfig:
     projects: list[ProjectConfig]
     linear: LinearConfig = field(default_factory=LinearConfig)
@@ -245,6 +260,7 @@ class BotfarmConfig:
     refactoring_analysis: RefactoringAnalysisConfig = field(
         default_factory=RefactoringAnalysisConfig
     )
+    daily_summary: DailySummaryConfig = field(default_factory=DailySummaryConfig)
     start_paused: bool = True
     source_path: str = ""  # Set by load_config to the source file path
 
@@ -456,6 +472,12 @@ def _validate_config(config: BotfarmConfig) -> None:
             "(0=None, 1=Urgent, 2=High, 3=Normal, 4=Low)"
         )
 
+    ds = config.daily_summary
+    if not (0 <= ds.send_hour <= 23):
+        raise ConfigError("daily_summary.send_hour must be between 0 and 23")
+    if ds.min_tasks_for_summary < 0:
+        raise ConfigError("daily_summary.min_tasks_for_summary must be at least 0")
+
     if config.notifications.webhook_format not in ("slack", "discord"):
         raise ConfigError(
             f"notifications.webhook_format must be 'slack' or 'discord', "
@@ -501,7 +523,8 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
     known_keys = {
         "projects", "linear", "database", "usage_limits",
         "dashboard", "agents", "logging", "notifications",
-        "identities", "refactoring_analysis", "start_paused",
+        "identities", "refactoring_analysis", "daily_summary",
+        "start_paused",
     }
     unknown = set(data.keys()) - known_keys
     if unknown:
@@ -649,6 +672,16 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         priority=int(ra_data.get("priority", 4)),
     )
 
+    ds_data = data.get("daily_summary", {})
+    if not isinstance(ds_data, dict):
+        ds_data = {}
+    daily_summary = DailySummaryConfig(
+        enabled=_parse_bool(ds_data, "enabled", False, section="daily_summary"),
+        send_hour=int(ds_data.get("send_hour", 18)),
+        min_tasks_for_summary=int(ds_data.get("min_tasks_for_summary", 0)),
+        webhook_url=str(ds_data.get("webhook_url", "")),
+    )
+
     if "failed_status" in linear_data:
         logger.warning(
             "The 'linear.failed_status' config key is deprecated and ignored — "
@@ -675,6 +708,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         notifications=notifications,
         identities=identities,
         refactoring_analysis=refactoring_analysis,
+        daily_summary=daily_summary,
         start_paused=start_paused,
     )
 

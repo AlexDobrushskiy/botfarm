@@ -446,6 +446,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
             self._poll_and_dispatch,
             self._cleanup_old_ticket_logs,
             self._maybe_create_refactoring_analysis_ticket,
+            self._maybe_send_daily_summary,
         ):
             try:
                 phase()

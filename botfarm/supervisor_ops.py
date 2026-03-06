@@ -7,6 +7,7 @@ have full access to supervisor state.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import queue
@@ -16,8 +17,13 @@ import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from botfarm.config import DailySummaryConfig
 
 from botfarm.db import (
+    get_daily_summary_data,
     get_events,
     get_last_refactoring_analysis_date,
     get_last_scheduled_refactoring_ticket,
@@ -1232,3 +1238,190 @@ Note: The supervisor handles status transitions automatically — do not move th
         """Request an update-and-restart cycle (thread-safe, called from dashboard)."""
         self._update_event.set()
         self._wake_event.set()
+
+    # ------------------------------------------------------------------
+    # Daily work summary
+    # ------------------------------------------------------------------
+
+    def _maybe_send_daily_summary(self) -> None:
+        """Check if it's time to send a daily work summary digest."""
+        ds_config = self._config.daily_summary
+        if not ds_config.enabled:
+            return
+
+        now = datetime.now(timezone.utc)
+        if now.hour != ds_config.send_hour:
+            return
+
+        # Check if we already sent a summary in the last 20 hours
+        recent_events = get_events(
+            self._conn, event_type="daily_summary_sent", limit=1,
+        )
+        if recent_events:
+            last_sent_str = recent_events[0]["created_at"]
+            try:
+                last_sent = datetime.fromisoformat(
+                    last_sent_str.replace("Z", "+00:00")
+                )
+                hours_since = (now - last_sent).total_seconds() / 3600
+                if hours_since < 20:
+                    return
+            except (ValueError, TypeError):
+                pass
+
+        self._send_daily_summary(ds_config)
+
+    def _send_daily_summary(self, ds_config: DailySummaryConfig) -> None:
+        """Gather data, invoke Claude for summarization, and send notification."""
+        summary_data = get_daily_summary_data(self._conn)
+        tasks = summary_data["tasks"]
+        total_completed = summary_data["total_completed"]
+        total_failed = summary_data["total_failed"]
+        total_tasks = total_completed + total_failed
+
+        # Check min_tasks_for_summary threshold
+        if ds_config.min_tasks_for_summary > 0 and total_tasks < ds_config.min_tasks_for_summary:
+            logger.debug(
+                "Daily summary skipped: %d tasks < min_tasks_for_summary=%d",
+                total_tasks, ds_config.min_tasks_for_summary,
+            )
+            insert_event(
+                self._conn, event_type="daily_summary_sent",
+                detail="skipped: below min_tasks threshold",
+            )
+            self._conn.commit()
+            return
+
+        # Build quiet-day message if no tasks
+        if total_tasks == 0:
+            self._notifier.notify_daily_summary(
+                "Daily Summary — Quiet Day",
+                "No tasks completed or failed in the last 24 hours.",
+                webhook_url=ds_config.webhook_url,
+            )
+            insert_event(
+                self._conn, event_type="daily_summary_sent",
+                detail="quiet day — no tasks",
+            )
+            self._conn.commit()
+            return
+
+        # Build context for Claude summarization
+        task_lines = []
+        for t in tasks:
+            pr_url = t.get("pr_url") or t.get("th_pr_url") or ""
+            desc_snippet = (t.get("description") or "")[:200]
+            duration = t.get("duration_seconds")
+            duration_str = f"{int(duration // 60)}m" if duration else "N/A"
+            task_lines.append(
+                f"- [{t['status'].upper()}] {t['ticket_id']}: {t['title']}\n"
+                f"  PR: {pr_url or 'none'} | Duration: {duration_str}\n"
+                f"  Description: {desc_snippet}"
+            )
+            if t.get("failure_reason"):
+                task_lines.append(f"  Failure: {t['failure_reason'][:150]}")
+
+        context = (
+            f"Tasks completed in the last 24 hours: {total_completed}\n"
+            f"Tasks failed in the last 24 hours: {total_failed}\n"
+            f"Total duration: {int(summary_data['total_duration_seconds'] // 60)} minutes\n\n"
+            + "\n".join(task_lines)
+        )
+
+        prompt = (
+            "Write a concise daily summary for a Slack channel. Focus on features "
+            "that impact the product and are worth trying. If only a few items, "
+            "give slightly more detail per item. If many items, keep each brief. "
+            "Use bullet points. Include PR URLs as plain links where available "
+            "(not markdown-formatted — bare URLs auto-link in both Slack and Discord). "
+            "Keep it under 500 words.\n\n"
+            "Group by theme (features, fixes, investigations) rather than "
+            "chronological order. Highlight what changed from the user's "
+            "perspective, not implementation details. Mention failures only if "
+            "noteworthy (e.g., blocked on something). Adapt verbosity: few items "
+            "→ more detail per item; many items → terse bullets.\n\n"
+            "Return ONLY valid JSON with two keys:\n"
+            '{"headline": "one-line summary", "summary": "the full summary text"}\n\n'
+            f"Here are today's tasks:\n\n{context}"
+        )
+
+        try:
+            proc = subprocess.run(
+                ["claude", "-p", "--output-format", "json"],
+                input=prompt,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if proc.returncode != 0:
+                logger.warning(
+                    "Daily summary Claude subprocess failed (rc=%d): %s",
+                    proc.returncode, proc.stderr[:300],
+                )
+                self._send_fallback_daily_summary(summary_data, ds_config)
+                insert_event(
+                    self._conn, event_type="daily_summary_sent",
+                    detail=f"fallback: completed={total_completed} failed={total_failed}",
+                )
+                self._conn.commit()
+                return
+
+            # Parse Claude's response — extract the result text from the JSON envelope
+            try:
+                envelope = json.loads(proc.stdout)
+                result_text = envelope.get("result", proc.stdout)
+            except (json.JSONDecodeError, TypeError):
+                result_text = proc.stdout
+
+            # Try to parse the inner JSON from Claude's response
+            try:
+                parsed = json.loads(result_text)
+                headline = parsed.get("headline", "Daily Work Summary")
+                summary = parsed.get("summary", result_text)
+            except (json.JSONDecodeError, TypeError):
+                headline = "Daily Work Summary"
+                summary = result_text
+
+            self._notifier.notify_daily_summary(
+                headline,
+                summary,
+                webhook_url=ds_config.webhook_url,
+            )
+
+        except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+            logger.warning("Daily summary Claude invocation failed: %s", exc)
+            self._send_fallback_daily_summary(summary_data, ds_config)
+            insert_event(
+                self._conn, event_type="daily_summary_sent",
+                detail=f"fallback: completed={total_completed} failed={total_failed}",
+            )
+            self._conn.commit()
+            return
+
+        insert_event(
+            self._conn, event_type="daily_summary_sent",
+            detail=f"completed={total_completed} failed={total_failed}",
+        )
+        self._conn.commit()
+
+    def _send_fallback_daily_summary(self, summary_data: dict, ds_config: DailySummaryConfig) -> None:
+        """Send a simple non-Claude summary when Claude invocation fails."""
+        total_completed = summary_data["total_completed"]
+        total_failed = summary_data["total_failed"]
+        tasks = summary_data["tasks"]
+        duration_min = int(summary_data["total_duration_seconds"] // 60)
+
+        lines = [f"{total_completed} completed, {total_failed} failed | Total: {duration_min}m"]
+        for t in tasks[:10]:
+            status_icon = "+" if t["status"] == "completed" else "-"
+            pr_url = t.get("pr_url") or t.get("th_pr_url") or ""
+            pr_part = f" — {pr_url}" if pr_url else ""
+            lines.append(f"{status_icon} {t['ticket_id']}: {t['title']}{pr_part}")
+        if len(tasks) > 10:
+            lines.append(f"... and {len(tasks) - 10} more")
+
+        self._notifier.notify_daily_summary(
+            "Daily Work Summary",
+            "\n".join(lines),
+            webhook_url=ds_config.webhook_url,
+        )

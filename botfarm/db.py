@@ -6,7 +6,7 @@ import json
 import os
 import re
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
@@ -1206,3 +1206,70 @@ def read_runtime_config(conn: sqlite3.Connection) -> dict[str, object]:
     """Read all runtime config keys, JSON-decoding values."""
     rows = conn.execute("SELECT key, value FROM runtime_config").fetchall()
     return {row["key"]: json.loads(row["value"]) for row in rows}
+
+
+# ---------------------------------------------------------------------------
+# Daily summary helpers
+# ---------------------------------------------------------------------------
+
+def get_daily_summary_data(
+    conn: sqlite3.Connection,
+) -> dict:
+    """Gather data for the daily work summary (last 24 hours).
+
+    Returns a dict with keys:
+    - tasks: list of dicts with task + ticket_history info
+    - total_completed: int
+    - total_failed: int
+    - total_duration_seconds: float
+    """
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).strftime(
+        "%Y-%m-%dT%H:%M:%S.%fZ"
+    )
+    rows = conn.execute(
+        """
+        SELECT t.ticket_id, t.title, t.status, t.pr_url, t.result_text,
+               t.started_at, t.completed_at, t.turns, t.review_iterations,
+               t.failure_reason,
+               th.description, th.labels, th.pr_url as th_pr_url
+        FROM tasks t
+        LEFT JOIN ticket_history th ON t.ticket_id = th.ticket_id
+        WHERE COALESCE(t.completed_at, t.started_at) >= ?
+          AND t.status IN ('completed', 'failed')
+        ORDER BY COALESCE(t.completed_at, t.started_at) DESC
+        """,
+        (cutoff,),
+    ).fetchall()
+
+    tasks = []
+    total_completed = 0
+    total_failed = 0
+    total_duration = 0.0
+
+    for row in rows:
+        task = dict(row)
+        if task["status"] == "completed":
+            total_completed += 1
+        else:
+            total_failed += 1
+
+        if task["started_at"] and task["completed_at"]:
+            try:
+                started = datetime.fromisoformat(task["started_at"].replace("Z", "+00:00"))
+                completed = datetime.fromisoformat(task["completed_at"].replace("Z", "+00:00"))
+                duration = (completed - started).total_seconds()
+                task["duration_seconds"] = duration
+                total_duration += duration
+            except (ValueError, TypeError):
+                task["duration_seconds"] = None
+        else:
+            task["duration_seconds"] = None
+
+        tasks.append(task)
+
+    return {
+        "tasks": tasks,
+        "total_completed": total_completed,
+        "total_failed": total_failed,
+        "total_duration_seconds": total_duration,
+    }
