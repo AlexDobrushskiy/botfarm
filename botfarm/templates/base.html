@@ -819,7 +819,7 @@
     </main>
     <script>
     (function() {
-        var state = { disconnected: false, failCount: 0, lastRetryAt: 0 };
+        var state = { disconnected: false, failCount: 0, lastRetryAt: 0, lastErrorAt: 0 };
         var banner = document.getElementById("connection-lost-banner");
         var bannerText = document.getElementById("connection-lost-text");
 
@@ -839,6 +839,9 @@
         }
 
         function onError() {
+            var now = Date.now();
+            if (state.disconnected && now - state.lastErrorAt < 2000) return;
+            state.lastErrorAt = now;
             state.failCount++;
             state.disconnected = true;
             showBanner();
@@ -849,6 +852,8 @@
 
         document.body.addEventListener("htmx:beforeRequest", function(evt) {
             if (!state.disconnected) return;
+            var trigger = evt.detail.elt.getAttribute("hx-trigger") || "";
+            if (trigger.indexOf("every") === -1) return;
             var now = Date.now();
             if (now - state.lastRetryAt < backoffMs()) {
                 evt.preventDefault();
