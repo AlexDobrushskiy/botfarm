@@ -730,67 +730,67 @@ _LANGUAGE_MARKERS: list[tuple[str, str, list[str]]] = [
 ]
 
 
+def detect_runtimes(base_dir: Path) -> list[tuple[str, str, str]]:
+    """Detect project languages and check if runtimes are available.
+
+    Returns a list of ``(level, language, message)`` tuples where *level*
+    is ``"ok"`` or ``"warning"``.  This helper is shared by
+    :func:`check_project_runtimes` (preflight) and the ``add-project``
+    CLI command.
+    """
+    results: list[tuple[str, str, str]] = []
+    checked_languages: set[str] = set()
+    for marker_file, language, version_cmd in _LANGUAGE_MARKERS:
+        if language in checked_languages:
+            continue
+        if not (base_dir / marker_file).exists():
+            continue
+        checked_languages.add(language)
+        try:
+            proc = subprocess.run(
+                version_cmd,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if proc.returncode == 0:
+                version = proc.stdout.strip() or proc.stderr.strip()
+                results.append(("ok", language, version))
+            else:
+                results.append((
+                    "warning",
+                    language,
+                    f"{language} project detected (found {marker_file}) but "
+                    f"`{version_cmd[0]}` returned exit code {proc.returncode}",
+                ))
+        except FileNotFoundError:
+            results.append((
+                "warning",
+                language,
+                f"{language} project detected (found {marker_file}) but "
+                f"`{version_cmd[0]}` not found in PATH",
+            ))
+        except subprocess.TimeoutExpired:
+            results.append((
+                "warning",
+                language,
+                f"`{version_cmd[0]}` timed out checking {language} runtime",
+            ))
+    return results
+
+
 def check_project_runtimes(config: BotfarmConfig) -> list[CheckResult]:
     """Detect project languages and warn if the runtime is not installed."""
     results: list[CheckResult] = []
     for project in config.projects:
         base = Path(project.base_dir).expanduser()
-        # Track which languages we've already checked for this project
-        checked_languages: set[str] = set()
-        for marker_file, language, version_cmd in _LANGUAGE_MARKERS:
-            if language in checked_languages:
-                continue
-            if not (base / marker_file).exists():
-                continue
-            checked_languages.add(language)
-            try:
-                proc = subprocess.run(
-                    version_cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                )
-                if proc.returncode == 0:
-                    version = proc.stdout.strip() or proc.stderr.strip()
-                    results.append(CheckResult(
-                        name=f"project_runtime:{project.name}/{language}",
-                        passed=True,
-                        message=f"OK — {version}",
-                        critical=False,
-                    ))
-                else:
-                    results.append(CheckResult(
-                        name=f"project_runtime:{project.name}/{language}",
-                        passed=False,
-                        message=(
-                            f"Project '{project.name}' appears to be a "
-                            f"{language} project (found {marker_file}) but "
-                            f"`{version_cmd[0]}` returned exit code "
-                            f"{proc.returncode}"
-                        ),
-                        critical=False,
-                    ))
-            except FileNotFoundError:
-                results.append(CheckResult(
-                    name=f"project_runtime:{project.name}/{language}",
-                    passed=False,
-                    message=(
-                        f"Project '{project.name}' appears to be a "
-                        f"{language} project (found {marker_file}) but "
-                        f"`{version_cmd[0]}` not found in PATH"
-                    ),
-                    critical=False,
-                ))
-            except subprocess.TimeoutExpired:
-                results.append(CheckResult(
-                    name=f"project_runtime:{project.name}/{language}",
-                    passed=False,
-                    message=(
-                        f"`{version_cmd[0]}` timed out checking "
-                        f"{language} runtime for project '{project.name}'"
-                    ),
-                    critical=False,
-                ))
+        for level, language, message in detect_runtimes(base):
+            results.append(CheckResult(
+                name=f"project_runtime:{project.name}/{language}",
+                passed=(level == "ok"),
+                message=f"OK — {message}" if level == "ok" else message,
+                critical=False,
+            ))
     return results
 
 
