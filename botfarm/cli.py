@@ -682,8 +682,28 @@ agents:
 #     github_token: ${{REVIEWER_GITHUB_TOKEN}}
 #     linear_api_key: ${{REVIEWER_LINEAR_API_KEY}}
 
+# Periodic refactoring analysis — auto-creates investigation tickets
+# on a configurable cadence. Disabled by default.
+# refactoring_analysis:
+#   enabled: true
+#   cadence_days: 14
+#   linear_label: "Refactoring Analysis"
+#   priority: 4  # Low priority — doesn't preempt feature work
+
 # Note: this template should stay in sync with DEFAULT_CONFIG_TEMPLATE in config.py.
 start_paused: true
+
+# notifications:
+#   webhook_url: https://hooks.slack.com/services/...
+#   webhook_format: slack  # or "discord"
+#   rate_limit_seconds: 300
+
+# Daily work summary — sends a Claude-generated digest of the last 24h.
+# daily_summary:
+#   enabled: true
+#   send_hour: 18  # UTC hour (0-23)
+#   min_tasks_for_summary: 0  # 0 = always send
+#   webhook_url: ""  # Falls back to notifications.webhook_url
 """
 
 
