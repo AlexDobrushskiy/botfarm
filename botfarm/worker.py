@@ -1348,6 +1348,18 @@ class _PipelineContext:
                 codex_log_file=codex_kwargs.get("codex_log_file"),
                 on_extra_usage=extra_usage,
             )
+        elif stage == "review" and self.codex_config.enabled and result.review_approved is not None:
+            # Codex was skipped this iteration (e.g. skip_on_reiteration)
+            # but we still need to record Claude's verdict so that
+            # _build_review_summary picks up the latest result.
+            verdict = "approved" if result.review_approved else "changes_requested"
+            insert_event(
+                self.conn,
+                task_id=self.task_id,
+                event_type="claude_review_completed",
+                detail=f"verdict={verdict}",
+            )
+            self.conn.commit()
 
         return self._finish_stage(
             stage, result, wall_start, iteration,

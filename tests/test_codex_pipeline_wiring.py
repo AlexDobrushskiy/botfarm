@@ -557,3 +557,13 @@ class TestCodexEventsRecorded:
                    and "iteration" in (e["detail"] or "")]
         assert len(skipped) == 1
         assert "iteration 2" in skipped[0]["detail"]
+
+        # Verify claude_review_completed is recorded for iteration 2
+        # even though Codex was skipped (SMA-356 fix).
+        claude_reviews = [e for e in events
+                          if e["event_type"] == "claude_review_completed"]
+        assert len(claude_reviews) >= 1, (
+            "claude_review_completed must be recorded when Codex is skipped"
+        )
+        # Most recent (events are DESC) should be the iteration 2 approval
+        assert "verdict=approved" in claude_reviews[0]["detail"]

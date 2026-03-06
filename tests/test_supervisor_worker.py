@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from botfarm.config import ProjectConfig
-from botfarm.db import get_events, get_task, get_ticket_history_entry, init_db, insert_task, update_task
+from botfarm.db import get_events, get_task, get_ticket_history_entry, init_db, insert_event, insert_task, update_task
 from botfarm.linear import PollResult
 from botfarm.supervisor import (
     StopSlotResult,
@@ -24,6 +24,7 @@ from botfarm.supervisor import (
     _worker_entry,
     setup_logging,
 )
+from botfarm.supervisor_ops import OperationsMixin
 from botfarm.worker import STAGES
 from tests.helpers import make_config, make_issue
 
@@ -2062,3 +2063,151 @@ class TestVerifyBaseDirClean:
         assert len(failed_events) == 1
         assert "was_on=feature-branch" in failed_events[0]["detail"]
         assert "dirty worktree" in failed_events[0]["detail"]
+
+
+# ---------------------------------------------------------------------------
+# _build_review_summary
+# ---------------------------------------------------------------------------
+
+
+class TestBuildReviewSummary:
+    """Tests for OperationsMixin._build_review_summary."""
+
+    @pytest.fixture()
+    def setup(self, tmp_path, monkeypatch):
+        """Create a DB and a minimal mock self for _build_review_summary."""
+        db_path = str(tmp_path / "test.db")
+        monkeypatch.setenv("BOTFARM_DB_PATH", db_path)
+        conn = init_db(db_path, allow_migration=True)
+        task_id = insert_task(
+            conn, ticket_id="TST-1", title="Test", project="proj",
+            slot=1, status="in_progress",
+        )
+        conn.commit()
+
+        mock_self = MagicMock()
+        mock_self._conn = conn
+        mock_self._config.agents.codex_reviewer_enabled = True
+
+        return mock_self, conn, task_id
+
+    def test_returns_none_when_codex_disabled(self, setup):
+        mock_self, conn, task_id = setup
+        mock_self._config.agents.codex_reviewer_enabled = False
+        result = OperationsMixin._build_review_summary(mock_self, task_id)
+        assert result is None
+
+    def test_returns_none_when_no_codex_events(self, setup):
+        mock_self, conn, task_id = setup
+        insert_event(conn, task_id=task_id, event_type="claude_review_completed",
+                     detail="verdict=approved")
+        conn.commit()
+        result = OperationsMixin._build_review_summary(mock_self, task_id)
+        assert result is None
+
+    def test_both_approved(self, setup):
+        mock_self, conn, task_id = setup
+        insert_event(conn, task_id=task_id, event_type="claude_review_completed",
+                     detail="verdict=approved")
+        insert_event(conn, task_id=task_id, event_type="codex_review_completed",
+                     detail="verdict=approved")
+        conn.commit()
+        result = OperationsMixin._build_review_summary(mock_self, task_id)
+        assert result == "Review: Claude APPROVED, Codex APPROVED"
+
+    def test_claude_approved_codex_changes_requested(self, setup):
+        mock_self, conn, task_id = setup
+        insert_event(conn, task_id=task_id, event_type="claude_review_completed",
+                     detail="verdict=approved")
+        insert_event(conn, task_id=task_id, event_type="codex_review_completed",
+                     detail="verdict=changes_requested")
+        conn.commit()
+        result = OperationsMixin._build_review_summary(mock_self, task_id)
+        assert result == "Review: Claude APPROVED, Codex CHANGES_REQUESTED"
+
+    def test_codex_failed(self, setup):
+        mock_self, conn, task_id = setup
+        insert_event(conn, task_id=task_id, event_type="claude_review_completed",
+                     detail="verdict=approved")
+        insert_event(conn, task_id=task_id, event_type="codex_review_failed",
+                     detail="timeout")
+        conn.commit()
+        result = OperationsMixin._build_review_summary(mock_self, task_id)
+        assert result == "Review: Claude APPROVED, Codex FAILED (fell back to Claude-only)"
+
+    def test_latest_claude_verdict_wins(self, setup):
+        """When there are multiple review iterations, the most recent
+        claude_review_completed event should be used."""
+        mock_self, conn, task_id = setup
+        # Iteration 1: both CHANGES_REQUESTED
+        insert_event(conn, task_id=task_id, event_type="claude_review_completed",
+                     detail="verdict=changes_requested")
+        insert_event(conn, task_id=task_id, event_type="codex_review_completed",
+                     detail="verdict=changes_requested")
+        conn.commit()
+        # Iteration 2: Claude approves (Codex skipped)
+        import time; time.sleep(0.01)  # ensure different timestamp
+        insert_event(conn, task_id=task_id, event_type="claude_review_completed",
+                     detail="verdict=approved")
+        insert_event(conn, task_id=task_id, event_type="codex_review_skipped",
+                     detail="iteration 2 (only runs on first)")
+        conn.commit()
+
+        result = OperationsMixin._build_review_summary(mock_self, task_id)
+        assert "Claude APPROVED" in result
+        assert "Codex skipped" in result
+
+    def test_codex_skipped_after_completed_shows_skipped(self, setup):
+        """When codex_review_skipped is more recent than codex_review_completed,
+        the notification should show 'Codex skipped' instead of the stale verdict."""
+        mock_self, conn, task_id = setup
+        insert_event(conn, task_id=task_id, event_type="claude_review_completed",
+                     detail="verdict=changes_requested")
+        insert_event(conn, task_id=task_id, event_type="codex_review_completed",
+                     detail="verdict=changes_requested")
+        conn.commit()
+        import time; time.sleep(0.01)
+        insert_event(conn, task_id=task_id, event_type="claude_review_completed",
+                     detail="verdict=approved")
+        insert_event(conn, task_id=task_id, event_type="codex_review_skipped",
+                     detail="iteration 2 (only runs on first)")
+        conn.commit()
+
+        result = OperationsMixin._build_review_summary(mock_self, task_id)
+        assert result == "Review: Claude APPROVED, Codex skipped"
+
+    def test_codex_skipped_after_failed_shows_skipped(self, setup):
+        """When codex_review_skipped is more recent than codex_review_failed,
+        the notification should show 'Codex skipped'."""
+        mock_self, conn, task_id = setup
+        insert_event(conn, task_id=task_id, event_type="claude_review_completed",
+                     detail="verdict=changes_requested")
+        insert_event(conn, task_id=task_id, event_type="codex_review_failed",
+                     detail="timeout")
+        conn.commit()
+        import time; time.sleep(0.01)
+        insert_event(conn, task_id=task_id, event_type="claude_review_completed",
+                     detail="verdict=approved")
+        insert_event(conn, task_id=task_id, event_type="codex_review_skipped",
+                     detail="iteration 2 (only runs on first)")
+        conn.commit()
+
+        result = OperationsMixin._build_review_summary(mock_self, task_id)
+        assert result == "Review: Claude APPROVED, Codex skipped"
+
+    def test_codex_not_skipped_after_completed_shows_verdict(self, setup):
+        """When codex_review_completed is the most recent codex event,
+        the actual verdict should be shown (not 'skipped')."""
+        mock_self, conn, task_id = setup
+        insert_event(conn, task_id=task_id, event_type="codex_review_skipped",
+                     detail="Claude review failed")
+        conn.commit()
+        import time; time.sleep(0.01)
+        insert_event(conn, task_id=task_id, event_type="claude_review_completed",
+                     detail="verdict=approved")
+        insert_event(conn, task_id=task_id, event_type="codex_review_completed",
+                     detail="verdict=approved")
+        conn.commit()
+
+        result = OperationsMixin._build_review_summary(mock_self, task_id)
+        assert result == "Review: Claude APPROVED, Codex APPROVED"

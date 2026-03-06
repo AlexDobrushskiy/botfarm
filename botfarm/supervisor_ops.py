@@ -400,8 +400,17 @@ class OperationsMixin:
         codex_failed_events = get_events(
             self._conn, task_id=task_id, event_type="codex_review_failed",
         )
+        codex_skipped_events = get_events(
+            self._conn, task_id=task_id, event_type="codex_review_skipped",
+        )
 
         if codex_events:
+            # If Codex was skipped more recently than it completed
+            # (e.g. skip_on_reiteration), the completed verdict is stale.
+            codex_completed_at = codex_events[0]["created_at"]
+            if codex_skipped_events and codex_skipped_events[0]["created_at"] > codex_completed_at:
+                return f"Review: Claude {claude_str}, Codex skipped"
+
             detail = codex_events[0]["detail"] or ""
             if "approved" in detail and "changes_requested" not in detail:
                 codex_str = "APPROVED"
@@ -410,6 +419,10 @@ class OperationsMixin:
             return f"Review: Claude {claude_str}, Codex {codex_str}"
 
         if codex_failed_events:
+            # If Codex was skipped more recently than it failed, show skipped.
+            codex_failed_at = codex_failed_events[0]["created_at"]
+            if codex_skipped_events and codex_skipped_events[0]["created_at"] > codex_failed_at:
+                return f"Review: Claude {claude_str}, Codex skipped"
             return f"Review: Claude {claude_str}, Codex FAILED (fell back to Claude-only)"
 
         return None
