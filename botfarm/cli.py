@@ -676,7 +676,6 @@ def _run_readiness_checks(project_dict: dict) -> list[tuple[str, str]]:
     Returns a list of (level, message) tuples where level is 'warning' or 'ok'.
     """
     from botfarm.config import ProjectConfig
-    from botfarm.preflight import CheckResult
 
     project = ProjectConfig(**project_dict)
     results: list[tuple[str, str]] = []
@@ -694,42 +693,10 @@ def _run_readiness_checks(project_dict: dict) -> list[tuple[str, str]]:
         ))
 
     # Runtime detection check
-    from botfarm.preflight import _LANGUAGE_MARKERS
+    from botfarm.preflight import detect_runtimes
 
-    checked_languages: set[str] = set()
-    for marker_file, language, version_cmd in _LANGUAGE_MARKERS:
-        if language in checked_languages:
-            continue
-        if not (base / marker_file).exists():
-            continue
-        checked_languages.add(language)
-        try:
-            proc = subprocess.run(
-                version_cmd,
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if proc.returncode == 0:
-                version = proc.stdout.strip() or proc.stderr.strip()
-                results.append(("ok", f"{language} runtime: {version}"))
-            else:
-                results.append((
-                    "warning",
-                    f"{language} project detected (found {marker_file}) but "
-                    f"`{version_cmd[0]}` returned exit code {proc.returncode}",
-                ))
-        except FileNotFoundError:
-            results.append((
-                "warning",
-                f"{language} project detected (found {marker_file}) but "
-                f"`{version_cmd[0]}` not found in PATH",
-            ))
-        except subprocess.TimeoutExpired:
-            results.append((
-                "warning",
-                f"`{version_cmd[0]}` timed out checking {language} runtime",
-            ))
+    for level, _language, message in detect_runtimes(base):
+        results.append((level, message))
 
     return results
 
@@ -741,8 +708,13 @@ def _append_project_to_config(config_path: Path, project_dict: dict) -> None:
     if not isinstance(data, dict):
         raise ConfigError("Config file must contain a YAML mapping")
 
-    if "projects" not in data or not isinstance(data.get("projects"), list):
+    if "projects" not in data:
         data["projects"] = []
+    elif not isinstance(data["projects"], list):
+        raise ConfigError(
+            "Config 'projects' key exists but is not a list — "
+            "fix the config file manually before adding a project"
+        )
 
     # Build the project entry — only include linear_project if non-empty
     entry: dict = {

@@ -1,6 +1,5 @@
 """Tests for botfarm add-project CLI command."""
 
-import os
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
@@ -14,7 +13,6 @@ from botfarm.cli import (
     _run_readiness_checks,
     _validate_project_dir,
     _validate_worktree_parent,
-    add_project,
     main,
 )
 
@@ -232,6 +230,20 @@ class TestAppendProjectToConfig:
         data = yaml.safe_load(config_path.read_text())
         assert len(data["projects"]) == 1
         assert data["projects"][0]["name"] == "proj"
+
+    def test_raises_on_non_list_projects(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("projects: not-a-list\nlinear:\n  api_key: test\n")
+        project = {
+            "name": "proj",
+            "linear_team": "SMA",
+            "base_dir": "/tmp/proj",
+            "worktree_prefix": "proj-slot-",
+            "slots": [1],
+            "linear_project": "",
+        }
+        with pytest.raises(Exception, match="not a list"):
+            _append_project_to_config(config_path, project)
 
 
 # ---------------------------------------------------------------------------
