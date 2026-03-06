@@ -784,12 +784,12 @@ class TestLimitsCommand:
 
 class TestInitCommand:
     def test_creates_config_and_env(self, runner, tmp_path, monkeypatch):
-        """init creates both config.yaml and .env when neither exists."""
+        """init --non-interactive creates both config.yaml and .env when neither exists."""
         config_path = tmp_path / "config.yaml"
         env_path = tmp_path / ".env"
         monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_PATH", config_path)
         monkeypatch.setattr("botfarm.cli.ENV_FILE_PATH", env_path)
-        result = runner.invoke(main, ["init"])
+        result = runner.invoke(main, ["init", "--non-interactive"])
         assert result.exit_code == 0
         assert config_path.exists()
         assert env_path.exists()
@@ -803,19 +803,19 @@ class TestInitCommand:
         env_path = tmp_path / ".env"
         monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_PATH", config_path)
         monkeypatch.setattr("botfarm.cli.ENV_FILE_PATH", env_path)
-        runner.invoke(main, ["init"])
+        runner.invoke(main, ["init", "--non-interactive"])
         content = env_path.read_text()
         assert "LINEAR_API_KEY=" in content
         assert "BOTFARM_DB_PATH" in content
 
     def test_skips_existing_config(self, runner, tmp_path, monkeypatch):
-        """init skips config creation if it already exists, still creates .env."""
+        """init --non-interactive skips config creation if it already exists, still creates .env."""
         config_path = tmp_path / "config.yaml"
         config_path.write_text("existing")
         env_path = tmp_path / ".env"
         monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_PATH", config_path)
         monkeypatch.setattr("botfarm.cli.ENV_FILE_PATH", env_path)
-        result = runner.invoke(main, ["init"])
+        result = runner.invoke(main, ["init", "--non-interactive"])
         assert result.exit_code == 0
         assert "Config file already exists" in result.output
         assert "Created default .env" in result.output
@@ -824,13 +824,13 @@ class TestInitCommand:
         assert config_path.read_text() == "existing"
 
     def test_skips_existing_env(self, runner, tmp_path, monkeypatch):
-        """init skips .env creation if it already exists, still creates config."""
+        """init --non-interactive skips .env creation if it already exists, still creates config."""
         config_path = tmp_path / "config.yaml"
         env_path = tmp_path / ".env"
         env_path.write_text("existing")
         monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_PATH", config_path)
         monkeypatch.setattr("botfarm.cli.ENV_FILE_PATH", env_path)
-        result = runner.invoke(main, ["init"])
+        result = runner.invoke(main, ["init", "--non-interactive"])
         assert result.exit_code == 0
         assert "Created default config" in result.output
         assert ".env file already exists" in result.output
@@ -845,7 +845,7 @@ class TestInitCommand:
         env_path.write_text("existing")
         monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_PATH", config_path)
         monkeypatch.setattr("botfarm.cli.ENV_FILE_PATH", env_path)
-        result = runner.invoke(main, ["init"])
+        result = runner.invoke(main, ["init", "--non-interactive"])
         assert result.exit_code == 0
         assert "Next step" not in result.output
 
@@ -855,7 +855,7 @@ class TestInitCommand:
         env_path = tmp_path / ".env"
         monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_PATH", config_path)
         monkeypatch.setattr("botfarm.cli.ENV_FILE_PATH", env_path)
-        result = runner.invoke(main, ["init"])
+        result = runner.invoke(main, ["init", "--non-interactive"])
         assert result.exit_code == 0
         assert "Next step" in result.output
         assert str(env_path) in result.output
@@ -865,7 +865,7 @@ class TestInitCommand:
         custom_config = tmp_path / "custom" / "my-config.yaml"
         env_path = tmp_path / ".env"
         monkeypatch.setattr("botfarm.cli.ENV_FILE_PATH", env_path)
-        result = runner.invoke(main, ["init", "--path", str(custom_config)])
+        result = runner.invoke(main, ["init", "--non-interactive", "--path", str(custom_config)])
         assert result.exit_code == 0
         assert custom_config.exists()
         assert env_path.exists()

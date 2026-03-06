@@ -812,20 +812,20 @@ def test_default_config_template_includes_status_and_comment_fields():
 # --- CLI init command ---
 
 
-def test_cli_init(tmp_path):
+def test_cli_init_non_interactive(tmp_path):
     from click.testing import CliRunner
 
     from botfarm.cli import main
 
     config_path = tmp_path / "config.yaml"
     runner = CliRunner()
-    result = runner.invoke(main, ["init", "--path", str(config_path)])
+    result = runner.invoke(main, ["init", "--non-interactive", "--path", str(config_path)])
     assert result.exit_code == 0
     assert "Created default config" in result.output
     assert config_path.exists()
 
 
-def test_cli_init_already_exists(tmp_path):
+def test_cli_init_non_interactive_already_exists(tmp_path):
     from click.testing import CliRunner
 
     from botfarm.cli import main
@@ -833,7 +833,7 @@ def test_cli_init_already_exists(tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text("existing")
     runner = CliRunner()
-    result = runner.invoke(main, ["init", "--path", str(config_path)])
+    result = runner.invoke(main, ["init", "--non-interactive", "--path", str(config_path)])
     assert result.exit_code == 0
     assert "already exists" in result.output
 
