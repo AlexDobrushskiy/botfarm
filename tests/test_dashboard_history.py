@@ -279,6 +279,21 @@ class TestTaskDetailPage:
         assert "TST-2" in body
         assert "Tests failed" in body
 
+    def test_failed_task_shows_failure_category_badge(self, tmp_path):
+        path = tmp_path / "cat.db"
+        conn = init_db(path)
+        tid = insert_task(conn, ticket_id="CAT-1", title="Env fail", project="p", slot=1, status="failed")
+        update_task(conn, tid, failure_reason="ModuleNotFoundError: flask", failure_category="env_missing_package")
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=path)
+        client = TestClient(app)
+        resp = client.get("/task/1")
+        body = resp.text
+        assert "Failure Category" in body
+        assert "failure-cat-env_missing_package" in body
+        assert "env missing package" in body
+
     def test_task_with_no_stages_or_events(self, tmp_path):
         path = tmp_path / "sparse.db"
         conn = init_db(path)
@@ -513,6 +528,32 @@ class TestMetricsPage:
         body = resp.text
         assert "Common Failure Reasons" in body
         assert "Tests failed" in body
+
+    def test_failure_categories_displayed(self, client):
+        resp = client.get("/metrics")
+        body = resp.text
+        assert "Failures by Category" in body
+        # The test data has "Tests failed" without category → COALESCE gives "code_failure"
+        assert "code failure" in body
+
+    def test_failure_category_filter(self, tmp_path):
+        path = tmp_path / "cat_metrics.db"
+        conn = init_db(path)
+        tid1 = insert_task(conn, ticket_id="M-1", title="t1", project="p", slot=1, status="failed")
+        update_task(conn, tid1, failure_reason="ModuleNotFoundError", failure_category="env_missing_package")
+        tid2 = insert_task(conn, ticket_id="M-2", title="t2", project="p", slot=1, status="failed")
+        update_task(conn, tid2, failure_reason="tests failed", failure_category="code_failure")
+        save_dispatch_state(conn, paused=False)
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=path)
+        client = TestClient(app)
+        # Filter by env_missing_package
+        resp = client.get("/metrics?failure_category=env_missing_package")
+        body = resp.text
+        assert "ModuleNotFoundError" in body
+        # code_failure reason should NOT appear (filtered out)
+        assert "tests failed" not in body
 
     def test_project_filter(self, client):
         resp = client.get("/metrics?project=my-project")

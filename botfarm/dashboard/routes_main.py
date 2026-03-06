@@ -466,7 +466,8 @@ _EMPTY_METRICS: dict = {
     "avg_turns": 0, "avg_review_iterations": 0.0,
     "avg_wall_time_seconds": 0, "success_rate": 0.0,
     "completed_today": 0, "completed_week": 0,
-    "completed_month": 0, "failure_reasons": [],
+    "completed_month": 0,
+    "failure_reasons": [], "failure_categories": [],
     "total_input_tokens": 0, "total_output_tokens": 0,
     "total_cost_usd": 0.0, "extra_usage_cost_usd": 0.0,
     "avg_context_fill_pct": None,
@@ -479,9 +480,10 @@ _EMPTY_METRICS: dict = {
 
 def _compute_metrics(
     conn: sqlite3.Connection, project: str | None = None,
+    failure_category: str | None = None,
 ) -> dict:
-    """Compute all metrics, optionally filtered by project."""
-    metrics: dict = {**_EMPTY_METRICS, "failure_reasons": []}
+    """Compute all metrics, optionally filtered by project and failure category."""
+    metrics: dict = {**_EMPTY_METRICS, "failure_reasons": [], "failure_categories": []}
     where = " WHERE 1=1"
     params: list[object] = []
     if project:
@@ -597,16 +599,36 @@ def _compute_metrics(
     except sqlite3.OperationalError:
         pass
 
-    # Most common failure reasons
+    # Failure categories summary
+    try:
+        cat_rows = conn.execute(
+            "SELECT COALESCE(failure_category, 'code_failure') as cat, COUNT(*) as cnt "
+            "FROM tasks" + where
+            + " AND failure_reason IS NOT NULL AND failure_reason != '' "
+            "GROUP BY cat ORDER BY cnt DESC",
+            params,
+        ).fetchall()
+        metrics["failure_categories"] = [
+            {"category": r["cat"], "count": r["cnt"]}
+            for r in cat_rows
+        ]
+    except sqlite3.OperationalError:
+        pass
+
+    # Most common failure reasons (optionally filtered by category)
+    reason_where = where + " AND failure_reason IS NOT NULL AND failure_reason != '' "
+    reason_params = list(params)
+    if failure_category:
+        reason_where += " AND COALESCE(failure_category, 'code_failure') = ? "
+        reason_params.append(failure_category)
     reason_rows = conn.execute(
-        "SELECT failure_reason, COUNT(*) as cnt "
-        "FROM tasks" + where
-        + " AND failure_reason IS NOT NULL AND failure_reason != '' "
-        "GROUP BY failure_reason ORDER BY cnt DESC LIMIT 5",
-        params,
+        "SELECT failure_reason, COALESCE(failure_category, 'code_failure') as cat, COUNT(*) as cnt "
+        "FROM tasks" + reason_where
+        + "GROUP BY failure_reason ORDER BY cnt DESC LIMIT 5",
+        reason_params,
     ).fetchall()
     metrics["failure_reasons"] = [
-        {"reason": r["failure_reason"], "count": r["cnt"]}
+        {"reason": r["failure_reason"], "category": r["cat"], "count": r["cnt"]}
         for r in reason_rows
     ]
 
@@ -801,12 +823,17 @@ def metrics_page(request: Request):
     app = request.app
     templates = request.app.state.templates
     filter_project = request.query_params.get("project") or ""
+    filter_failure_category = request.query_params.get("failure_category") or ""
     conn = get_db(app)
     metrics = dict(_EMPTY_METRICS)
     projects: list[str] = []
     if conn:
         try:
-            metrics = _compute_metrics(conn, project=filter_project or None)
+            metrics = _compute_metrics(
+                conn,
+                project=filter_project or None,
+                failure_category=filter_failure_category or None,
+            )
             projects = get_distinct_projects(conn)
         except sqlite3.OperationalError:
             pass
@@ -818,6 +845,7 @@ def metrics_page(request: Request):
         "metrics": metrics,
         "projects": projects,
         "filter_project": filter_project,
+        "filter_failure_category": filter_failure_category,
         "format_duration": format_duration,
         "supervisor": supervisor_status(app, state),
         "pause_state": manual_pause_state(state),

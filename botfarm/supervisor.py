@@ -58,12 +58,14 @@ from botfarm.worker import STAGES, PipelineResult, build_git_env, run_pipeline
 from botfarm.supervisor_ops import OperationsMixin
 from botfarm.supervisor_recovery import RecoveryMixin
 from botfarm.supervisor_workers import (
+    FAILURE_CATEGORIES,
     PauseResumeManager,
     WorkerLifecycleManager,
     _StallInfo,
     _WorkerResult,
     StopSlotResult,
     _check_limit_hit,
+    _classify_failure,
     _collect_descendant_pids,
     _kill_descendant_sessions,
     _kill_pids,
@@ -87,6 +89,7 @@ __all__ = [
     "DEFAULT_LOG_DIR",
     "DEFAULT_PAUSE_5H_THRESHOLD",
     "DEFAULT_PAUSE_7D_THRESHOLD",
+    "FAILURE_CATEGORIES",
     "PipelineResult",
     "STAGES",
     "StopSlotResult",
@@ -94,6 +97,7 @@ __all__ = [
     "_StallInfo",
     "_WorkerResult",
     "_check_limit_hit",
+    "_classify_failure",
     "_collect_descendant_pids",
     "_is_pid_alive",
     "_kill_descendant_sessions",

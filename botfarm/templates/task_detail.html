@@ -168,6 +168,9 @@
             {% if task.failure_reason %}
             <tr><td><strong>Failure Reason</strong></td><td class="status-failed">{{ task.failure_reason }}</td></tr>
             {% endif %}
+            {% if task.failure_category %}
+            <tr><td><strong>Failure Category</strong></td><td><span class="failure-category-badge failure-cat-{{ task.failure_category }}">{{ task.failure_category | replace("_", " ") }}</span></td></tr>
+            {% endif %}
             {% if task.comments %}
             <tr><td><strong>Review Comments</strong></td><td>{{ task.comments }}</td></tr>
             {% endif %}

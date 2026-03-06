@@ -516,6 +516,37 @@ class TestNotificationWithoutCodex:
         assert "Review:" not in payload["text"]
         assert "Codex" not in payload["text"]
 
+    def test_task_failed_env_category_adds_label(self, notifier):
+        notifier.notify_task_failed(
+            ticket_id="SMA-10",
+            title="Broken env",
+            failure_reason="ModuleNotFoundError: No module named 'flask'",
+            failure_category="env_missing_package",
+        )
+        payload = notifier._client.post.call_args[1]["json"]
+        assert "Environment: missing package/module" in payload["text"]
+        assert "no auto-retry" in payload["text"]
+
+    def test_task_failed_code_failure_no_env_label(self, notifier):
+        notifier.notify_task_failed(
+            ticket_id="SMA-11",
+            title="Code bug",
+            failure_reason="tests failed",
+            failure_category="code_failure",
+        )
+        payload = notifier._client.post.call_args[1]["json"]
+        assert "Environment:" not in payload["text"]
+        assert "no auto-retry" not in payload["text"]
+
+    def test_task_failed_no_category_no_env_label(self, notifier):
+        notifier.notify_task_failed(
+            ticket_id="SMA-12",
+            title="Old task",
+            failure_reason="tests failed",
+        )
+        payload = notifier._client.post.call_args[1]["json"]
+        assert "Environment:" not in payload["text"]
+
     def test_task_completed_none_review_summary_unchanged(self, notifier):
         notifier.notify_task_completed(
             ticket_id="SMA-1",

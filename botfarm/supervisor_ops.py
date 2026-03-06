@@ -469,15 +469,18 @@ class OperationsMixin:
     def _notify_task_failed(self, slot: SlotState) -> None:
         """Send a webhook notification for a failed task."""
         reason = None
+        category = None
         task_id = self._find_task_id(slot.ticket_id)
         if task_id is not None:
             task = get_task(self._conn, task_id)
             if task:
                 reason = task["failure_reason"]
+                category = task["failure_category"]
         self._notifier.notify_task_failed(
             ticket_id=slot.ticket_id or "unknown",
             title=slot.ticket_title or "unknown",
             failure_reason=reason,
+            failure_category=category,
             review_summary=self._build_review_summary(task_id),
         )
 

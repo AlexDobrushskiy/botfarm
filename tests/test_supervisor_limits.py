@@ -17,6 +17,7 @@ from botfarm.supervisor import (
     _StallInfo,
     _WorkerResult,
     _check_limit_hit,
+    _classify_failure,
 )
 from botfarm.worker import PipelineResult
 from tests.helpers import make_issue
@@ -164,6 +165,96 @@ class TestCheckLimitHit:
         assert _check_limit_hit(result) is False
 
 
+# ---------------------------------------------------------------------------
+# _classify_failure
+# ---------------------------------------------------------------------------
+
+
+class TestClassifyFailure:
+    """Tests for _classify_failure() failure reason categorization."""
+
+    # -- limit_hit --
+    def test_rate_limit(self):
+        assert _classify_failure("Claude was killed due to rate limit") == "limit_hit"
+
+    def test_usage_limit(self):
+        assert _classify_failure("Hit usage limit for this period") == "limit_hit"
+
+    def test_max_tokens_exceeded(self):
+        assert _classify_failure("CalledProcessError: max_tokens_exceeded") == "limit_hit"
+
+    # -- timeout --
+    def test_timeout_error(self):
+        assert _classify_failure("TimeoutError: stage implement") == "timeout"
+
+    def test_timed_out(self):
+        assert _classify_failure("Worker timed out waiting for response") == "timeout"
+
+    def test_timeout_in_stage(self):
+        assert _classify_failure("timeout in stage implement") == "timeout"
+
+    # -- env_missing_runtime --
+    def test_command_not_found(self):
+        assert _classify_failure("bash: node: command not found") == "env_missing_runtime"
+
+    def test_no_such_file(self):
+        assert _classify_failure("/usr/bin/python3: No such file or directory") == "env_missing_runtime"
+
+    # -- env_missing_package --
+    def test_module_not_found_error(self):
+        assert _classify_failure("ModuleNotFoundError: No module named 'flask'") == "env_missing_package"
+
+    def test_cannot_find_module(self):
+        assert _classify_failure("Error: Cannot find module 'express'") == "env_missing_package"
+
+    def test_import_error(self):
+        assert _classify_failure("ImportError: cannot import name 'foo'") == "env_missing_package"
+
+    def test_no_module_named(self):
+        assert _classify_failure("No module named 'requests'") == "env_missing_package"
+
+    # -- env_missing_service --
+    def test_econnrefused(self):
+        assert _classify_failure("Error: connect ECONNREFUSED 127.0.0.1:5432") == "env_missing_service"
+
+    def test_connection_refused(self):
+        assert _classify_failure("psycopg2.OperationalError: connection refused") == "env_missing_service"
+
+    def test_role_does_not_exist(self):
+        assert _classify_failure('role "myapp" does not exist') == "env_missing_service"
+
+    def test_database_does_not_exist(self):
+        assert _classify_failure('database "mydb" does not exist') == "env_missing_service"
+
+    # -- env_missing_config --
+    def test_env_file_not_found(self):
+        assert _classify_failure(".env file not found") == "env_missing_config"
+
+    def test_env_variable_not_set(self):
+        assert _classify_failure("environment variable DATABASE_URL not set") == "env_missing_config"
+
+    def test_env_var_not_set(self):
+        assert _classify_failure("env var API_KEY not set") == "env_missing_config"
+
+    # -- code_failure (default) --
+    def test_generic_failure(self):
+        assert _classify_failure("PR URL not found in output") == "code_failure"
+
+    def test_test_failure(self):
+        assert _classify_failure("implement: tests failed after 3 attempts") == "code_failure"
+
+    def test_none_reason(self):
+        assert _classify_failure(None) == "code_failure"
+
+    def test_empty_reason(self):
+        assert _classify_failure("") == "code_failure"
+
+    # -- case insensitivity --
+    def test_case_insensitive_module_error(self):
+        assert _classify_failure("MODULENOTFOUNDERROR: No module named 'foo'") == "env_missing_package"
+
+    def test_case_insensitive_command(self):
+        assert _classify_failure("COMMAND NOT FOUND") == "env_missing_runtime"
 
 
 # ---------------------------------------------------------------------------
