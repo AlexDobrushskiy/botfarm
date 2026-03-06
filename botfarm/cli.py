@@ -661,9 +661,28 @@ agents:
     implement: 120
     review: 30
     fix: 60
+  # timeout_overrides (first matching label wins; order matters):
+  #   Investigation:
+  #     implement: 30
   timeout_grace_seconds: 10
   codex_reviewer_enabled: false
+  codex_reviewer_model: ""              # e.g. "o3", "o4-mini", or empty for default
+  codex_reviewer_reasoning_effort: "medium"  # none, low, medium, high, xhigh — or empty for default
+  codex_reviewer_timeout_minutes: 15    # separate from Claude review timeout
+  codex_reviewer_skip_on_reiteration: true  # skip codex on review iterations 2+
 
+# identities:
+#   coder:
+#     github_token: ${{CODER_GITHUB_TOKEN}}
+#     ssh_key_path: ~/.botfarm/coder_id_ed25519
+#     git_author_name: "Coder Bot"
+#     git_author_email: "coder-bot@example.com"
+#     linear_api_key: ${{CODER_LINEAR_API_KEY}}
+#   reviewer:
+#     github_token: ${{REVIEWER_GITHUB_TOKEN}}
+#     linear_api_key: ${{REVIEWER_LINEAR_API_KEY}}
+
+# Note: this template should stay in sync with DEFAULT_CONFIG_TEMPLATE in config.py.
 start_paused: true
 """
 
@@ -852,7 +871,8 @@ def init(path, non_interactive):
         if not Confirm.ask("Overwrite?", default=False):
             return
 
-    _run_interactive_init(config_path, env_path, console)
+    if not _run_interactive_init(config_path, env_path, console):
+        raise SystemExit(1)
 
 
 # ---------------------------------------------------------------------------

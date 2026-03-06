@@ -1067,6 +1067,9 @@ class LinearClient:
         """List all teams accessible by the API key.
 
         Returns list of dicts with 'id', 'name', 'key'.
+
+        Note: does not paginate — returns only the first page of results.
+        Fine for the init wizard; most workspaces have fewer than 50 teams.
         """
         data = self._execute(LIST_TEAMS_QUERY)
         return data.get("teams", {}).get("nodes", [])
@@ -1075,6 +1078,9 @@ class LinearClient:
         """List all projects for a given team.
 
         Returns list of dicts with 'id', 'name'.
+
+        Note: does not paginate — returns only the first page of results.
+        Sufficient for the init wizard where full enumeration isn't critical.
         """
         data = self._execute(LIST_TEAM_PROJECTS_QUERY, {"teamId": team_id})
         team = data.get("team")

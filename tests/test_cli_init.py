@@ -288,7 +288,7 @@ class TestInteractiveInit:
             ["init", "--path", str(config_path)],
             input="bad_key\n",
         )
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         assert "Failed" in result.output
         assert not config_path.exists()
 
@@ -307,7 +307,7 @@ class TestInteractiveInit:
             ["init", "--path", str(config_path)],
             input="\n",
         )
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         assert "empty" in result.output
         assert not config_path.exists()
 
