@@ -363,6 +363,146 @@ class TestPollAndDispatch:
         supervisor._poll_and_dispatch()
 
 
+class TestHumanBlockerDetection:
+    @pytest.fixture(autouse=True)
+    def _mock_notifier(self, supervisor):
+        supervisor._notifier.notify_human_blocker = MagicMock()
+
+    def test_notifies_when_human_blocker_found(self, supervisor):
+        """When no candidates, free slot exists, and a blocked issue is
+        blocked by a Human-labeled ticket, a notification is sent."""
+        blocked = make_issue(
+            identifier="TST-10", title="Blocked task",
+            blocked_by=["TST-99"],
+        )
+        poller = supervisor._pollers["test-project"]
+        poller.poll.return_value = PollResult(
+            candidates=[], blocked=[blocked], auto_close_parents=[],
+        )
+
+        supervisor._linear_client.fetch_issue_labels = MagicMock(
+            return_value=("Create GitHub accounts", ["Human"]),
+        )
+
+        with patch.object(supervisor, "_dispatch_worker"):
+            supervisor._poll_and_dispatch()
+
+        supervisor._notifier.notify_human_blocker.assert_called_once_with(
+            blocker_id="TST-99",
+            blocker_title="Create GitHub accounts",
+            blocked_tickets=["TST-10"],
+        )
+
+    def test_no_notification_when_blocker_lacks_human_label(self, supervisor):
+        """If the blocker doesn't have the Human label, no notification."""
+        blocked = make_issue(
+            identifier="TST-10", title="Blocked",
+            blocked_by=["TST-99"],
+        )
+        poller = supervisor._pollers["test-project"]
+        poller.poll.return_value = PollResult(
+            candidates=[], blocked=[blocked], auto_close_parents=[],
+        )
+
+        supervisor._linear_client.fetch_issue_labels = MagicMock(
+            return_value=("Some other task", ["Bug"]),
+        )
+
+        with patch.object(supervisor, "_dispatch_worker"):
+            supervisor._poll_and_dispatch()
+
+        supervisor._notifier.notify_human_blocker.assert_not_called()
+
+    def test_no_notification_when_candidates_exist(self, supervisor):
+        """If there are candidates, don't check for human blockers."""
+        candidate = make_issue(identifier="TST-1", title="Ready")
+        blocked = make_issue(
+            identifier="TST-10", title="Blocked",
+            blocked_by=["TST-99"],
+        )
+        poller = supervisor._pollers["test-project"]
+        poller.poll.return_value = PollResult(
+            candidates=[candidate], blocked=[blocked], auto_close_parents=[],
+        )
+
+        supervisor._linear_client.fetch_issue_labels = MagicMock()
+
+        with patch.object(supervisor, "_dispatch_worker"):
+            supervisor._poll_and_dispatch()
+
+        supervisor._linear_client.fetch_issue_labels.assert_not_called()
+
+    def test_multiple_blocked_by_same_human_blocker(self, supervisor):
+        """Multiple blocked issues sharing one Human blocker → single notification."""
+        blocked1 = make_issue(
+            identifier="TST-10", blocked_by=["TST-99"],
+        )
+        blocked2 = make_issue(
+            identifier="TST-11", blocked_by=["TST-99"],
+        )
+        poller = supervisor._pollers["test-project"]
+        poller.poll.return_value = PollResult(
+            candidates=[], blocked=[blocked1, blocked2], auto_close_parents=[],
+        )
+
+        supervisor._linear_client.fetch_issue_labels = MagicMock(
+            return_value=("Manual step", ["Human"]),
+        )
+
+        with patch.object(supervisor, "_dispatch_worker"):
+            supervisor._poll_and_dispatch()
+
+        supervisor._notifier.notify_human_blocker.assert_called_once_with(
+            blocker_id="TST-99",
+            blocker_title="Manual step",
+            blocked_tickets=["TST-10", "TST-11"],
+        )
+
+    def test_label_lookup_failure_does_not_crash(self, supervisor):
+        """API failure during label lookup is handled gracefully."""
+        blocked = make_issue(
+            identifier="TST-10", blocked_by=["TST-99"],
+        )
+        poller = supervisor._pollers["test-project"]
+        poller.poll.return_value = PollResult(
+            candidates=[], blocked=[blocked], auto_close_parents=[],
+        )
+
+        supervisor._linear_client.fetch_issue_labels = MagicMock(
+            side_effect=Exception("API error"),
+        )
+
+        with patch.object(supervisor, "_dispatch_worker"):
+            supervisor._poll_and_dispatch()
+
+        supervisor._notifier.notify_human_blocker.assert_not_called()
+
+    def test_no_check_when_no_free_slot(self, supervisor):
+        """If no free slot, blocked issues are not checked for human blockers."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="T1", branch="b1",
+        )
+        sm.assign_ticket(
+            "test-project", 2,
+            ticket_id="TST-2", ticket_title="T2", branch="b2",
+        )
+
+        blocked = make_issue(
+            identifier="TST-10", blocked_by=["TST-99"],
+        )
+        poller = supervisor._pollers["test-project"]
+        poller.poll.return_value = PollResult(
+            candidates=[], blocked=[blocked], auto_close_parents=[],
+        )
+
+        supervisor._linear_client.fetch_issue_labels = MagicMock()
+
+        with patch.object(supervisor, "_dispatch_worker"):
+            supervisor._poll_and_dispatch()
+
+        supervisor._linear_client.fetch_issue_labels.assert_not_called()
 
 
 class TestParentAutoClose:
