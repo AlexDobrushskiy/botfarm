@@ -691,6 +691,109 @@ def check_claude_plugins() -> list[CheckResult]:
     return results
 
 
+def check_project_claude_md(config: BotfarmConfig) -> list[CheckResult]:
+    """Warn if any project is missing a CLAUDE.md file."""
+    results: list[CheckResult] = []
+    for project in config.projects:
+        base = Path(project.base_dir).expanduser()
+        claude_md = base / "CLAUDE.md"
+        if claude_md.exists():
+            results.append(CheckResult(
+                name=f"project_claude_md:{project.name}",
+                passed=True,
+                message=f"OK — {claude_md}",
+                critical=False,
+            ))
+        else:
+            results.append(CheckResult(
+                name=f"project_claude_md:{project.name}",
+                passed=False,
+                message=(
+                    f"Project '{project.name}' has no CLAUDE.md — agent will "
+                    "lack project-specific instructions (test commands, "
+                    "architecture, conventions)"
+                ),
+                critical=False,
+            ))
+    return results
+
+
+# Language marker files → (language name, version command)
+_LANGUAGE_MARKERS: list[tuple[str, str, list[str]]] = [
+    ("requirements.txt", "Python", ["python3", "--version"]),
+    ("pyproject.toml", "Python", ["python3", "--version"]),
+    ("setup.py", "Python", ["python3", "--version"]),
+    ("package.json", "Node.js", ["node", "--version"]),
+    ("go.mod", "Go", ["go", "version"]),
+    ("Cargo.toml", "Rust", ["cargo", "--version"]),
+    ("Gemfile", "Ruby", ["ruby", "--version"]),
+]
+
+
+def check_project_runtimes(config: BotfarmConfig) -> list[CheckResult]:
+    """Detect project languages and warn if the runtime is not installed."""
+    results: list[CheckResult] = []
+    for project in config.projects:
+        base = Path(project.base_dir).expanduser()
+        # Track which languages we've already checked for this project
+        checked_languages: set[str] = set()
+        for marker_file, language, version_cmd in _LANGUAGE_MARKERS:
+            if language in checked_languages:
+                continue
+            if not (base / marker_file).exists():
+                continue
+            checked_languages.add(language)
+            try:
+                proc = subprocess.run(
+                    version_cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                if proc.returncode == 0:
+                    version = proc.stdout.strip() or proc.stderr.strip()
+                    results.append(CheckResult(
+                        name=f"project_runtime:{project.name}/{language}",
+                        passed=True,
+                        message=f"OK — {version}",
+                        critical=False,
+                    ))
+                else:
+                    results.append(CheckResult(
+                        name=f"project_runtime:{project.name}/{language}",
+                        passed=False,
+                        message=(
+                            f"Project '{project.name}' appears to be a "
+                            f"{language} project (found {marker_file}) but "
+                            f"`{version_cmd[0]}` returned exit code "
+                            f"{proc.returncode}"
+                        ),
+                        critical=False,
+                    ))
+            except FileNotFoundError:
+                results.append(CheckResult(
+                    name=f"project_runtime:{project.name}/{language}",
+                    passed=False,
+                    message=(
+                        f"Project '{project.name}' appears to be a "
+                        f"{language} project (found {marker_file}) but "
+                        f"`{version_cmd[0]}` not found in PATH"
+                    ),
+                    critical=False,
+                ))
+            except subprocess.TimeoutExpired:
+                results.append(CheckResult(
+                    name=f"project_runtime:{project.name}/{language}",
+                    passed=False,
+                    message=(
+                        f"`{version_cmd[0]}` timed out checking "
+                        f"{language} runtime for project '{project.name}'"
+                    ),
+                    critical=False,
+                ))
+    return results
+
+
 def check_identity_cross_validation(config: BotfarmConfig) -> list[CheckResult]:
     """Warn about potentially inconsistent identity configuration."""
     results: list[CheckResult] = []
@@ -753,6 +856,8 @@ def run_preflight_checks(
     results.extend(check_identity_github_tokens(config))
     results.extend(check_identity_linear_api_key(config))
     results.extend(check_identity_cross_validation(config))
+    results.extend(check_project_claude_md(config))
+    results.extend(check_project_runtimes(config))
     results.extend(check_claude_plugins())
     results.extend(check_codex_reviewer(config))
     results.extend(check_systemd_unit())
