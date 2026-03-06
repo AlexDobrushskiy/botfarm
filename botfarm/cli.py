@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import signal
 import sqlite3
 import subprocess
@@ -1199,40 +1200,57 @@ def add_project(config_path):
             f"Remove it first or choose a different project name."
         )
 
-    projects_dir.mkdir(parents=True, exist_ok=True)
-    console.print(f"\n[bold]Cloning repository...[/bold]")
-    _clone_repo(repo_url, repo_dir)
-    console.print(f"  Cloned to {repo_dir}")
-
-    # --- 7. Create worktrees and placeholder branches ---
-    console.print(f"\n[bold]Creating {num_slots} worktree(s)...[/bold]")
-    for slot_id in slots:
-        branch_name = f"slot-{slot_id}-placeholder"
-        worktree_path = projects_dir / f"{worktree_prefix}{slot_id}"
-        _create_worktree(repo_dir, worktree_path, branch_name)
-        console.print(f"  Slot {slot_id}: {worktree_path} (branch: {branch_name})")
-
-    # --- 8. Update config.yaml ---
-    console.print(f"\n[bold]Updating config...[/bold]")
-    project_dict = {
-        "name": name,
-        "linear_team": linear_team,
-        "base_dir": str(repo_dir),
-        "worktree_prefix": str(projects_dir) + "/" + worktree_prefix,
-        "slots": slots,
-        "linear_project": linear_project,
-    }
+    # Track whether we created projects_dir so we can clean up on failure
+    created_projects_dir = not projects_dir.exists()
 
     try:
+        projects_dir.mkdir(parents=True, exist_ok=True)
+        console.print(f"\n[bold]Cloning repository...[/bold]")
+        _clone_repo(repo_url, repo_dir)
+        console.print(f"  Cloned to {repo_dir}")
+
+        # --- 7. Create worktrees and placeholder branches ---
+        console.print(f"\n[bold]Creating {num_slots} worktree(s)...[/bold]")
+        for slot_id in slots:
+            branch_name = f"slot-{slot_id}-placeholder"
+            worktree_path = projects_dir / f"{worktree_prefix}{slot_id}"
+            _create_worktree(repo_dir, worktree_path, branch_name)
+            console.print(f"  Slot {slot_id}: {worktree_path} (branch: {branch_name})")
+
+        # --- 8. Update config.yaml ---
+        console.print(f"\n[bold]Updating config...[/bold]")
+        project_dict = {
+            "name": name,
+            "linear_team": linear_team,
+            "base_dir": str(repo_dir),
+            "worktree_prefix": str(projects_dir) + "/" + worktree_prefix,
+            "slots": slots,
+            "linear_project": linear_project,
+        }
+
         _append_project_to_config(cfg_path, project_dict)
-    except (ConfigError, OSError) as exc:
+    except (click.ClickException, ConfigError, OSError) as exc:
+        console.print(f"\n[bold red]Error — cleaning up...[/bold red]")
+        if created_projects_dir and projects_dir.exists():
+            shutil.rmtree(projects_dir, ignore_errors=True)
+            console.print(f"  Removed {projects_dir}")
+        elif projects_dir.exists():
+            # Only remove artifacts we created (repo + worktrees), not the parent dir
+            if repo_dir.exists():
+                shutil.rmtree(repo_dir, ignore_errors=True)
+            for slot_id in slots:
+                wt = projects_dir / f"{worktree_prefix}{slot_id}"
+                if wt.exists():
+                    shutil.rmtree(wt, ignore_errors=True)
+            console.print(f"  Cleaned up cloned repo and worktrees from {projects_dir}")
+        if isinstance(exc, click.ClickException):
+            raise
         raise click.ClickException(f"Failed to write config: {exc}") from exc
 
     console.print(f"  Updated {cfg_path}")
 
     # --- Readiness checks (informational) ---
     readiness = _run_readiness_checks(project_dict)
-    warnings = [r for r in readiness if r[0] == "warning"]
     if readiness:
         console.print(f"\n[bold]Readiness checks:[/bold]")
         for level, msg in readiness:
