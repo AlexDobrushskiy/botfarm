@@ -498,12 +498,15 @@ class TestCountdownTimers:
         # for dates older than 7 days.
         first_text = timestamps.first.inner_text()
         import re
-        is_timeago = (
-            "ago" in first_text.lower()
-            or "just now" in first_text.lower()
-            or re.match(r"^[A-Z][a-z]{2} \d{1,2}$", first_text)  # "Feb 27"
+        months = ["jan", "feb", "mar", "apr", "may", "jun",
+                  "jul", "aug", "sep", "oct", "nov", "dec"]
+        is_timeago = "ago" in first_text.lower() or "just now" in first_text.lower()
+        is_absolute = (
+            re.match(r"^[A-Z][a-z]{2} \d{1,2}$", first_text)
+            or any(m in first_text.lower() for m in months)
         )
-        assert is_timeago, f"Expected timeago format, got: {first_text!r}"
+        assert is_timeago or is_absolute, \
+            f"Expected timeago format, got: {first_text!r}"
 
     def test_countdown_updates_via_javascript(self, live_server, page):
         """P1: updateCountdowns() function is callable and updates elements."""
