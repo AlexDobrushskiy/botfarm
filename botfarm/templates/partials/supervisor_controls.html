@@ -4,7 +4,8 @@
     <button class="pause-btn pause-btn-pause"
             hx-post="/api/pause"
             hx-swap="none"
-            hx-on::after-request="this.closest('[hx-get]') && htmx.trigger(this.closest('[hx-get]'), 'htmx:load')">
+            hx-on::before-request="this.disabled=true; this.textContent='Pausing\u2026'; this.className='pause-btn pause-btn-pausing';"
+            hx-on::after-request="if(!event.detail.successful){this.disabled=false; this.textContent='Pause'; this.className='pause-btn pause-btn-pause';} this.closest('[hx-get]') && htmx.trigger(this.closest('[hx-get]'), 'htmx:load')">
         Pause
     </button>
     <span class="pause-hint">Stops new dispatches; running stages finish gracefully</span>
@@ -14,7 +15,8 @@
     <button class="pause-btn pause-btn-play"
             hx-post="/api/resume"
             hx-swap="none"
-            hx-on::after-request="this.closest('[hx-get]') && htmx.trigger(this.closest('[hx-get]'), 'htmx:load')">
+            hx-on::before-request="this.disabled=true; this.textContent='Starting\u2026'; this.className='pause-btn pause-btn-pausing';"
+            hx-on::after-request="if(!event.detail.successful){this.disabled=false; this.innerHTML='\u25B6 Start'; this.className='pause-btn pause-btn-play';} this.closest('[hx-get]') && htmx.trigger(this.closest('[hx-get]'), 'htmx:load')">
         &#9654; Start
     </button>
     <span class="pause-hint">Botfarm is ready. Click to start dispatching tickets.</span>
@@ -29,7 +31,8 @@
         <button class="pause-btn pause-btn-resume"
                 hx-post="/api/resume"
                 hx-swap="none"
-                hx-on::after-request="this.closest('[hx-get]') && htmx.trigger(this.closest('[hx-get]'), 'htmx:load')">
+                hx-on::before-request="this.disabled=true; this.textContent='Resuming\u2026'; this.className='pause-btn pause-btn-pausing';"
+                hx-on::after-request="if(!event.detail.successful){this.disabled=false; this.textContent='Cancel'; this.className='pause-btn pause-btn-resume';} this.closest('[hx-get]') && htmx.trigger(this.closest('[hx-get]'), 'htmx:load')">
             Cancel
         </button>
     </div>
@@ -47,7 +50,8 @@
     <button class="pause-btn pause-btn-resume"
             hx-post="/api/resume"
             hx-swap="none"
-            hx-on::after-request="this.closest('[hx-get]') && htmx.trigger(this.closest('[hx-get]'), 'htmx:load')">
+            hx-on::before-request="this.disabled=true; this.textContent='Resuming\u2026'; this.className='pause-btn pause-btn-pausing';"
+            hx-on::after-request="if(!event.detail.successful){this.disabled=false; this.textContent='Resume'; this.className='pause-btn pause-btn-resume';} this.closest('[hx-get]') && htmx.trigger(this.closest('[hx-get]'), 'htmx:load')">
         Resume
     </button>
     <span class="pause-hint">All work paused. In-progress tickets resume from where they left off.</span>
