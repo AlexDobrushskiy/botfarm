@@ -6,4 +6,8 @@
     Dispatch is paused. New tickets will not be dispatched until the supervisor is resumed.
     {% endif %}
 </div>
+{% elif pause_state == "resuming" %}
+<div class="banner-start-paused banner-resuming" id="start-paused-banner">
+    Starting dispatch&hellip;
+</div>
 {% endif %}

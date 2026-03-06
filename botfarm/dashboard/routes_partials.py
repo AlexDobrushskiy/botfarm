@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
@@ -23,6 +24,18 @@ from .state import (
 )
 
 router = APIRouter()
+
+
+def _apply_resume_transition(app_state, pause_state: str) -> str:
+    """Override pause_state to 'resuming' while resume is in flight."""
+    resume_at = getattr(app_state, "resume_requested_at", 0.0)
+    if pause_state in ("start_paused", "paused") and resume_at:
+        if time.monotonic() - resume_at < 10:
+            return "resuming"
+        app_state.resume_requested_at = 0.0
+    elif pause_state == "running" and resume_at:
+        app_state.resume_requested_at = 0.0
+    return pause_state
 
 
 @router.get("/partials/slots", response_class=HTMLResponse)
@@ -72,9 +85,10 @@ def partial_start_paused_banner(request: Request):
     app = request.app
     templates = app.state.templates
     state = read_state(app)
+    pause_state = _apply_resume_transition(app.state, manual_pause_state(state))
     return templates.TemplateResponse("partials/start_paused_banner.html", {
         "request": request,
-        "pause_state": manual_pause_state(state),
+        "pause_state": pause_state,
         "has_callbacks": app.state.on_pause is not None,
     })
 
@@ -153,7 +167,7 @@ def partial_supervisor_controls(request: Request):
     app = request.app
     templates = request.app.state.templates
     state = read_state(app)
-    pause_state = manual_pause_state(state)
+    pause_state = _apply_resume_transition(app.state, manual_pause_state(state))
     busy_slots = [
         s for s in state.get("slots", []) if s["status"] == "busy"
     ] if pause_state.startswith("pausing") else []
