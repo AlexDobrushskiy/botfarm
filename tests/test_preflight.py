@@ -1005,6 +1005,26 @@ class TestCheckClaudePlugins:
         assert not results[0].passed
         assert not results[0].critical
 
+    def test_warn_when_settings_not_a_dict(self, tmp_path):
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text("[]")
+        with patch("botfarm.preflight.Path.expanduser", return_value=settings_file):
+            results = check_claude_plugins()
+        assert len(results) == 1
+        assert not results[0].passed
+        assert not results[0].critical
+        assert "unexpected format" in results[0].message
+
+    def test_warn_when_enabled_plugins_not_a_dict(self, tmp_path):
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text(json.dumps({"enabledPlugins": ["linear@claude-plugins-official"]}))
+        with patch("botfarm.preflight.Path.expanduser", return_value=settings_file):
+            results = check_claude_plugins()
+        assert len(results) == 1
+        assert not results[0].passed
+        assert not results[0].critical
+        assert "enabledPlugins" in results[0].message
+
 
 # ---------------------------------------------------------------------------
 # log_preflight_summary

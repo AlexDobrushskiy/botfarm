@@ -657,7 +657,23 @@ def check_claude_plugins() -> list[CheckResult]:
             critical=False,
         )]
 
+    if not isinstance(settings, dict):
+        return [CheckResult(
+            name="claude_plugins",
+            passed=False,
+            message="Claude Code settings has unexpected format (expected JSON object)",
+            critical=False,
+        )]
+
     enabled_plugins = settings.get("enabledPlugins", {})
+    if not isinstance(enabled_plugins, dict):
+        return [CheckResult(
+            name="claude_plugins",
+            passed=False,
+            message="Claude Code settings 'enabledPlugins' has unexpected format (expected object)",
+            critical=False,
+        )]
+
     results: list[CheckResult] = []
     for plugin in REQUIRED_PLUGINS:
         if enabled_plugins.get(plugin):
