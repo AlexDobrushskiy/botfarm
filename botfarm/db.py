@@ -167,6 +167,7 @@ def insert_task(
             comments = '',
             limit_interruptions = 0,
             failure_reason = NULL,
+            failure_category = NULL,
             pr_url = NULL,
             pipeline_stage = NULL,
             review_state = NULL,

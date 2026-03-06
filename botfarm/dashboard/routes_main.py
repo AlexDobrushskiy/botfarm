@@ -624,7 +624,7 @@ def _compute_metrics(
     reason_rows = conn.execute(
         "SELECT failure_reason, COALESCE(failure_category, 'code_failure') as cat, COUNT(*) as cnt "
         "FROM tasks" + reason_where
-        + "GROUP BY failure_reason ORDER BY cnt DESC LIMIT 5",
+        + "GROUP BY failure_reason, cat ORDER BY cnt DESC LIMIT 5",
         reason_params,
     ).fetchall()
     metrics["failure_reasons"] = [
