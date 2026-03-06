@@ -259,6 +259,63 @@ class TestPauseHints:
         assert "resume from where they left off" in body
 
 
+class TestPauseButtonFeedback:
+    """Verify buttons have immediate-feedback hx-on::before-request handlers."""
+
+    def test_pause_button_has_before_request(self, db_file):
+        """Pause button disables itself and shows 'Pausing' on click."""
+        app = create_app(db_path=db_file, on_pause=lambda: None, on_resume=lambda: None)
+        client = TestClient(app)
+        resp = client.get("/partials/supervisor-controls")
+        assert "hx-on::before-request" in resp.text
+        assert "Pausing" in resp.text or "pausing" in resp.text.lower()
+
+    def test_resume_button_has_before_request(self, tmp_path):
+        """Resume button disables itself and shows 'Resuming' on click."""
+        path = tmp_path / "test.db"
+        conn = init_db(path)
+        _seed_slot(conn, "proj", 1, status="paused_manual", ticket_id="T-1")
+        save_dispatch_state(conn, paused=True, reason="manual_pause")
+        conn.commit()
+        conn.close()
+
+        app = create_app(db_path=path, on_pause=lambda: None, on_resume=lambda: None)
+        client = TestClient(app)
+        resp = client.get("/partials/supervisor-controls")
+        assert "hx-on::before-request" in resp.text
+        assert "Resuming" in resp.text
+
+    def test_start_button_has_before_request(self, tmp_path):
+        """Start button disables itself and shows 'Starting' on click."""
+        path = tmp_path / "test.db"
+        conn = init_db(path)
+        _seed_slot(conn, "proj", 1, status="free")
+        save_dispatch_state(conn, paused=True, reason="start_paused")
+        conn.commit()
+        conn.close()
+
+        app = create_app(db_path=path, on_pause=lambda: None, on_resume=lambda: None)
+        client = TestClient(app)
+        resp = client.get("/partials/supervisor-controls")
+        assert "hx-on::before-request" in resp.text
+        assert "Starting" in resp.text
+
+    def test_cancel_button_has_before_request(self, tmp_path):
+        """Cancel button in pausing state disables itself on click."""
+        path = tmp_path / "test.db"
+        conn = init_db(path)
+        _seed_slot(conn, "proj", 1, status="busy", ticket_id="T-1", pid=12345)
+        save_dispatch_state(conn, paused=True, reason="manual_pause")
+        conn.commit()
+        conn.close()
+
+        app = create_app(db_path=path, on_pause=lambda: None, on_resume=lambda: None)
+        client = TestClient(app)
+        resp = client.get("/partials/supervisor-controls")
+        assert resp.text.count("hx-on::before-request") >= 1
+        assert "Resuming" in resp.text
+
+
 class TestPauseResumeAPI:
     def test_pause_calls_callback(self, db_file):
         """POST /api/pause calls the on_pause callback."""
