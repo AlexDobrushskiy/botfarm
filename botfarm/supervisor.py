@@ -742,7 +742,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
             candidates = poll_result.candidates
             if not candidates:
                 logger.debug("No candidates for %s", project_name)
-                if poll_result.blocked and slot is not None:
+                if poll_result.blocked:
                     self._check_human_blockers(poll_result.blocked)
                 continue
 

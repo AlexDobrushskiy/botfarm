@@ -608,6 +608,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         webhook_url=str(notif_data.get("webhook_url", "")),
         webhook_format=str(notif_data.get("webhook_format", "slack")),
         rate_limit_seconds=int(notif_data.get("rate_limit_seconds", 300)),
+        human_blocker_cooldown_seconds=int(notif_data.get("human_blocker_cooldown_seconds", 3600)),
     )
 
     ident_data = data.get("identities", {})
