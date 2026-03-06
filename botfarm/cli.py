@@ -555,6 +555,21 @@ def resume_project(project, config_path):
         conn.close()
 
 
+DEFAULT_ENV_TEMPLATE = """\
+# Botfarm environment variables
+LINEAR_API_KEY=
+# BOTFARM_DB_PATH=~/.botfarm/botfarm.db  # uncomment to override default
+"""
+
+
+def create_default_env(env_path: Path = ENV_FILE_PATH) -> Path:
+    """Create a default .env file if it doesn't exist. Returns the path."""
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    if not env_path.exists():
+        env_path.write_text(DEFAULT_ENV_TEMPLATE)
+    return env_path
+
+
 @main.command()
 @click.option(
     "--path",
@@ -563,13 +578,29 @@ def resume_project(project, config_path):
     help="Path for the config file.",
 )
 def init(path):
-    """Create a default configuration file."""
+    """Create a default configuration file and .env file."""
     config_path = DEFAULT_CONFIG_PATH if path is None else Path(path)
+    created_config = False
+    created_env = False
+
     if config_path.exists():
         click.echo(f"Config file already exists: {config_path}")
-        return
-    create_default_config(config_path)
-    click.echo(f"Created default config at: {config_path}")
+    else:
+        create_default_config(config_path)
+        click.echo(f"Created default config at: {config_path}")
+        created_config = True
+
+    if ENV_FILE_PATH.exists():
+        click.echo(f".env file already exists: {ENV_FILE_PATH}")
+    else:
+        create_default_env(ENV_FILE_PATH)
+        click.echo(f"Created default .env at: {ENV_FILE_PATH}")
+        created_env = True
+
+    if created_config or created_env:
+        click.echo(
+            f"\nNext step: set your Linear API key in {ENV_FILE_PATH}"
+        )
 
 
 @main.command()
