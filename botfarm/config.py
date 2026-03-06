@@ -482,7 +482,16 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         raise ConfigError(f"Config file not found: {config_path}")
 
     raw = config_path.read_text()
-    data = yaml.safe_load(raw)
+    try:
+        data = yaml.safe_load(raw)
+    except yaml.YAMLError as exc:
+        msg = f"YAML syntax error in {config_path}"
+        if hasattr(exc, "problem_mark") and exc.problem_mark is not None:
+            mark = exc.problem_mark
+            msg += f" at line {mark.line + 1}, column {mark.column + 1}"
+        if hasattr(exc, "problem") and exc.problem:
+            msg += f": {exc.problem}"
+        raise ConfigError(msg) from exc
 
     if not isinstance(data, dict):
         raise ConfigError("Config file must contain a YAML mapping")

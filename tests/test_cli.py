@@ -5,6 +5,7 @@ import sqlite3
 from unittest.mock import patch
 
 import pytest
+import yaml
 from click.testing import CliRunner
 
 from botfarm.cli import _elapsed, main
@@ -86,14 +87,59 @@ class TestElapsed:
 
 
 class TestStatusCommand:
-    def test_no_database(self, runner, tmp_path, monkeypatch):
+    def test_no_database_no_config(self, runner, tmp_path, monkeypatch):
+        monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "nonexistent.db"))
         monkeypatch.setattr(
-            "botfarm.cli._resolve_paths",
-            lambda _: (tmp_path / "nonexistent.db", None),
+            "botfarm.cli.DEFAULT_CONFIG_PATH", tmp_path / "no-config.yaml",
         )
         result = runner.invoke(main, ["status"])
         assert result.exit_code == 0
         assert "No database found" in result.output
+        assert "botfarm init" in result.output
+
+    def test_no_database_valid_config(self, runner, tmp_path, monkeypatch):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.dump({
+                "projects": [
+                    {
+                        "name": "test",
+                        "linear_team": "TST",
+                        "base_dir": "~/test",
+                        "worktree_prefix": "test-slot-",
+                        "slots": [1],
+                    }
+                ],
+                "linear": {"api_key": "test-key"},
+            })
+        )
+        monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "nonexistent.db"))
+        monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_PATH", config_path)
+        result = runner.invoke(main, ["status"])
+        assert result.exit_code == 0
+        assert "Config valid" in result.output
+        assert "botfarm run" in result.output
+
+    def test_no_database_invalid_config(self, runner, tmp_path, monkeypatch):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.dump({"projects": [{"name": "test"}]})
+        )
+        monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "nonexistent.db"))
+        monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_PATH", config_path)
+        result = runner.invoke(main, ["status"])
+        assert result.exit_code == 0
+        assert "Config error" in result.output
+
+    def test_no_database_yaml_syntax_error(self, runner, tmp_path, monkeypatch):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("projects:\n  - name: test\n    bad: [unclosed")
+        monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "nonexistent.db"))
+        monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_PATH", config_path)
+        result = runner.invoke(main, ["status"])
+        assert result.exit_code == 0
+        assert "Config error" in result.output
+        assert "YAML syntax error" in result.output
 
     def test_empty_slots(self, runner, db_file, monkeypatch):
         monkeypatch.setattr("botfarm.cli._resolve_paths", _mock_resolve(db_file))
