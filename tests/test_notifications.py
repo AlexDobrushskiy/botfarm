@@ -70,6 +70,11 @@ class TestNotifierDisabled:
             parent_ticket_id="X-1", brief_list="test",
             linear_ticket_url="https://linear.app/test/issue/X-1",
         )
+        n.notify_human_blocker(
+            blocker_id="X-1",
+            blocker_title="Manual step",
+            blocked_tickets=["X-2", "X-3"],
+        )
         n.close()
 
 
@@ -631,3 +636,93 @@ class TestRefactoringAnalysisNotifications:
             linear_ticket_url="https://linear.app/test/issue/SMA-100",
         )
         n.close()
+
+
+# ---------------------------------------------------------------------------
+# Human blocker notifications
+# ---------------------------------------------------------------------------
+
+
+class TestHumanBlockerNotifications:
+    @pytest.fixture()
+    def notifier(self):
+        n = Notifier(NotificationsConfig(
+            webhook_url="https://hooks.slack.com/services/xxx",
+            webhook_format="slack",
+            human_blocker_cooldown_seconds=3600,
+        ))
+        n._client = MagicMock()
+        response = MagicMock()
+        response.raise_for_status = MagicMock()
+        n._client.post.return_value = response
+        yield n
+        n.close()
+
+    def test_message_format(self, notifier):
+        notifier.notify_human_blocker(
+            blocker_id="SMA-100",
+            blocker_title="Create separate GitHub accounts",
+            blocked_tickets=["SMA-101", "SMA-102"],
+        )
+        notifier._client.post.assert_called_once()
+        payload = notifier._client.post.call_args[1]["json"]
+        text = payload["text"]
+        assert "Queue blocked by human action" in text
+        assert "SMA-100" in text
+        assert "Create separate GitHub accounts" in text
+        assert "SMA-101" in text
+        assert "SMA-102" in text
+
+    def test_rate_limited_per_blocker(self, notifier):
+        notifier.notify_human_blocker(
+            blocker_id="SMA-100",
+            blocker_title="Manual step",
+            blocked_tickets=["SMA-101"],
+        )
+        assert notifier._client.post.call_count == 1
+        # Same blocker — should be rate-limited
+        notifier.notify_human_blocker(
+            blocker_id="SMA-100",
+            blocker_title="Manual step",
+            blocked_tickets=["SMA-101"],
+        )
+        assert notifier._client.post.call_count == 1
+
+    def test_different_blockers_not_rate_limited(self, notifier):
+        notifier.notify_human_blocker(
+            blocker_id="SMA-100",
+            blocker_title="Step A",
+            blocked_tickets=["SMA-101"],
+        )
+        notifier.notify_human_blocker(
+            blocker_id="SMA-200",
+            blocker_title="Step B",
+            blocked_tickets=["SMA-201"],
+        )
+        assert notifier._client.post.call_count == 2
+
+    def test_cooldown_expiry_allows_resend(self, notifier):
+        notifier.notify_human_blocker(
+            blocker_id="SMA-100",
+            blocker_title="Manual step",
+            blocked_tickets=["SMA-101"],
+        )
+        assert notifier._client.post.call_count == 1
+        # Simulate cooldown expiry
+        notifier._last_sent["human_blocker:SMA-100"] = time.monotonic() - 3601
+        notifier.notify_human_blocker(
+            blocker_id="SMA-100",
+            blocker_title="Manual step",
+            blocked_tickets=["SMA-101"],
+        )
+        assert notifier._client.post.call_count == 2
+
+    def test_single_blocked_ticket(self, notifier):
+        notifier.notify_human_blocker(
+            blocker_id="SMA-50",
+            blocker_title="Needs human input",
+            blocked_tickets=["SMA-51"],
+        )
+        payload = notifier._client.post.call_args[1]["json"]
+        assert "SMA-51" in payload["text"]
+        assert "SMA-50" in payload["text"]

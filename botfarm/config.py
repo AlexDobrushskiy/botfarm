@@ -207,6 +207,7 @@ class NotificationsConfig:
     webhook_url: str = ""
     webhook_format: str = "slack"  # "slack" or "discord"
     rate_limit_seconds: int = 300
+    human_blocker_cooldown_seconds: int = 3600  # 1 hour per blocker ticket
 
 
 @dataclass

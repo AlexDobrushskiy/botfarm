@@ -742,6 +742,8 @@ class Supervisor(RecoveryMixin, OperationsMixin):
             candidates = poll_result.candidates
             if not candidates:
                 logger.debug("No candidates for %s", project_name)
+                if poll_result.blocked and slot is not None:
+                    self._check_human_blockers(poll_result.blocked)
                 continue
 
             issue = candidates[0]
@@ -777,6 +779,35 @@ class Supervisor(RecoveryMixin, OperationsMixin):
             except Exception:
                 logger.exception(
                     "Failed to auto-close parent %s", parent.identifier,
+                )
+
+    def _check_human_blockers(self, blocked_issues: list) -> None:
+        """Check if any blocked issues are held up by a Human-labeled ticket.
+
+        For each unique blocker identifier across all blocked issues,
+        fetch its labels and notify if the 'Human' label is present.
+        """
+        # Collect blocker -> list of blocked ticket identifiers
+        blocker_to_blocked: dict[str, list[str]] = {}
+        for issue in blocked_issues:
+            for blocker_id in (issue.blocked_by or []):
+                blocker_to_blocked.setdefault(blocker_id, []).append(issue.identifier)
+
+        for blocker_id, blocked_ids in blocker_to_blocked.items():
+            try:
+                result = self._linear_client.fetch_issue_labels(blocker_id)
+            except Exception:
+                logger.debug("Failed to fetch labels for blocker %s", blocker_id)
+                continue
+            if result is None:
+                continue
+            title, labels = result
+            label_names_lower = {l.lower() for l in labels}
+            if "human" in label_names_lower:
+                self._notifier.notify_human_blocker(
+                    blocker_id=blocker_id,
+                    blocker_title=title,
+                    blocked_tickets=blocked_ids,
                 )
 
     def _check_busy_idle_transition(self) -> None:

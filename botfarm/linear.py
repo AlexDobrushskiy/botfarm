@@ -199,6 +199,19 @@ query IssueState($identifier: String!) {
 }
 """
 
+ISSUE_LABELS_BY_IDENTIFIER_QUERY = """
+query IssueLabelsByIdentifier($identifier: String!) {
+  issue(id: $identifier) {
+    title
+    labels {
+      nodes {
+        name
+      }
+    }
+  }
+}
+"""
+
 ACTIVE_ISSUES_COUNT_QUERY = """
 query ActiveIssuesCount($first: Int!, $after: String) {
   issues(
@@ -706,6 +719,28 @@ class LinearClient:
             raise LinearAPIError(
                 f"Failed to add labels to issue {issue_id}"
             )
+
+    def fetch_issue_labels(
+        self, identifier: str
+    ) -> tuple[str, list[str]] | None:
+        """Fetch title and label names for a single issue by identifier.
+
+        Returns ``(title, [label_names])`` or ``None`` on API errors /
+        issue not found.
+        """
+        try:
+            data = self._execute(
+                ISSUE_LABELS_BY_IDENTIFIER_QUERY, {"identifier": identifier}
+            )
+        except LinearAPIError:
+            logger.warning("Failed to fetch labels for issue %s", identifier)
+            return None
+        issue = data.get("issue")
+        if not issue:
+            return None
+        title = issue.get("title", "")
+        label_nodes = issue.get("labels", {}).get("nodes", [])
+        return title, [ln.get("name", "") for ln in label_nodes]
 
     def fetch_issue_state_type(self, identifier: str) -> str | None:
         """Fetch the workflow state type of a single issue by identifier.

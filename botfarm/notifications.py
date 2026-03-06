@@ -219,6 +219,26 @@ class Notifier:
             f"Top concerns: {brief_list}. Details: {linear_ticket_url}",
         )
 
+    def notify_human_blocker(
+        self,
+        *,
+        blocker_id: str,
+        blocker_title: str,
+        blocked_tickets: list[str],
+    ) -> None:
+        """Notify that a Human-labeled ticket is blocking the queue.
+
+        Rate-limited per blocker ticket using a separate cooldown
+        (``human_blocker_cooldown_seconds`` in config, default 1 hour).
+        """
+        blocked_list = ", ".join(blocked_tickets)
+        message = (
+            f"*Queue blocked by human action* — {blocker_id}: \"{blocker_title}\"\n"
+            f"Blocked tickets: {blocked_list}"
+        )
+        event_key = f"human_blocker:{blocker_id}"
+        self._send(event_key, message, rate_limit_seconds=self._config.human_blocker_cooldown_seconds)
+
     def notify_supervisor_shutdown(self, *, reason: str) -> None:
         """Notify that the supervisor is shutting down unexpectedly."""
         self._send(
@@ -230,19 +250,32 @@ class Notifier:
     # Internal
     # ------------------------------------------------------------------
 
-    def _is_rate_limited(self, event_type: str) -> bool:
+    def _is_rate_limited(self, event_type: str, cooldown: int | None = None) -> bool:
         """Check if this event type was sent recently."""
         last = self._last_sent.get(event_type)
         if last is None:
             return False
-        return (time.monotonic() - last) < self._config.rate_limit_seconds
+        limit = cooldown if cooldown is not None else self._config.rate_limit_seconds
+        return (time.monotonic() - last) < limit
 
-    def _send(self, event_type: str, message: str, *, rate_limited: bool = False) -> None:
-        """Format and POST the webhook payload. Never raises."""
+    def _send(
+        self,
+        event_type: str,
+        message: str,
+        *,
+        rate_limited: bool = False,
+        rate_limit_seconds: int | None = None,
+    ) -> None:
+        """Format and POST the webhook payload. Never raises.
+
+        When *rate_limit_seconds* is provided, the event is rate-limited
+        using that custom cooldown instead of the global default.
+        """
         if not self.enabled:
             return
 
-        if rate_limited and self._is_rate_limited(event_type):
+        use_rate_limit = rate_limited or rate_limit_seconds is not None
+        if use_rate_limit and self._is_rate_limited(event_type, rate_limit_seconds):
             logger.debug("Rate-limited notification: %s", event_type)
             return
 
@@ -254,7 +287,7 @@ class Notifier:
         except Exception:
             logger.debug("Failed to send %s notification", event_type, exc_info=True)
         finally:
-            if rate_limited:
+            if use_rate_limit:
                 self._last_sent[event_type] = time.monotonic()
 
     def _format_payload(self, message: str) -> dict:
