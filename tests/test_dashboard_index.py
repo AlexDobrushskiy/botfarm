@@ -892,6 +892,78 @@ class TestIndexQueuePanel:
         assert "No work available" in body
 
 
+# --- Connection Lost Banner (SMA-346) ---
+
+
+class TestConnectionLostBanner:
+    """Tests for HTMX polling error handling: banner, backoff, auto-recovery."""
+
+    def test_banner_element_present(self, client):
+        """Connection-lost banner div is rendered in the base template."""
+        resp = client.get("/")
+        body = resp.text
+        assert 'id="connection-lost-banner"' in body
+        assert "connection-lost-banner" in body
+
+    def test_banner_hidden_by_default(self, client):
+        """Banner should not have the 'visible' class on initial load."""
+        resp = client.get("/")
+        body = resp.text
+        assert 'class="connection-lost-banner"' in body
+        assert 'class="connection-lost-banner visible"' not in body
+
+    def test_banner_has_reconnecting_text(self, client):
+        """Banner contains reconnecting indicator text."""
+        resp = client.get("/")
+        body = resp.text
+        assert "Connection lost" in body
+        assert "Reconnecting" in body
+
+    def test_banner_has_aria_role(self, client):
+        """Banner has role=alert for accessibility."""
+        resp = client.get("/")
+        assert 'role="alert"' in resp.text
+
+    def test_response_error_handler_present(self, client):
+        """JavaScript listens for htmx:responseError events."""
+        resp = client.get("/")
+        assert "htmx:responseError" in resp.text
+
+    def test_send_error_handler_present(self, client):
+        """JavaScript listens for htmx:sendError events (network failures)."""
+        resp = client.get("/")
+        assert "htmx:sendError" in resp.text
+
+    def test_backoff_logic_present(self, client):
+        """JavaScript implements exponential backoff via htmx:beforeRequest."""
+        resp = client.get("/")
+        body = resp.text
+        assert "htmx:beforeRequest" in body
+        assert "backoffMs" in body
+
+    def test_auto_recovery_handler_present(self, client):
+        """JavaScript auto-recovers on successful request via htmx:afterRequest."""
+        resp = client.get("/")
+        body = resp.text
+        assert "htmx:afterRequest" in body
+        assert "evt.detail.successful" in body
+
+    def test_banner_on_non_index_pages(self, client):
+        """Connection-lost banner appears on non-index pages too (via base.html)."""
+        for page in ["/history", "/health", "/tickets"]:
+            resp = client.get(page)
+            assert 'id="connection-lost-banner"' in resp.text, (
+                f"Banner missing on {page}"
+            )
+
+    def test_banner_css_present(self, client):
+        """Connection-lost banner CSS class is defined."""
+        resp = client.get("/")
+        body = resp.text
+        assert ".connection-lost-banner" in body
+        assert "conn-pulse" in body
+
+
 # --- History ---
 
 

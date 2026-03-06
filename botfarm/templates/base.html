@@ -159,6 +159,37 @@
         }
         progress { width: 100%; height: 0.5rem; margin-top: 0.25rem; }
 
+        /* Connection lost banner */
+        .connection-lost-banner {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 9999;
+            background: var(--pico-del-color);
+            color: #fff;
+            padding: 0.5rem 1rem;
+            text-align: center;
+            font-weight: 600;
+            font-size: 0.9rem;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+        }
+        .connection-lost-banner.visible { display: block; }
+        .connection-lost-dot {
+            display: inline-block;
+            width: 0.5rem;
+            height: 0.5rem;
+            border-radius: 50%;
+            background: #fff;
+            margin-right: 0.5rem;
+            animation: conn-pulse 1.5s ease-in-out infinite;
+        }
+        @keyframes conn-pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
+
         /* Pipeline stepper */
         .pipeline-stepper {
             display: flex;
@@ -777,10 +808,64 @@
             <li><a href="/health"{% if active_page == "health" %} aria-current="page"{% endif %}>Health</a></li>
         </ul>
     </nav>
+    <div id="connection-lost-banner" class="connection-lost-banner" role="alert">
+        <span class="connection-lost-dot"></span>
+        <span id="connection-lost-text">Connection lost — Reconnecting…</span>
+    </div>
     <main class="container">
         <div id="preflight-banner" hx-get="/partials/preflight-banner" hx-trigger="load, every 5s" hx-swap="innerHTML">
         </div>
         {% block content %}{% endblock %}
     </main>
+    <script>
+    (function() {
+        var state = { disconnected: false, failCount: 0, lastRetryAt: 0 };
+        var banner = document.getElementById("connection-lost-banner");
+        var bannerText = document.getElementById("connection-lost-text");
+
+        function backoffMs() {
+            var delay = 5000 * Math.pow(2, Math.min(state.failCount - 1, 3));
+            return Math.min(delay, 30000);
+        }
+
+        function showBanner() {
+            var secs = Math.round(backoffMs() / 1000);
+            bannerText.textContent = "Connection lost \u2014 Reconnecting every " + secs + "s\u2026";
+            banner.classList.add("visible");
+        }
+
+        function hideBanner() {
+            banner.classList.remove("visible");
+        }
+
+        function onError() {
+            state.failCount++;
+            state.disconnected = true;
+            showBanner();
+        }
+
+        document.body.addEventListener("htmx:responseError", onError);
+        document.body.addEventListener("htmx:sendError", onError);
+
+        document.body.addEventListener("htmx:beforeRequest", function(evt) {
+            if (!state.disconnected) return;
+            var now = Date.now();
+            if (now - state.lastRetryAt < backoffMs()) {
+                evt.preventDefault();
+                return;
+            }
+            state.lastRetryAt = now;
+        });
+
+        document.body.addEventListener("htmx:afterRequest", function(evt) {
+            if (evt.detail.successful && state.disconnected) {
+                state.disconnected = false;
+                state.failCount = 0;
+                state.lastRetryAt = 0;
+                hideBanner();
+            }
+        });
+    })();
+    </script>
 </body>
 </html>
