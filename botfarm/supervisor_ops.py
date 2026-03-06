@@ -17,6 +17,10 @@ import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from botfarm.config import DailySummaryConfig
 
 from botfarm.db import (
     get_daily_summary_data,
@@ -1254,7 +1258,7 @@ Note: The supervisor handles status transitions automatically — do not move th
 
         self._send_daily_summary(ds_config)
 
-    def _send_daily_summary(self, ds_config) -> None:
+    def _send_daily_summary(self, ds_config: DailySummaryConfig) -> None:
         """Gather data, invoke Claude for summarization, and send notification."""
         summary_data = get_daily_summary_data(self._conn)
         tasks = summary_data["tasks"]
@@ -1373,6 +1377,12 @@ Note: The supervisor handles status transitions automatically — do not move th
         except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
             logger.warning("Daily summary Claude invocation failed: %s", exc)
             self._send_fallback_daily_summary(summary_data, ds_config)
+            insert_event(
+                self._conn, event_type="daily_summary_sent",
+                detail=f"fallback: completed={total_completed} failed={total_failed}",
+            )
+            self._conn.commit()
+            return
 
         insert_event(
             self._conn, event_type="daily_summary_sent",
@@ -1380,7 +1390,7 @@ Note: The supervisor handles status transitions automatically — do not move th
         )
         self._conn.commit()
 
-    def _send_fallback_daily_summary(self, summary_data: dict, ds_config) -> None:
+    def _send_fallback_daily_summary(self, summary_data: dict, ds_config: DailySummaryConfig) -> None:
         """Send a simple non-Claude summary when Claude invocation fails."""
         total_completed = summary_data["total_completed"]
         total_failed = summary_data["total_failed"]
