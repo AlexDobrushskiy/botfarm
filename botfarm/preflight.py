@@ -7,6 +7,7 @@ a single, actionable summary rather than one-error-at-a-time debugging.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sqlite3
@@ -626,6 +627,78 @@ def check_systemd_unit() -> list[CheckResult]:
     return []
 
 
+REQUIRED_PLUGINS = ["linear@claude-plugins-official"]
+
+
+def check_claude_plugins() -> list[CheckResult]:
+    """Warn if required Claude Code plugins are not enabled."""
+    settings_path = Path("~/.claude/settings.json").expanduser()
+    if not settings_path.exists():
+        return [CheckResult(
+            name="claude_plugins",
+            passed=False,
+            message=(
+                f"Claude Code settings not found at {settings_path} — "
+                "cannot verify required plugins. "
+                "Run 'claude' interactively and use /plugins to install: "
+                + ", ".join(REQUIRED_PLUGINS)
+            ),
+            critical=False,
+        )]
+
+    try:
+        with open(settings_path) as f:
+            settings = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        return [CheckResult(
+            name="claude_plugins",
+            passed=False,
+            message=f"Cannot read Claude Code settings: {exc}",
+            critical=False,
+        )]
+
+    if not isinstance(settings, dict):
+        return [CheckResult(
+            name="claude_plugins",
+            passed=False,
+            message="Claude Code settings has unexpected format (expected JSON object)",
+            critical=False,
+        )]
+
+    enabled_plugins = settings.get("enabledPlugins", {})
+    if not isinstance(enabled_plugins, dict):
+        return [CheckResult(
+            name="claude_plugins",
+            passed=False,
+            message="Claude Code settings 'enabledPlugins' has unexpected format (expected object)",
+            critical=False,
+        )]
+
+    results: list[CheckResult] = []
+    for plugin in REQUIRED_PLUGINS:
+        if enabled_plugins.get(plugin):
+            results.append(CheckResult(
+                name=f"claude_plugins:{plugin}",
+                passed=True,
+                message=f"OK — {plugin} enabled",
+                critical=False,
+            ))
+        else:
+            results.append(CheckResult(
+                name=f"claude_plugins:{plugin}",
+                passed=False,
+                message=(
+                    f"Plugin '{plugin}' is not enabled in Claude Code. "
+                    "Workers use Linear MCP tools for ticket management. "
+                    "Install via: claude interactive mode → /plugins → "
+                    f"search '{plugin}'. "
+                    "For headless machines, use SSH tunnel for auth."
+                ),
+                critical=False,
+            ))
+    return results
+
+
 def check_identity_cross_validation(config: BotfarmConfig) -> list[CheckResult]:
     """Warn about potentially inconsistent identity configuration."""
     results: list[CheckResult] = []
@@ -688,6 +761,7 @@ def run_preflight_checks(
     results.extend(check_identity_github_tokens(config))
     results.extend(check_identity_linear_api_key(config))
     results.extend(check_identity_cross_validation(config))
+    results.extend(check_claude_plugins())
     results.extend(check_codex_reviewer(config))
     results.extend(check_systemd_unit())
     return results
