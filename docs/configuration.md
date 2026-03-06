@@ -29,7 +29,7 @@ All runtime state lives under `~/.botfarm/` by default:
 
 Config values support `${VAR}` syntax for environment variable expansion. If a referenced variable is not set, botfarm raises an error at startup.
 
-You can place variables in `~/.botfarm/.env` — botfarm loads this file automatically via `python-dotenv`.
+Botfarm loads `~/.botfarm/.env` automatically via `python-dotenv`. This is the **only** `.env` file that botfarm reads — `.env` files in the current working directory are ignored. If a CWD `.env` is detected, botfarm prints a warning to stderr.
 
 Required:
 
