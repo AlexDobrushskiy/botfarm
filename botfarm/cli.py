@@ -633,7 +633,7 @@ _PROJECT_MARKERS = [
     ("Gemfile", "Ruby", "bundle exec rspec", "bundle install"),
 ]
 
-CLAUDE_MD_TEMPLATE = """\
+_CLAUDE_MD_TEMPLATE = """\
 # {project_name}
 
 ## Project Context
@@ -660,7 +660,7 @@ Describe coding standards and conventions.
 def _detect_project(project_dir: Path) -> dict:
     """Detect project characteristics from marker files.
 
-    Returns a dict with keys: language, test_command, dev_command.
+    Returns a dict with keys: language, test_command, dev_command, marker.
     """
     for marker_file, language, test_cmd, dev_cmd in _PROJECT_MARKERS:
         if (project_dir / marker_file).exists():
@@ -685,13 +685,12 @@ def init_claude_md(project_dir):
     claude_md_path = project_dir / "CLAUDE.md"
 
     if claude_md_path.exists():
-        click.echo(f"CLAUDE.md already exists: {claude_md_path}")
-        raise SystemExit(1)
+        raise click.ClickException(f"CLAUDE.md already exists: {claude_md_path}")
 
     detection = _detect_project(project_dir)
     project_name = project_dir.resolve().name
 
-    content = CLAUDE_MD_TEMPLATE.format(
+    content = _CLAUDE_MD_TEMPLATE.format(
         project_name=project_name,
         test_command=detection["test_command"],
         dev_command=detection["dev_command"],
