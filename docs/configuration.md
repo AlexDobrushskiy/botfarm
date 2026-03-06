@@ -265,10 +265,10 @@ How each field is used:
 
 | Field | Effect |
 |---|---|
-| `coder.github_token` | Set as `GH_TOKEN` for `gh` CLI during implement/fix/merge stages |
+| `coder.github_token` | Set as `GH_TOKEN` for `gh` CLI during implement/fix/pr_checks/merge stages |
 | `coder.ssh_key_path` | Used in `GIT_SSH_COMMAND` for git push (must be an absolute or `~`-prefixed path) |
-| `coder.git_author_name` | Set as `GIT_AUTHOR_NAME` and `GIT_COMMITTER_NAME` on commits |
-| `coder.git_author_email` | Set as `GIT_AUTHOR_EMAIL` and `GIT_COMMITTER_EMAIL` on commits |
+| `coder.git_author_name` | Set as `GIT_AUTHOR_NAME` and `GIT_COMMITTER_NAME` on commits during implement/fix/pr_checks/merge stages |
+| `coder.git_author_email` | Set as `GIT_AUTHOR_EMAIL` and `GIT_COMMITTER_EMAIL` on commits during implement/fix/pr_checks/merge stages |
 | `coder.linear_api_key` | Optional separate Linear key for the coder (rarely needed) |
 | `reviewer.github_token` | Set as `GH_TOKEN` for `gh` CLI during review stages |
 | `reviewer.linear_api_key` | Optional separate Linear key for the reviewer |
@@ -279,7 +279,8 @@ You can configure identities incrementally — any field left empty falls back t
 
 When identities are configured, `botfarm run` automatically validates them at startup:
 
-- SSH key file exists and has correct permissions (0600)
+- SSH key file exists (critical — blocks startup)
+- SSH key has correct permissions, 0600 (warning only — does not block startup)
 - SSH key can connect to GitHub (`ssh -T git@github.com`)
 - GitHub tokens are valid (`gh api user`)
 - Coder and reviewer tokens are not identical (should be different accounts)

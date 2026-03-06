@@ -831,7 +831,7 @@ def _run_interactive_init(
         "[dim]  1. Edit the 'projects' section in config.yaml to set "
         "your base_dir, worktree_prefix, and slots.[/dim]"
     )
-    # TODO(SMA-343): Add an interactive identity setup prompt here.
+    # TODO: Add an interactive identity setup prompt here.
     # Ask the user if they want to configure separate coder/reviewer
     # GitHub accounts, and if so, guide them through token creation
     # and SSH key generation. See docs/configuration.md for details.
