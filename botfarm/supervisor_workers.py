@@ -963,7 +963,7 @@ class PauseResumeManager:
 
             # Force-poll once so all resume decisions use fresh data
             if not polled:
-                self._usage_poller.force_poll(self._conn)
+                self._usage_poller.force_poll(self._conn, bypass_cooldown=True)
                 polled = True
 
             # Re-check usage API to confirm limits have actually reset

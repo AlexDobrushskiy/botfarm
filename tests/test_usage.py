@@ -1095,6 +1095,19 @@ class TestForcePollCooldown:
         # Should still have old values, not HIGH_USAGE_RESPONSE
         assert state.utilization_5h == 0.42
 
+    def test_bypass_cooldown_forces_fresh_poll(self, poller, conn):
+        """bypass_cooldown=True ignores the cooldown and fetches fresh data."""
+        with patch.object(poller, "_fetch", return_value=SAMPLE_USAGE_RESPONSE):
+            poller.force_poll(conn)
+
+        # Second call within cooldown, but with bypass
+        with patch.object(poller, "_fetch", return_value=HIGH_USAGE_RESPONSE) as mock_fetch:
+            state = poller.force_poll(conn, bypass_cooldown=True)
+
+        mock_fetch.assert_called_once()
+        assert poller.last_polled_fresh is True
+        assert state.utilization_5h == 0.95
+
 
 # ---------------------------------------------------------------------------
 # Existing transient-error retry preserved

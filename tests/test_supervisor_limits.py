@@ -304,7 +304,7 @@ class TestLimitHitHandling:
             wraps=supervisor._usage_poller.force_poll,
         ) as mock_fp:
             supervisor._reconcile_workers()
-            mock_fp.assert_called_once_with(supervisor._conn)
+            mock_fp.assert_called_once_with(supervisor._conn, bypass_cooldown=True)
 
     def test_usage_api_detects_limit_when_string_match_misses(self, supervisor):
         """Worker failure without limit strings is caught by usage API check."""
@@ -595,7 +595,7 @@ class TestHandlePausedSlots:
 
             supervisor._handle_paused_slots()
 
-            mock_fp.assert_called_once_with(supervisor._conn)
+            mock_fp.assert_called_once_with(supervisor._conn, bypass_cooldown=True)
 
     def test_resume_immediately_when_limits_disabled(self, supervisor):
         """Disabling usage limits resumes paused slots even if resume_after is in the future."""

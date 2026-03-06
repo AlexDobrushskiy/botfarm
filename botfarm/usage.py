@@ -160,15 +160,24 @@ class UsagePoller:
         self._do_poll(conn)
         return self._state
 
-    def force_poll(self, conn: sqlite3.Connection) -> UsageState:
+    def force_poll(
+        self, conn: sqlite3.Connection, *, bypass_cooldown: bool = False
+    ) -> UsageState:
         """Poll immediately, ignoring the interval timer.
 
         Applies a cooldown of FORCE_POLL_COOLDOWN seconds to prevent
         rapid-fire API calls when multiple callers invoke force_poll()
         in quick succession.
+
+        Pass ``bypass_cooldown=True`` for safety-critical paths that need
+        a guaranteed fresh reading (e.g. limit checks, resume decisions).
         """
         now = time.monotonic()
-        if self._last_force_poll > 0 and now - self._last_force_poll < FORCE_POLL_COOLDOWN:
+        if (
+            not bypass_cooldown
+            and self._last_force_poll > 0
+            and now - self._last_force_poll < FORCE_POLL_COOLDOWN
+        ):
             logger.debug(
                 "force_poll() cooldown active (%.0fs remaining) — returning cached data",
                 FORCE_POLL_COOLDOWN - (now - self._last_force_poll),
