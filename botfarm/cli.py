@@ -619,6 +619,93 @@ def init(path):
         )
 
 
+# ---------------------------------------------------------------------------
+# Project detection helpers for init-claude-md
+# ---------------------------------------------------------------------------
+
+# Mapping of marker file -> (language, test command, dev setup command)
+_PROJECT_MARKERS = [
+    ("requirements.txt", "Python", "python -m pytest tests/", "pip install -r requirements.txt"),
+    ("pyproject.toml", "Python", "python -m pytest tests/", "pip install -e ."),
+    ("package.json", "Node.js", "npm test", "npm install"),
+    ("go.mod", "Go", "go test ./...", "go mod download"),
+    ("Cargo.toml", "Rust", "cargo test", "cargo build"),
+    ("Gemfile", "Ruby", "bundle exec rspec", "bundle install"),
+]
+
+CLAUDE_MD_TEMPLATE = """\
+# {project_name}
+
+## Project Context
+Describe your project here.
+
+## Testing
+```bash
+{test_command}
+```
+
+## Development
+```bash
+{dev_command}
+```
+
+## Architecture
+Describe key modules and patterns.
+
+## Conventions
+Describe coding standards and conventions.
+"""
+
+
+def _detect_project(project_dir: Path) -> dict:
+    """Detect project characteristics from marker files.
+
+    Returns a dict with keys: language, test_command, dev_command.
+    """
+    for marker_file, language, test_cmd, dev_cmd in _PROJECT_MARKERS:
+        if (project_dir / marker_file).exists():
+            return {
+                "language": language,
+                "test_command": test_cmd,
+                "dev_command": dev_cmd,
+                "marker": marker_file,
+            }
+    return {
+        "language": "Unknown",
+        "test_command": "# Add your test command here",
+        "dev_command": "# Add your dev setup command here",
+        "marker": None,
+    }
+
+
+@main.command("init-claude-md")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+def init_claude_md(project_dir):
+    """Generate a CLAUDE.md template for a project directory."""
+    claude_md_path = project_dir / "CLAUDE.md"
+
+    if claude_md_path.exists():
+        click.echo(f"CLAUDE.md already exists: {claude_md_path}")
+        raise SystemExit(1)
+
+    detection = _detect_project(project_dir)
+    project_name = project_dir.resolve().name
+
+    content = CLAUDE_MD_TEMPLATE.format(
+        project_name=project_name,
+        test_command=detection["test_command"],
+        dev_command=detection["dev_command"],
+    )
+
+    claude_md_path.write_text(content)
+
+    if detection["marker"]:
+        click.echo(f"Detected: {detection['language']} (found {detection['marker']})")
+    else:
+        click.echo("No known project markers detected — using generic template.")
+    click.echo(f"Created: {claude_md_path}")
+
+
 @main.command()
 @click.option(
     "--config",
