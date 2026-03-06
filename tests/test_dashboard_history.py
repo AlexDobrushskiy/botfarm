@@ -413,6 +413,63 @@ class TestUsagePage:
         assert "<details>" in resp.text
         assert "Raw snapshot data" in resp.text
 
+    def test_chart_auto_scales_y_axis(self, client):
+        """Y-axis should auto-scale based on data, not fixed at 100."""
+        resp = client.get("/usage")
+        body = resp.text
+        # Should contain auto-scaling JS logic, not hardcoded max: 100
+        assert "yMax" in body
+        assert "dataMax" in body
+        # Should NOT have hardcoded max: 100 on the y scale
+        assert "max: 100," not in body
+
+    def test_chart_includes_datalabels_plugin(self, client):
+        """Chart.js datalabels plugin should be included for value labels."""
+        resp = client.get("/usage")
+        body = resp.text
+        assert "chartjs-plugin-datalabels" in body
+
+    def test_no_low_data_message_with_high_values(self, client):
+        """No 'not enough data' message when utilization values are high."""
+        resp = client.get("/usage")
+        assert "Not enough data yet" not in resp.text
+
+
+class TestUsageChartLowData:
+    """Tests for usage chart with low utilization values (fresh instance)."""
+
+    @pytest.fixture()
+    def low_data_client(self, tmp_path):
+        from botfarm.db import init_db, insert_usage_snapshot, save_dispatch_state
+        from tests.helpers import seed_slot as _seed_slot
+
+        path = tmp_path / "botfarm.db"
+        conn = init_db(path)
+        _seed_slot(conn, "my-project", 1, status="free")
+        save_dispatch_state(conn, paused=False)
+        # Insert a few snapshots with very low utilization (fresh instance)
+        for i in range(3):
+            insert_usage_snapshot(
+                conn,
+                utilization_5h=0.02 + i * 0.01,
+                utilization_7d=0.01 + i * 0.005,
+            )
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=path)
+        return TestClient(app)
+
+    def test_low_data_message_shown(self, low_data_client):
+        """Fresh instances with low values and few snapshots show a help message."""
+        resp = low_data_client.get("/usage")
+        assert "Not enough data yet" in resp.text
+
+    def test_chart_still_renders(self, low_data_client):
+        """Chart should still render even with low data."""
+        resp = low_data_client.get("/usage")
+        assert "usage-chart" in resp.text
+        assert "chart.js" in resp.text.lower()
+
 
 # --- Metrics ---
 
