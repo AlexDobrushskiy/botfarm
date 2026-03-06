@@ -204,6 +204,15 @@ def _worker_entry(
     """
     # Ignore SIGINT so only the supervisor handles Ctrl-C.
     signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+    # Convert SIGTERM into a SystemExit so Python's ``finally`` blocks
+    # run.  Without this, the OS-level kill terminates the process
+    # immediately and ``_terminate_process_group`` in ``worker.py``
+    # never executes — leaving orphaned ``claude`` subprocesses.
+    def _sigterm_handler(signum: int, frame: object) -> None:
+        raise SystemExit(128 + signum)
+    signal.signal(signal.SIGTERM, _sigterm_handler)
+
     # Move worker into its own process group so process-group signals
     # (kill, terminal close, systemd stop) don't reach it.  The
     # supervisor can still send SIGTERM directly via os.kill(pid, ...).
@@ -821,10 +830,19 @@ class WorkerLifecycleManager:
             pid, project, slot.slot_id, stage, elapsed, int(limit),
         )
 
+        # Collect descendant PIDs *before* signalling the worker, because
+        # /proc/<pid>/children becomes unavailable once the worker exits.
+        descendant_pids = _collect_descendant_pids(pid)
+
         try:
             os.kill(pid, signal.SIGTERM)
         except (OSError, ProcessLookupError):
             pass
+
+        # Belt-and-suspenders: also SIGTERM descendant session groups
+        # (claude subprocesses in their own sessions) in case the
+        # worker's finally block doesn't execute.
+        _kill_pids(descendant_pids, signal.SIGTERM)
 
         from botfarm.slots import _now_iso
         slot.sigterm_sent_at = _now_iso()
@@ -861,14 +879,13 @@ class WorkerLifecycleManager:
         stage = slot.stage
         project = slot.project
 
-        try:
-            os.kill(pid, 0)
-            os.kill(pid, signal.SIGKILL)
-            logger.warning(
-                "Worker PID %d did not exit after SIGTERM, sent SIGKILL", pid,
-            )
-        except (OSError, ProcessLookupError):
-            pass
+        # Kill the entire process tree: worker + descendant session
+        # groups (claude subprocesses with start_new_session=True).
+        _kill_process_tree(pid)
+        logger.warning(
+            "Worker PID %d did not exit after SIGTERM, sent SIGKILL to process tree",
+            pid,
+        )
 
         key = (project, slot.slot_id)
         proc = self._workers.pop(key, None)

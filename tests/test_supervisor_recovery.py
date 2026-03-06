@@ -13,6 +13,12 @@ import pytest
 from botfarm.db import get_events, get_task, insert_task, update_task
 from botfarm.linear import PollResult
 from botfarm.supervisor import Supervisor
+from botfarm.supervisor_workers import (
+    _collect_descendant_pids,
+    _kill_pids,
+    _kill_process_tree,
+    _worker_entry,
+)
 from tests.helpers import make_config
 
 
@@ -385,6 +391,117 @@ class TestCheckTimeouts:
 
         sup._conn.close()
 
+
+class TestSigtermHandler:
+    """Tests for the SIGTERM handler installed in _worker_entry."""
+
+    def test_sigterm_handler_raises_systemexit(self):
+        """The SIGTERM handler installed in _worker_entry converts the signal
+        to a SystemExit so that finally blocks run."""
+        # We can't easily run _worker_entry (it needs a full pipeline),
+        # so we test the handler logic directly: SIGTERM (15) → SystemExit(143).
+        handler = None
+
+        def capture_handler(signum, handler_fn):
+            nonlocal handler
+            if signum == signal.SIGTERM:
+                handler = handler_fn
+
+        with patch("botfarm.supervisor_workers.signal.signal", side_effect=capture_handler):
+            with patch("botfarm.supervisor_workers.os.setpgrp"):
+                with patch("botfarm.supervisor_workers.run_pipeline") as mock_pipeline:
+                    mock_pipeline.side_effect = Exception("should not reach pipeline")
+                    with patch("botfarm.supervisor_workers.init_db"):
+                        with patch("botfarm.supervisor_workers.resolve_db_path"):
+                            try:
+                                import multiprocessing
+                                q = multiprocessing.Queue()
+                                _worker_entry(
+                                    ticket_id="TST-1",
+                                    ticket_title="Test",
+                                    task_id=1,
+                                    project_name="test",
+                                    slot_id=1,
+                                    cwd="/tmp",
+                                    result_queue=q,
+                                    max_turns=None,
+                                )
+                            except Exception:
+                                pass  # expected — pipeline mock raises
+
+        assert handler is not None, "SIGTERM handler was not installed"
+        with pytest.raises(SystemExit) as exc_info:
+            handler(signal.SIGTERM, None)
+        assert exc_info.value.code == 128 + signal.SIGTERM
+
+    def test_send_sigterm_also_kills_descendants(self, supervisor):
+        """_send_sigterm sends SIGTERM to both the worker and its descendants."""
+        now = datetime.now(timezone.utc)
+        started = (now - timedelta(minutes=130)).isoformat()
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.update_stage("test-project", 1, stage="implement")
+        slot = sm.get_slot("test-project", 1)
+        slot.stage_started_at = started
+        slot.pid = 99999
+
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        fake_descendants = [11111, 22222]
+        with patch("botfarm.supervisor_workers._collect_descendant_pids", return_value=fake_descendants) as mock_collect, \
+             patch("botfarm.supervisor_workers._kill_pids") as mock_kill_pids, \
+             patch("botfarm.supervisor_workers.os.kill") as mock_kill:
+            supervisor._check_timeouts()
+            # Worker receives SIGTERM
+            mock_kill.assert_called_once_with(99999, signal.SIGTERM)
+            # Descendants are collected from the worker PID
+            mock_collect.assert_called_once_with(99999)
+            # Descendants receive SIGTERM too
+            mock_kill_pids.assert_called_once_with(fake_descendants, signal.SIGTERM)
+
+    def test_escalate_kill_uses_kill_process_tree(self, supervisor):
+        """_maybe_escalate_kill uses _kill_process_tree for full cleanup."""
+        now = datetime.now(timezone.utc)
+        started = (now - timedelta(minutes=130)).isoformat()
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.update_stage("test-project", 1, stage="implement")
+        slot = sm.get_slot("test-project", 1)
+        slot.stage_started_at = started
+        slot.pid = 99999
+
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        # Phase 1: send SIGTERM
+        with patch("botfarm.supervisor_workers._collect_descendant_pids", return_value=[]):
+            with patch("botfarm.supervisor_workers.os.kill"):
+                supervisor._check_timeouts()
+
+        # Phase 2: grace period elapsed
+        slot = sm.get_slot("test-project", 1)
+        slot.sigterm_sent_at = "2020-01-01T00:00:00.000000Z"
+
+        with patch("botfarm.supervisor_workers._kill_process_tree") as mock_tree:
+            supervisor._check_timeouts()
+            mock_tree.assert_called_once_with(99999)
+
+        assert sm.get_slot("test-project", 1).status == "failed"
 
 
 
