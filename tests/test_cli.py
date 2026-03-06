@@ -88,10 +88,7 @@ class TestElapsed:
 
 class TestStatusCommand:
     def test_no_database_no_config(self, runner, tmp_path, monkeypatch):
-        monkeypatch.setattr(
-            "botfarm.cli._resolve_paths",
-            lambda _: (tmp_path / "nonexistent.db", None),
-        )
+        monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "nonexistent.db"))
         monkeypatch.setattr(
             "botfarm.cli.DEFAULT_CONFIG_PATH", tmp_path / "no-config.yaml",
         )
@@ -116,10 +113,7 @@ class TestStatusCommand:
                 "linear": {"api_key": "test-key"},
             })
         )
-        monkeypatch.setattr(
-            "botfarm.cli._resolve_paths",
-            lambda _: (tmp_path / "nonexistent.db", None),
-        )
+        monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "nonexistent.db"))
         monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_PATH", config_path)
         result = runner.invoke(main, ["status"])
         assert result.exit_code == 0
@@ -131,10 +125,7 @@ class TestStatusCommand:
         config_path.write_text(
             yaml.dump({"projects": [{"name": "test"}]})
         )
-        monkeypatch.setattr(
-            "botfarm.cli._resolve_paths",
-            lambda _: (tmp_path / "nonexistent.db", None),
-        )
+        monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "nonexistent.db"))
         monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_PATH", config_path)
         result = runner.invoke(main, ["status"])
         assert result.exit_code == 0
@@ -143,10 +134,7 @@ class TestStatusCommand:
     def test_no_database_yaml_syntax_error(self, runner, tmp_path, monkeypatch):
         config_path = tmp_path / "config.yaml"
         config_path.write_text("projects:\n  - name: test\n    bad: [unclosed")
-        monkeypatch.setattr(
-            "botfarm.cli._resolve_paths",
-            lambda _: (tmp_path / "nonexistent.db", None),
-        )
+        monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "nonexistent.db"))
         monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_PATH", config_path)
         result = runner.invoke(main, ["status"])
         assert result.exit_code == 0

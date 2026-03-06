@@ -126,7 +126,11 @@ def main():
 )
 def status(config_path):
     """Show current slot states across all projects."""
-    db_path, _ = _resolve_paths(config_path)
+    try:
+        db_path, config = _resolve_paths(config_path)
+    except ConfigError as exc:
+        click.echo(f"Config error: {exc}")
+        return
 
     if not db_path.exists():
         cfg_path = config_path or DEFAULT_CONFIG_PATH
@@ -135,11 +139,6 @@ def status(config_path):
                 "No database found and no config file found.\n"
                 "Run `botfarm init` to create a default configuration."
             )
-            return
-        try:
-            load_config(cfg_path)
-        except ConfigError as exc:
-            click.echo(f"Config error: {exc}")
             return
         click.echo(
             "Config valid. No database yet — run `botfarm run` to start the supervisor."
