@@ -15,8 +15,8 @@
     <button class="pause-btn pause-btn-play"
             hx-post="/api/resume"
             hx-swap="none"
-            hx-on::before-request="this.disabled=true; this.textContent='Starting\u2026'; this.className='pause-btn pause-btn-pausing';"
-            hx-on::after-request="if(!event.detail.successful){this.disabled=false; this.innerHTML='\u25B6 Start'; this.className='pause-btn pause-btn-play';} this.closest('[hx-get]') && htmx.trigger(this.closest('[hx-get]'), 'htmx:load')">
+            hx-on::before-request="this.disabled=true; this.textContent='Starting\u2026'; this.className='pause-btn pause-btn-pausing'; var b=document.getElementById('start-paused-banner-container'); if(b){b.innerHTML='<div class=&quot;banner-start-paused banner-resuming&quot;>Starting dispatch\u2026</div>';}"
+            hx-on::after-request="if(!event.detail.successful){this.disabled=false; this.innerHTML='\u25B6 Start'; this.className='pause-btn pause-btn-play'; var b=document.getElementById('start-paused-banner-container'); if(b) htmx.ajax('GET','/partials/start-paused-banner','#start-paused-banner-container');}">
         &#9654; Start
     </button>
     <span class="pause-hint">Botfarm is ready. Click to start dispatching tickets.</span>
@@ -31,8 +31,8 @@
         <button class="pause-btn pause-btn-resume"
                 hx-post="/api/resume"
                 hx-swap="none"
-                hx-on::before-request="this.disabled=true; this.textContent='Resuming\u2026'; this.className='pause-btn pause-btn-pausing';"
-                hx-on::after-request="if(!event.detail.successful){this.disabled=false; this.textContent='Cancel'; this.className='pause-btn pause-btn-resume';} this.closest('[hx-get]') && htmx.trigger(this.closest('[hx-get]'), 'htmx:load')">
+                hx-on::before-request="this.disabled=true; this.textContent='Resuming\u2026'; this.className='pause-btn pause-btn-pausing'; var b=document.getElementById('start-paused-banner-container'); if(b) b.innerHTML='';"
+                hx-on::after-request="if(!event.detail.successful){this.disabled=false; this.textContent='Cancel'; this.className='pause-btn pause-btn-resume';}">
             Cancel
         </button>
     </div>
@@ -45,13 +45,20 @@
     </div>
     {% endif %}
 </div>
+{% elif pause_state == "resuming" %}
+<div class="pause-controls">
+    <button class="pause-btn pause-btn-pausing" disabled>
+        Starting&hellip;
+    </button>
+    <span class="pause-hint">Dispatch is starting&hellip;</span>
+</div>
 {% elif pause_state == "paused" %}
 <div class="pause-controls">
     <button class="pause-btn pause-btn-resume"
             hx-post="/api/resume"
             hx-swap="none"
-            hx-on::before-request="this.disabled=true; this.textContent='Resuming\u2026'; this.className='pause-btn pause-btn-pausing';"
-            hx-on::after-request="if(!event.detail.successful){this.disabled=false; this.textContent='Resume'; this.className='pause-btn pause-btn-resume';} this.closest('[hx-get]') && htmx.trigger(this.closest('[hx-get]'), 'htmx:load')">
+            hx-on::before-request="this.disabled=true; this.textContent='Resuming\u2026'; this.className='pause-btn pause-btn-pausing'; var b=document.getElementById('start-paused-banner-container'); if(b) b.innerHTML='';"
+            hx-on::after-request="if(!event.detail.successful){this.disabled=false; this.textContent='Resume'; this.className='pause-btn pause-btn-resume';}">
         Resume
     </button>
     <span class="pause-hint">All work paused. In-progress tickets resume from where they left off.</span>

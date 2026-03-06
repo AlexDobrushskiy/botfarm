@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sqlite3
+import time
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Request
@@ -198,6 +199,7 @@ def api_resume(request: Request):
             status_code=503,
         )
     cb()
+    request.app.state.resume_requested_at = time.monotonic()
     return JSONResponse({"status": "ok"})
 
 

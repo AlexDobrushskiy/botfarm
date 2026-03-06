@@ -96,6 +96,7 @@ def create_app(
     app.state.on_stop_slot = on_stop_slot
     app.state.get_preflight_results = get_preflight_results
     app.state.get_degraded = get_degraded
+    app.state.resume_requested_at = 0.0
     app.state.update_in_progress = False
     app.state.update_failed_event = update_failed_event
     app.state.auto_restart = auto_restart

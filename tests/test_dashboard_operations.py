@@ -206,6 +206,82 @@ class TestManualPauseState:
         assert "supervisor-badge-paused" in resp.text
 
 
+class TestResumingTransitionalState:
+    """Verify the 'resuming' transitional banner/controls after clicking Start/Resume."""
+
+    def test_resume_shows_transitional_banner(self, tmp_path):
+        """After POST /api/resume, the banner partial returns 'resuming' state."""
+        from datetime import datetime, timezone
+
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        path = tmp_path / "resume.db"
+        conn = init_db(path)
+        _seed_slot(conn, "proj", 1, status="free")
+        save_dispatch_state(conn, paused=True, reason="start_paused",
+                            supervisor_heartbeat=now_iso)
+        conn.commit()
+        conn.close()
+
+        app = create_app(db_path=path, on_pause=lambda: None, on_resume=lambda: None)
+        client = TestClient(app)
+
+        # Before resume: banner shows "Dispatch is paused"
+        resp = client.get("/partials/start-paused-banner")
+        assert "Dispatch is paused" in resp.text
+
+        # Click resume
+        resp = client.post("/api/resume")
+        assert resp.status_code == 200
+
+        # After resume: banner shows transitional "Starting dispatch" message
+        resp = client.get("/partials/start-paused-banner")
+        assert "Starting dispatch" in resp.text
+        assert "banner-resuming" in resp.text
+        assert "Dispatch is paused" not in resp.text
+
+    def test_resume_shows_transitional_controls(self, tmp_path):
+        """After POST /api/resume, controls partial shows 'Starting...' state."""
+        from datetime import datetime, timezone
+
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        path = tmp_path / "resume_ctrl.db"
+        conn = init_db(path)
+        _seed_slot(conn, "proj", 1, status="free")
+        save_dispatch_state(conn, paused=True, reason="start_paused",
+                            supervisor_heartbeat=now_iso)
+        conn.commit()
+        conn.close()
+
+        app = create_app(db_path=path, on_pause=lambda: None, on_resume=lambda: None)
+        client = TestClient(app)
+
+        # Before resume: shows Start button
+        resp = client.get("/partials/supervisor-controls")
+        assert "Start" in resp.text
+
+        # Click resume
+        client.post("/api/resume")
+
+        # After resume: shows disabled "Starting..." button
+        resp = client.get("/partials/supervisor-controls")
+        assert "Starting" in resp.text
+        assert "Dispatch is starting" in resp.text
+
+    def test_resuming_state_clears_when_running(self, db_file):
+        """When supervisor catches up (state=running), resume flag is cleared."""
+        app = create_app(db_path=db_file, on_pause=lambda: None, on_resume=lambda: None)
+        client = TestClient(app)
+
+        # Simulate a resume request (no actual paused state in DB)
+        app.state.resume_requested_at = 1.0  # very old timestamp
+
+        # DB state is "running", so resume flag should be cleared
+        resp = client.get("/partials/start-paused-banner")
+        assert "Dispatch is paused" not in resp.text
+        assert "Starting dispatch" not in resp.text
+        assert app.state.resume_requested_at == 0.0
+
+
 class TestPauseHints:
     """Verify informational hints shown in each pause state."""
 
