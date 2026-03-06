@@ -61,6 +61,7 @@
     }
 
     function connect() {
+        output.innerHTML = "";
         var evtSource = new EventSource("/api/logs/{{ stream_ticket_id }}/{{ stream_stage }}/stream");
 
         var eventTypes = ["assistant", "tool_use", "tool_result", "result", "system", "log"];

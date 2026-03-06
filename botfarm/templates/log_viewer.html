@@ -107,6 +107,7 @@
     }
 
     function connect() {
+        output.innerHTML = "";
         var evtSource = new EventSource("/api/logs/{{ ticket_id }}/{{ current_stage }}/stream");
 
         // Listen for all formatted event types from the SSE stream
