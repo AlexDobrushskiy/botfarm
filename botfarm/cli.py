@@ -109,11 +109,14 @@ _STATUS_COLORS = {
 @click.version_option(version=__version__)
 def main():
     """Botfarm: autonomous Linear ticket dispatcher for Claude Code agents."""
-    # Load local .env first (slot-specific, e.g. BOTFARM_DB_PATH),
-    # then global ~/.botfarm/.env (shared, e.g. LINEAR_API_KEY).
-    # override=False means first-loaded value wins.
-    load_dotenv(Path.cwd() / ".env", override=False)
     load_dotenv(ENV_FILE_PATH, override=False)
+    cwd_env = Path.cwd() / ".env"
+    if cwd_env.is_file() and cwd_env.resolve() != ENV_FILE_PATH.resolve():
+        click.echo(
+            f"Warning: found .env in current directory ({cwd_env}) "
+            f"which is ignored. Botfarm only loads {ENV_FILE_PATH}.",
+            err=True,
+        )
 
 
 @main.command()
