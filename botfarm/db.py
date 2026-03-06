@@ -1234,9 +1234,9 @@ def get_daily_summary_data(
                th.description, th.labels, th.pr_url as th_pr_url
         FROM tasks t
         LEFT JOIN ticket_history th ON t.ticket_id = th.ticket_id
-        WHERE t.completed_at >= ?
+        WHERE COALESCE(t.completed_at, t.started_at) >= ?
           AND t.status IN ('completed', 'failed')
-        ORDER BY t.completed_at DESC
+        ORDER BY COALESCE(t.completed_at, t.started_at) DESC
         """,
         (cutoff,),
     ).fetchall()

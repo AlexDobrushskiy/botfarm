@@ -7,6 +7,7 @@ have full access to supervisor state.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import queue
@@ -1327,7 +1328,6 @@ Note: The supervisor handles status transitions automatically — do not move th
         )
 
         try:
-            import json as json_mod
             proc = subprocess.run(
                 ["claude", "-p", "--output-format", "json"],
                 input=prompt,
@@ -1341,21 +1341,26 @@ Note: The supervisor handles status transitions automatically — do not move th
                     proc.returncode, proc.stderr[:300],
                 )
                 self._send_fallback_daily_summary(summary_data, ds_config)
+                insert_event(
+                    self._conn, event_type="daily_summary_sent",
+                    detail=f"fallback: completed={total_completed} failed={total_failed}",
+                )
+                self._conn.commit()
                 return
 
             # Parse Claude's response — extract the result text from the JSON envelope
             try:
-                envelope = json_mod.loads(proc.stdout)
+                envelope = json.loads(proc.stdout)
                 result_text = envelope.get("result", proc.stdout)
-            except (json_mod.JSONDecodeError, TypeError):
+            except (json.JSONDecodeError, TypeError):
                 result_text = proc.stdout
 
             # Try to parse the inner JSON from Claude's response
             try:
-                parsed = json_mod.loads(result_text)
+                parsed = json.loads(result_text)
                 headline = parsed.get("headline", "Daily Work Summary")
                 summary = parsed.get("summary", result_text)
-            except (json_mod.JSONDecodeError, TypeError):
+            except (json.JSONDecodeError, TypeError):
                 headline = "Daily Work Summary"
                 summary = result_text
 

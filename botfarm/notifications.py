@@ -257,10 +257,8 @@ class Notifier:
         if not url:
             return
         try:
-            if "discord.com" in url or "discordapp.com" in url:
-                payload = {"content": message}
-            else:
-                payload = {"text": message}
+            fmt = _detect_format(url, "") if webhook_url else self._format
+            payload = {"content": message} if fmt == "discord" else {"text": message}
             resp = self._client.post(url, json=payload)
             resp.raise_for_status()
             logger.debug("Sent daily_summary notification")
