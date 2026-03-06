@@ -924,6 +924,89 @@ class TestSSEStreamFormatting:
         assert resp.status_code == 404
 
 
+class TestSSEHeartbeatAndReconnection:
+    """Tests for SSE keepalive heartbeats and auto-reconnection UI."""
+
+    def test_heartbeat_constant_defined(self):
+        """SSE_HEARTBEAT_INTERVAL should be defined in routes_logs module."""
+        from botfarm.dashboard.routes_logs import SSE_HEARTBEAT_INTERVAL
+        assert SSE_HEARTBEAT_INTERVAL > 0
+
+    def test_live_viewer_has_reconnection_logic(self, tmp_path):
+        """Live log viewer page should include auto-reconnection JS."""
+        db_path = tmp_path / "hb.db"
+        conn = init_db(db_path)
+        insert_task(
+            conn, ticket_id="HB-1", title="Heartbeat test",
+            project="proj", slot=1, status="in_progress",
+        )
+        _seed_slot(
+            conn, "proj", 1, status="busy",
+            ticket_id="HB-1", ticket_title="Heartbeat test",
+            stage="implement",
+        )
+        conn.commit()
+        conn.close()
+
+        logs_dir = tmp_path / "logs"
+        ticket_log_dir = logs_dir / "HB-1"
+        ticket_log_dir.mkdir(parents=True)
+        (ticket_log_dir / "implement-20260226-100000.log").write_text("test\n")
+
+        app = create_app(db_path=db_path, logs_dir=logs_dir)
+        client = TestClient(app)
+        resp = client.get("/task/HB-1/logs/implement")
+        body = resp.text
+        assert resp.status_code == 200
+        assert "RECONNECTING" in body
+        assert "reconnectDelay" in body
+        assert "heartbeat" in body
+        assert "showReconnecting" in body
+        assert "connect()" in body
+
+    def test_log_stream_partial_has_reconnection_logic(self, tmp_path):
+        """Embeddable log stream partial should include reconnection JS."""
+        db_path = tmp_path / "ls.db"
+        conn = init_db(db_path)
+        insert_task(
+            conn, ticket_id="LS-1", title="Log stream test",
+            project="proj", slot=1, status="in_progress",
+        )
+        _seed_slot(
+            conn, "proj", 1, status="busy",
+            ticket_id="LS-1", ticket_title="Log stream test",
+            stage="implement",
+        )
+        conn.commit()
+        conn.close()
+
+        logs_dir = tmp_path / "logs"
+        ticket_log_dir = logs_dir / "LS-1"
+        ticket_log_dir.mkdir(parents=True)
+        (ticket_log_dir / "implement-20260226-100000.log").write_text("test\n")
+
+        app = create_app(db_path=db_path, logs_dir=logs_dir)
+        client = TestClient(app)
+        # The task detail page includes the log stream partial for busy tasks
+        resp = client.get("/task/LS-1")
+        body = resp.text
+        assert resp.status_code == 200
+        # Check reconnection logic is present in the embedded stream
+        assert "log-stream-reconnecting" in body or "reconnectDelay" in body
+
+    def test_reconnecting_css_in_base_template(self, tmp_path):
+        """Base template should include reconnecting badge CSS classes."""
+        db_path = tmp_path / "css.db"
+        conn = init_db(db_path)
+        conn.close()
+        app = create_app(db_path=db_path)
+        client = TestClient(app)
+        resp = client.get("/")
+        body = resp.text
+        assert "log-reconnecting-badge" in body
+        assert "log-stream-reconnecting" in body
+
+
 class TestLogViewerFormattedEvents:
     """Tests for the updated log viewer template with event type styling."""
 

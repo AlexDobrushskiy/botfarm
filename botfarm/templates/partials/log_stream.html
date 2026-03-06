@@ -24,6 +24,10 @@
     var terminal = panel.querySelector(".log-stream-terminal");
     var badge = panel.querySelector(".log-stream-badge");
     var autoScroll = true;
+    var streamDone = false;
+    var reconnectDelay = 1000;
+    var maxReconnectDelay = 30000;
+    var reconnectTimer = null;
 
     function scrollToBottom() {
         if (autoScroll) terminal.scrollTop = terminal.scrollHeight;
@@ -43,24 +47,54 @@
         scrollToBottom();
     }
 
-    var evtSource = new EventSource("/api/logs/{{ stream_ticket_id }}/{{ stream_stage }}/stream");
+    function showReconnecting() {
+        badge.textContent = "RECONNECTING...";
+        badge.classList.remove("log-stream-live", "log-stream-done");
+        badge.classList.add("log-stream-reconnecting");
+    }
 
-    var eventTypes = ["assistant", "tool_use", "tool_result", "result", "system", "log"];
-    eventTypes.forEach(function(t) {
-        evtSource.addEventListener(t, function(e) { appendLine(e.data, t); });
-    });
+    function showLive() {
+        badge.textContent = "LIVE";
+        badge.classList.remove("log-stream-reconnecting", "log-stream-done");
+        badge.classList.add("log-stream-live");
+        reconnectDelay = 1000;
+    }
 
-    evtSource.addEventListener("done", function() {
-        evtSource.close();
-        badge.textContent = "DONE";
-        badge.classList.remove("log-stream-live");
-        badge.classList.add("log-stream-done");
-    });
+    function connect() {
+        output.innerHTML = "";
+        var evtSource = new EventSource("/api/logs/{{ stream_ticket_id }}/{{ stream_stage }}/stream");
 
-    evtSource.addEventListener("error", function() {
-        evtSource.close();
-        badge.textContent = "DISCONNECTED";
-        badge.classList.remove("log-stream-live");
-    });
+        var eventTypes = ["assistant", "tool_use", "tool_result", "result", "system", "log"];
+        eventTypes.forEach(function(t) {
+            evtSource.addEventListener(t, function(e) {
+                showLive();
+                appendLine(e.data, t);
+            });
+        });
+
+        evtSource.addEventListener("heartbeat", function() {
+            showLive();
+        });
+
+        evtSource.addEventListener("done", function() {
+            streamDone = true;
+            evtSource.close();
+            badge.textContent = "DONE";
+            badge.classList.remove("log-stream-live", "log-stream-reconnecting");
+            badge.classList.add("log-stream-done");
+        });
+
+        evtSource.addEventListener("error", function() {
+            evtSource.close();
+            if (streamDone) return;
+            showReconnecting();
+            reconnectTimer = setTimeout(function() {
+                connect();
+            }, reconnectDelay);
+            reconnectDelay = Math.min(reconnectDelay * 2, maxReconnectDelay);
+        });
+    }
+
+    connect();
 })();
 </script>
