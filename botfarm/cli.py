@@ -13,12 +13,15 @@ from rich.console import Console
 from rich.table import Table
 
 from botfarm import __version__
+import yaml
+
 from botfarm.config import (
     DEFAULT_CONFIG_DIR,
     DEFAULT_CONFIG_PATH,
     ConfigError,
     create_default_config,
     load_config,
+    write_yaml_atomic,
 )
 from botfarm.db import (
     SchemaVersionError,
@@ -617,6 +620,302 @@ def init(path):
         click.echo(
             f"\nNext step: set your Linear API key in {ENV_FILE_PATH}"
         )
+
+
+# ---------------------------------------------------------------------------
+# add-project command
+# ---------------------------------------------------------------------------
+
+
+def _validate_project_dir(base_dir: str) -> list[str]:
+    """Validate that base_dir is a git repo with a reachable remote.
+
+    Returns a list of error messages (empty means valid).
+    """
+    errors: list[str] = []
+    base = Path(base_dir).expanduser().resolve()
+    if not base.exists():
+        errors.append(f"Directory does not exist: {base}")
+        return errors
+    if not (base / ".git").exists():
+        errors.append(f"Not a git repository: {base}")
+        return errors
+    try:
+        proc = subprocess.run(
+            ["git", "ls-remote", "--exit-code", "origin"],
+            cwd=str(base),
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if proc.returncode != 0:
+            errors.append(
+                f"git remote 'origin' not reachable: {proc.stderr.strip()[:200]}"
+            )
+    except subprocess.TimeoutExpired:
+        errors.append("git ls-remote timed out after 15s")
+    except FileNotFoundError:
+        errors.append("git command not found")
+    return errors
+
+
+def _validate_worktree_parent(base_dir: str) -> list[str]:
+    """Validate that the worktree parent directory is writable."""
+    base = Path(base_dir).expanduser().resolve()
+    parent = base.parent
+    if not parent.exists():
+        return [f"Worktree parent dir does not exist: {parent}"]
+    if not os.access(str(parent), os.W_OK):
+        return [f"Worktree parent dir is not writable: {parent}"]
+    return []
+
+
+def _run_readiness_checks(project_dict: dict) -> list[tuple[str, str]]:
+    """Run CLAUDE.md and runtime readiness checks for a single project.
+
+    Returns a list of (level, message) tuples where level is 'warning' or 'ok'.
+    """
+    from botfarm.config import ProjectConfig
+    from botfarm.preflight import CheckResult
+
+    project = ProjectConfig(**project_dict)
+    results: list[tuple[str, str]] = []
+
+    # CLAUDE.md check
+    base = Path(project.base_dir).expanduser()
+    claude_md = base / "CLAUDE.md"
+    if claude_md.exists():
+        results.append(("ok", f"CLAUDE.md found: {claude_md}"))
+    else:
+        results.append((
+            "warning",
+            f"No CLAUDE.md — agent will lack project-specific instructions. "
+            f"Create one with: botfarm init-claude-md {base}",
+        ))
+
+    # Runtime detection check
+    from botfarm.preflight import _LANGUAGE_MARKERS
+
+    checked_languages: set[str] = set()
+    for marker_file, language, version_cmd in _LANGUAGE_MARKERS:
+        if language in checked_languages:
+            continue
+        if not (base / marker_file).exists():
+            continue
+        checked_languages.add(language)
+        try:
+            proc = subprocess.run(
+                version_cmd,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if proc.returncode == 0:
+                version = proc.stdout.strip() or proc.stderr.strip()
+                results.append(("ok", f"{language} runtime: {version}"))
+            else:
+                results.append((
+                    "warning",
+                    f"{language} project detected (found {marker_file}) but "
+                    f"`{version_cmd[0]}` returned exit code {proc.returncode}",
+                ))
+        except FileNotFoundError:
+            results.append((
+                "warning",
+                f"{language} project detected (found {marker_file}) but "
+                f"`{version_cmd[0]}` not found in PATH",
+            ))
+        except subprocess.TimeoutExpired:
+            results.append((
+                "warning",
+                f"`{version_cmd[0]}` timed out checking {language} runtime",
+            ))
+
+    return results
+
+
+def _append_project_to_config(config_path: Path, project_dict: dict) -> None:
+    """Append a new project entry to the config.yaml projects list."""
+    raw = config_path.read_text()
+    data = yaml.safe_load(raw)
+    if not isinstance(data, dict):
+        raise ConfigError("Config file must contain a YAML mapping")
+
+    if "projects" not in data or not isinstance(data.get("projects"), list):
+        data["projects"] = []
+
+    # Build the project entry — only include linear_project if non-empty
+    entry: dict = {
+        "name": project_dict["name"],
+        "linear_team": project_dict["linear_team"],
+        "base_dir": project_dict["base_dir"],
+        "worktree_prefix": project_dict["worktree_prefix"],
+        "slots": project_dict["slots"],
+    }
+    if project_dict.get("linear_project"):
+        entry["linear_project"] = project_dict["linear_project"]
+
+    data["projects"].append(entry)
+    write_yaml_atomic(config_path, data)
+
+
+@main.command("add-project")
+@click.option(
+    "--config",
+    "config_path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help="Path to config file (default: ~/.botfarm/config.yaml).",
+)
+def add_project(config_path):
+    """Interactively add a new project to the configuration."""
+    cfg_path = config_path or DEFAULT_CONFIG_PATH
+    console = Console()
+
+    if not cfg_path.exists():
+        raise click.ClickException(
+            f"Config file not found: {cfg_path}\n"
+            "Run 'botfarm init' first to create a default config."
+        )
+
+    # Load existing config to check for duplicate names
+    raw = cfg_path.read_text()
+    data = yaml.safe_load(raw) or {}
+    existing_projects = data.get("projects", [])
+    existing_names = {
+        p["name"] for p in existing_projects if isinstance(p, dict) and "name" in p
+    }
+
+    console.print("\n[bold]Add a new project to botfarm[/bold]\n")
+
+    # --- Prompt for fields ---
+    cwd = Path.cwd()
+
+    # base_dir
+    base_dir = click.prompt(
+        "Git repository path",
+        default=str(cwd),
+    )
+    base_dir = str(Path(base_dir).expanduser().resolve())
+
+    # name
+    default_name = Path(base_dir).name
+    name = click.prompt("Project name", default=default_name)
+
+    # Check duplicate names
+    if name in existing_names:
+        raise click.ClickException(
+            f"Project '{name}' already exists in config. Choose a different name."
+        )
+
+    # linear_team
+    linear_team = click.prompt("Linear team key (e.g., SMA)")
+
+    # worktree_prefix
+    default_prefix = f"{name}-slot-"
+    worktree_prefix = click.prompt(
+        "Worktree directory prefix",
+        default=default_prefix,
+    )
+
+    # slots
+    slots_input = click.prompt(
+        "Slot IDs (comma-separated)",
+        default="1",
+    )
+    try:
+        slots = [int(s.strip()) for s in slots_input.split(",")]
+        if len(slots) != len(set(slots)):
+            raise click.ClickException("Slot IDs must be unique.")
+    except ValueError:
+        raise click.ClickException(
+            f"Invalid slot IDs: {slots_input!r}. Must be comma-separated integers."
+        )
+
+    # linear_project (optional)
+    linear_project = click.prompt(
+        "Linear project filter (optional, press Enter to skip)",
+        default="",
+    )
+
+    project_dict = {
+        "name": name,
+        "linear_team": linear_team,
+        "base_dir": base_dir,
+        "worktree_prefix": worktree_prefix,
+        "slots": slots,
+        "linear_project": linear_project,
+    }
+
+    # --- Run validation ---
+    console.print("\n[bold]Validating...[/bold]")
+
+    has_errors = False
+
+    # Validate git repo
+    git_errors = _validate_project_dir(base_dir)
+    if git_errors:
+        has_errors = True
+        for err in git_errors:
+            console.print(f"  [red]FAIL[/red] {err}")
+    else:
+        console.print(f"  [green]OK[/green]   Git repository: {base_dir}")
+
+    # Validate worktree parent
+    wt_errors = _validate_worktree_parent(base_dir)
+    if wt_errors:
+        has_errors = True
+        for err in wt_errors:
+            console.print(f"  [red]FAIL[/red] {err}")
+    else:
+        base = Path(base_dir).expanduser().resolve()
+        console.print(f"  [green]OK[/green]   Worktree parent writable: {base.parent}")
+
+    if has_errors:
+        if not click.confirm(
+            "\nValidation failed. Add project anyway?", default=False
+        ):
+            console.print("Aborted.")
+            return
+
+    # --- Run readiness checks (non-blocking) ---
+    readiness = _run_readiness_checks(project_dict)
+    warnings = [r for r in readiness if r[0] == "warning"]
+    for level, msg in readiness:
+        if level == "ok":
+            console.print(f"  [green]OK[/green]   {msg}")
+        else:
+            console.print(f"  [yellow]WARN[/yellow] {msg}")
+
+    # --- Write to config ---
+    try:
+        _append_project_to_config(cfg_path, project_dict)
+    except (ConfigError, OSError) as exc:
+        raise click.ClickException(f"Failed to write config: {exc}") from exc
+
+    # --- Summary ---
+    console.print(f"\n[bold green]Project '{name}' added to {cfg_path}[/bold green]\n")
+    console.print("  Configuration:")
+    console.print(f"    name:            {name}")
+    console.print(f"    base_dir:        {base_dir}")
+    console.print(f"    linear_team:     {linear_team}")
+    console.print(f"    worktree_prefix: {worktree_prefix}")
+    console.print(f"    slots:           {slots}")
+    if linear_project:
+        console.print(f"    linear_project:  {linear_project}")
+
+    if warnings:
+        console.print(f"\n  [yellow]{len(warnings)} warning(s) — see above[/yellow]")
+
+    # Next steps
+    console.print("\n  Next steps:")
+    base = Path(base_dir).expanduser().resolve()
+    claude_md = base / "CLAUDE.md"
+    if not claude_md.exists():
+        console.print(
+            f"    - Create a CLAUDE.md: botfarm init-claude-md {base}"
+        )
+    console.print("    - Restart the supervisor to pick up changes")
 
 
 # ---------------------------------------------------------------------------
