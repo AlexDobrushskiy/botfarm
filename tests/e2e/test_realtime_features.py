@@ -494,9 +494,14 @@ class TestCountdownTimers:
             pytest.skip("No timestamp elements on page")
 
         # The JS should have converted ISO timestamps to "Xh ago" format
+        # (or "Mon DD" for timestamps older than 7 days)
         first_text = timestamps.first.inner_text()
         # After DOMContentLoaded, timeago() should have run
-        assert "ago" in first_text.lower() or "just now" in first_text.lower(), \
+        months = ["jan", "feb", "mar", "apr", "may", "jun",
+                  "jul", "aug", "sep", "oct", "nov", "dec"]
+        is_timeago = "ago" in first_text.lower() or "just now" in first_text.lower()
+        is_absolute = any(m in first_text.lower() for m in months)
+        assert is_timeago or is_absolute, \
             f"Expected timeago format, got: {first_text!r}"
 
     def test_countdown_updates_via_javascript(self, live_server, page):
