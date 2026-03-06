@@ -209,6 +209,81 @@ identities:
 
 All fields default to empty string. Environment variable expansion (`${VAR}`) works in all string fields.
 
+#### Why use separate identities?
+
+Without identity configuration, all PRs, commits, and review comments are posted under your personal GitHub account. This works fine for solo use, but has drawbacks for teams:
+
+- **PR review credibility** — when the same account creates a PR and approves it, GitHub shows the review as the author approving their own work. With separate coder/reviewer accounts, reviews appear as genuine third-party feedback.
+- **Audit trail** — separate accounts make it clear which actions came from the coder agent vs the reviewer agent in GitHub history and notifications.
+- **Access control** — you can scope each account's permissions independently (e.g. give the reviewer read-only repo access).
+
+If you only run a single slot with no review stage, you can skip identity setup entirely.
+
+#### How to create separate GitHub accounts
+
+You need two GitHub accounts: one for the coder and one for the reviewer.
+
+1. **Create the accounts.** Use separate email addresses (e.g. `coder-bot@yourcompany.com` and `reviewer-bot@yourcompany.com`). GitHub requires unique emails per account.
+
+2. **Add both accounts as collaborators** on your repository (Settings → Collaborators). The coder needs write access; the reviewer needs at least read access (write if you want it to post review comments via the API).
+
+3. **Generate a Personal Access Token (PAT)** for each account:
+   - Go to **Settings → Developer settings → Personal access tokens → Fine-grained tokens**
+   - Set the token to only access the specific repository/repositories botfarm manages
+   - Required permissions for the **coder** token: `Contents` (read/write), `Pull requests` (read/write), `Metadata` (read)
+   - Required permissions for the **reviewer** token: `Contents` (read), `Pull requests` (read/write), `Metadata` (read)
+
+4. **Generate an SSH key** for the coder account (used for git push):
+   ```bash
+   ssh-keygen -t ed25519 -f ~/.botfarm/coder_id_ed25519 -N "" -C "coder-bot"
+   chmod 600 ~/.botfarm/coder_id_ed25519
+   ```
+   Add the public key (`~/.botfarm/coder_id_ed25519.pub`) to the coder GitHub account under **Settings → SSH and GPG keys**.
+
+5. **Add tokens to your `.env` file** (`~/.botfarm/.env`):
+   ```
+   CODER_GITHUB_TOKEN=github_pat_xxxx
+   REVIEWER_GITHUB_TOKEN=github_pat_yyyy
+   ```
+
+#### Configuring identities in config.yaml
+
+Uncomment the `identities` section and fill in the values:
+
+```yaml
+identities:
+  coder:
+    github_token: ${CODER_GITHUB_TOKEN}
+    ssh_key_path: ~/.botfarm/coder_id_ed25519
+    git_author_name: "Coder Bot"
+    git_author_email: "coder-bot@yourcompany.com"
+  reviewer:
+    github_token: ${REVIEWER_GITHUB_TOKEN}
+```
+
+How each field is used:
+
+| Field | Effect |
+|---|---|
+| `coder.github_token` | Set as `GH_TOKEN` for `gh` CLI during implement/fix/merge stages |
+| `coder.ssh_key_path` | Used in `GIT_SSH_COMMAND` for git push (must be an absolute or `~`-prefixed path) |
+| `coder.git_author_name` | Set as `GIT_AUTHOR_NAME` and `GIT_COMMITTER_NAME` on commits |
+| `coder.git_author_email` | Set as `GIT_AUTHOR_EMAIL` and `GIT_COMMITTER_EMAIL` on commits |
+| `coder.linear_api_key` | Optional separate Linear key for the coder (rarely needed) |
+| `reviewer.github_token` | Set as `GH_TOKEN` for `gh` CLI during review stages |
+| `reviewer.linear_api_key` | Optional separate Linear key for the reviewer |
+
+You can configure identities incrementally — any field left empty falls back to the system-level default (your `gh auth` login, global git config, etc.).
+
+#### Preflight checks
+
+When identities are configured, `botfarm run` automatically validates them at startup:
+
+- SSH key file exists and has correct permissions (0600)
+- SSH key can connect to GitHub (`ssh -T git@github.com`)
+- GitHub tokens are valid (`gh auth status`)
+- Coder and reviewer tokens belong to different accounts
+
 ---
 
 ## Minimal Working Example
