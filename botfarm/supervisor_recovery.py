@@ -592,7 +592,7 @@ class RecoveryMixin:
                     "Worker result: %s/%d completed", wr.project, wr.slot_id,
                 )
             elif wr.limit_hit:
-                self._usage_poller.force_poll(self._conn)
+                self._usage_poller.force_poll(self._conn, bypass_cooldown=True)
                 self._handle_limit_hit(wr)
             else:
                 limit_detected = self._check_usage_api_for_limit()

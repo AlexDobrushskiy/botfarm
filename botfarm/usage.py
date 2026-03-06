@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import sqlite3
 import time
 from dataclasses import dataclass, field
@@ -34,6 +35,11 @@ TRANSIENT_EXCEPTIONS = (
     httpx.ConnectError,
     httpx.PoolTimeout,
 )
+
+# 429 rate-limit retry configuration
+RATE_LIMIT_BACKOFF_SECONDS = (5, 15, 30)  # exponential backoff for 429s
+MAX_ADAPTIVE_POLL_INTERVAL = 1800  # 30 minutes cap for adaptive interval
+FORCE_POLL_COOLDOWN = 30  # minimum seconds between force_poll API calls
 
 
 @dataclass
@@ -120,6 +126,9 @@ class UsagePoller:
     _last_poll: float = 0.0
     _last_polled_fresh: bool = field(default=False, repr=False)
     _client: httpx.AsyncClient | None = field(default=None, repr=False)
+    _consecutive_429s: int = field(default=0, repr=False)
+    _active_poll_interval: int | None = field(default=None, repr=False)
+    _last_force_poll: float = field(default=0.0, repr=False)
 
     @property
     def state(self) -> UsageState:
@@ -130,6 +139,11 @@ class UsagePoller:
         """Whether the most recent ``poll()`` call actually fetched new data."""
         return self._last_polled_fresh
 
+    @property
+    def effective_poll_interval(self) -> int:
+        """Return the current poll interval, which may be inflated due to 429s."""
+        return self._active_poll_interval if self._active_poll_interval is not None else self.poll_interval
+
     def poll(self, conn: sqlite3.Connection) -> UsageState:
         """Poll the usage API if the interval has elapsed.
 
@@ -137,7 +151,7 @@ class UsagePoller:
         Returns the current (possibly unchanged) usage state.
         """
         now = time.monotonic()
-        if now - self._last_poll < self.poll_interval:
+        if now - self._last_poll < self.effective_poll_interval:
             self._last_polled_fresh = False
             return self._state
 
@@ -146,9 +160,33 @@ class UsagePoller:
         self._do_poll(conn)
         return self._state
 
-    def force_poll(self, conn: sqlite3.Connection) -> UsageState:
-        """Poll immediately, ignoring the interval timer."""
-        self._last_poll = time.monotonic()
+    def force_poll(
+        self, conn: sqlite3.Connection, *, bypass_cooldown: bool = False
+    ) -> UsageState:
+        """Poll immediately, ignoring the interval timer.
+
+        Applies a cooldown of FORCE_POLL_COOLDOWN seconds to prevent
+        rapid-fire API calls when multiple callers invoke force_poll()
+        in quick succession.
+
+        Pass ``bypass_cooldown=True`` for safety-critical paths that need
+        a guaranteed fresh reading (e.g. limit checks, resume decisions).
+        """
+        now = time.monotonic()
+        if (
+            not bypass_cooldown
+            and self._last_force_poll > 0
+            and now - self._last_force_poll < FORCE_POLL_COOLDOWN
+        ):
+            logger.debug(
+                "force_poll() cooldown active (%.0fs remaining) — returning cached data",
+                FORCE_POLL_COOLDOWN - (now - self._last_force_poll),
+            )
+            self._last_polled_fresh = False
+            return self._state
+
+        self._last_poll = now
+        self._last_force_poll = now
         self._last_polled_fresh = True
         self._do_poll(conn)
         return self._state
@@ -176,7 +214,10 @@ class UsagePoller:
         try:
             data = self._fetch(token)
         except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 401:
+            if exc.response.status_code == 429:
+                self._handle_429()
+                return
+            elif exc.response.status_code == 401:
                 logger.warning("Usage API returned 401 — refreshing token")
                 token = self.credential_manager.refresh_token()
                 if token is None:
@@ -197,9 +238,37 @@ class UsagePoller:
             logger.exception("Usage API call failed — using last known values")
             return
 
+        self._reset_rate_limit_state()
         self._parse_and_store(data, conn)
         self._purge_old_snapshots(conn)
         conn.commit()
+
+    def _handle_429(self) -> None:
+        """Handle a 429 rate-limit response by increasing the poll interval."""
+        self._consecutive_429s += 1
+        new_interval = min(
+            self.poll_interval * (2 ** self._consecutive_429s),
+            MAX_ADAPTIVE_POLL_INTERVAL,
+        )
+        self._active_poll_interval = new_interval
+        logger.warning(
+            "Usage API returned 429 (consecutive: %d) — "
+            "increasing poll interval to %ds",
+            self._consecutive_429s,
+            new_interval,
+        )
+
+    def _reset_rate_limit_state(self) -> None:
+        """Reset adaptive poll interval after a successful API response."""
+        if self._consecutive_429s > 0:
+            logger.info(
+                "Usage API recovered after %d consecutive 429(s) — "
+                "resetting poll interval to %ds",
+                self._consecutive_429s,
+                self.poll_interval,
+            )
+            self._consecutive_429s = 0
+            self._active_poll_interval = None
 
     def _fetch(self, token: str) -> dict:
         """Call the usage API synchronously via asyncio, with retry for transient errors."""
@@ -207,12 +276,35 @@ class UsagePoller:
         return loop.run_until_complete(self._fetch_with_retry(token))
 
     async def _fetch_with_retry(self, token: str) -> dict:
-        """Fetch usage data, retrying on transient connection errors."""
+        """Fetch usage data, retrying on transient connection errors and 429s."""
         client = self._get_client()
         last_exc: Exception | None = None
         for attempt in range(MAX_RETRIES):
             try:
                 return await fetch_usage(token, client=client)
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 429:
+                    last_exc = exc
+                    if attempt < MAX_RETRIES - 1:
+                        delay = _get_429_delay(exc, attempt)
+                        logger.warning(
+                            "Usage API returned 429 (attempt %d/%d) — "
+                            "retrying in %.1fs%s",
+                            attempt + 1,
+                            MAX_RETRIES,
+                            delay,
+                            _retry_after_log(exc),
+                        )
+                        await asyncio.sleep(delay)
+                    else:
+                        logger.warning(
+                            "Usage API returned 429 (attempt %d/%d) — "
+                            "all retries exhausted",
+                            attempt + 1,
+                            MAX_RETRIES,
+                        )
+                else:
+                    raise
             except TRANSIENT_EXCEPTIONS as exc:
                 last_exc = exc
                 if attempt < MAX_RETRIES - 1:
@@ -309,6 +401,27 @@ def refresh_usage_snapshot(conn: sqlite3.Connection) -> UsageState | None:
     if poller.last_polled_fresh and poller.state.utilization_5h is not None:
         return poller.state
     return None
+
+
+def _get_429_delay(exc: httpx.HTTPStatusError, attempt: int) -> float:
+    """Compute the delay for a 429 retry, respecting Retry-After if present."""
+    retry_after = exc.response.headers.get("retry-after")
+    if retry_after is not None:
+        try:
+            return max(float(retry_after), 1.0)
+        except (ValueError, TypeError):
+            pass
+    base = RATE_LIMIT_BACKOFF_SECONDS[min(attempt, len(RATE_LIMIT_BACKOFF_SECONDS) - 1)]
+    jitter = random.uniform(0, base * 0.25)
+    return base + jitter
+
+
+def _retry_after_log(exc: httpx.HTTPStatusError) -> str:
+    """Return a log suffix describing the Retry-After header, if present."""
+    retry_after = exc.response.headers.get("retry-after")
+    if retry_after is not None:
+        return f" (Retry-After: {retry_after})"
+    return ""
 
 
 def _get_or_create_event_loop() -> asyncio.AbstractEventLoop:
