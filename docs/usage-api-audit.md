@@ -114,12 +114,13 @@ hashlib.sha256(token[-8:].encode()).hexdigest()[:16]
 
 ```
 active ──(error)──> erroring ──(3rd consecutive error)──> blocked
-                       |                                     |
-                       |──(success)──> recovered             |──(success)──> recovered
-                       |                                     |
-                       └──(new key)──> replaced              └──(new key)──> replaced
-
-(new key appears → old key marked replaced)
+  │                    │  ▲                                  │
+  │                    │  └──────────(error)─────────────────┤
+  │                    │──(success)──> recovered ◄──(success)─┘
+  │                    │                  │
+  └──(new key)─┐      └──(new key)─┐     └──(new key)──> replaced
+               ▼                   ▼          └──(error)──> erroring
+             replaced           replaced
 ```
 
 **State definitions:**
@@ -221,12 +222,15 @@ GROUP BY caller ORDER BY total_calls DESC;
 ### Time from first use to first error per key
 
 ```sql
-SELECT token_fingerprint,
-       total_successes AS successes_before_trouble,
-       first_seen_at, first_error_at,
-       (julianday(first_error_at) - julianday(first_seen_at)) * 24 AS hours_until_first_error
-FROM usage_api_key_sessions
-WHERE first_error_at IS NOT NULL;
+SELECT ks.token_fingerprint,
+       (SELECT COUNT(*) FROM usage_api_calls c
+        WHERE c.token_fingerprint = ks.token_fingerprint
+          AND c.success = 1
+          AND c.created_at < ks.first_error_at) AS successes_before_trouble,
+       ks.first_seen_at, ks.first_error_at,
+       (julianday(ks.first_error_at) - julianday(ks.first_seen_at)) * 24 AS hours_until_first_error
+FROM usage_api_key_sessions ks
+WHERE ks.first_error_at IS NOT NULL;
 ```
 
 ### Error rate by hour (spot degradation trends)
