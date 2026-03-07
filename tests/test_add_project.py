@@ -54,7 +54,7 @@ def _isolate_env(monkeypatch, tmp_path):
     monkeypatch.setattr("botfarm.cli.ENV_FILE_PATH", tmp_path / "nonexistent.env")
 
 
-def _make_mock_run(tmp_path):
+def _make_mock_run():
     """Create a subprocess.run mock that simulates git clone and worktree add."""
 
     def mock_run(cmd, **kwargs):
@@ -272,7 +272,7 @@ class TestAddProjectCommand:
             {"id": "p2", "name": "Other project"},
         ]
 
-        with patch("botfarm.cli.subprocess.run", side_effect=_make_mock_run(tmp_path)), \
+        with patch("botfarm.cli.subprocess.run", side_effect=_make_mock_run()), \
              patch("botfarm.cli.LinearClient", return_value=mock_client):
             result = runner.invoke(
                 main,
@@ -296,7 +296,7 @@ class TestAddProjectCommand:
         monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_DIR", tmp_path / ".botfarm")
         monkeypatch.delenv("LINEAR_API_KEY", raising=False)
 
-        with patch("botfarm.cli.subprocess.run", side_effect=_make_mock_run(tmp_path)):
+        with patch("botfarm.cli.subprocess.run", side_effect=_make_mock_run()):
             result = runner.invoke(
                 main,
                 ["add-project", "--config", str(config_path)],
@@ -359,7 +359,7 @@ class TestAddProjectCommand:
         monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_DIR", tmp_path / ".botfarm")
         monkeypatch.delenv("LINEAR_API_KEY", raising=False)
 
-        with patch("botfarm.cli.subprocess.run", side_effect=_make_mock_run(tmp_path)):
+        with patch("botfarm.cli.subprocess.run", side_effect=_make_mock_run()):
             result = runner.invoke(
                 main,
                 ["add-project", "--config", str(config_path)],
@@ -379,7 +379,7 @@ class TestAddProjectCommand:
         monkeypatch.delenv("LINEAR_API_KEY", raising=False)
 
         worktree_cmds = []
-        original_mock = _make_mock_run(tmp_path)
+        original_mock = _make_mock_run()
 
         def tracking_run(cmd, **kwargs):
             if isinstance(cmd, list) and "worktree" in cmd:
@@ -411,7 +411,7 @@ class TestAddProjectCommand:
         mock_client = MagicMock()
         mock_client.list_teams.side_effect = LinearAPIError("connection failed")
 
-        with patch("botfarm.cli.subprocess.run", side_effect=_make_mock_run(tmp_path)), \
+        with patch("botfarm.cli.subprocess.run", side_effect=_make_mock_run()), \
              patch("botfarm.cli.LinearClient", return_value=mock_client):
             result = runner.invoke(
                 main,
@@ -434,7 +434,7 @@ class TestAddProjectCommand:
         monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_DIR", tmp_path / ".botfarm")
         monkeypatch.delenv("LINEAR_API_KEY", raising=False)
 
-        with patch("botfarm.cli.subprocess.run", side_effect=_make_mock_run(tmp_path)), \
+        with patch("botfarm.cli.subprocess.run", side_effect=_make_mock_run()), \
              patch("botfarm.cli._run_readiness_checks", return_value=[
                  ("warning", "No CLAUDE.md"),
              ]) as mock_readiness:
@@ -448,13 +448,54 @@ class TestAddProjectCommand:
         assert mock_readiness.called
         assert "WARN" in result.output
 
+    def test_partial_worktree_failure_cleanup(
+        self, runner, config_dir, tmp_path, monkeypatch
+    ):
+        """Test cleanup when worktree #2 of 3 fails — repo and worktree #1 are removed."""
+        _, config_path = config_dir
+        monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_DIR", tmp_path / ".botfarm")
+        monkeypatch.delenv("LINEAR_API_KEY", raising=False)
+
+        worktree_call_count = 0
+        base_mock = _make_mock_run()
+
+        def fail_second_worktree(cmd, **kwargs):
+            nonlocal worktree_call_count
+            if isinstance(cmd, list) and "worktree" in cmd and "add" in cmd:
+                worktree_call_count += 1
+                if worktree_call_count == 2:
+                    result = MagicMock()
+                    result.returncode = 1
+                    result.stderr = "fatal: worktree error"
+                    result.stdout = ""
+                    return result
+            return base_mock(cmd, **kwargs)
+
+        with patch("botfarm.cli.subprocess.run", side_effect=fail_second_worktree):
+            result = runner.invoke(
+                main,
+                ["add-project", "--config", str(config_path)],
+                input="git@github.com:user/cleanup-test.git\ncleanup-test\nSMA\n\n3\ny\n",
+            )
+
+        assert result.exit_code != 0
+        # The projects dir was freshly created, so the entire dir should be removed
+        projects_dir = tmp_path / ".botfarm" / "projects" / "cleanup-test"
+        assert not projects_dir.exists(), (
+            f"Expected {projects_dir} to be cleaned up after partial worktree failure"
+        )
+        # Config should NOT have the failed project
+        config = yaml.safe_load(config_path.read_text())
+        project_names = [p["name"] for p in config["projects"]]
+        assert "cleanup-test" not in project_names
+
     def test_suggests_init_claude_md(self, runner, config_dir, tmp_path, monkeypatch):
         """Test that init-claude-md is suggested when CLAUDE.md is missing."""
         _, config_path = config_dir
         monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_DIR", tmp_path / ".botfarm")
         monkeypatch.delenv("LINEAR_API_KEY", raising=False)
 
-        with patch("botfarm.cli.subprocess.run", side_effect=_make_mock_run(tmp_path)):
+        with patch("botfarm.cli.subprocess.run", side_effect=_make_mock_run()):
             result = runner.invoke(
                 main,
                 ["add-project", "--config", str(config_path)],

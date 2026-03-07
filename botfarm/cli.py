@@ -1186,7 +1186,7 @@ def add_project(config_path):
             "name": name,
             "linear_team": linear_team,
             "base_dir": str(repo_dir),
-            "worktree_prefix": str(projects_dir) + "/" + worktree_prefix,
+            "worktree_prefix": str(projects_dir / worktree_prefix),
             "slots": slots,
             "linear_project": linear_project,
         }
