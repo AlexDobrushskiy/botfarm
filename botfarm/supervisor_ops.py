@@ -1206,7 +1206,7 @@ Note: The supervisor handles status transitions automatically — do not move th
     def _handle_add_slot_requests(self) -> None:
         """Drain pending add-slot requests and execute each."""
         with self._add_slot_lock:
-            requests = list(self._add_slot_requests)
+            requests = list(dict.fromkeys(self._add_slot_requests))
             self._add_slot_requests.clear()
         for project_name in requests:
             try:
@@ -1242,14 +1242,6 @@ Note: The supervisor handles status transitions automatically — do not move th
         new_slot_id = max(existing_ids) + 1 if existing_ids else 1
 
         worktree_path = self._slot_worktree_cwd(project_cfg, new_slot_id)
-
-        # Idempotency: if slot already exists, return success
-        if self._slot_manager.get_slot(project_name, new_slot_id) is not None:
-            logger.info(
-                "Slot %s/%d already exists — skipping add",
-                project_name, new_slot_id,
-            )
-            return new_slot_id
 
         # Validate worktree path doesn't already exist
         wt_path = Path(worktree_path)
@@ -1299,34 +1291,52 @@ Note: The supervisor handles status transitions automatically — do not move th
                 placeholder, exc.stderr.strip(),
             )
 
-        # Register with SlotManager
-        self._slot_manager.register_slot(project_name, new_slot_id)
-        self._slot_manager.save()
+        # Persist config, register slot, and log event — with rollback on failure
+        try:
+            # Persist to config.yaml first (source of truth on restart)
+            config_path = self._config.source_path
+            if config_path:
+                updated_slots = project_cfg.slots + [new_slot_id]
+                write_structural_config_updates(
+                    Path(config_path),
+                    {"projects": [{"name": project_name, "slots": updated_slots}]},
+                )
 
-        # Persist to config.yaml
-        config_path = self._config.source_path
-        if config_path:
-            updated_slots = project_cfg.slots + [new_slot_id]
-            write_structural_config_updates(
-                Path(config_path),
-                {"projects": [{"name": project_name, "slots": updated_slots}]},
+            # Register with SlotManager
+            self._slot_manager.register_slot(project_name, new_slot_id)
+            self._slot_manager.save()
+
+            # Update in-memory config
+            if new_slot_id not in project_cfg.slots:
+                project_cfg.slots.append(new_slot_id)
+
+            # Log event
+            insert_event(
+                self._conn,
+                event_type="slot_added",
+                detail=json.dumps({
+                    "project": project_name,
+                    "slot_id": new_slot_id,
+                    "worktree": worktree_path,
+                }),
             )
-
-        # Update in-memory config
-        if new_slot_id not in project_cfg.slots:
-            project_cfg.slots.append(new_slot_id)
-
-        # Log event
-        insert_event(
-            self._conn,
-            event_type="slot_added",
-            detail=json.dumps({
-                "project": project_name,
-                "slot_id": new_slot_id,
-                "worktree": worktree_path,
-            }),
-        )
-        self._conn.commit()
+            self._conn.commit()
+        except Exception:
+            # Clean up orphaned worktree
+            try:
+                subprocess.run(
+                    ["git", "worktree", "remove", "--force", worktree_path],
+                    cwd=base_dir,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to clean up worktree %s after add_slot failure",
+                    worktree_path,
+                )
+            raise
 
         logger.info(
             "Added slot %s/%d with worktree at %s",

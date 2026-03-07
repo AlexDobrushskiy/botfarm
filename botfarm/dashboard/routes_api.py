@@ -194,13 +194,13 @@ async def api_add_slot(request: Request):
     if not isinstance(body, dict):
         return JSONResponse({"error": "Expected a JSON object"}, status_code=400)
     project = body.get("project", "")
-    if not project:
-        return JSONResponse(
-            {"error": "project is required"}, status_code=400,
-        )
     if not isinstance(project, str):
         return JSONResponse(
             {"error": "project must be a string"}, status_code=400,
+        )
+    if not project:
+        return JSONResponse(
+            {"error": "project is required"}, status_code=400,
         )
     cb(project)
     return JSONResponse({

@@ -2267,6 +2267,17 @@ class TestRequestAddSlot:
 
         mock_add.assert_called_once_with("test-project")
 
+    def test_handle_add_slot_requests_deduplicates_by_project(self, supervisor):
+        """Duplicate project names in the queue are deduplicated."""
+        supervisor.request_add_slot("test-project")
+        supervisor.request_add_slot("test-project")
+        supervisor.request_add_slot("test-project")
+
+        with patch.object(supervisor, "add_slot", return_value=3) as mock_add:
+            supervisor._handle_add_slot_requests()
+
+        mock_add.assert_called_once_with("test-project")
+
     def test_handle_add_slot_requests_error_does_not_crash(self, supervisor):
         """Errors in add_slot are caught and logged."""
         supervisor.request_add_slot("test-project")
@@ -2433,6 +2444,45 @@ class TestAddSlot:
                 supervisor.add_slot("test-project")
 
         # Slot should NOT be registered after failure
+        slot = supervisor._slot_manager.get_slot("test-project", 3)
+        assert slot is None
+
+    def test_add_slot_cleans_up_worktree_on_post_create_failure(self, supervisor):
+        """If config persistence fails after worktree creation, worktree is cleaned up."""
+        import subprocess as _sp
+        project_cfg = supervisor._projects["test-project"]
+        worktree_parent = Path(project_cfg.base_dir).parent
+        worktree_parent.mkdir(parents=True, exist_ok=True)
+
+        call_count = 0
+
+        def mock_subprocess_run(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 2:
+                # First two calls: worktree add + placeholder branch — succeed
+                return MagicMock(returncode=0)
+            # Third call: worktree remove cleanup — succeed
+            return MagicMock(returncode=0)
+
+        with (
+            patch("botfarm.supervisor_ops.subprocess.run", side_effect=mock_subprocess_run) as mock_run,
+            patch(
+                "botfarm.config.write_structural_config_updates",
+                side_effect=OSError("disk full"),
+            ),
+        ):
+            supervisor._config.source_path = "/fake/config.yaml"
+            with pytest.raises(OSError, match="disk full"):
+                supervisor.add_slot("test-project")
+
+        # The third subprocess call should be worktree remove cleanup
+        assert call_count == 3
+        cleanup_call = mock_run.call_args_list[2]
+        cleanup_args = cleanup_call[0][0]
+        assert cleanup_args[0:3] == ["git", "worktree", "remove"]
+
+        # Slot should NOT be registered
         slot = supervisor._slot_manager.get_slot("test-project", 3)
         assert slot is None
 

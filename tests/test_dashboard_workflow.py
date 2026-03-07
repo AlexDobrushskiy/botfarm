@@ -2138,7 +2138,7 @@ class TestAddSlotAPI:
             on_add_slot=lambda p: None,
         )
         client = TestClient(app)
-        for payload in [1, ["a"], {"x": 1}, True]:
+        for payload in [1, ["a"], {"x": 1}, True, 0, False]:
             resp = client.post("/api/slot/add", json={"project": payload})
             assert resp.status_code == 400, f"Expected 400 for project={payload!r}"
             assert "project must be a string" in resp.json()["error"]
