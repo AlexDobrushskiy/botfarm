@@ -405,6 +405,70 @@
             color: #fff !important;
         }
 
+        /* Toast notifications */
+        .toast-container {
+            position: fixed;
+            top: 1rem;
+            right: 1rem;
+            z-index: 9998;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+        .toast {
+            padding: 0.6rem 1rem;
+            border-radius: var(--pico-border-radius);
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: #fff;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+            animation: toast-in 0.25s ease-out;
+            max-width: 22rem;
+        }
+        .toast-success { background: #22c55e; }
+        .toast-error { background: var(--pico-del-color); }
+        @keyframes toast-in {
+            from { opacity: 0; transform: translateX(1rem); }
+            to { opacity: 1; transform: translateX(0); }
+        }
+
+        /* Add slot button */
+        .add-slot-btn {
+            padding: 0.2rem 0.6rem;
+            border-radius: var(--pico-border-radius);
+            border: 1px solid var(--pico-ins-color);
+            background: transparent;
+            color: var(--pico-ins-color);
+            cursor: pointer;
+            font-size: 0.75rem;
+            font-weight: 600;
+            line-height: 1.4;
+            transition: background 0.15s ease, color 0.15s ease;
+        }
+        .add-slot-btn:hover {
+            background: var(--pico-ins-color);
+            color: #fff;
+        }
+        .add-slot-btn:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
+        .add-slot-btn:disabled:hover {
+            background: transparent;
+            color: var(--pico-ins-color);
+        }
+        .slot-project-actions {
+            display: flex;
+            gap: 0.5rem;
+            align-items: center;
+            margin-bottom: 0.5rem;
+            flex-wrap: wrap;
+        }
+        .slot-project-actions span {
+            font-size: 0.8rem;
+            color: var(--pico-muted-color);
+        }
+
         /* Failure reason truncation */
         .failure-reason { max-width: 600px; }
         .failure-reason details summary {
@@ -830,6 +894,7 @@
             <li><a href="/health"{% if active_page == "health" %} aria-current="page"{% endif %}>Health</a></li>
         </ul>
     </nav>
+    <div id="toast-container" class="toast-container"></div>
     <div id="connection-lost-banner" class="connection-lost-banner" role="alert">
         <span class="connection-lost-dot"></span>
         <span id="connection-lost-text">Connection lost — Reconnecting…</span>
@@ -839,6 +904,20 @@
         </div>
         {% block content %}{% endblock %}
     </main>
+    <script>
+    function showToast(message, type) {
+        var container = document.getElementById("toast-container");
+        var toast = document.createElement("div");
+        toast.className = "toast toast-" + (type || "success");
+        toast.textContent = message;
+        container.appendChild(toast);
+        setTimeout(function() {
+            toast.style.opacity = "0";
+            toast.style.transition = "opacity 0.3s ease";
+            setTimeout(function() { toast.remove(); }, 300);
+        }, 3000);
+    }
+    </script>
     <script>
     (function() {
         var state = { disconnected: false, failCount: 0, lastRetryAt: 0, lastErrorAt: 0 };

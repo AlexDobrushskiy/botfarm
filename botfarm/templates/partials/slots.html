@@ -14,6 +14,30 @@
 {% endfor %}
 {% endif %}
 
+{% set all_projects = [] %}
+{% for slot in slots %}
+{% if slot.project not in all_projects %}
+{% if all_projects.append(slot.project) %}{% endif %}
+{% endif %}
+{% endfor %}
+{% if projects is defined %}
+{% for p in projects %}
+{% if p not in all_projects %}
+{% if all_projects.append(p) %}{% endif %}
+{% endif %}
+{% endfor %}
+{% endif %}
+
+{% if all_projects %}
+<div class="slot-project-actions">
+    {% for project in all_projects | sort %}
+    <button class="add-slot-btn"
+            onclick='addSlot({{ project | tojson }})'
+            {% if not supervisor.running or dispatch_paused %}disabled title="Supervisor not running or dispatch paused"{% else %}title="Add a new slot to {{ project }}"{% endif %}>+ Add Slot ({{ project }})</button>
+    {% endfor %}
+</div>
+{% endif %}
+
 {% if slots %}
 <figure>
 <table>
