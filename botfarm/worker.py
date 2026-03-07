@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import sqlite3
+import subprocess
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -46,6 +47,7 @@ from botfarm.worker_claude import (
     parse_stream_json_result as parse_stream_json_result,
 )
 from botfarm.worker_stages import (
+    _check_pr_has_merge_conflict,
     _execute_stage,
     _is_investigation,
     _is_merge_conflict,
@@ -223,6 +225,97 @@ class PipelineResult:
     result_text: str | None = None
 
 
+def _merge_main_before_retry_resume(
+    cwd: str | Path,
+    pr_url: str,
+    *,
+    env: dict[str, str] | None = None,
+) -> bool:
+    """Check out the PR branch, merge main into it, and push.
+
+    Called before resuming a retry pipeline so the branch is up to date.
+    Returns True on success, False if the merge had conflicts (branch is
+    checked out at the PR ref so the resumed pipeline stage can handle it).
+
+    Raises RuntimeError if the PR branch cannot be checked out at all —
+    the caller should abort the pipeline rather than continue on the
+    wrong branch.
+    """
+    subprocess_env = {**os.environ, **(env or {})}
+    cwd_str = str(cwd)
+
+    # Get the branch name from the PR
+    try:
+        proc = subprocess.run(
+            ["gh", "pr", "view", pr_url, "--json", "headRefName", "--jq", ".headRefName"],
+            capture_output=True, text=True, cwd=cwd_str, env=subprocess_env, timeout=30,
+        )
+        if proc.returncode != 0 or not proc.stdout.strip():
+            raise RuntimeError(f"Could not determine PR branch from {pr_url}")
+        branch = proc.stdout.strip()
+    except (subprocess.TimeoutExpired, OSError) as e:
+        raise RuntimeError(f"Failed to get PR branch from {pr_url}: {e}") from e
+
+    try:
+        # Fetch all refs
+        subprocess.run(
+            ["git", "fetch", "origin"],
+            cwd=cwd_str, env=subprocess_env, check=True,
+            capture_output=True, timeout=60,
+        )
+
+        # Check out the PR branch (reset to remote state)
+        subprocess.run(
+            ["git", "checkout", "-B", branch, f"origin/{branch}"],
+            cwd=cwd_str, env=subprocess_env, check=True,
+            capture_output=True, timeout=30,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        raise RuntimeError(f"Failed to check out PR branch {branch}: {e}") from e
+
+    # -- Branch is now checked out. Merge/push failures below are
+    #    non-fatal: the pipeline can proceed on the checked-out branch. --
+
+    try:
+        result = subprocess.run(
+            ["git", "merge", "origin/main", "--no-edit"],
+            cwd=cwd_str, env=subprocess_env,
+            capture_output=True, text=True, timeout=120,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning("Merge of main into %s timed out", branch)
+        subprocess.run(
+            ["git", "merge", "--abort"],
+            cwd=cwd_str, env=subprocess_env, capture_output=True, timeout=30,
+        )
+        return False
+
+    if result.returncode != 0:
+        subprocess.run(
+            ["git", "merge", "--abort"],
+            cwd=cwd_str, env=subprocess_env, capture_output=True, timeout=30,
+        )
+        logger.warning(
+            "Merge conflict when merging main into %s — pipeline will handle it",
+            branch,
+        )
+        return False
+
+    # Push the merged result
+    try:
+        subprocess.run(
+            ["git", "push", "origin", branch],
+            cwd=cwd_str, env=subprocess_env, check=True,
+            capture_output=True, timeout=60,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        logger.warning("Failed to push merged branch %s — continuing anyway", branch)
+        return False
+
+    logger.info("Successfully merged main into %s and pushed", branch)
+    return True
+
+
 def run_pipeline(
     *,
     ticket_id: str,
@@ -251,6 +344,8 @@ def run_pipeline(
     codex_reviewer_reasoning_effort: str = "medium",
     codex_reviewer_timeout_minutes: int = 15,
     codex_reviewer_skip_on_reiteration: bool = True,
+    prior_context: str = "",
+    merge_main_before_resume: bool = False,
 ) -> PipelineResult:
     """Execute the full implement→review→fix→pr_checks→merge pipeline.
 
@@ -314,11 +409,28 @@ def run_pipeline(
         _record_failure(conn, task_id, pipeline)
         return pipeline
 
-    # When resuming, recover PR URL from existing stage_runs
+    # When resuming, recover PR URL — check task DB first (retry resume
+    # preserves it), then fall back to gh pr view (limit-pause resume).
     if resume_from_stage:
-        pr_url = _recover_pr_url(conn, task_id, cwd, env=coder_env)
+        task_row = get_task(conn, task_id)
+        pr_url = (task_row["pr_url"] if task_row else None) or _recover_pr_url(
+            conn, task_id, cwd, env=coder_env,
+        )
         if pr_url:
             pipeline.pr_url = pr_url
+
+        # On retry resume, check out the PR branch and merge main.
+        # RuntimeError means the branch couldn't be checked out — hard-fail
+        # rather than running mid-pipeline stages on the wrong branch.
+        if merge_main_before_resume and pr_url:
+            try:
+                _merge_main_before_retry_resume(cwd, pr_url, env=coder_env)
+            except RuntimeError as e:
+                logger.warning("Pre-resume branch setup failed: %s", e)
+                pipeline.failure_stage = resume_from_stage
+                pipeline.failure_reason = f"Pre-resume branch setup failed: {e}"
+                _record_failure(conn, task_id, pipeline)
+                return pipeline
 
     # Determine which stages to skip when resuming
     skipping = resume_from_stage is not None
@@ -363,6 +475,7 @@ def run_pipeline(
         max_ci_retries=eff_max_ci_retries,
         max_merge_conflict_retries=eff_max_merge_conflict_retries,
         _refreshable_limits=_compute_refreshable_limits(pipeline_tpl),
+        prior_context=prior_context,
     )
 
     # Build main-stage list: skip loop-managed stages (they're handled
@@ -621,6 +734,9 @@ def _dispatch_pipeline_stage(
         )
 
     # ----- Merge with conflict retry loop -----
+    if stage == "merge" and "merge" in ctx.pipeline.stages_completed:
+        return False, pr_url
+
     if stage == "merge":
         return _handle_merge_stage(
             ctx,
@@ -684,6 +800,40 @@ def _handle_fix_resume(
     return False
 
 
+def _try_conflict_resolution(
+    ctx: "_PipelineContext",
+    pr_url: str,
+    log_msg: str,
+) -> tuple[bool, str | None] | None:
+    """Check for merge conflict and attempt resolution if found.
+
+    Returns ``(should_stop, pr_url)`` when a conflict was detected,
+    or ``None`` to let the caller fall through to other logic.
+    """
+    if not _check_pr_has_merge_conflict(
+        pr_url, ctx.cwd,
+        env={**os.environ, **(ctx.coder_env or {})},
+    ):
+        return None
+
+    ctx._refresh_runtime_config()
+    if ctx.max_merge_conflict_retries <= 0:
+        return True, pr_url  # conflict retries disabled — fail
+
+    logger.info(log_msg, ctx.ticket_id)
+    _reset_for_retry(ctx)
+    success = _run_merge_conflict_loop(
+        ctx,
+        pr_url=pr_url,
+        max_retries=ctx.max_merge_conflict_retries,
+    )
+    if not success:
+        return True, pr_url
+    if "pr_checks" not in ctx.pipeline.stages_completed:
+        ctx.pipeline.stages_completed.append("pr_checks")
+    return False, pr_url
+
+
 def _handle_pr_checks_stage(
     ctx: "_PipelineContext",
     *,
@@ -698,6 +848,18 @@ def _handle_pr_checks_stage(
     if result is not None:
         return False, pr_url  # CI passed on first try
 
+    # Check if the failure is due to merge conflicts.
+    # When pr_checks detects a merge conflict (pre-check or "no checks reported"
+    # because GitHub won't run CI on conflicting PRs), route to the conflict
+    # resolution flow instead of wasting ci_fix retries.
+    if pr_url:
+        conflict_result = _try_conflict_resolution(
+            ctx, pr_url,
+            "pr_checks failed due to merge conflict for %s — entering conflict resolution",
+        )
+        if conflict_result is not None:
+            return conflict_result
+
     # Re-read in case the budget was changed while pr_checks was running
     ctx._refresh_runtime_config()
     eff_max_ci_retries = ctx.max_ci_retries
@@ -711,11 +873,22 @@ def _handle_pr_checks_stage(
             ci_failure_output=ci_failure_output,
             max_retries=eff_max_ci_retries,
         )
-        if not success:
-            return True, pr_url
-        if "pr_checks" not in ctx.pipeline.stages_completed:
-            ctx.pipeline.stages_completed.append("pr_checks")
-        return False, pr_url
+        if success:
+            if "pr_checks" not in ctx.pipeline.stages_completed:
+                ctx.pipeline.stages_completed.append("pr_checks")
+            return False, pr_url
+
+        # CI retries exhausted — check if a merge conflict developed
+        # during the ci_fix loop (e.g. another PR merged to main).
+        if pr_url:
+            conflict_result = _try_conflict_resolution(
+                ctx, pr_url,
+                "Merge conflict detected after CI retries for %s — entering conflict resolution",
+            )
+            if conflict_result is not None:
+                return conflict_result
+
+        return True, pr_url
 
     # No retries configured — fail
     return True, pr_url
@@ -856,6 +1029,17 @@ def _run_merge_conflict_loop(
         # --- RE-RUN PR_CHECKS ---
         checks_result = ctx.run_and_record("pr_checks", pr_url=pr_url, iteration=retry)
         if checks_result is None:
+            # Check if this pr_checks failure is due to a merge conflict
+            # (e.g. another PR merged to main during review). If so,
+            # continue to the next conflict retry instead of entering
+            # the CI fix path (which can't resolve conflicts).
+            if pr_url and _check_pr_has_merge_conflict(
+                pr_url, ctx.cwd,
+                env={**os.environ, **(ctx.coder_env or {})},
+            ):
+                _reset_for_retry(ctx)
+                continue
+
             # CI failed — attempt CI retries within this conflict retry
             if ctx.max_ci_retries > 0:
                 ci_failure_output = ctx.pipeline.failure_reason or "CI checks failed"
@@ -867,6 +1051,14 @@ def _run_merge_conflict_loop(
                     max_retries=ctx.max_ci_retries,
                 )
                 if not ci_success:
+                    # CI retries exhausted — check if a merge conflict
+                    # developed during CI fixes.
+                    if pr_url and _check_pr_has_merge_conflict(
+                        pr_url, ctx.cwd,
+                        env={**os.environ, **(ctx.coder_env or {})},
+                    ):
+                        _reset_for_retry(ctx)
+                        continue
                     return False
             else:
                 return False
@@ -1047,6 +1239,7 @@ class _PipelineContext:
     _refreshable_limits: frozenset[str] = field(
         default_factory=lambda: frozenset({"max_review_iterations", "max_ci_retries", "max_merge_conflict_retries"}),
     )
+    prior_context: str = ""
 
     def _refresh_runtime_config(self) -> None:
         """Re-read runtime config from DB and update mutable fields.
@@ -1329,6 +1522,7 @@ class _PipelineContext:
                 on_context_fill=on_context_fill,
                 stage_tpl=stage_tpl,
                 shared_mem_path=self.shared_mem_path,
+                prior_context=self.prior_context,
                 **codex_kwargs,
             )
         except Exception as exc:

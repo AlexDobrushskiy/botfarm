@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import random
 import sqlite3
 import time
 from dataclasses import dataclass, field
@@ -38,8 +37,6 @@ TRANSIENT_EXCEPTIONS = (
     httpx.PoolTimeout,
 )
 
-# 429 rate-limit retry configuration
-RATE_LIMIT_BACKOFF_SECONDS = (5, 15, 30)  # exponential backoff for 429s
 MAX_ADAPTIVE_POLL_INTERVAL = 1800  # 30 minutes cap for adaptive interval
 FORCE_POLL_COOLDOWN = 30  # minimum seconds between force_poll API calls
 
@@ -162,6 +159,14 @@ class UsagePoller:
         self._do_poll(conn)
         return self._state
 
+    @property
+    def in_429_backoff(self) -> bool:
+        """Return True if we're in a 429 adaptive backoff period."""
+        if self._consecutive_429s <= 0:
+            return False
+        elapsed = time.monotonic() - self._last_poll
+        return elapsed < self.effective_poll_interval
+
     def force_poll(
         self, conn: sqlite3.Connection, *, bypass_cooldown: bool = False
     ) -> UsageState:
@@ -173,8 +178,22 @@ class UsagePoller:
 
         Pass ``bypass_cooldown=True`` for safety-critical paths that need
         a guaranteed fresh reading (e.g. limit checks, resume decisions).
+
+        Even with ``bypass_cooldown=True``, 429 adaptive backoff is always
+        respected — hammering a rate-limited API makes the block permanent.
         """
         now = time.monotonic()
+
+        # NEVER bypass 429 adaptive backoff — we must respect rate limits
+        if self._consecutive_429s > 0:
+            if now - self._last_poll < self.effective_poll_interval:
+                logger.debug(
+                    "force_poll() suppressed — in 429 backoff (%ds remaining)",
+                    self.effective_poll_interval - (now - self._last_poll),
+                )
+                self._last_polled_fresh = False
+                return self._state
+
         if (
             not bypass_cooldown
             and self._last_force_poll > 0
@@ -278,7 +297,11 @@ class UsagePoller:
         return loop.run_until_complete(self._fetch_with_retry(token))
 
     async def _fetch_with_retry(self, token: str) -> dict:
-        """Fetch usage data, retrying on transient connection errors and 429s."""
+        """Fetch usage data, retrying on transient connection errors only.
+
+        429 responses are NOT retried here — they are raised immediately
+        so that ``_do_poll`` can handle them via ``_handle_429()``.
+        """
         client = self._get_client()
         last_exc: Exception | None = None
         for attempt in range(MAX_RETRIES):
@@ -286,27 +309,8 @@ class UsagePoller:
                 return await fetch_usage(token, client=client)
             except httpx.HTTPStatusError as exc:
                 if exc.response.status_code == 429:
-                    last_exc = exc
-                    if attempt < MAX_RETRIES - 1:
-                        delay = _get_429_delay(exc, attempt)
-                        logger.warning(
-                            "Usage API returned 429 (attempt %d/%d) — "
-                            "retrying in %.1fs%s",
-                            attempt + 1,
-                            MAX_RETRIES,
-                            delay,
-                            _retry_after_log(exc),
-                        )
-                        await _async_sleep(delay)
-                    else:
-                        logger.warning(
-                            "Usage API returned 429 (attempt %d/%d) — "
-                            "all retries exhausted",
-                            attempt + 1,
-                            MAX_RETRIES,
-                        )
-                else:
-                    raise
+                    raise  # Let _do_poll handle 429 via _handle_429()
+                raise
             except TRANSIENT_EXCEPTIONS as exc:
                 last_exc = exc
                 if attempt < MAX_RETRIES - 1:
@@ -403,27 +407,6 @@ def refresh_usage_snapshot(conn: sqlite3.Connection) -> UsageState | None:
     if poller.last_polled_fresh and poller.state.utilization_5h is not None:
         return poller.state
     return None
-
-
-def _get_429_delay(exc: httpx.HTTPStatusError, attempt: int) -> float:
-    """Compute the delay for a 429 retry, respecting Retry-After if present."""
-    retry_after = exc.response.headers.get("retry-after")
-    if retry_after is not None:
-        try:
-            return max(float(retry_after), 1.0)
-        except (ValueError, TypeError):
-            pass
-    base = RATE_LIMIT_BACKOFF_SECONDS[min(attempt, len(RATE_LIMIT_BACKOFF_SECONDS) - 1)]
-    jitter = random.uniform(0, base * 0.25)
-    return base + jitter
-
-
-def _retry_after_log(exc: httpx.HTTPStatusError) -> str:
-    """Return a log suffix describing the Retry-After header, if present."""
-    retry_after = exc.response.headers.get("retry-after")
-    if retry_after is not None:
-        return f" (Retry-After: {retry_after})"
-    return ""
 
 
 def _get_or_create_event_loop() -> asyncio.AbstractEventLoop:

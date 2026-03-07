@@ -61,6 +61,7 @@ from botfarm.supervisor_recovery import RecoveryMixin
 from botfarm.supervisor_workers import (
     FAILURE_CATEGORIES,
     PauseResumeManager,
+    PriorContext,
     WorkerLifecycleManager,
     _StallInfo,
     _WorkerResult,
@@ -74,6 +75,7 @@ from botfarm.supervisor_workers import (
     _setup_worker_logging,
     _truncate_for_comment,
     _worker_entry,
+    build_prior_context,
 )
 
 logger = logging.getLogger(__name__)
@@ -111,6 +113,7 @@ __all__ = [
     "read_runtime_config",
     "resolve_stage_timeout",
     "run_pipeline",
+    "build_prior_context",
     "setup_logging",
 ]
 
@@ -770,19 +773,33 @@ class Supervisor(RecoveryMixin, OperationsMixin):
             self._persist_queue_entries(project_name, poll_result)
             self._auto_close_parent_issues(poller, poll_result)
 
-            slot = self._slot_manager.find_free_slot_for_project(project_name)
-            if slot is None:
-                continue
-
             candidates = poll_result.candidates
             if not candidates:
+                slot = self._slot_manager.find_free_slot_for_project(project_name)
+                if slot is None:
+                    continue
                 logger.debug("No candidates for %s", project_name)
                 if poll_result.blocked:
                     self._check_human_blockers(poll_result.blocked)
                 continue
 
             issue = candidates[0]
-            self._dispatch_worker(project_name, slot, issue, poller)
+
+            # Build prior-work context and determine slot affinity
+            prior = build_prior_context(self._conn, issue.identifier)
+            slot = self._slot_manager.find_free_slot_for_project(
+                project_name, preferred_slot_id=prior.prior_slot,
+            )
+            if slot is None:
+                continue
+
+            if prior.context_str:
+                logger.info(
+                    "Retrying %s with prior-work context (prior slot %s, assigned slot %d)",
+                    issue.identifier, prior.prior_slot, slot.slot_id,
+                )
+
+            self._dispatch_worker(project_name, slot, issue, poller, prior=prior)
             active_ids.add(issue.identifier)
 
     def _persist_queue_entries(self, project_name: str, poll_result) -> None:
@@ -862,9 +879,12 @@ class Supervisor(RecoveryMixin, OperationsMixin):
         slot: SlotState,
         issue,
         poller: LinearPoller,
+        prior: PriorContext | None = None,
     ) -> None:
         """Assign a ticket to a slot and spawn a worker subprocess."""
-        self._worker_mgr.dispatch_worker(project_name, slot, issue, poller)
+        self._worker_mgr.dispatch_worker(
+            project_name, slot, issue, poller, prior=prior,
+        )
 
     def _spawn_worker(self, **kwargs) -> multiprocessing.Process:
         """Spawn a worker subprocess — delegates to WorkerLifecycleManager."""

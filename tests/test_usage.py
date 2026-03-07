@@ -19,11 +19,9 @@ from botfarm.usage import (
     FORCE_POLL_COOLDOWN,
     MAX_ADAPTIVE_POLL_INTERVAL,
     MAX_RETRIES,
-    RATE_LIMIT_BACKOFF_SECONDS,
     TRANSIENT_EXCEPTIONS,
     UsagePoller,
     UsageState,
-    _get_429_delay,
     refresh_usage_snapshot,
 )
 
@@ -818,8 +816,8 @@ def _make_429_error(retry_after: str | None = None) -> httpx.HTTPStatusError:
 
 class TestFetchWithRetry429:
     @pytest.mark.asyncio
-    async def test_429_retried_then_succeeds(self, poller):
-        """A 429 on attempt 1 is retried and succeeds on attempt 2."""
+    async def test_429_raises_immediately_no_retry(self, poller):
+        """A 429 is raised immediately without retrying."""
         mock_client = AsyncMock()
         mock_client.is_closed = False
         poller._client = mock_client
@@ -829,97 +827,34 @@ class TestFetchWithRetry429:
         async def mock_fetch(token, *, client=None):
             nonlocal call_count
             call_count += 1
-            if call_count == 1:
-                raise _make_429_error()
-            return SAMPLE_USAGE_RESPONSE
-
-        sleep_delays: list[float] = []
-
-        async def _tracking_sleep(delay):
-            sleep_delays.append(delay)
-
-        with patch("botfarm.usage.fetch_usage", side_effect=mock_fetch):
-            with patch("botfarm.usage._async_sleep", _tracking_sleep):
-                result = await poller._fetch_with_retry("test-token")
-
-        assert result == SAMPLE_USAGE_RESPONSE
-        assert call_count == 2
-        assert len(sleep_delays) == 1
-
-    @pytest.mark.asyncio
-    async def test_429_all_retries_exhausted_raises(self, poller):
-        """When all retries fail with 429, the error is raised."""
-        mock_client = AsyncMock()
-        mock_client.is_closed = False
-        poller._client = mock_client
-
-        async def always_429(token, *, client=None):
             raise _make_429_error()
 
-        async def _noop_sleep(delay):
-            pass
-
-        with patch("botfarm.usage.fetch_usage", side_effect=always_429):
-            with patch("botfarm.usage._async_sleep", _noop_sleep):
-                with pytest.raises(httpx.HTTPStatusError) as exc_info:
-                    await poller._fetch_with_retry("test-token")
-
-        assert exc_info.value.response.status_code == 429
-
-    @pytest.mark.asyncio
-    async def test_429_respects_retry_after_header(self, poller):
-        """When Retry-After header is present, its value is used as delay."""
-        mock_client = AsyncMock()
-        mock_client.is_closed = False
-        poller._client = mock_client
-
-        call_count = 0
-
-        async def mock_fetch(token, *, client=None):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                raise _make_429_error(retry_after="10")
-            return SAMPLE_USAGE_RESPONSE
-
-        sleep_delays: list[float] = []
-
-        async def _tracking_sleep(delay):
-            sleep_delays.append(delay)
-
         with patch("botfarm.usage.fetch_usage", side_effect=mock_fetch):
-            with patch("botfarm.usage._async_sleep", _tracking_sleep):
+            with pytest.raises(httpx.HTTPStatusError) as exc_info:
                 await poller._fetch_with_retry("test-token")
 
-        assert sleep_delays == [10.0]
+        assert exc_info.value.response.status_code == 429
+        assert call_count == 1  # No retries — raised on first attempt
 
     @pytest.mark.asyncio
-    async def test_429_uses_backoff_without_retry_after(self, poller):
-        """Without Retry-After header, exponential backoff with jitter is used."""
+    async def test_429_not_retried_even_with_retry_after(self, poller):
+        """429 with Retry-After header is still raised immediately."""
         mock_client = AsyncMock()
         mock_client.is_closed = False
         poller._client = mock_client
 
-        async def always_429(token, *, client=None):
-            raise _make_429_error()
+        call_count = 0
 
-        sleep_delays: list[float] = []
+        async def mock_fetch(token, *, client=None):
+            nonlocal call_count
+            call_count += 1
+            raise _make_429_error(retry_after="10")
 
-        async def _tracking_sleep(delay):
-            sleep_delays.append(delay)
+        with patch("botfarm.usage.fetch_usage", side_effect=mock_fetch):
+            with pytest.raises(httpx.HTTPStatusError):
+                await poller._fetch_with_retry("test-token")
 
-        with patch("botfarm.usage.fetch_usage", side_effect=always_429):
-            with patch("botfarm.usage._async_sleep", _tracking_sleep):
-                with pytest.raises(httpx.HTTPStatusError):
-                    await poller._fetch_with_retry("test-token")
-
-        # Should have slept MAX_RETRIES - 1 times
-        assert len(sleep_delays) == MAX_RETRIES - 1
-        # Each delay should be >= base and <= base * 1.25 (base + 25% jitter)
-        for i, delay in enumerate(sleep_delays):
-            base = RATE_LIMIT_BACKOFF_SECONDS[min(i, len(RATE_LIMIT_BACKOFF_SECONDS) - 1)]
-            assert delay >= base
-            assert delay <= base * 1.25 + 0.01  # small epsilon for float precision
+        assert call_count == 1
 
     @pytest.mark.asyncio
     async def test_non_429_http_error_not_retried(self, poller):
@@ -947,44 +882,6 @@ class TestFetchWithRetry429:
 
 
 # ---------------------------------------------------------------------------
-# _get_429_delay helper
-# ---------------------------------------------------------------------------
-
-
-class TestGet429Delay:
-    def test_uses_retry_after_header(self):
-        exc = _make_429_error(retry_after="20")
-        delay = _get_429_delay(exc, attempt=0)
-        assert delay == 20.0
-
-    def test_retry_after_minimum_1s(self):
-        exc = _make_429_error(retry_after="0.5")
-        delay = _get_429_delay(exc, attempt=0)
-        assert delay == 1.0
-
-    def test_invalid_retry_after_falls_back_to_backoff(self):
-        exc = _make_429_error(retry_after="not-a-number")
-        delay = _get_429_delay(exc, attempt=0)
-        base = RATE_LIMIT_BACKOFF_SECONDS[0]
-        assert delay >= base
-        assert delay <= base * 1.25 + 0.01
-
-    def test_no_retry_after_uses_backoff(self):
-        exc = _make_429_error()
-        delay = _get_429_delay(exc, attempt=1)
-        base = RATE_LIMIT_BACKOFF_SECONDS[1]
-        assert delay >= base
-        assert delay <= base * 1.25 + 0.01
-
-    def test_attempt_clamps_to_last_backoff(self):
-        exc = _make_429_error()
-        delay = _get_429_delay(exc, attempt=99)
-        base = RATE_LIMIT_BACKOFF_SECONDS[-1]
-        assert delay >= base
-        assert delay <= base * 1.25 + 0.01
-
-
-# ---------------------------------------------------------------------------
 # Adaptive poll interval on repeated 429s
 # ---------------------------------------------------------------------------
 
@@ -1008,9 +905,15 @@ class TestAdaptivePollInterval:
 
         with patch.object(poller, "_fetch", side_effect=error):
             poller.force_poll(conn)
-            poller._last_force_poll = 0  # reset cooldown
+            # Reset both cooldown and backoff timer to allow next force_poll.
+            # Use a far-past timestamp so the backoff guard never triggers
+            # (time.monotonic() can be small in fresh CI containers).
+            far_past = time.monotonic() - MAX_ADAPTIVE_POLL_INTERVAL - 1
+            poller._last_force_poll = far_past
+            poller._last_poll = far_past
             poller.force_poll(conn)
-            poller._last_force_poll = 0
+            poller._last_force_poll = far_past
+            poller._last_poll = far_past
             poller.force_poll(conn)
 
         assert poller._consecutive_429s == 3
@@ -1021,10 +924,14 @@ class TestAdaptivePollInterval:
         response = _make_429_response()
         error = httpx.HTTPStatusError("", request=response.request, response=response)
 
-        # Simulate many 429s to exceed cap
+        # Simulate many 429s to exceed cap.
+        # Use a far-past timestamp so the backoff guard never triggers
+        # (time.monotonic() can be small in fresh CI containers).
+        far_past = time.monotonic() - MAX_ADAPTIVE_POLL_INTERVAL - 1
         with patch.object(poller, "_fetch", side_effect=error):
             for _ in range(20):
-                poller._last_force_poll = 0
+                poller._last_force_poll = far_past
+                poller._last_poll = far_past
                 poller.force_poll(conn)
 
         assert poller.effective_poll_interval == MAX_ADAPTIVE_POLL_INTERVAL
@@ -1041,9 +948,11 @@ class TestAdaptivePollInterval:
         assert poller._consecutive_429s == 1
         assert poller.effective_poll_interval > poller.poll_interval
 
-        # Then: successful poll
+        # Then: successful poll (backoff expired)
+        far_past = time.monotonic() - MAX_ADAPTIVE_POLL_INTERVAL - 1
         with patch.object(poller, "_fetch", return_value=SAMPLE_USAGE_RESPONSE):
-            poller._last_force_poll = 0
+            poller._last_force_poll = far_past
+            poller._last_poll = far_past
             poller.force_poll(conn)
 
         assert poller._consecutive_429s == 0
@@ -1162,5 +1071,122 @@ class TestTransientRetryPreserved:
 
         assert call_count == 2
         assert state.utilization_5h == 0.42
+
+
+# ---------------------------------------------------------------------------
+# force_poll() respects 429 backoff (SMA-376)
+# ---------------------------------------------------------------------------
+
+
+class TestForcePoll429Backoff:
+    def test_force_poll_suppressed_during_429_backoff(self, poller, conn):
+        """force_poll(bypass_cooldown=True) is suppressed during 429 backoff."""
+        response = _make_429_response()
+        error = httpx.HTTPStatusError("", request=response.request, response=response)
+
+        # Trigger 429 to enter backoff
+        with patch.object(poller, "_fetch", side_effect=error):
+            poller.force_poll(conn)
+
+        assert poller._consecutive_429s == 1
+        assert poller.in_429_backoff is True
+
+        # Now force_poll with bypass_cooldown=True should be suppressed
+        with patch.object(poller, "_fetch", return_value=SAMPLE_USAGE_RESPONSE) as mock_fetch:
+            state = poller.force_poll(conn, bypass_cooldown=True)
+
+        mock_fetch.assert_not_called()
+        assert poller.last_polled_fresh is False
+
+    def test_force_poll_allowed_after_429_backoff_expires(self, poller, conn):
+        """force_poll works once the 429 backoff period has elapsed."""
+        response = _make_429_response()
+        error = httpx.HTTPStatusError("", request=response.request, response=response)
+
+        # Trigger 429
+        with patch.object(poller, "_fetch", side_effect=error):
+            poller.force_poll(conn)
+
+        assert poller._consecutive_429s == 1
+
+        # Simulate backoff expiry
+        poller._last_poll = time.monotonic() - poller.effective_poll_interval - 1
+
+        assert poller.in_429_backoff is False
+
+        # Now force_poll should go through
+        with patch.object(poller, "_fetch", return_value=SAMPLE_USAGE_RESPONSE) as mock_fetch:
+            state = poller.force_poll(conn, bypass_cooldown=True)
+
+        mock_fetch.assert_called_once()
+        assert poller.last_polled_fresh is True
+        assert state.utilization_5h == 0.42
+        # Should have reset 429 state after successful poll
+        assert poller._consecutive_429s == 0
+
+    def test_in_429_backoff_false_when_no_429s(self, poller):
+        """in_429_backoff is False when there are no 429 errors."""
+        assert poller.in_429_backoff is False
+
+    def test_in_429_backoff_true_within_interval(self, poller, conn):
+        """in_429_backoff is True when within the adaptive backoff interval."""
+        response = _make_429_response()
+        error = httpx.HTTPStatusError("", request=response.request, response=response)
+
+        with patch.object(poller, "_fetch", side_effect=error):
+            poller.force_poll(conn)
+
+        assert poller.in_429_backoff is True
+
+    def test_in_429_backoff_false_after_interval(self, poller, conn):
+        """in_429_backoff is False when the backoff interval has elapsed."""
+        response = _make_429_response()
+        error = httpx.HTTPStatusError("", request=response.request, response=response)
+
+        with patch.object(poller, "_fetch", side_effect=error):
+            poller.force_poll(conn)
+
+        # Simulate time passing beyond the backoff
+        poller._last_poll = time.monotonic() - poller.effective_poll_interval - 1
+        assert poller.in_429_backoff is False
+
+    def test_consecutive_429s_increment_across_force_polls(self, poller, conn):
+        """_consecutive_429s increments correctly even when force_poll backoff
+        expires between calls."""
+        response = _make_429_response()
+        error = httpx.HTTPStatusError("", request=response.request, response=response)
+
+        far_past = time.monotonic() - MAX_ADAPTIVE_POLL_INTERVAL - 1
+        with patch.object(poller, "_fetch", side_effect=error):
+            # First 429
+            poller.force_poll(conn)
+            assert poller._consecutive_429s == 1
+
+            # Expire the backoff, then trigger another 429
+            poller._last_poll = far_past
+            poller._last_force_poll = far_past
+            poller.force_poll(conn)
+            assert poller._consecutive_429s == 2
+
+            # Expire again, trigger a third
+            poller._last_poll = far_past
+            poller._last_force_poll = far_past
+            poller.force_poll(conn)
+            assert poller._consecutive_429s == 3
+
+    def test_normal_poll_also_blocked_during_429_backoff(self, poller, conn):
+        """Regular poll() also respects the inflated interval during 429 backoff."""
+        response = _make_429_response()
+        error = httpx.HTTPStatusError("", request=response.request, response=response)
+
+        with patch.object(poller, "_fetch", side_effect=error):
+            poller.force_poll(conn)
+
+        # Try normal poll — should be blocked by inflated interval
+        with patch.object(poller, "_fetch", return_value=SAMPLE_USAGE_RESPONSE) as mock_fetch:
+            poller.poll(conn)
+
+        mock_fetch.assert_not_called()
+        assert poller.last_polled_fresh is False
 
 

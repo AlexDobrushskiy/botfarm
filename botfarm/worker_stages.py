@@ -136,12 +136,14 @@ def _run_implement(
     on_context_fill: ContextFillCallback | None = None,
     stage_tpl: StageTemplate | None = None,
     shared_mem_path: Path | None = None,
+    prior_context: str = "",
 ) -> StageResult:
     """IMPLEMENT stage — Claude Code implements the ticket and creates a PR."""
     if stage_tpl is not None:
         prompt_vars: dict[str, str] = {"ticket_id": ticket_id}
         if shared_mem_path:
             prompt_vars["shared_mem_path"] = str(shared_mem_path)
+        prompt_vars["prior_context"] = prior_context
         return _run_claude_stage(
             stage_tpl, cwd=cwd, max_turns=max_turns,
             prompt_vars=prompt_vars,
@@ -149,6 +151,8 @@ def _run_implement(
         )
     # Legacy fallback
     prompt = _build_implement_prompt(ticket_id, ticket_labels)
+    if prior_context:
+        prompt = prior_context + prompt
     if shared_mem_path:
         prompt += (
             f"\n\nAfter completing your implementation, write a brief summary to "
@@ -673,6 +677,19 @@ def _run_pr_checks(
 ) -> StageResult:
     """PR_CHECKS stage — Wait for CI checks to pass. No Claude Code invocation."""
     subprocess_env = {**os.environ, **env} if env else None
+
+    # Pre-check: detect merge conflicts before waiting for CI.
+    # When a PR has conflicts, GitHub won't run CI checks, so
+    # `gh pr checks --watch` would return "no checks reported"
+    # which wastes ci_fix retries on the wrong problem.
+    if _check_pr_has_merge_conflict(pr_url, cwd, env=subprocess_env):
+        logger.info("PR has merge conflicts — skipping CI check wait")
+        return StageResult(
+            stage="pr_checks",
+            success=False,
+            error="PR has merge conflicts — CI checks will not run",
+        )
+
     start = time.monotonic()
     try:
         proc = subprocess.run(
@@ -765,6 +782,34 @@ def _run_ci_fix(
 # ---------------------------------------------------------------------------
 
 _CONFLICT_RE = re.compile(r"conflict|isn't mergeable|not mergeable", re.IGNORECASE)
+
+
+def _check_pr_has_merge_conflict(
+    pr_url: str,
+    cwd: str | Path,
+    *,
+    env: dict[str, str] | None = None,
+) -> bool:
+    """Check whether a PR has merge conflicts via the GitHub API.
+
+    Queries ``gh pr view --json mergeable`` and returns ``True`` when the
+    PR state is ``CONFLICTING``.  Returns ``False`` on any other state or
+    on errors (conservative — avoids false positives).
+    """
+    try:
+        proc = subprocess.run(
+            ["gh", "pr", "view", pr_url, "--json", "mergeable", "--jq", ".mergeable"],
+            capture_output=True,
+            text=True,
+            cwd=str(cwd),
+            timeout=30,
+            env=env,
+        )
+        if proc.returncode == 0:
+            return proc.stdout.strip().upper() == "CONFLICTING"
+    except (subprocess.TimeoutExpired, OSError):
+        logger.debug("Could not check PR mergeable state for %s", pr_url, exc_info=True)
+    return False
 
 
 def _is_merge_conflict(
@@ -977,6 +1022,7 @@ def _execute_stage(
     on_context_fill: ContextFillCallback | None = None,
     stage_tpl: StageTemplate | None = None,
     shared_mem_path: Path | None = None,
+    prior_context: str = "",
     codex_enabled: bool = False,
     codex_model: str | None = None,
     codex_reasoning_effort: str | None = None,
@@ -1013,6 +1059,7 @@ def _execute_stage(
             prompt_vars: dict[str, str] = {}
             if stage == "implement":
                 prompt_vars["ticket_id"] = ticket_id
+                prompt_vars["prior_context"] = prior_context
             elif pr_url:
                 owner, repo, number = _parse_pr_url(pr_url)
                 prompt_vars.update(
@@ -1051,6 +1098,7 @@ def _execute_stage(
             cwd=cwd, max_turns=max_turns, log_file=log_file,
             env=env, on_context_fill=on_context_fill,
             shared_mem_path=shared_mem_path,
+            prior_context=prior_context,
         )
     elif stage == "review":
         if not pr_url:
