@@ -856,8 +856,11 @@ class TestFetchWithRetry429:
         async def always_429(token, *, client=None):
             raise _make_429_error()
 
+        async def _noop_sleep(delay):
+            pass
+
         with patch("botfarm.usage.fetch_usage", side_effect=always_429):
-            with patch("botfarm.usage._async_sleep", new_callable=AsyncMock):
+            with patch("botfarm.usage._async_sleep", _noop_sleep):
                 with pytest.raises(httpx.HTTPStatusError) as exc_info:
                     await poller._fetch_with_retry("test-token")
 
