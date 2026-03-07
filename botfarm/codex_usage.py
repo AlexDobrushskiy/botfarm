@@ -115,7 +115,7 @@ class CodexUsagePoller:
 
         now = time.monotonic()
         interval = self.config.poll_interval_seconds or DEFAULT_POLL_INTERVAL
-        if now - self._last_poll < interval:
+        if self._last_poll > 0 and now - self._last_poll < interval:
             self._last_polled_fresh = False
             return self._state
 
