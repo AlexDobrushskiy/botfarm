@@ -32,6 +32,7 @@ Docs under `docs/`:
 - `codex-cli.md` — Codex CLI automation, approval, and non-interactive behavior
 - `refactoring-analysis.md` — Periodic refactoring analysis procedure for agents
 - `dashboard.md` — Dashboard architecture, route reference, templates, and data flow
+- `usage-api-audit.md` — Usage API audit log, key blocking detection, and analysis queries
 
 Key patterns:
 - Workers run as subprocesses; communicate results via `multiprocessing.Queue`
