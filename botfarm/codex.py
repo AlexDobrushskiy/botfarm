@@ -292,6 +292,7 @@ def run_codex_streaming(
     # Parse collected JSONL lines
     result = parse_codex_jsonl(stdout_lines)
     result.duration_seconds = duration
+    result.model = model or ""
 
     # Mark errors for timeout or non-zero exit
     if timed_out.is_set():
