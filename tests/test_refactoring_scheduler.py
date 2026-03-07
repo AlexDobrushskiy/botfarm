@@ -190,6 +190,23 @@ class TestDBHelpers:
         conn.commit()
         assert count_completed_tasks_since(conn, "1970-01-01T00:00:00Z") == 0
 
+    def test_count_completed_tasks_since_null_completed_at(self, conn):
+        """Tasks completed via recovery paths (NULL completed_at) are counted
+        using COALESCE fallback to started_at."""
+        started = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        task_id = insert_task(
+            conn,
+            ticket_id="TST-RECOV",
+            title="Recovered task",
+            project="test-project",
+            slot=1,
+            status="completed",
+        )
+        # Simulate recovery path: status=completed, started_at set, but no completed_at
+        update_task(conn, task_id, status="completed", started_at=started)
+        conn.commit()
+        assert count_completed_tasks_since(conn, "1970-01-01T00:00:00Z") == 1
+
 
 # ---------------------------------------------------------------------------
 # Config tests
