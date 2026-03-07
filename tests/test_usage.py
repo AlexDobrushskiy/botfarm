@@ -699,13 +699,18 @@ class TestUsagePollerRetry:
         async def mock_fetch(token, *, client=None):
             raise httpx.ConnectTimeout("timed out")
 
+        sleep_delays: list[float] = []
+
+        async def _tracking_sleep(delay):
+            sleep_delays.append(delay)
+
         with patch("botfarm.usage.fetch_usage", side_effect=mock_fetch):
-            with patch("botfarm.usage._async_sleep", new_callable=AsyncMock) as mock_sleep:
+            with patch("botfarm.usage._async_sleep", _tracking_sleep):
                 with pytest.raises(httpx.ConnectTimeout):
                     await poller._fetch_with_retry("test-token")
 
         # Should have slept between retries (MAX_RETRIES - 1 times)
-        assert mock_sleep.call_count == MAX_RETRIES - 1
+        assert len(sleep_delays) == MAX_RETRIES - 1
 
     @pytest.mark.asyncio
     async def test_fetch_with_retry_backoff_delays(self, poller):
@@ -717,13 +722,17 @@ class TestUsagePollerRetry:
         async def mock_fetch(token, *, client=None):
             raise httpx.ConnectTimeout("timed out")
 
+        sleep_delays: list[float] = []
+
+        async def _tracking_sleep(delay):
+            sleep_delays.append(delay)
+
         with patch("botfarm.usage.fetch_usage", side_effect=mock_fetch):
-            with patch("botfarm.usage._async_sleep", new_callable=AsyncMock) as mock_sleep:
+            with patch("botfarm.usage._async_sleep", _tracking_sleep):
                 with pytest.raises(httpx.ConnectTimeout):
                     await poller._fetch_with_retry("test-token")
 
-        delays = [call.args[0] for call in mock_sleep.call_args_list]
-        assert delays == [2, 5]
+        assert sleep_delays == [2, 5]
 
 
 # ---------------------------------------------------------------------------
@@ -824,13 +833,18 @@ class TestFetchWithRetry429:
                 raise _make_429_error()
             return SAMPLE_USAGE_RESPONSE
 
+        sleep_delays: list[float] = []
+
+        async def _tracking_sleep(delay):
+            sleep_delays.append(delay)
+
         with patch("botfarm.usage.fetch_usage", side_effect=mock_fetch):
-            with patch("botfarm.usage._async_sleep", new_callable=AsyncMock) as mock_sleep:
+            with patch("botfarm.usage._async_sleep", _tracking_sleep):
                 result = await poller._fetch_with_retry("test-token")
 
         assert result == SAMPLE_USAGE_RESPONSE
         assert call_count == 2
-        assert mock_sleep.call_count == 1
+        assert len(sleep_delays) == 1
 
     @pytest.mark.asyncio
     async def test_429_all_retries_exhausted_raises(self, poller):
@@ -865,11 +879,16 @@ class TestFetchWithRetry429:
                 raise _make_429_error(retry_after="10")
             return SAMPLE_USAGE_RESPONSE
 
+        sleep_delays: list[float] = []
+
+        async def _tracking_sleep(delay):
+            sleep_delays.append(delay)
+
         with patch("botfarm.usage.fetch_usage", side_effect=mock_fetch):
-            with patch("botfarm.usage._async_sleep", new_callable=AsyncMock) as mock_sleep:
+            with patch("botfarm.usage._async_sleep", _tracking_sleep):
                 await poller._fetch_with_retry("test-token")
 
-        mock_sleep.assert_called_once_with(10.0)
+        assert sleep_delays == [10.0]
 
     @pytest.mark.asyncio
     async def test_429_uses_backoff_without_retry_after(self, poller):
@@ -881,16 +900,20 @@ class TestFetchWithRetry429:
         async def always_429(token, *, client=None):
             raise _make_429_error()
 
+        sleep_delays: list[float] = []
+
+        async def _tracking_sleep(delay):
+            sleep_delays.append(delay)
+
         with patch("botfarm.usage.fetch_usage", side_effect=always_429):
-            with patch("botfarm.usage._async_sleep", new_callable=AsyncMock) as mock_sleep:
+            with patch("botfarm.usage._async_sleep", _tracking_sleep):
                 with pytest.raises(httpx.HTTPStatusError):
                     await poller._fetch_with_retry("test-token")
 
         # Should have slept MAX_RETRIES - 1 times
-        assert mock_sleep.call_count == MAX_RETRIES - 1
+        assert len(sleep_delays) == MAX_RETRIES - 1
         # Each delay should be >= base and <= base * 1.25 (base + 25% jitter)
-        for i, call in enumerate(mock_sleep.call_args_list):
-            delay = call.args[0]
+        for i, delay in enumerate(sleep_delays):
             base = RATE_LIMIT_BACKOFF_SECONDS[min(i, len(RATE_LIMIT_BACKOFF_SECONDS) - 1)]
             assert delay >= base
             assert delay <= base * 1.25 + 0.01  # small epsilon for float precision
