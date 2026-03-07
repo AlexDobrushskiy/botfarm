@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import time
 from unittest.mock import MagicMock, patch
 
 import httpx
@@ -12,7 +11,6 @@ import pytest
 from botfarm.codex_usage import (
     CodexUsagePoller,
     CodexUsageState,
-    DEFAULT_POLL_INTERVAL,
     OPENAI_COSTS_URL,
 )
 from botfarm.config import CodexUsageConfig
@@ -146,10 +144,6 @@ class TestCodexUsagePoller:
 
     def test_poll_respects_interval(self, conn):
         poller = self._make_poller(interval=300)
-
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = SAMPLE_COSTS_RESPONSE
-        mock_resp.raise_for_status = MagicMock()
 
         with patch.object(poller, "_fetch", return_value=SAMPLE_COSTS_RESPONSE):
             poller.poll(conn)
