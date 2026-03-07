@@ -10,7 +10,11 @@ import httpx
 import pytest
 
 from botfarm.credentials import CredentialManager
-from botfarm.db import get_usage_snapshots
+from botfarm.db import (
+    get_active_key_session,
+    get_usage_api_call_history,
+    get_usage_snapshots,
+)
 from botfarm.usage import (
     DEFAULT_PAUSE_5H_THRESHOLD,
     DEFAULT_PAUSE_7D_THRESHOLD,
@@ -22,7 +26,9 @@ from botfarm.usage import (
     TRANSIENT_EXCEPTIONS,
     UsagePoller,
     UsageState,
+    _categorize_error,
     refresh_usage_snapshot,
+    token_fingerprint,
 )
 
 # --- Sample API response ---
@@ -517,7 +523,7 @@ class TestRefreshUsageSnapshot:
     def test_returns_fresh_state_on_success(self, conn):
         with patch("botfarm.usage.UsagePoller.force_poll") as mock_poll:
             # Simulate a successful poll that sets state
-            def fake_poll(c):
+            def fake_poll(c, **kwargs):
                 pass
 
             mock_poll.side_effect = fake_poll
@@ -1188,5 +1194,328 @@ class TestForcePoll429Backoff:
 
         mock_fetch.assert_not_called()
         assert poller.last_polled_fresh is False
+
+
+# ---------------------------------------------------------------------------
+# Token fingerprint
+# ---------------------------------------------------------------------------
+
+
+class TestTokenFingerprint:
+    def test_deterministic(self):
+        assert token_fingerprint("abc12345") == token_fingerprint("abc12345")
+
+    def test_different_tokens(self):
+        assert token_fingerprint("token-aaa") != token_fingerprint("token-bbb")
+
+    def test_returns_16_hex_chars(self):
+        fp = token_fingerprint("my-secret-token")
+        assert len(fp) == 16
+        assert all(c in "0123456789abcdef" for c in fp)
+
+    def test_only_last_8_chars_matter(self):
+        assert token_fingerprint("XXXXXXXX12345678") == token_fingerprint("YYYYYYYY12345678")
+
+
+# ---------------------------------------------------------------------------
+# Error categorization
+# ---------------------------------------------------------------------------
+
+
+class TestCategorizeError:
+    def _http_error(self, status: int) -> httpx.HTTPStatusError:
+        resp = httpx.Response(
+            status,
+            request=httpx.Request("GET", "https://example.com"),
+        )
+        return httpx.HTTPStatusError("", request=resp.request, response=resp)
+
+    def test_429_rate_limit(self):
+        assert _categorize_error(self._http_error(429)) == "rate_limit"
+
+    def test_401_auth_error(self):
+        assert _categorize_error(self._http_error(401)) == "auth_error"
+
+    def test_500_server_error(self):
+        assert _categorize_error(self._http_error(500)) == "server_error"
+
+    def test_503_server_error(self):
+        assert _categorize_error(self._http_error(503)) == "server_error"
+
+    def test_400_other(self):
+        assert _categorize_error(self._http_error(400)) == "other"
+
+    def test_connect_timeout(self):
+        assert _categorize_error(httpx.ConnectTimeout("timeout")) == "timeout"
+
+    def test_pool_timeout(self):
+        assert _categorize_error(httpx.PoolTimeout("pool")) == "timeout"
+
+    def test_connect_error(self):
+        assert _categorize_error(httpx.ConnectError("refused")) == "connection_error"
+
+    def test_generic_exception(self):
+        assert _categorize_error(RuntimeError("boom")) == "other"
+
+
+# ---------------------------------------------------------------------------
+# Usage API audit instrumentation
+# ---------------------------------------------------------------------------
+
+
+class TestUsageAuditInstrumentation:
+    @pytest.fixture()
+    def audit_poller(self):
+        """Poller with mock client — patches fetch_usage, not _fetch."""
+        cred_mgr = MagicMock(spec=CredentialManager)
+        cred_mgr.get_token.return_value = "test-token"
+        p = UsagePoller(credential_manager=cred_mgr, poll_interval=10)
+        mock_client = AsyncMock()
+        mock_client.is_closed = False
+        p._client = mock_client
+        return p
+
+    def _poll_with_fetch(self, poller, conn, response=None, side_effect=None, **kwargs):
+        """Force poll using a patched fetch_usage (not _fetch)."""
+        if response is not None:
+            async def _ok(token, *, client=None):
+                return response
+            side_effect = _ok
+        with patch("botfarm.usage.fetch_usage", side_effect=side_effect):
+            with patch("botfarm.usage._async_sleep", new_callable=AsyncMock):
+                return poller.force_poll(conn, **kwargs)
+
+    def test_successful_poll_creates_audit_row(self, audit_poller, conn):
+        """A successful poll inserts a row in usage_api_calls with success=1."""
+        self._poll_with_fetch(audit_poller, conn, response=SAMPLE_USAGE_RESPONSE)
+
+        rows = get_usage_api_call_history(conn, limit=10)
+        assert len(rows) == 1
+        assert rows[0]["success"] == 1
+        assert rows[0]["status_code"] == 200
+        assert rows[0]["error_type"] is None
+        assert rows[0]["response_time_ms"] is not None
+        assert rows[0]["token_fingerprint"] is not None
+
+    def test_429_creates_audit_row_with_rate_limit(self, audit_poller, conn):
+        """A 429 response creates an audit row with error_type=rate_limit."""
+        async def _raise_429(token, *, client=None):
+            raise _make_429_error()
+
+        self._poll_with_fetch(audit_poller, conn, side_effect=_raise_429)
+
+        rows = get_usage_api_call_history(conn, limit=10)
+        assert len(rows) == 1
+        assert rows[0]["success"] == 0
+        assert rows[0]["status_code"] == 429
+        assert rows[0]["error_type"] == "rate_limit"
+
+    def test_connection_error_creates_audit_rows(self, audit_poller, conn):
+        """Connection errors create audit rows for each retry attempt."""
+        async def always_fail(token, *, client=None):
+            raise httpx.ConnectError("connection refused")
+
+        self._poll_with_fetch(audit_poller, conn, side_effect=always_fail)
+
+        rows = get_usage_api_call_history(conn, limit=10)
+        assert len(rows) == MAX_RETRIES
+        for row in rows:
+            assert row["success"] == 0
+            assert row["error_type"] == "connection_error"
+            assert row["status_code"] is None
+
+    def test_caller_context_recorded_poll(self, audit_poller, conn):
+        """poll() records caller='poll'."""
+        audit_poller._last_poll = 0
+
+        async def _ok(token, *, client=None):
+            return SAMPLE_USAGE_RESPONSE
+
+        with patch("botfarm.usage.fetch_usage", side_effect=_ok):
+            with patch("botfarm.usage._async_sleep", new_callable=AsyncMock):
+                audit_poller.poll(conn)
+
+        rows = get_usage_api_call_history(conn, limit=10)
+        assert len(rows) == 1
+        assert rows[0]["caller"] == "poll"
+
+    def test_caller_context_recorded_force_poll(self, audit_poller, conn):
+        """force_poll() records caller='force_poll'."""
+        self._poll_with_fetch(audit_poller, conn, response=SAMPLE_USAGE_RESPONSE)
+
+        rows = get_usage_api_call_history(conn, limit=10)
+        assert len(rows) == 1
+        assert rows[0]["caller"] == "force_poll"
+
+    def test_caller_context_recorded_force_poll_bypass(self, audit_poller, conn):
+        """force_poll(bypass_cooldown=True) records caller='force_poll_bypass'."""
+        self._poll_with_fetch(
+            audit_poller, conn, response=SAMPLE_USAGE_RESPONSE, bypass_cooldown=True,
+        )
+
+        rows = get_usage_api_call_history(conn, limit=10)
+        assert len(rows) == 1
+        assert rows[0]["caller"] == "force_poll_bypass"
+
+    def test_caller_context_custom(self, audit_poller, conn):
+        """force_poll(caller='custom') overrides the default."""
+        self._poll_with_fetch(
+            audit_poller, conn, response=SAMPLE_USAGE_RESPONSE, caller="cli_refresh",
+        )
+
+        rows = get_usage_api_call_history(conn, limit=10)
+        assert len(rows) == 1
+        assert rows[0]["caller"] == "cli_refresh"
+
+    def test_key_session_created_on_success(self, audit_poller, conn):
+        """A successful poll creates/updates a key session."""
+        self._poll_with_fetch(audit_poller, conn, response=SAMPLE_USAGE_RESPONSE)
+
+        session = get_active_key_session(conn)
+        assert session is not None
+        assert session["status"] == "active"
+        assert session["total_successes"] == 1
+        assert session["consecutive_errors"] == 0
+
+    def test_key_session_error_then_recovery(self, audit_poller, conn):
+        """Error followed by success transitions session to recovered."""
+        # First: a 500 error
+        async def _raise_500(token, *, client=None):
+            resp = httpx.Response(
+                500,
+                request=httpx.Request("GET", "https://api.anthropic.com/api/oauth/usage"),
+            )
+            raise httpx.HTTPStatusError("", request=resp.request, response=resp)
+
+        self._poll_with_fetch(audit_poller, conn, side_effect=_raise_500)
+
+        session = get_active_key_session(conn)
+        assert session["status"] == "erroring"
+        assert session["total_errors"] == 1
+
+        # Then: success (reset cooldown)
+        audit_poller._last_force_poll = 0
+        self._poll_with_fetch(audit_poller, conn, response=SAMPLE_USAGE_RESPONSE)
+
+        session = get_active_key_session(conn)
+        assert session["status"] == "recovered"
+        assert session["total_successes"] == 1
+        assert session["consecutive_errors"] == 0
+
+    def test_key_rotation_detection(self, audit_poller, conn):
+        """Changing token between polls marks old session as replaced."""
+        # First poll with token A
+        audit_poller.credential_manager.get_token.return_value = "token-AAAAAAAA"
+        self._poll_with_fetch(audit_poller, conn, response=SAMPLE_USAGE_RESPONSE)
+
+        fp_a = token_fingerprint("token-AAAAAAAA")
+        session = get_active_key_session(conn)
+        assert session["token_fingerprint"] == fp_a
+
+        # Second poll with token B
+        audit_poller._last_force_poll = 0
+        audit_poller.credential_manager.get_token.return_value = "token-BBBBBBBB"
+        self._poll_with_fetch(audit_poller, conn, response=SAMPLE_USAGE_RESPONSE)
+
+        # Old session should be replaced
+        old = conn.execute(
+            "SELECT * FROM usage_api_key_sessions WHERE token_fingerprint = ?",
+            (fp_a,),
+        ).fetchone()
+        assert old["status"] == "replaced"
+
+        # New session should be active
+        fp_b = token_fingerprint("token-BBBBBBBB")
+        new_session = get_active_key_session(conn)
+        assert new_session["token_fingerprint"] == fp_b
+        assert new_session["status"] == "active"
+
+    def test_audit_write_failure_does_not_break_polling(self, audit_poller, conn):
+        """If audit DB writes fail, polling still succeeds."""
+        with patch("botfarm.usage.insert_usage_api_call", side_effect=Exception("DB locked")):
+            self._poll_with_fetch(audit_poller, conn, response=SAMPLE_USAGE_RESPONSE)
+
+        # Polling should still have succeeded
+        assert audit_poller.state.utilization_5h == 0.42
+
+    def test_429_with_retry_after_recorded(self, audit_poller, conn):
+        """A 429 with Retry-After header records the value."""
+        async def _raise_429(token, *, client=None):
+            raise _make_429_error(retry_after="30")
+
+        self._poll_with_fetch(audit_poller, conn, side_effect=_raise_429)
+
+        rows = get_usage_api_call_history(conn, limit=10)
+        assert len(rows) == 1
+        assert rows[0]["retry_after"] == "30"
+
+    def test_transient_retry_then_success_records_all_attempts(self, audit_poller, conn):
+        """When a transient error is retried successfully, all attempts are recorded."""
+        call_count = 0
+
+        async def mock_fetch(token, *, client=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise httpx.ConnectTimeout("timed out")
+            return SAMPLE_USAGE_RESPONSE
+
+        self._poll_with_fetch(audit_poller, conn, side_effect=mock_fetch)
+
+        rows = get_usage_api_call_history(conn, limit=10)
+        assert len(rows) == 2
+        # Most recent first (newest first in get_usage_api_call_history)
+        assert rows[0]["success"] == 1
+        assert rows[1]["success"] == 0
+        assert rows[1]["error_type"] == "timeout"
+
+    def test_purge_includes_audit_rows(self, audit_poller, conn):
+        """_purge_old_snapshots also purges old usage_api_calls."""
+        # Insert an old audit row
+        conn.execute(
+            "INSERT INTO usage_api_calls (created_at, success, caller) "
+            "VALUES (strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-60 days'), 1, 'test')",
+        )
+        conn.commit()
+
+        self._poll_with_fetch(audit_poller, conn, response=SAMPLE_USAGE_RESPONSE)
+
+        # Only the fresh row should remain (old one purged)
+        rows = get_usage_api_call_history(conn, limit=100)
+        assert len(rows) == 1
+        assert rows[0]["caller"] == "force_poll"
+
+
+# ---------------------------------------------------------------------------
+# refresh_usage_snapshot caller parameter
+# ---------------------------------------------------------------------------
+
+
+class TestRefreshUsageSnapshotCaller:
+    def test_default_caller_cli_refresh(self, conn):
+        """Default caller is 'cli_refresh'."""
+        async def _ok(token, *, client=None):
+            return SAMPLE_USAGE_RESPONSE
+
+        with patch("botfarm.usage.fetch_usage", side_effect=_ok):
+            with patch("botfarm.usage.CredentialManager.get_token", return_value="test-token"):
+                refresh_usage_snapshot(conn)
+
+        rows = get_usage_api_call_history(conn, limit=10)
+        assert len(rows) == 1
+        assert rows[0]["caller"] == "cli_refresh"
+
+    def test_custom_caller_dashboard(self, conn):
+        """Custom caller='dashboard_refresh' is recorded."""
+        async def _ok(token, *, client=None):
+            return SAMPLE_USAGE_RESPONSE
+
+        with patch("botfarm.usage.fetch_usage", side_effect=_ok):
+            with patch("botfarm.usage.CredentialManager.get_token", return_value="test-token"):
+                refresh_usage_snapshot(conn, caller="dashboard_refresh")
+
+        rows = get_usage_api_call_history(conn, limit=10)
+        assert len(rows) == 1
+        assert rows[0]["caller"] == "dashboard_refresh"
 
 

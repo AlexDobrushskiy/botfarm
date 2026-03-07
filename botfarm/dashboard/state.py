@@ -354,7 +354,7 @@ def refresh_and_get_usage(app: FastAPI) -> dict | None:
         # Look up via the package module so tests can mock.patch
         # "botfarm.dashboard.refresh_usage_snapshot"
         import botfarm.dashboard as _pkg
-        state = _pkg.refresh_usage_snapshot(conn)
+        state = _pkg.refresh_usage_snapshot(conn, caller="dashboard_refresh")
         if state is not None:
             result = state.to_dict()
             with lock:
