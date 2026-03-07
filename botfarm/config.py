@@ -542,6 +542,17 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
     if not isinstance(data, dict):
         raise ConfigError("Config file must contain a YAML mapping")
 
+    # Extract codex admin key before global env expansion so a missing
+    # OPENAI_ADMIN_API_KEY env var doesn't crash the entire config load.
+    cu_raw = data.get("codex_usage", {})
+    if isinstance(cu_raw, dict):
+        cu_admin_raw = cu_raw.get("admin_api_key", "")
+        if isinstance(cu_admin_raw, str) and "${" in cu_admin_raw:
+            try:
+                cu_raw["admin_api_key"] = expand_env_vars(cu_admin_raw)
+            except ConfigError:
+                cu_raw["admin_api_key"] = ""
+
     data = _expand_env_recursive(data)
 
     known_keys = {
@@ -709,14 +720,9 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
     cu_data = data.get("codex_usage", {})
     if not isinstance(cu_data, dict):
         cu_data = {}
-    # admin_api_key may fail env expansion if not set — treat as disabled
-    try:
-        cu_admin_key = str(cu_data.get("admin_api_key", ""))
-    except ConfigError:
-        cu_admin_key = ""
     codex_usage = CodexUsageConfig(
         enabled=_parse_bool(cu_data, "enabled", False, section="codex_usage"),
-        admin_api_key=cu_admin_key,
+        admin_api_key=str(cu_data.get("admin_api_key", "")),
         poll_interval_seconds=int(cu_data.get("poll_interval_seconds", 300)),
         monthly_budget=float(cu_data.get("monthly_budget", 0.0)),
         pause_budget_threshold=float(cu_data.get("pause_budget_threshold", 0.90)),

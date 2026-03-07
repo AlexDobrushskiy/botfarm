@@ -169,7 +169,6 @@ class CodexUsagePoller:
             OPENAI_COSTS_URL,
             headers={
                 "Authorization": f"Bearer {self.config.admin_api_key}",
-                "Content-Type": "application/json",
             },
             params={
                 "start_time": start_ts,
