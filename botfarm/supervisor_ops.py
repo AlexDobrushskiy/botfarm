@@ -813,13 +813,8 @@ Note: The supervisor handles status transitions automatically — do not move th
     # ------------------------------------------------------------------
 
     def _check_usage_api_for_limit(self) -> bool:
-        """Force-poll the usage API and return True if thresholds are exceeded.
-
-        Skips force_poll when the API is in 429 backoff — uses cached state
-        instead to avoid hammering a rate-limited endpoint.
-        """
-        if not self._usage_poller.in_429_backoff:
-            self._usage_poller.force_poll(self._conn, bypass_cooldown=True)
+        """Force-poll the usage API and return True if thresholds are exceeded."""
+        self._usage_poller.force_poll(self._conn, bypass_cooldown=True)
         thresholds = self._config.usage_limits
         should_pause, _ = self._usage_poller.state.should_pause_with_thresholds(
             five_hour_threshold=thresholds.pause_five_hour_threshold,

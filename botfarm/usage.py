@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import random
 import sqlite3
 import time
 from dataclasses import dataclass, field
@@ -36,8 +35,6 @@ TRANSIENT_EXCEPTIONS = (
     httpx.PoolTimeout,
 )
 
-# 429 rate-limit retry configuration
-RATE_LIMIT_BACKOFF_SECONDS = (5, 15, 30)  # exponential backoff for 429s
 MAX_ADAPTIVE_POLL_INTERVAL = 1800  # 30 minutes cap for adaptive interval
 FORCE_POLL_COOLDOWN = 30  # minimum seconds between force_poll API calls
 
@@ -408,27 +405,6 @@ def refresh_usage_snapshot(conn: sqlite3.Connection) -> UsageState | None:
     if poller.last_polled_fresh and poller.state.utilization_5h is not None:
         return poller.state
     return None
-
-
-def _get_429_delay(exc: httpx.HTTPStatusError, attempt: int) -> float:
-    """Compute the delay for a 429 retry, respecting Retry-After if present."""
-    retry_after = exc.response.headers.get("retry-after")
-    if retry_after is not None:
-        try:
-            return max(float(retry_after), 1.0)
-        except (ValueError, TypeError):
-            pass
-    base = RATE_LIMIT_BACKOFF_SECONDS[min(attempt, len(RATE_LIMIT_BACKOFF_SECONDS) - 1)]
-    jitter = random.uniform(0, base * 0.25)
-    return base + jitter
-
-
-def _retry_after_log(exc: httpx.HTTPStatusError) -> str:
-    """Return a log suffix describing the Retry-After header, if present."""
-    retry_after = exc.response.headers.get("retry-after")
-    if retry_after is not None:
-        return f" (Retry-After: {retry_after})"
-    return ""
 
 
 def _get_or_create_event_loop() -> asyncio.AbstractEventLoop:

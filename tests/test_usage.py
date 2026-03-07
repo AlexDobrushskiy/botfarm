@@ -19,11 +19,9 @@ from botfarm.usage import (
     FORCE_POLL_COOLDOWN,
     MAX_ADAPTIVE_POLL_INTERVAL,
     MAX_RETRIES,
-    RATE_LIMIT_BACKOFF_SECONDS,
     TRANSIENT_EXCEPTIONS,
     UsagePoller,
     UsageState,
-    _get_429_delay,
     refresh_usage_snapshot,
 )
 
@@ -872,44 +870,6 @@ class TestFetchWithRetry429:
                 await poller._fetch_with_retry("test-token")
 
         assert call_count == 1
-
-
-# ---------------------------------------------------------------------------
-# _get_429_delay helper
-# ---------------------------------------------------------------------------
-
-
-class TestGet429Delay:
-    def test_uses_retry_after_header(self):
-        exc = _make_429_error(retry_after="20")
-        delay = _get_429_delay(exc, attempt=0)
-        assert delay == 20.0
-
-    def test_retry_after_minimum_1s(self):
-        exc = _make_429_error(retry_after="0.5")
-        delay = _get_429_delay(exc, attempt=0)
-        assert delay == 1.0
-
-    def test_invalid_retry_after_falls_back_to_backoff(self):
-        exc = _make_429_error(retry_after="not-a-number")
-        delay = _get_429_delay(exc, attempt=0)
-        base = RATE_LIMIT_BACKOFF_SECONDS[0]
-        assert delay >= base
-        assert delay <= base * 1.25 + 0.01
-
-    def test_no_retry_after_uses_backoff(self):
-        exc = _make_429_error()
-        delay = _get_429_delay(exc, attempt=1)
-        base = RATE_LIMIT_BACKOFF_SECONDS[1]
-        assert delay >= base
-        assert delay <= base * 1.25 + 0.01
-
-    def test_attempt_clamps_to_last_backoff(self):
-        exc = _make_429_error()
-        delay = _get_429_delay(exc, attempt=99)
-        base = RATE_LIMIT_BACKOFF_SECONDS[-1]
-        assert delay >= base
-        assert delay <= base * 1.25 + 0.01
 
 
 # ---------------------------------------------------------------------------
