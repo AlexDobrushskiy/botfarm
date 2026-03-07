@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from botfarm.config import DailySummaryConfig
 
 from botfarm.db import (
+    count_completed_tasks_since,
     get_daily_summary_data,
     get_events,
     get_last_refactoring_analysis_date,
@@ -588,19 +589,48 @@ Note: The supervisor handles status transitions automatically — do not move th
 """
 
     def _maybe_create_refactoring_analysis_ticket(self) -> None:
-        """Check if it's time to create a new refactoring analysis ticket."""
+        """Check if it's time to create a new refactoring analysis ticket.
+
+        Two independent triggers:
+        1. Time-based (cadence_days) — creates ticket in Todo state
+        2. Ticket-count-based (cadence_tickets) — creates ticket in Backlog
+           state and sends a webhook notification
+
+        Either trigger fires independently.  Shared dedup checks (open
+        tickets, previous ticket still open) prevent duplicate creation.
+        """
         ra_config = self._config.refactoring_analysis
         if not ra_config.enabled:
             return
 
         now = datetime.now(timezone.utc)
 
+        # --- Check which triggers have fired ---
+        time_triggered = False
+        ticket_count_triggered = False
+
         last_created = get_last_refactoring_analysis_date(self._conn)
+        last_created_iso = None
+
         if last_created:
             days_since = (now - last_created).total_seconds() / 86400
-            if days_since < ra_config.cadence_days:
-                return
+            if days_since >= ra_config.cadence_days:
+                time_triggered = True
+            last_created_iso = last_created.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        else:
+            # No previous analysis — time trigger fires immediately
+            time_triggered = True
 
+        if ra_config.cadence_tickets > 0:
+            since = last_created_iso or "1970-01-01T00:00:00.000000Z"
+            completed = count_completed_tasks_since(self._conn, since)
+            if completed >= ra_config.cadence_tickets:
+                ticket_count_triggered = True
+
+        if not time_triggered and not ticket_count_triggered:
+            return
+
+        # --- Shared dedup: previous ticket still open? ---
         last_ticket_id = get_last_scheduled_refactoring_ticket(self._conn)
         if last_ticket_id:
             for poller in self._pollers.values():
@@ -613,6 +643,7 @@ Note: The supervisor handles status transitions automatically — do not move th
                 )
                 return
 
+        # --- Shared dedup: any open tickets with the RA label? ---
         any_check_succeeded = False
         checked_teams: set[str] = set()
         for poller in self._pollers.values():
@@ -646,10 +677,19 @@ Note: The supervisor handles status transitions automatically — do not move th
             )
             return
 
-        self._create_refactoring_analysis_ticket(now)
+        # Ticket-count trigger → Backlog state; time trigger → Todo state
+        use_backlog = ticket_count_triggered and not time_triggered
+        self._create_refactoring_analysis_ticket(now, use_backlog=use_backlog)
 
-    def _create_refactoring_analysis_ticket(self, now: datetime) -> None:
-        """Create a refactoring analysis investigation ticket in Linear."""
+    def _create_refactoring_analysis_ticket(
+        self, now: datetime, *, use_backlog: bool = False,
+    ) -> None:
+        """Create a refactoring analysis investigation ticket in Linear.
+
+        When ``use_backlog`` is True, the ticket is placed in Backlog state
+        (ticket-count trigger) and a notification is sent.  Otherwise it
+        goes to Todo state (time-based trigger).
+        """
         ra_config = self._config.refactoring_analysis
         month = now.strftime("%B")
         year = now.year
@@ -708,24 +748,24 @@ Note: The supervisor handles status transitions automatically — do not move th
                     )
                     return
 
+            target_status = "Backlog" if use_backlog else self._config.linear.todo_status
             state_id: str | None = None
-            todo_status = self._config.linear.todo_status
             try:
                 states = self._linear_client.get_team_states(team_key)
-                state_id = states.get(todo_status)
+                state_id = states.get(target_status)
             except Exception as exc:
                 logger.warning(
-                    "Failed to resolve todo state '%s': %s",
-                    todo_status,
+                    "Failed to resolve state '%s': %s",
+                    target_status,
                     exc,
                 )
                 return
 
             if state_id is None:
                 logger.warning(
-                    "Todo state '%s' not found in team '%s' — skipping "
+                    "State '%s' not found in team '%s' — skipping "
                     "refactoring analysis ticket creation",
-                    todo_status,
+                    target_status,
                     team_key,
                 )
                 return
@@ -758,6 +798,12 @@ Note: The supervisor handles status transitions automatically — do not move th
                 identifier,
                 issue.get("url", ""),
             )
+
+            if use_backlog:
+                self._notifier.notify_refactoring_due(
+                    ticket_id=identifier,
+                    ticket_url=issue.get("url", ""),
+                )
 
         except Exception:
             logger.exception("Failed to create refactoring analysis ticket")

@@ -15,12 +15,15 @@ from botfarm.config import (
     RefactoringAnalysisConfig,
 )
 from botfarm.db import (
+    count_completed_tasks_since,
     get_events,
     get_last_refactoring_analysis_date,
     get_last_scheduled_refactoring_ticket,
     init_db,
     insert_event,
+    insert_task,
     record_refactoring_analysis_created,
+    update_task,
 )
 from botfarm.linear import LinearAPIError, PollResult
 from botfarm.supervisor import Supervisor
@@ -36,6 +39,7 @@ def _make_config(
     *,
     ra_enabled: bool = True,
     cadence_days: int = 14,
+    cadence_tickets: int = 20,
     priority: int = 4,
     linear_label: str = "Refactoring Analysis",
 ) -> BotfarmConfig:
@@ -57,6 +61,7 @@ def _make_config(
         refactoring_analysis=RefactoringAnalysisConfig(
             enabled=ra_enabled,
             cadence_days=cadence_days,
+            cadence_tickets=cadence_tickets,
             priority=priority,
             linear_label=linear_label,
         ),
@@ -81,6 +86,47 @@ def _make_supervisor(tmp_path, monkeypatch, config=None):
         sup = Supervisor(config, log_dir=tmp_path / "logs")
 
     return sup, mock_poller
+
+
+def _setup_linear_mocks(sup, *, states=None):
+    """Set up standard Linear client mocks for ticket creation."""
+    if states is None:
+        states = {"Todo": "todo-state-id", "Backlog": "backlog-state-id"}
+    sup._linear_client.get_team_id = MagicMock(return_value="team-uuid")
+    sup._linear_client.get_or_create_label = MagicMock(
+        return_value="label-uuid"
+    )
+    sup._linear_client.get_team_states = MagicMock(return_value=states)
+    sup._linear_client.get_project_id = MagicMock(return_value=None)
+    sup._linear_client.create_issue = MagicMock(
+        return_value={
+            "id": "issue-uuid",
+            "identifier": "TST-100",
+            "url": "https://linear.app/test/TST-100",
+        }
+    )
+    sup._linear_client.fetch_open_issues_with_label = MagicMock(
+        return_value=[]
+    )
+
+
+def _insert_completed_tasks(conn, count, *, completed_at=None):
+    """Insert N completed tasks for testing ticket-count trigger."""
+    if completed_at is None:
+        completed_at = datetime.now(timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%S.%fZ"
+        )
+    for i in range(count):
+        task_id = insert_task(
+            conn,
+            ticket_id=f"TST-C{i}",
+            title=f"Completed task {i}",
+            project="test-project",
+            slot=1,
+            status="completed",
+        )
+        update_task(conn, task_id, status="completed", completed_at=completed_at)
+    conn.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +155,58 @@ class TestDBHelpers:
         result = get_last_scheduled_refactoring_ticket(conn)
         assert result == "TST-99"
 
+    def test_count_completed_tasks_since_empty(self, conn):
+        assert count_completed_tasks_since(conn, "1970-01-01T00:00:00Z") == 0
+
+    def test_count_completed_tasks_since_with_tasks(self, conn):
+        _insert_completed_tasks(conn, 5)
+        assert count_completed_tasks_since(conn, "1970-01-01T00:00:00Z") == 5
+
+    def test_count_completed_tasks_since_respects_timestamp(self, conn):
+        old_time = (
+            datetime.now(timezone.utc) - timedelta(days=10)
+        ).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        _insert_completed_tasks(conn, 3, completed_at=old_time)
+
+        recent_cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=5)
+        ).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        assert count_completed_tasks_since(conn, recent_cutoff) == 0
+
+        old_cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=15)
+        ).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        assert count_completed_tasks_since(conn, old_cutoff) == 3
+
+    def test_count_completed_tasks_since_ignores_non_completed(self, conn):
+        task_id = insert_task(
+            conn,
+            ticket_id="TST-PEND",
+            title="Pending",
+            project="test-project",
+            slot=1,
+            status="pending",
+        )
+        conn.commit()
+        assert count_completed_tasks_since(conn, "1970-01-01T00:00:00Z") == 0
+
+    def test_count_completed_tasks_since_null_completed_at(self, conn):
+        """Tasks completed via recovery paths (NULL completed_at) are counted
+        using COALESCE fallback to started_at."""
+        started = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        task_id = insert_task(
+            conn,
+            ticket_id="TST-RECOV",
+            title="Recovered task",
+            project="test-project",
+            slot=1,
+            status="completed",
+        )
+        # Simulate recovery path: status=completed, started_at set, but no completed_at
+        update_task(conn, task_id, status="completed", started_at=started)
+        conn.commit()
+        assert count_completed_tasks_since(conn, "1970-01-01T00:00:00Z") == 1
+
 
 # ---------------------------------------------------------------------------
 # Config tests
@@ -120,6 +218,7 @@ class TestRefactoringAnalysisConfig:
         cfg = RefactoringAnalysisConfig()
         assert cfg.enabled is False
         assert cfg.cadence_days == 14
+        assert cfg.cadence_tickets == 20
         assert cfg.linear_label == "Refactoring Analysis"
         assert cfg.priority == 4
 
@@ -140,6 +239,7 @@ class TestRefactoringAnalysisConfig:
             "refactoring_analysis": {
                 "enabled": True,
                 "cadence_days": 7,
+                "cadence_tickets": 10,
                 "linear_label": "Custom Label",
                 "priority": 2,
             },
@@ -152,6 +252,7 @@ class TestRefactoringAnalysisConfig:
         cfg = load_config(path)
         assert cfg.refactoring_analysis.enabled is True
         assert cfg.refactoring_analysis.cadence_days == 7
+        assert cfg.refactoring_analysis.cadence_tickets == 10
         assert cfg.refactoring_analysis.linear_label == "Custom Label"
         assert cfg.refactoring_analysis.priority == 2
 
@@ -178,6 +279,53 @@ class TestRefactoringAnalysisConfig:
         cfg = load_config(path)
         assert cfg.refactoring_analysis.enabled is False
         assert cfg.refactoring_analysis.cadence_days == 14
+        assert cfg.refactoring_analysis.cadence_tickets == 20
+
+    def test_validation_rejects_negative_cadence_tickets(self, tmp_path):
+        import yaml
+        from botfarm.config import ConfigError, load_config
+
+        data = {
+            "projects": [
+                {
+                    "name": "p",
+                    "linear_team": "T",
+                    "base_dir": "~/d",
+                    "worktree_prefix": "p-",
+                    "slots": [1],
+                }
+            ],
+            "linear": {"api_key": "key"},
+            "refactoring_analysis": {"cadence_tickets": -1},
+        }
+        path = tmp_path / "config.yaml"
+        path.write_text(yaml.dump(data))
+
+        with pytest.raises(ConfigError, match="cadence_tickets"):
+            load_config(path)
+
+    def test_validation_allows_zero_cadence_tickets(self, tmp_path):
+        import yaml
+        from botfarm.config import load_config
+
+        data = {
+            "projects": [
+                {
+                    "name": "p",
+                    "linear_team": "T",
+                    "base_dir": "~/d",
+                    "worktree_prefix": "p-",
+                    "slots": [1],
+                }
+            ],
+            "linear": {"api_key": "key"},
+            "refactoring_analysis": {"cadence_tickets": 0},
+        }
+        path = tmp_path / "config.yaml"
+        path.write_text(yaml.dump(data))
+
+        cfg = load_config(path)
+        assert cfg.refactoring_analysis.cadence_tickets == 0
 
     def test_validation_rejects_bad_cadence(self, tmp_path):
         import yaml
@@ -832,3 +980,285 @@ class TestLinearClientMethods:
             result = client.get_or_create_label("TST", "Custom")
 
         assert result == "new-id"
+
+
+# ---------------------------------------------------------------------------
+# Ticket-count trigger tests
+# ---------------------------------------------------------------------------
+
+
+class TestTicketCountTrigger:
+    def _insert_recent_analysis(self, sup):
+        """Insert a recent analysis record and mark previous ticket terminal."""
+        record_refactoring_analysis_created(sup._conn, "TST-PREV")
+        sup._conn.commit()
+        for poller in sup._pollers.values():
+            poller.is_issue_terminal.return_value = True
+
+    def test_ticket_count_trigger_fires(self, tmp_path, monkeypatch):
+        """Creates ticket when cadence_tickets threshold is reached."""
+        config = _make_config(
+            tmp_path, cadence_days=999, cadence_tickets=5,
+        )
+        sup, _ = _make_supervisor(tmp_path, monkeypatch, config)
+        self._insert_recent_analysis(sup)
+        _insert_completed_tasks(sup._conn, 5)
+        _setup_linear_mocks(sup)
+
+        sup._maybe_create_refactoring_analysis_ticket()
+
+        sup._linear_client.create_issue.assert_called_once()
+
+    def test_ticket_count_trigger_does_not_fire_below_threshold(
+        self, tmp_path, monkeypatch,
+    ):
+        """Does not create ticket when below cadence_tickets threshold."""
+        config = _make_config(
+            tmp_path, cadence_days=999, cadence_tickets=10,
+        )
+        sup, _ = _make_supervisor(tmp_path, monkeypatch, config)
+        self._insert_recent_analysis(sup)
+        _insert_completed_tasks(sup._conn, 9)
+        _setup_linear_mocks(sup)
+
+        sup._maybe_create_refactoring_analysis_ticket()
+
+        sup._linear_client.create_issue.assert_not_called()
+
+    def test_ticket_count_trigger_uses_backlog_state(
+        self, tmp_path, monkeypatch,
+    ):
+        """Ticket-count trigger creates ticket in Backlog state, not Todo."""
+        config = _make_config(
+            tmp_path, cadence_days=999, cadence_tickets=5,
+        )
+        sup, _ = _make_supervisor(tmp_path, monkeypatch, config)
+        self._insert_recent_analysis(sup)
+        _insert_completed_tasks(sup._conn, 5)
+        _setup_linear_mocks(sup)
+
+        sup._maybe_create_refactoring_analysis_ticket()
+
+        call_kwargs = sup._linear_client.create_issue.call_args[1]
+        assert call_kwargs["state_id"] == "backlog-state-id"
+
+    def test_ticket_count_trigger_sends_notification(
+        self, tmp_path, monkeypatch,
+    ):
+        """Ticket-count trigger sends notify_refactoring_due notification."""
+        config = _make_config(
+            tmp_path, cadence_days=999, cadence_tickets=5,
+        )
+        sup, _ = _make_supervisor(tmp_path, monkeypatch, config)
+        self._insert_recent_analysis(sup)
+        _insert_completed_tasks(sup._conn, 5)
+        _setup_linear_mocks(sup)
+
+        with patch.object(sup._notifier, "notify_refactoring_due") as mock_notify:
+            sup._maybe_create_refactoring_analysis_ticket()
+            mock_notify.assert_called_once_with(
+                ticket_id="TST-100",
+                ticket_url="https://linear.app/test/TST-100",
+            )
+
+    def test_time_trigger_does_not_send_refactoring_due(
+        self, tmp_path, monkeypatch,
+    ):
+        """Time-based trigger does NOT send notify_refactoring_due."""
+        config = _make_config(
+            tmp_path, cadence_days=14, cadence_tickets=0,
+        )
+        sup, _ = _make_supervisor(tmp_path, monkeypatch, config)
+        _setup_linear_mocks(sup)
+
+        with patch.object(sup._notifier, "notify_refactoring_due") as mock_notify:
+            sup._maybe_create_refactoring_analysis_ticket()
+            mock_notify.assert_not_called()
+
+    def test_time_trigger_uses_todo_state(
+        self, tmp_path, monkeypatch,
+    ):
+        """Time-based trigger creates ticket in Todo state."""
+        config = _make_config(
+            tmp_path, cadence_days=14, cadence_tickets=0,
+        )
+        sup, _ = _make_supervisor(tmp_path, monkeypatch, config)
+        _setup_linear_mocks(sup)
+
+        sup._maybe_create_refactoring_analysis_ticket()
+
+        call_kwargs = sup._linear_client.create_issue.call_args[1]
+        assert call_kwargs["state_id"] == "todo-state-id"
+
+    def test_cadence_tickets_zero_disables_count_trigger(
+        self, tmp_path, monkeypatch,
+    ):
+        """cadence_tickets=0 disables the ticket-count trigger."""
+        config = _make_config(
+            tmp_path, cadence_days=999, cadence_tickets=0,
+        )
+        sup, _ = _make_supervisor(tmp_path, monkeypatch, config)
+        self._insert_recent_analysis(sup)
+        _insert_completed_tasks(sup._conn, 100)
+        _setup_linear_mocks(sup)
+
+        sup._maybe_create_refactoring_analysis_ticket()
+
+        # No trigger fires: time hasn't elapsed and count trigger disabled
+        sup._linear_client.create_issue.assert_not_called()
+
+    def test_both_triggers_fire_time_takes_priority(
+        self, tmp_path, monkeypatch,
+    ):
+        """When both triggers fire, time trigger wins (ticket goes to Todo)."""
+        config = _make_config(
+            tmp_path, cadence_days=14, cadence_tickets=5,
+        )
+        sup, _ = _make_supervisor(tmp_path, monkeypatch, config)
+        _insert_completed_tasks(sup._conn, 10)
+        _setup_linear_mocks(sup)
+
+        sup._maybe_create_refactoring_analysis_ticket()
+
+        call_kwargs = sup._linear_client.create_issue.call_args[1]
+        assert call_kwargs["state_id"] == "todo-state-id"
+
+    def test_triggers_fire_independently(self, tmp_path, monkeypatch):
+        """Ticket-count trigger fires even when time trigger hasn't elapsed."""
+        config = _make_config(
+            tmp_path, cadence_days=999, cadence_tickets=3,
+        )
+        sup, _ = _make_supervisor(tmp_path, monkeypatch, config)
+
+        # Record a recent creation so time trigger won't fire
+        record_refactoring_analysis_created(sup._conn, "TST-PREV")
+        sup._conn.commit()
+        # But mark previous ticket as terminal
+        for poller in sup._pollers.values():
+            poller.is_issue_terminal.return_value = True
+
+        _insert_completed_tasks(sup._conn, 3)
+        _setup_linear_mocks(sup)
+
+        sup._maybe_create_refactoring_analysis_ticket()
+
+        sup._linear_client.create_issue.assert_called_once()
+        call_kwargs = sup._linear_client.create_issue.call_args[1]
+        assert call_kwargs["state_id"] == "backlog-state-id"
+
+    def test_dedup_prevents_duplicate_creation(self, tmp_path, monkeypatch):
+        """Dedup check prevents ticket creation even when count trigger fires."""
+        config = _make_config(
+            tmp_path, cadence_days=999, cadence_tickets=5,
+        )
+        sup, mock_poller = _make_supervisor(tmp_path, monkeypatch, config)
+        _insert_completed_tasks(sup._conn, 10)
+
+        # Previous ticket still open
+        record_refactoring_analysis_created(sup._conn, "TST-OPEN")
+        sup._conn.commit()
+        mock_poller.is_issue_terminal.return_value = False
+
+        with patch.object(sup._linear_client, "create_issue") as mock_create:
+            sup._maybe_create_refactoring_analysis_ticket()
+            mock_create.assert_not_called()
+
+    def test_count_resets_after_analysis_created(self, tmp_path, monkeypatch):
+        """Tasks before last analysis don't count toward next trigger."""
+        config = _make_config(
+            tmp_path, cadence_days=999, cadence_tickets=5,
+        )
+        sup, _ = _make_supervisor(tmp_path, monkeypatch, config)
+
+        # Insert old tasks, then record analysis
+        old_time = (
+            datetime.now(timezone.utc) - timedelta(days=2)
+        ).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        _insert_completed_tasks(sup._conn, 10, completed_at=old_time)
+
+        record_refactoring_analysis_created(sup._conn, "TST-PREV")
+        sup._conn.commit()
+        # Previous ticket is terminal
+        for poller in sup._pollers.values():
+            poller.is_issue_terminal.return_value = True
+
+        # Only 2 new tasks since the analysis
+        _insert_completed_tasks(sup._conn, 2)
+        _setup_linear_mocks(sup)
+
+        sup._maybe_create_refactoring_analysis_ticket()
+
+        # 2 < 5 threshold, so no creation
+        sup._linear_client.create_issue.assert_not_called()
+
+    def test_backlog_state_not_found_skips_creation(
+        self, tmp_path, monkeypatch,
+    ):
+        """Skips creation when Backlog state doesn't exist in team."""
+        config = _make_config(
+            tmp_path, cadence_days=999, cadence_tickets=5,
+        )
+        sup, _ = _make_supervisor(tmp_path, monkeypatch, config)
+        self._insert_recent_analysis(sup)
+        _insert_completed_tasks(sup._conn, 5)
+        _setup_linear_mocks(sup, states={"Todo": "todo-state-id"})  # No Backlog
+
+        sup._maybe_create_refactoring_analysis_ticket()
+
+        sup._linear_client.create_issue.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Notification tests for refactoring_due
+# ---------------------------------------------------------------------------
+
+
+class TestRefactoringDueNotification:
+    @pytest.fixture()
+    def notifier(self):
+        from botfarm.config import NotificationsConfig
+        from botfarm.notifications import Notifier
+
+        n = Notifier(NotificationsConfig(
+            webhook_url="https://hooks.slack.com/services/xxx",
+            webhook_format="slack",
+        ))
+        n._client = MagicMock()
+        response = MagicMock()
+        response.raise_for_status = MagicMock()
+        n._client.post.return_value = response
+        yield n
+        n.close()
+
+    def test_sends_message_with_ticket_info(self, notifier):
+        notifier.notify_refactoring_due(
+            ticket_id="TST-100",
+            ticket_url="https://linear.app/test/TST-100",
+        )
+        notifier._client.post.assert_called_once()
+        payload = notifier._client.post.call_args[1]["json"]
+        assert "TST-100" in payload["text"]
+        assert "Backlog" in payload["text"]
+        assert "https://linear.app/test/TST-100" in payload["text"]
+
+    def test_not_rate_limited(self, notifier):
+        notifier.notify_refactoring_due(
+            ticket_id="TST-1",
+            ticket_url="https://linear.app/test/TST-1",
+        )
+        notifier.notify_refactoring_due(
+            ticket_id="TST-2",
+            ticket_url="https://linear.app/test/TST-2",
+        )
+        assert notifier._client.post.call_count == 2
+
+    def test_noop_when_disabled(self):
+        from botfarm.config import NotificationsConfig
+        from botfarm.notifications import Notifier
+
+        n = Notifier(NotificationsConfig(webhook_url=""))
+        n.notify_refactoring_due(
+            ticket_id="TST-1",
+            ticket_url="https://linear.app/test/TST-1",
+        )
+        n.close()

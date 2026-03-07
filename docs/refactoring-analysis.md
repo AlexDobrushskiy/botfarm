@@ -116,6 +116,31 @@ Explicit list of things that should NOT trigger refactoring tickets:
 - Test files (test duplication is acceptable if tests are clear)
 - Code that was recently written and may still be evolving
 
-## 5. Threshold Evolution
+## 5. Scheduling Triggers
+
+The refactoring analysis scheduler has two independent triggers:
+
+### Time-based trigger (`cadence_days`)
+
+Creates a ticket every N days (default 14). The ticket goes directly to **Todo** state and will be dispatched automatically.
+
+### Ticket-count trigger (`cadence_tickets`)
+
+Creates a ticket after N completed project tickets (default 20, 0 = disabled). The ticket goes to **Backlog** state and a webhook notification is sent, since it requires human action to move to Todo for dispatch.
+
+Either trigger fires independently — whichever condition is met first. If both fire simultaneously, the time-based trigger takes priority (ticket goes to Todo). Dedup checks prevent multiple tickets from being created: the scheduler skips creation if a previous analysis ticket is still open or if any ticket with the refactoring analysis label exists in Linear.
+
+### Configuration
+
+```yaml
+refactoring_analysis:
+  enabled: true
+  cadence_days: 14       # Time-based trigger (days between analyses)
+  cadence_tickets: 20    # Ticket-count trigger (0 = disabled)
+  linear_label: "Refactoring Analysis"
+  priority: 4            # 0=None, 1=Urgent, 2=High, 3=Normal, 4=Low
+```
+
+## 6. Threshold Evolution
 
 The action thresholds in this document can be adjusted based on experience. If the analysis consistently finds "good enough" for 3+ consecutive runs, consider tightening thresholds slightly. If it consistently flags things that don't warrant action, loosen them.

@@ -716,6 +716,28 @@ def record_refactoring_analysis_created(
     )
 
 
+def count_completed_tasks_since(
+    conn: sqlite3.Connection,
+    since: str,
+) -> int:
+    """Count tasks completed since the given ISO timestamp.
+
+    Used by the ticket-count-based refactoring analysis trigger to
+    determine how many tasks have completed since the last analysis
+    was scheduled.
+
+    Uses COALESCE(completed_at, started_at, created_at) to handle
+    recovery/reconciliation paths that set status='completed' without
+    setting completed_at.
+    """
+    return conn.execute(
+        "SELECT COUNT(*) FROM tasks "
+        "WHERE status = 'completed' "
+        "AND COALESCE(completed_at, started_at, created_at) >= ?",
+        (since,),
+    ).fetchone()[0]
+
+
 # ---------------------------------------------------------------------------
 # Slot runtime state helpers
 # ---------------------------------------------------------------------------
