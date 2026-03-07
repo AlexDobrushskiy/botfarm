@@ -55,12 +55,16 @@ def partial_slots(request: Request):
     dispatch_paused = state.get("dispatch_paused", False)
     dispatch_pause_reason = state.get("dispatch_pause_reason")
     project_pauses = state.get("project_pauses", {})
+    # Collect project names from config for the "Add Slot" buttons
+    cfg = app.state.botfarm_config
+    projects = [p.name for p in cfg.projects] if cfg else []
     return templates.TemplateResponse("partials/slots.html", {
         "request": request,
         "slots": slots,
         "dispatch_paused": dispatch_paused,
         "dispatch_pause_reason": dispatch_pause_reason,
         "project_pauses": project_pauses,
+        "projects": projects,
         "elapsed": elapsed,
         "linear_url": lambda tid: linear_url(app, tid),
         "context_fill_class": context_fill_class,

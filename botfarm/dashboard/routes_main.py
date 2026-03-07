@@ -659,6 +659,8 @@ def index(request: Request):
     dashboard_checked = get_dashboard_last_fresh_time(app)
     last_usage_check = dashboard_checked or state.get("last_usage_check")
     _linear_url = lambda tid: linear_url(app, tid)
+    cfg = app.state.botfarm_config
+    projects = [p.name for p in cfg.projects] if cfg else []
     return templates.TemplateResponse("index.html", {
         "request": request,
         "slots": slots,
@@ -667,6 +669,7 @@ def index(request: Request):
         "usage": usage,
         "codex_usage": codex_usage,
         "queue": queue,
+        "projects": projects,
         "last_usage_check": last_usage_check,
         "usage_stale": usage_is_stale(last_usage_check),
         "elapsed": elapsed,

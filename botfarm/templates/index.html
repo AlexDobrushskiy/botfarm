@@ -94,6 +94,22 @@ function confirmStopSlot() {
     });
 }
 
+function addSlot(project) {
+    if (!confirm("Add a new slot to project \"" + project + "\"?")) return;
+    fetch("/api/slot/add", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({project: project})
+    }).then(function(resp) {
+        if (!resp.ok) return resp.json().then(function(d) { throw new Error(d.error || "Request failed"); });
+        return resp.json();
+    }).then(function(data) {
+        showToast("Slot addition requested for " + project, "success");
+    }).catch(function(err) {
+        showToast("Failed: " + err.message, "error");
+    });
+}
+
 /* Suspend htmx polling on #slots-panel while the stop modal is open */
 document.body.addEventListener("htmx:beforeRequest", function(evt) {
     var panel = document.getElementById("slots-panel");
