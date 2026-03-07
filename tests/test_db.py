@@ -2791,6 +2791,44 @@ class TestUpsertUsageApiKeySession:
         assert row["unblocked_at"] is None
         assert row["block_duration_seconds"] is None
         assert row["blocked_at"] is None
+        assert row["first_error_at"] == "2026-03-07T10:20:00.000000Z"
+
+    def test_re_error_after_recovered_correct_block_duration(self, conn):
+        """Full round-trip: blocked → recovered → erroring → recovered again.
+
+        block_duration_seconds must be computed from the NEW error episode,
+        not the old first_error_at / blocked_at.
+        """
+        t0 = "2026-03-07T10:00:00.000000Z"
+        upsert_usage_api_key_session(conn, token_fingerprint="fp1", success=True, now_iso=t0)
+        # First error episode: 3 errors → blocked
+        for i in range(3):
+            upsert_usage_api_key_session(
+                conn, token_fingerprint="fp1", success=False,
+                now_iso=f"2026-03-07T10:0{i+1}:00.000000Z",
+            )
+        # Recover from blocked
+        upsert_usage_api_key_session(
+            conn, token_fingerprint="fp1", success=True,
+            now_iso="2026-03-07T10:10:00.000000Z",
+        )
+        # Second error episode: single error at T20
+        t_new_error = "2026-03-07T10:20:00.000000Z"
+        upsert_usage_api_key_session(
+            conn, token_fingerprint="fp1", success=False, now_iso=t_new_error,
+        )
+        # Recover again at T25
+        t_recover2 = "2026-03-07T10:25:00.000000Z"
+        upsert_usage_api_key_session(
+            conn, token_fingerprint="fp1", success=True, now_iso=t_recover2,
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT * FROM usage_api_key_sessions WHERE token_fingerprint = 'fp1'"
+        ).fetchone()
+        assert row["status"] == "recovered"
+        # Duration should be 5 minutes (T25 - T20), not measured from old episode
+        assert row["block_duration_seconds"] == 300.0
 
     def test_replaced_after_recovered_preserves_block_duration(self, conn):
         t0 = "2026-03-07T10:00:00.000000Z"
