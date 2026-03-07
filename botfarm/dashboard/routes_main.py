@@ -443,7 +443,7 @@ def _compute_task_totals(stages: list[dict]) -> dict:
     codex_input = sum(s.get("input_tokens") or 0 for s in codex_stages)
     codex_output = sum(s.get("output_tokens") or 0 for s in codex_stages)
     codex_cache_read = sum(s.get("cache_read_input_tokens") or 0 for s in codex_stages)
-    codex_cost = sum(s.get("total_cost_usd") or 0.0 for s in codex_stages)
+    codex_cost_usd = sum(s.get("total_cost_usd") or 0.0 for s in codex_stages)
     codex_runs = len(codex_stages)
 
     return {
@@ -455,7 +455,7 @@ def _compute_task_totals(stages: list[dict]) -> dict:
         "codex_input_tokens": codex_input,
         "codex_output_tokens": codex_output,
         "codex_cache_read_tokens": codex_cache_read,
-        "codex_cost": codex_cost,
+        "codex_cost_usd": codex_cost_usd,
         "codex_runs": codex_runs,
         "codex_stages": codex_stages,
     }
@@ -806,35 +806,37 @@ def usage_page(request: Request):
     conn = get_db(app)
     if conn:
         try:
-            rows = conn.execute(
-                "SELECT * FROM usage_snapshots "
-                "WHERE created_at >= datetime('now', ?)"
-                " ORDER BY created_at ASC",
-                (f"-{hours} hours",),
-            ).fetchall()
-            snapshots = [dict(r) for r in rows]
-        except sqlite3.OperationalError:
-            pass
-        try:
-            codex_rows = conn.execute(
-                "SELECT * FROM codex_usage_snapshots "
-                "WHERE created_at >= datetime('now', ?)"
-                " ORDER BY created_at ASC",
-                (f"-{hours} hours",),
-            ).fetchall()
-            codex_snapshots = [dict(r) for r in codex_rows]
-        except sqlite3.OperationalError:
-            pass
-        try:
-            cost_row = conn.execute(
-                "SELECT SUM(total_cost_usd) as total "
-                "FROM stage_runs WHERE stage = 'codex_review'"
-            ).fetchone()
-            if cost_row and cost_row["total"]:
-                codex_stage_cost = cost_row["total"]
-        except sqlite3.OperationalError:
-            pass
-        conn.close()
+            try:
+                rows = conn.execute(
+                    "SELECT * FROM usage_snapshots "
+                    "WHERE created_at >= datetime('now', ?)"
+                    " ORDER BY created_at ASC",
+                    (f"-{hours} hours",),
+                ).fetchall()
+                snapshots = [dict(r) for r in rows]
+            except sqlite3.OperationalError:
+                pass
+            try:
+                codex_rows = conn.execute(
+                    "SELECT * FROM codex_usage_snapshots "
+                    "WHERE created_at >= datetime('now', ?)"
+                    " ORDER BY created_at ASC",
+                    (f"-{hours} hours",),
+                ).fetchall()
+                codex_snapshots = [dict(r) for r in codex_rows]
+            except sqlite3.OperationalError:
+                pass
+            try:
+                cost_row = conn.execute(
+                    "SELECT SUM(total_cost_usd) as total "
+                    "FROM stage_runs WHERE stage = 'codex_review'"
+                ).fetchone()
+                if cost_row and cost_row["total"]:
+                    codex_stage_cost = cost_row["total"]
+            except sqlite3.OperationalError:
+                pass
+        finally:
+            conn.close()
     return templates.TemplateResponse("usage.html", {
         "request": request,
         "usage": usage,

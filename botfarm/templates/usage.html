@@ -15,6 +15,9 @@
     <a href="/usage?range=30d" role="button" {% if time_range == "30d" %}aria-current="true"{% else %}class="outline"{% endif %}>Last 30d</a>
 </fieldset>
 
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2"></script>
+
 {% if snapshots %}
 {% set non_null_values = [] %}
 {% for s in snapshots %}
@@ -31,8 +34,6 @@
 {% if has_extra %}
 <canvas id="extra-usage-chart" style="max-height:300px; margin-top:1rem;"></canvas>
 {% endif %}
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
-<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2"></script>
 <script>
     const snapshots = {{ snapshots | tojson }};
     const labels = snapshots.map(s => s.created_at ? s.created_at.slice(5, 16) : "");
