@@ -32,7 +32,7 @@
 <div class="slot-project-actions">
     {% for project in all_projects | sort %}
     <button class="add-slot-btn"
-            onclick="addSlot({{ project | tojson }})"
+            onclick='addSlot({{ project | tojson }})'
             {% if not supervisor.running or dispatch_paused %}disabled title="Supervisor not running or dispatch paused"{% else %}title="Add a new slot to {{ project }}"{% endif %}>+ Add Slot ({{ project }})</button>
     {% endfor %}
 </div>
