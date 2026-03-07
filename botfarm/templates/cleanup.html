@@ -93,7 +93,7 @@
             </div>
             <div>
                 <button id="btn-execute" style="background: var(--pico-ins-color); color: #fff;">
-                    Archive <span id="selected-count">0</span> issues
+                    Archive 0 issues
                 </button>
             </div>
         </footer>
@@ -317,7 +317,6 @@
     }
 
     function updateSelectedCount() {
-        document.getElementById("selected-count").textContent = selected.size;
         var btn = document.getElementById("btn-execute");
         btn.disabled = selected.size === 0;
         btn.textContent = (currentAction === "archive" ? "Archive " : "Delete ") + selected.size + " issues";
