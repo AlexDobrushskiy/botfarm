@@ -3787,7 +3787,6 @@ class TestPrChecksConflictPrecheck:
         """When PR has merge conflicts, _run_pr_checks returns immediately."""
         result = _run_pr_checks(PR_URL, cwd=tmp_path)
         assert result.success is False
-        assert result.merge_conflict is True
         assert "merge conflicts" in result.error
 
     @patch("botfarm.worker_stages._check_pr_has_merge_conflict", return_value=False)
@@ -3799,7 +3798,6 @@ class TestPrChecksConflictPrecheck:
         )
         result = _run_pr_checks(PR_URL, cwd=tmp_path)
         assert result.success is True
-        assert result.merge_conflict is False
 
 
 class TestPrChecksConflictRouting:

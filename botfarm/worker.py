@@ -690,6 +690,40 @@ def _handle_fix_resume(
     return False
 
 
+def _try_conflict_resolution(
+    ctx: "_PipelineContext",
+    pr_url: str,
+    log_msg: str,
+) -> tuple[bool, str | None] | None:
+    """Check for merge conflict and attempt resolution if found.
+
+    Returns ``(should_stop, pr_url)`` when a conflict was detected,
+    or ``None`` to let the caller fall through to other logic.
+    """
+    if not _check_pr_has_merge_conflict(
+        pr_url, ctx.cwd,
+        env={**os.environ, **(ctx.coder_env or {})},
+    ):
+        return None
+
+    ctx._refresh_runtime_config()
+    if ctx.max_merge_conflict_retries <= 0:
+        return True, pr_url  # conflict retries disabled — fail
+
+    logger.info(log_msg, ctx.ticket_id)
+    _reset_for_retry(ctx)
+    success = _run_merge_conflict_loop(
+        ctx,
+        pr_url=pr_url,
+        max_retries=ctx.max_merge_conflict_retries,
+    )
+    if not success:
+        return True, pr_url
+    if "pr_checks" not in ctx.pipeline.stages_completed:
+        ctx.pipeline.stages_completed.append("pr_checks")
+    return False, pr_url
+
+
 def _handle_pr_checks_stage(
     ctx: "_PipelineContext",
     *,
@@ -708,29 +742,13 @@ def _handle_pr_checks_stage(
     # When pr_checks detects a merge conflict (pre-check or "no checks reported"
     # because GitHub won't run CI on conflicting PRs), route to the conflict
     # resolution flow instead of wasting ci_fix retries.
-    if pr_url and _check_pr_has_merge_conflict(
-        pr_url, ctx.cwd,
-        env={**os.environ, **(ctx.coder_env or {})},
-    ):
-        ctx._refresh_runtime_config()
-        if ctx.max_merge_conflict_retries > 0:
-            logger.info(
-                "pr_checks failed due to merge conflict for %s — entering conflict resolution",
-                ctx.ticket_id,
-            )
-            _reset_for_retry(ctx)
-            success = _run_merge_conflict_loop(
-                ctx,
-                pr_url=pr_url,
-                max_retries=ctx.max_merge_conflict_retries,
-            )
-            if not success:
-                return True, pr_url
-            if "pr_checks" not in ctx.pipeline.stages_completed:
-                ctx.pipeline.stages_completed.append("pr_checks")
-            return False, pr_url
-        # Merge conflict retries disabled — fail
-        return True, pr_url
+    if pr_url:
+        conflict_result = _try_conflict_resolution(
+            ctx, pr_url,
+            "pr_checks failed due to merge conflict for %s — entering conflict resolution",
+        )
+        if conflict_result is not None:
+            return conflict_result
 
     # Re-read in case the budget was changed while pr_checks was running
     ctx._refresh_runtime_config()
@@ -752,27 +770,13 @@ def _handle_pr_checks_stage(
 
         # CI retries exhausted — check if a merge conflict developed
         # during the ci_fix loop (e.g. another PR merged to main).
-        if pr_url and _check_pr_has_merge_conflict(
-            pr_url, ctx.cwd,
-            env={**os.environ, **(ctx.coder_env or {})},
-        ):
-            ctx._refresh_runtime_config()
-            if ctx.max_merge_conflict_retries > 0:
-                logger.info(
-                    "Merge conflict detected after CI retries for %s — entering conflict resolution",
-                    ctx.ticket_id,
-                )
-                _reset_for_retry(ctx)
-                mc_success = _run_merge_conflict_loop(
-                    ctx,
-                    pr_url=pr_url,
-                    max_retries=ctx.max_merge_conflict_retries,
-                )
-                if not mc_success:
-                    return True, pr_url
-                if "pr_checks" not in ctx.pipeline.stages_completed:
-                    ctx.pipeline.stages_completed.append("pr_checks")
-                return False, pr_url
+        if pr_url:
+            conflict_result = _try_conflict_resolution(
+                ctx, pr_url,
+                "Merge conflict detected after CI retries for %s — entering conflict resolution",
+            )
+            if conflict_result is not None:
+                return conflict_result
 
         return True, pr_url
 

@@ -688,7 +688,6 @@ def _run_pr_checks(
             stage="pr_checks",
             success=False,
             error="PR has merge conflicts — CI checks will not run",
-            merge_conflict=True,
         )
 
     start = time.monotonic()
