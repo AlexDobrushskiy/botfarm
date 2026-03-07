@@ -1227,6 +1227,210 @@ def list_cleanup_batches(
 
 
 # ---------------------------------------------------------------------------
+# Usage API audit helpers
+# ---------------------------------------------------------------------------
+
+DEFAULT_RETENTION_DAYS = 30
+
+
+def insert_usage_api_call(
+    conn: sqlite3.Connection,
+    *,
+    token_fingerprint: str | None = None,
+    status_code: int | None = None,
+    success: bool = False,
+    error_type: str | None = None,
+    error_detail: str | None = None,
+    response_time_ms: float | None = None,
+    retry_after: str | None = None,
+    caller: str | None = None,
+) -> int:
+    """Insert a usage API call log row and return its id."""
+    cur = conn.execute(
+        """
+        INSERT INTO usage_api_calls
+            (created_at, token_fingerprint, status_code, success,
+             error_type, error_detail, response_time_ms, retry_after, caller)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            _now_iso(),
+            token_fingerprint,
+            status_code,
+            int(success),
+            error_type,
+            error_detail,
+            response_time_ms,
+            retry_after,
+            caller,
+        ),
+    )
+    return cur.lastrowid
+
+
+def upsert_usage_api_key_session(
+    conn: sqlite3.Connection,
+    *,
+    token_fingerprint: str,
+    success: bool,
+    now_iso: str | None = None,
+) -> None:
+    """Create or update a key session row based on call outcome.
+
+    On success: increment total_successes, reset consecutive_errors,
+    update last_success_at.  If previously erroring/blocked -> recovered.
+
+    On failure: increment total_errors and consecutive_errors,
+    update last_error_at, set first_error_at if NULL.
+    Status transitions to 'erroring' on first error, 'blocked' at >=3.
+    """
+    if now_iso is None:
+        now_iso = _now_iso()
+
+    row = conn.execute(
+        "SELECT * FROM usage_api_key_sessions WHERE token_fingerprint = ?",
+        (token_fingerprint,),
+    ).fetchone()
+
+    if row is None:
+        status = "active" if success else "erroring"
+        conn.execute(
+            """
+            INSERT INTO usage_api_key_sessions
+                (token_fingerprint, first_seen_at, last_success_at,
+                 first_error_at, last_error_at,
+                 consecutive_errors, total_errors, total_successes,
+                 status, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                token_fingerprint,
+                now_iso,
+                now_iso if success else None,
+                None if success else now_iso,
+                None if success else now_iso,
+                0 if success else 1,
+                0 if success else 1,
+                1 if success else 0,
+                status,
+                now_iso,
+            ),
+        )
+        return
+
+    old_status = row["status"]
+
+    if success:
+        updates: dict[str, object] = {
+            "total_successes": row["total_successes"] + 1,
+            "consecutive_errors": 0,
+            "last_success_at": now_iso,
+        }
+        if old_status in ("erroring", "blocked"):
+            updates["status"] = "recovered"
+            updates["unblocked_at"] = now_iso
+            blocked_at = row["blocked_at"] or row["first_error_at"]
+            if blocked_at:
+                try:
+                    ba = datetime.fromisoformat(blocked_at.replace("Z", "+00:00"))
+                    na = datetime.fromisoformat(now_iso.replace("Z", "+00:00"))
+                    updates["block_duration_seconds"] = (na - ba).total_seconds()
+                except (ValueError, TypeError):
+                    pass
+    else:
+        updates = {
+            "total_errors": row["total_errors"] + 1,
+            "consecutive_errors": row["consecutive_errors"] + 1,
+            "last_error_at": now_iso,
+        }
+        if row["first_error_at"] is None:
+            updates["first_error_at"] = now_iso
+        new_consecutive = updates["consecutive_errors"]
+        if new_consecutive >= 3 and old_status not in ("blocked", "replaced"):
+            updates["status"] = "blocked"
+            updates["blocked_at"] = now_iso
+        elif old_status == "active":
+            updates["status"] = "erroring"
+
+    set_clause = ", ".join(f"{col} = ?" for col in updates)
+    values = list(updates.values())
+    values.append(token_fingerprint)
+    conn.execute(
+        f"UPDATE usage_api_key_sessions SET {set_clause} WHERE token_fingerprint = ?",  # noqa: S608
+        values,
+    )
+
+
+def mark_key_session_replaced(
+    conn: sqlite3.Connection,
+    *,
+    token_fingerprint: str,
+    replaced_at: str | None = None,
+) -> None:
+    """Mark a key session as replaced by a new token."""
+    if replaced_at is None:
+        replaced_at = _now_iso()
+
+    row = conn.execute(
+        "SELECT blocked_at, first_error_at FROM usage_api_key_sessions WHERE token_fingerprint = ?",
+        (token_fingerprint,),
+    ).fetchone()
+
+    block_duration = None
+    if row:
+        ref = row["blocked_at"] or row["first_error_at"]
+        if ref:
+            try:
+                ra = datetime.fromisoformat(ref.replace("Z", "+00:00"))
+                na = datetime.fromisoformat(replaced_at.replace("Z", "+00:00"))
+                block_duration = (na - ra).total_seconds()
+            except (ValueError, TypeError):
+                pass
+
+    conn.execute(
+        "UPDATE usage_api_key_sessions SET status = 'replaced', replaced_at = ?, block_duration_seconds = ? WHERE token_fingerprint = ?",
+        (replaced_at, block_duration, token_fingerprint),
+    )
+
+
+def get_active_key_session(conn: sqlite3.Connection) -> sqlite3.Row | None:
+    """Return the most recent key session that isn't 'replaced'."""
+    return conn.execute(
+        "SELECT * FROM usage_api_key_sessions WHERE status != 'replaced' ORDER BY created_at DESC LIMIT 1",
+    ).fetchone()
+
+
+def get_usage_api_call_history(
+    conn: sqlite3.Connection,
+    *,
+    limit: int = 100,
+    token_fingerprint: str | None = None,
+) -> list[sqlite3.Row]:
+    """Return recent usage API call log entries, newest first."""
+    if token_fingerprint is not None:
+        return conn.execute(
+            "SELECT * FROM usage_api_calls WHERE token_fingerprint = ? ORDER BY created_at DESC LIMIT ?",
+            (token_fingerprint, limit),
+        ).fetchall()
+    return conn.execute(
+        "SELECT * FROM usage_api_calls ORDER BY created_at DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+
+
+def purge_old_usage_api_calls(
+    conn: sqlite3.Connection,
+    *,
+    retention_days: int = DEFAULT_RETENTION_DAYS,
+) -> None:
+    """Delete usage API call rows older than the retention period."""
+    conn.execute(
+        "DELETE FROM usage_api_calls WHERE created_at < datetime('now', ?)",
+        (f"-{retention_days} days",),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Runtime config helpers
 # ---------------------------------------------------------------------------
 

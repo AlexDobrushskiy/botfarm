@@ -2,7 +2,7 @@
 
 Botfarm uses a single SQLite database (`~/.botfarm/botfarm.db`) in WAL mode with foreign keys enabled. Schema is versioned — migrations run automatically on startup (see `db.py`).
 
-Current schema version: **6**
+Current schema version: **21**
 
 ## Tables
 
@@ -139,6 +139,45 @@ Singleton row (id=1) tracking global dispatch state.
 | `supervisor_heartbeat` | TEXT | Last heartbeat timestamp (added in v4) |
 | `updated_at` | TEXT | Last modification timestamp |
 
+### `usage_api_calls`
+
+Append-only audit log — one row per usage API call attempt.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | INTEGER PK | Auto-increment |
+| `created_at` | TEXT | ISO-8601 timestamp |
+| `token_fingerprint` | TEXT | SHA-256 of last 8 chars of OAuth token (16 hex chars) |
+| `status_code` | INTEGER | HTTP status (200, 429, 401, etc.). NULL for connection errors |
+| `success` | INTEGER | 1 for 2xx responses, 0 otherwise |
+| `error_type` | TEXT | `rate_limit`, `auth_error`, `server_error`, `connection_error`, `timeout`, `other`. NULL on success |
+| `error_detail` | TEXT | Error message or response body excerpt |
+| `response_time_ms` | REAL | Wall-clock time for the HTTP request |
+| `retry_after` | TEXT | Value of `Retry-After` response header |
+| `caller` | TEXT | Context: `poll`, `force_poll`, `force_poll_bypass`, `cli_refresh`, `dashboard_refresh` |
+
+### `usage_api_key_sessions`
+
+One row per distinct token fingerprint — tracks the key's lifecycle.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | INTEGER PK | Auto-increment |
+| `token_fingerprint` | TEXT UNIQUE | SHA-256 fingerprint of the token |
+| `first_seen_at` | TEXT | When this token was first used |
+| `last_success_at` | TEXT | Last successful API call |
+| `first_error_at` | TEXT | First error with this token |
+| `last_error_at` | TEXT | Most recent error |
+| `consecutive_errors` | INTEGER | Current streak of consecutive errors |
+| `total_errors` | INTEGER | Lifetime error count |
+| `total_successes` | INTEGER | Lifetime success count |
+| `status` | TEXT | `active`, `erroring`, `blocked`, `recovered`, `replaced` |
+| `blocked_at` | TEXT | When status became `blocked` |
+| `unblocked_at` | TEXT | When status became `recovered` |
+| `replaced_at` | TEXT | When this token was replaced by a new one |
+| `block_duration_seconds` | REAL | Duration of the blocked period |
+| `created_at` | TEXT | ISO-8601 timestamp |
+
 ### `schema_version`
 
 Single row tracking the current schema version for migrations.
@@ -156,6 +195,10 @@ Single row tracking the current schema version for migrations.
 | `idx_task_events_type` | task_events | event_type |
 | `idx_tasks_ticket_id` | tasks | ticket_id |
 | `idx_tasks_status` | tasks | status |
+| `idx_usage_api_calls_created_at` | usage_api_calls | created_at |
+| `idx_usage_api_calls_token` | usage_api_calls | token_fingerprint |
+| `idx_usage_api_calls_success` | usage_api_calls | success |
+| `idx_usage_api_key_sessions_status` | usage_api_key_sessions | status |
 
 ## Pipeline Stages
 
@@ -181,6 +224,8 @@ botfarm/migrations/
   004_add_supervisor_heartbeat.sql
   005_add_resets_at_7d.sql
   006_drop_cost_usd.sql
+  ...
+  021_usage_api_audit.sql
 ```
 
 Each file is executed exactly once, in order, with a commit after each step. The `schema_version` table tracks the last successfully applied migration. Fresh databases run all migrations sequentially; existing databases skip already-applied migrations.
@@ -204,3 +249,5 @@ Each file is executed exactly once, in order, with a commit after each step. The
 | 4 | `004_add_supervisor_heartbeat.sql` | Add `supervisor_heartbeat` to dispatch_state |
 | 5 | `005_add_resets_at_7d.sql` | Add `resets_at_7d` to usage_snapshots |
 | 6 | `006_drop_cost_usd.sql` | Drop `cost_usd` from tasks and stage_runs (always $0.00 on Max subscription) |
+| 7–20 | `007_*` – `020_*` | Various additions (queue entries, token usage, workflow definitions, ticket history, cleanup batches, etc.) |
+| 21 | `021_usage_api_audit.sql` | Add `usage_api_calls` and `usage_api_key_sessions` tables for usage API audit logging |
