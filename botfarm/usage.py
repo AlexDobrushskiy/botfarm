@@ -12,14 +12,14 @@ import logging
 import random
 import sqlite3
 import time
-
-_async_sleep = asyncio.sleep  # local alias for testability
 from dataclasses import dataclass, field
 
 import httpx
 
 from botfarm.credentials import USAGE_API_TIMEOUT, CredentialManager, fetch_usage
 from botfarm.db import insert_usage_snapshot
+
+_async_sleep = asyncio.sleep  # local alias for testability
 
 logger = logging.getLogger(__name__)
 

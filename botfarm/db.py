@@ -1349,6 +1349,7 @@ def upsert_usage_api_key_session(
         if old_status == "recovered":
             updates["unblocked_at"] = None
             updates["block_duration_seconds"] = None
+            updates["blocked_at"] = None
         if new_consecutive >= 3 and old_status not in ("blocked", "replaced"):
             updates["status"] = "blocked"
             updates["blocked_at"] = now_iso

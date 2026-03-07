@@ -2790,6 +2790,7 @@ class TestUpsertUsageApiKeySession:
         assert row["status"] == "erroring"
         assert row["unblocked_at"] is None
         assert row["block_duration_seconds"] is None
+        assert row["blocked_at"] is None
 
     def test_replaced_after_recovered_preserves_block_duration(self, conn):
         t0 = "2026-03-07T10:00:00.000000Z"
