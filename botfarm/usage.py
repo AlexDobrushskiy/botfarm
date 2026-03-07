@@ -12,6 +12,8 @@ import logging
 import random
 import sqlite3
 import time
+
+_async_sleep = asyncio.sleep  # local alias for testability
 from dataclasses import dataclass, field
 
 import httpx
@@ -295,7 +297,7 @@ class UsagePoller:
                             delay,
                             _retry_after_log(exc),
                         )
-                        await asyncio.sleep(delay)
+                        await _async_sleep(delay)
                     else:
                         logger.warning(
                             "Usage API returned 429 (attempt %d/%d) — "
@@ -317,7 +319,7 @@ class UsagePoller:
                         exc,
                         delay,
                     )
-                    await asyncio.sleep(delay)
+                    await _async_sleep(delay)
                 else:
                     logger.warning(
                         "Transient error on usage API (attempt %d/%d): %s — "

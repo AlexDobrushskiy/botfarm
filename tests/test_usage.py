@@ -580,7 +580,7 @@ class TestUsagePollerRetry:
             return SAMPLE_USAGE_RESPONSE
 
         with patch("botfarm.usage.fetch_usage", side_effect=mock_fetch):
-            with patch("botfarm.usage.asyncio.sleep", new_callable=AsyncMock):
+            with patch("botfarm.usage._async_sleep", new_callable=AsyncMock):
                 state = poller.force_poll(conn)
 
         assert call_count == 2
@@ -596,7 +596,7 @@ class TestUsagePollerRetry:
             raise httpx.ConnectTimeout("connection timed out")
 
         with patch("botfarm.usage.fetch_usage", side_effect=always_fail):
-            with patch("botfarm.usage.asyncio.sleep", new_callable=AsyncMock):
+            with patch("botfarm.usage._async_sleep", new_callable=AsyncMock):
                 state = poller.force_poll(conn)
 
         # State should remain at defaults (None) since no successful poll occurred
@@ -619,7 +619,7 @@ class TestUsagePollerRetry:
             return SAMPLE_USAGE_RESPONSE
 
         with patch("botfarm.usage.fetch_usage", side_effect=mock_fetch):
-            with patch("botfarm.usage.asyncio.sleep", new_callable=AsyncMock):
+            with patch("botfarm.usage._async_sleep", new_callable=AsyncMock):
                 result = await poller._fetch_with_retry("test-token")
 
         assert result == SAMPLE_USAGE_RESPONSE
@@ -642,7 +642,7 @@ class TestUsagePollerRetry:
             return SAMPLE_USAGE_RESPONSE
 
         with patch("botfarm.usage.fetch_usage", side_effect=mock_fetch):
-            with patch("botfarm.usage.asyncio.sleep", new_callable=AsyncMock):
+            with patch("botfarm.usage._async_sleep", new_callable=AsyncMock):
                 result = await poller._fetch_with_retry("test-token")
 
         assert result == SAMPLE_USAGE_RESPONSE
@@ -665,7 +665,7 @@ class TestUsagePollerRetry:
             return SAMPLE_USAGE_RESPONSE
 
         with patch("botfarm.usage.fetch_usage", side_effect=mock_fetch):
-            with patch("botfarm.usage.asyncio.sleep", new_callable=AsyncMock):
+            with patch("botfarm.usage._async_sleep", new_callable=AsyncMock):
                 result = await poller._fetch_with_retry("test-token")
 
         assert result == SAMPLE_USAGE_RESPONSE
@@ -700,7 +700,7 @@ class TestUsagePollerRetry:
             raise httpx.ConnectTimeout("timed out")
 
         with patch("botfarm.usage.fetch_usage", side_effect=mock_fetch):
-            with patch("botfarm.usage.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            with patch("botfarm.usage._async_sleep", new_callable=AsyncMock) as mock_sleep:
                 with pytest.raises(httpx.ConnectTimeout):
                     await poller._fetch_with_retry("test-token")
 
@@ -718,7 +718,7 @@ class TestUsagePollerRetry:
             raise httpx.ConnectTimeout("timed out")
 
         with patch("botfarm.usage.fetch_usage", side_effect=mock_fetch):
-            with patch("botfarm.usage.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            with patch("botfarm.usage._async_sleep", new_callable=AsyncMock) as mock_sleep:
                 with pytest.raises(httpx.ConnectTimeout):
                     await poller._fetch_with_retry("test-token")
 
@@ -779,7 +779,7 @@ class TestUsagePollerPersistentClient:
             return SAMPLE_USAGE_RESPONSE
 
         with patch("botfarm.usage.fetch_usage", side_effect=mock_fetch):
-            with patch("botfarm.usage.asyncio.sleep", new_callable=AsyncMock):
+            with patch("botfarm.usage._async_sleep", new_callable=AsyncMock):
                 state = poller.force_poll(conn)
 
         assert state.utilization_5h == 0.42
@@ -825,7 +825,7 @@ class TestFetchWithRetry429:
             return SAMPLE_USAGE_RESPONSE
 
         with patch("botfarm.usage.fetch_usage", side_effect=mock_fetch):
-            with patch("botfarm.usage.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            with patch("botfarm.usage._async_sleep", new_callable=AsyncMock) as mock_sleep:
                 result = await poller._fetch_with_retry("test-token")
 
         assert result == SAMPLE_USAGE_RESPONSE
@@ -843,7 +843,7 @@ class TestFetchWithRetry429:
             raise _make_429_error()
 
         with patch("botfarm.usage.fetch_usage", side_effect=always_429):
-            with patch("botfarm.usage.asyncio.sleep", new_callable=AsyncMock):
+            with patch("botfarm.usage._async_sleep", new_callable=AsyncMock):
                 with pytest.raises(httpx.HTTPStatusError) as exc_info:
                     await poller._fetch_with_retry("test-token")
 
@@ -866,7 +866,7 @@ class TestFetchWithRetry429:
             return SAMPLE_USAGE_RESPONSE
 
         with patch("botfarm.usage.fetch_usage", side_effect=mock_fetch):
-            with patch("botfarm.usage.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            with patch("botfarm.usage._async_sleep", new_callable=AsyncMock) as mock_sleep:
                 await poller._fetch_with_retry("test-token")
 
         mock_sleep.assert_called_once_with(10.0)
@@ -882,7 +882,7 @@ class TestFetchWithRetry429:
             raise _make_429_error()
 
         with patch("botfarm.usage.fetch_usage", side_effect=always_429):
-            with patch("botfarm.usage.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            with patch("botfarm.usage._async_sleep", new_callable=AsyncMock) as mock_sleep:
                 with pytest.raises(httpx.HTTPStatusError):
                     await poller._fetch_with_retry("test-token")
 
@@ -1131,7 +1131,7 @@ class TestTransientRetryPreserved:
             return SAMPLE_USAGE_RESPONSE
 
         with patch("botfarm.usage.fetch_usage", side_effect=mock_fetch):
-            with patch("botfarm.usage.asyncio.sleep", new_callable=AsyncMock):
+            with patch("botfarm.usage._async_sleep", new_callable=AsyncMock):
                 state = poller.force_poll(conn)
 
         assert call_count == 2
