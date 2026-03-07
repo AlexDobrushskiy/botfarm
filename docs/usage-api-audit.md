@@ -114,12 +114,12 @@ hashlib.sha256(token[-8:].encode()).hexdigest()[:16]
 
 ```
 active ──(error)──> erroring ──(3rd consecutive error)──> blocked
-  ^                    |                                     |
-  |                    |──(success)──> active                |──(success)──> recovered
-  |                    |                                     |
-  |                    └──(new key)──> replaced              └──(new key)──> replaced
-  |
-  └──(new key appears, old key marked replaced)
+                       |                                     |
+                       |──(success)──> recovered             |──(success)──> recovered
+                       |                                     |
+                       └──(new key)──> replaced              └──(new key)──> replaced
+
+(new key appears → old key marked replaced)
 ```
 
 **State definitions:**
