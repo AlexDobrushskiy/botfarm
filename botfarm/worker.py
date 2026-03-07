@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import sqlite3
+import subprocess
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -224,6 +225,97 @@ class PipelineResult:
     result_text: str | None = None
 
 
+def _merge_main_before_retry_resume(
+    cwd: str | Path,
+    pr_url: str,
+    *,
+    env: dict[str, str] | None = None,
+) -> bool:
+    """Check out the PR branch, merge main into it, and push.
+
+    Called before resuming a retry pipeline so the branch is up to date.
+    Returns True on success, False if the merge had conflicts (branch is
+    checked out at the PR ref so the resumed pipeline stage can handle it).
+
+    Raises RuntimeError if the PR branch cannot be checked out at all —
+    the caller should abort the pipeline rather than continue on the
+    wrong branch.
+    """
+    subprocess_env = {**os.environ, **(env or {})}
+    cwd_str = str(cwd)
+
+    # Get the branch name from the PR
+    try:
+        proc = subprocess.run(
+            ["gh", "pr", "view", pr_url, "--json", "headRefName", "--jq", ".headRefName"],
+            capture_output=True, text=True, cwd=cwd_str, env=subprocess_env, timeout=30,
+        )
+        if proc.returncode != 0 or not proc.stdout.strip():
+            raise RuntimeError(f"Could not determine PR branch from {pr_url}")
+        branch = proc.stdout.strip()
+    except (subprocess.TimeoutExpired, OSError) as e:
+        raise RuntimeError(f"Failed to get PR branch from {pr_url}: {e}") from e
+
+    try:
+        # Fetch all refs
+        subprocess.run(
+            ["git", "fetch", "origin"],
+            cwd=cwd_str, env=subprocess_env, check=True,
+            capture_output=True, timeout=60,
+        )
+
+        # Check out the PR branch (reset to remote state)
+        subprocess.run(
+            ["git", "checkout", "-B", branch, f"origin/{branch}"],
+            cwd=cwd_str, env=subprocess_env, check=True,
+            capture_output=True, timeout=30,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        raise RuntimeError(f"Failed to check out PR branch {branch}: {e}") from e
+
+    # -- Branch is now checked out. Merge/push failures below are
+    #    non-fatal: the pipeline can proceed on the checked-out branch. --
+
+    try:
+        result = subprocess.run(
+            ["git", "merge", "origin/main", "--no-edit"],
+            cwd=cwd_str, env=subprocess_env,
+            capture_output=True, text=True, timeout=120,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning("Merge of main into %s timed out", branch)
+        subprocess.run(
+            ["git", "merge", "--abort"],
+            cwd=cwd_str, env=subprocess_env, capture_output=True, timeout=30,
+        )
+        return False
+
+    if result.returncode != 0:
+        subprocess.run(
+            ["git", "merge", "--abort"],
+            cwd=cwd_str, env=subprocess_env, capture_output=True, timeout=30,
+        )
+        logger.warning(
+            "Merge conflict when merging main into %s — pipeline will handle it",
+            branch,
+        )
+        return False
+
+    # Push the merged result
+    try:
+        subprocess.run(
+            ["git", "push", "origin", branch],
+            cwd=cwd_str, env=subprocess_env, check=True,
+            capture_output=True, timeout=60,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        logger.warning("Failed to push merged branch %s — continuing anyway", branch)
+        return False
+
+    logger.info("Successfully merged main into %s and pushed", branch)
+    return True
+
+
 def run_pipeline(
     *,
     ticket_id: str,
@@ -253,6 +345,7 @@ def run_pipeline(
     codex_reviewer_timeout_minutes: int = 15,
     codex_reviewer_skip_on_reiteration: bool = True,
     prior_context: str = "",
+    merge_main_before_resume: bool = False,
 ) -> PipelineResult:
     """Execute the full implement→review→fix→pr_checks→merge pipeline.
 
@@ -316,11 +409,28 @@ def run_pipeline(
         _record_failure(conn, task_id, pipeline)
         return pipeline
 
-    # When resuming, recover PR URL from existing stage_runs
+    # When resuming, recover PR URL — check task DB first (retry resume
+    # preserves it), then fall back to gh pr view (limit-pause resume).
     if resume_from_stage:
-        pr_url = _recover_pr_url(conn, task_id, cwd, env=coder_env)
+        task_row = get_task(conn, task_id)
+        pr_url = (task_row["pr_url"] if task_row else None) or _recover_pr_url(
+            conn, task_id, cwd, env=coder_env,
+        )
         if pr_url:
             pipeline.pr_url = pr_url
+
+        # On retry resume, check out the PR branch and merge main.
+        # RuntimeError means the branch couldn't be checked out — hard-fail
+        # rather than running mid-pipeline stages on the wrong branch.
+        if merge_main_before_resume and pr_url:
+            try:
+                _merge_main_before_retry_resume(cwd, pr_url, env=coder_env)
+            except RuntimeError as e:
+                logger.warning("Pre-resume branch setup failed: %s", e)
+                pipeline.failure_stage = resume_from_stage
+                pipeline.failure_reason = f"Pre-resume branch setup failed: {e}"
+                _record_failure(conn, task_id, pipeline)
+                return pipeline
 
     # Determine which stages to skip when resuming
     skipping = resume_from_stage is not None

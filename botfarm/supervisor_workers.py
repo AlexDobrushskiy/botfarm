@@ -82,6 +82,17 @@ class StopSlotResult:
     message: str = ""
 
 
+@dataclass
+class PriorContext:
+    """Result from build_prior_context() for retried tickets."""
+
+    context_str: str = ""
+    prior_slot: int | None = None
+    prior_pr_url: str | None = None
+    failed_stage: str | None = None
+    pr_state: str | None = None
+
+
 # ---------------------------------------------------------------------------
 # Process management helpers
 # ---------------------------------------------------------------------------
@@ -188,21 +199,21 @@ def _check_pr_state(pr_url: str) -> str | None:
 def build_prior_context(
     conn: sqlite3.Connection,
     ticket_id: str,
-) -> tuple[str, int | None]:
-    """Build a structured prior-work context string for a retried ticket.
+) -> PriorContext:
+    """Build a structured prior-work context for a retried ticket.
 
     Looks up the most recent task for *ticket_id*. If it was a failed
     task, gathers prior PR, failure stage/reason, review iterations,
     and completed stages from the DB, and optionally checks the PR
     state via ``gh``.
 
-    Returns ``(prior_context_string, prior_slot)`` where
-    *prior_context_string* is empty for fresh tickets and
-    *prior_slot* is the slot the prior task ran on (or None).
+    Returns a :class:`PriorContext` with the context string, prior slot,
+    prior PR URL, failed stage, and PR state.  For fresh (non-failed)
+    tickets, all fields are empty/None.
     """
     task = get_task_by_ticket(conn, ticket_id)
     if task is None or task["status"] != "failed":
-        return "", None
+        return PriorContext()
 
     prior_slot: int | None = task["slot"]
     pr_url = task["pr_url"]
@@ -210,6 +221,11 @@ def build_prior_context(
     failure_reason = task["failure_reason"] or "unknown"
     review_iterations = task["review_iterations"]
     task_id = task["id"]
+
+    # Check PR state once (used both for context string and resume decision)
+    pr_state: str | None = None
+    if pr_url:
+        pr_state = _check_pr_state(pr_url)
 
     # Summarise completed stages from stage_runs
     stage_runs = get_stage_runs(conn, task_id)
@@ -226,7 +242,6 @@ def build_prior_context(
     ]
 
     if pr_url:
-        pr_state = _check_pr_state(pr_url)
         state_str = f" (status: {pr_state})" if pr_state else ""
         lines.append(f"- **Prior PR:** {pr_url}{state_str}")
     lines.append(f"- **Failed at stage:** {failure_stage}")
@@ -249,7 +264,29 @@ def build_prior_context(
         )
     lines.append("")
 
-    return "\n".join(lines), prior_slot
+    return PriorContext(
+        context_str="\n".join(lines),
+        prior_slot=prior_slot,
+        prior_pr_url=pr_url,
+        failed_stage=task["pipeline_stage"],
+        pr_state=pr_state,
+    )
+
+
+def _determine_resume_stage(failed_stage: str | None) -> str | None:
+    """Map a failed pipeline stage to the stage to resume from.
+
+    Returns None when the pipeline should restart from scratch
+    (e.g. failed during implement — no PR exists yet).
+    """
+    if failed_stage in ("pr_checks", "ci_fix"):
+        return "pr_checks"
+    if failed_stage == "merge":
+        return "merge"
+    if failed_stage in ("review", "fix", "resolve_conflict"):
+        return "review"
+    # implement or unknown → full restart
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -286,6 +323,7 @@ def _worker_entry(
     codex_reviewer_timeout_minutes: int = 15,
     codex_reviewer_skip_on_reiteration: bool = True,
     prior_context: str = "",
+    merge_main_before_resume: bool = False,
 ) -> None:
     """Entry point for a worker subprocess.
 
@@ -377,6 +415,7 @@ def _worker_entry(
             codex_reviewer_timeout_minutes=codex_reviewer_timeout_minutes,
             codex_reviewer_skip_on_reiteration=codex_reviewer_skip_on_reiteration,
             prior_context=prior_context,
+            merge_main_before_resume=merge_main_before_resume,
         )
         if result.paused:
             result_queue.put(_WorkerResult(
@@ -614,6 +653,7 @@ class WorkerLifecycleManager:
         resume_session_id: str | None = None,
         slot_db: str | None = None,
         prior_context: str = "",
+        merge_main_before_resume: bool = False,
     ) -> multiprocessing.Process:
         """Spawn a worker subprocess — shared logic for dispatch and resume paths.
 
@@ -671,6 +711,7 @@ class WorkerLifecycleManager:
                 "codex_reviewer_timeout_minutes": self._config.agents.codex_reviewer_timeout_minutes,
                 "codex_reviewer_skip_on_reiteration": self._config.agents.codex_reviewer_skip_on_reiteration,
                 "prior_context": prior_context,
+                "merge_main_before_resume": merge_main_before_resume,
             },
             daemon=False,
         )
@@ -689,7 +730,7 @@ class WorkerLifecycleManager:
         issue,
         poller,
         *,
-        prior_context: str = "",
+        prior: PriorContext | None = None,
     ) -> None:
         """Assign a ticket to a slot and spawn a worker subprocess."""
         from botfarm.db import insert_task
@@ -744,12 +785,30 @@ class WorkerLifecycleManager:
         )
         self._conn.commit()
 
+        # Determine retry resume: preserve pr_url and skip to failed stage
+        resume_from_stage = None
+        merge_main_before_resume = False
+        prior_context_str = prior.context_str if prior else ""
+        if prior and prior.prior_pr_url and prior.pr_state == "OPEN":
+            resume_stage = _determine_resume_stage(prior.failed_stage)
+            if resume_stage:
+                update_task(self._conn, task_id, pr_url=prior.prior_pr_url)
+                self._conn.commit()
+                resume_from_stage = resume_stage
+                merge_main_before_resume = True
+                prior_context_str = ""  # Structured resume — no text hints needed
+                logger.info(
+                    "Retry resume for %s: preserving PR %s, resuming from '%s'",
+                    issue.identifier, prior.prior_pr_url, resume_stage,
+                )
+
         insert_event(
             self._conn,
             event_type="worker_dispatched",
             task_id=task_id,
             detail=f"ticket={issue.identifier}, project={project_name}, "
-            f"slot={slot.slot_id}",
+            f"slot={slot.slot_id}"
+            + (f", resume_from={resume_from_stage}" if resume_from_stage else ""),
         )
         self._conn.commit()
 
@@ -767,7 +826,9 @@ class WorkerLifecycleManager:
             ticket_title=issue.title,
             ticket_labels=issue.labels or [],
             task_id=task_id,
-            prior_context=prior_context,
+            prior_context=prior_context_str,
+            resume_from_stage=resume_from_stage,
+            merge_main_before_resume=merge_main_before_resume,
         )
 
         logger.info(

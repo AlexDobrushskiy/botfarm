@@ -61,6 +61,7 @@ from botfarm.supervisor_recovery import RecoveryMixin
 from botfarm.supervisor_workers import (
     FAILURE_CATEGORIES,
     PauseResumeManager,
+    PriorContext,
     WorkerLifecycleManager,
     _StallInfo,
     _WorkerResult,
@@ -785,20 +786,20 @@ class Supervisor(RecoveryMixin, OperationsMixin):
             issue = candidates[0]
 
             # Build prior-work context and determine slot affinity
-            prior_context, prior_slot = build_prior_context(self._conn, issue.identifier)
+            prior = build_prior_context(self._conn, issue.identifier)
             slot = self._slot_manager.find_free_slot_for_project(
-                project_name, preferred_slot_id=prior_slot,
+                project_name, preferred_slot_id=prior.prior_slot,
             )
             if slot is None:
                 continue
 
-            if prior_context:
+            if prior.context_str:
                 logger.info(
                     "Retrying %s with prior-work context (prior slot %s, assigned slot %d)",
-                    issue.identifier, prior_slot, slot.slot_id,
+                    issue.identifier, prior.prior_slot, slot.slot_id,
                 )
 
-            self._dispatch_worker(project_name, slot, issue, poller, prior_context=prior_context)
+            self._dispatch_worker(project_name, slot, issue, poller, prior=prior)
             active_ids.add(issue.identifier)
 
     def _persist_queue_entries(self, project_name: str, poll_result) -> None:
@@ -878,11 +879,11 @@ class Supervisor(RecoveryMixin, OperationsMixin):
         slot: SlotState,
         issue,
         poller: LinearPoller,
-        prior_context: str = "",
+        prior: PriorContext | None = None,
     ) -> None:
         """Assign a ticket to a slot and spawn a worker subprocess."""
         self._worker_mgr.dispatch_worker(
-            project_name, slot, issue, poller, prior_context=prior_context,
+            project_name, slot, issue, poller, prior=prior,
         )
 
     def _spawn_worker(self, **kwargs) -> multiprocessing.Process:
