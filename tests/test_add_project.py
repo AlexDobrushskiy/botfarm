@@ -12,8 +12,6 @@ from botfarm.cli import (
     _append_project_to_config,
     _extract_repo_name,
     _run_readiness_checks,
-    _validate_project_dir,
-    _validate_worktree_parent,
     main,
 )
 from botfarm.linear import LinearAPIError
@@ -103,74 +101,6 @@ class TestExtractRepoName:
 
     def test_plain_name(self):
         assert _extract_repo_name("my-repo") == "my-repo"
-
-
-# ---------------------------------------------------------------------------
-# _validate_project_dir
-# ---------------------------------------------------------------------------
-
-
-class TestValidateProjectDir:
-    def test_nonexistent_dir(self, tmp_path):
-        errors = _validate_project_dir(str(tmp_path / "nonexistent"))
-        assert len(errors) == 1
-        assert "does not exist" in errors[0]
-
-    def test_not_a_git_repo(self, tmp_path):
-        d = tmp_path / "plain"
-        d.mkdir()
-        errors = _validate_project_dir(str(d))
-        assert len(errors) == 1
-        assert "Not a git repository" in errors[0]
-
-    def test_git_repo_remote_unreachable(self, tmp_path):
-        repo = tmp_path / "unreachable-repo"
-        repo.mkdir()
-        (repo / ".git").mkdir()
-        with patch("botfarm.cli.subprocess.run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess(
-                args=[], returncode=128, stdout="",
-                stderr="fatal: could not read from remote repository",
-            )
-            errors = _validate_project_dir(str(repo))
-        assert len(errors) == 1
-        assert "not reachable" in errors[0]
-
-    def test_valid_git_repo(self, tmp_path):
-        with patch("botfarm.cli.subprocess.run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess(
-                args=[], returncode=0, stdout="", stderr=""
-            )
-            repo = tmp_path / "good-repo"
-            repo.mkdir()
-            (repo / ".git").mkdir()
-            errors = _validate_project_dir(str(repo))
-            assert errors == []
-
-
-# ---------------------------------------------------------------------------
-# _validate_worktree_parent
-# ---------------------------------------------------------------------------
-
-
-class TestValidateWorktreeParent:
-    def test_parent_exists_and_writable(self, tmp_path):
-        repo = tmp_path / "my-repo"
-        repo.mkdir()
-        errors = _validate_worktree_parent(str(repo))
-        assert errors == []
-
-    def test_parent_not_writable(self, tmp_path):
-        repo = tmp_path / "subdir" / "my-repo"
-        repo.mkdir(parents=True)
-        parent = repo.parent
-        parent.chmod(0o555)
-        try:
-            errors = _validate_worktree_parent(str(repo))
-            assert len(errors) == 1
-            assert "not writable" in errors[0]
-        finally:
-            parent.chmod(0o755)
 
 
 # ---------------------------------------------------------------------------
@@ -370,8 +300,8 @@ class TestAddProjectCommand:
             result = runner.invoke(
                 main,
                 ["add-project", "--config", str(config_path)],
-                # repo URL, name, team key (manual), slots, confirm
-                input="git@github.com:user/my-app.git\nmy-app\nSMA\n1\ny\n",
+                # repo URL, name, team key (manual), project filter (manual), slots, confirm
+                input="git@github.com:user/my-app.git\nmy-app\nSMA\n\n1\ny\n",
             )
 
         assert result.exit_code == 0, result.output
@@ -391,7 +321,7 @@ class TestAddProjectCommand:
         result = runner.invoke(
             main,
             ["add-project", "--config", str(config_path)],
-            input="git@github.com:user/my-app.git\nmy-app\nSMA\n1\nn\n",
+            input="git@github.com:user/my-app.git\nmy-app\nSMA\n\n1\nn\n",
         )
 
         assert result.exit_code == 0
@@ -417,7 +347,7 @@ class TestAddProjectCommand:
             result = runner.invoke(
                 main,
                 ["add-project", "--config", str(config_path)],
-                input="git@github.com:user/nonexistent.git\nmy-app\nSMA\n1\ny\n",
+                input="git@github.com:user/nonexistent.git\nmy-app\nSMA\n\n1\ny\n",
             )
 
         assert result.exit_code != 0
@@ -434,7 +364,7 @@ class TestAddProjectCommand:
                 main,
                 ["add-project", "--config", str(config_path)],
                 # Accept the default name by pressing enter
-                input="git@github.com:user/cool-repo.git\n\nSMA\n1\ny\n",
+                input="git@github.com:user/cool-repo.git\n\nSMA\n\n1\ny\n",
             )
 
         assert result.exit_code == 0, result.output
@@ -460,7 +390,7 @@ class TestAddProjectCommand:
             result = runner.invoke(
                 main,
                 ["add-project", "--config", str(config_path)],
-                input="git@github.com:user/multi.git\nmulti\nSMA\n3\ny\n",
+                input="git@github.com:user/multi.git\nmulti\nSMA\n\n3\ny\n",
             )
 
         assert result.exit_code == 0, result.output
@@ -486,7 +416,7 @@ class TestAddProjectCommand:
             result = runner.invoke(
                 main,
                 ["add-project", "--config", str(config_path)],
-                input="git@github.com:user/my-app.git\nmy-app\nSMA\n1\ny\n",
+                input="git@github.com:user/my-app.git\nmy-app\nSMA\n\n1\ny\n",
             )
 
         assert result.exit_code == 0, result.output
@@ -511,7 +441,7 @@ class TestAddProjectCommand:
             result = runner.invoke(
                 main,
                 ["add-project", "--config", str(config_path)],
-                input="git@github.com:user/my-app.git\nmy-app\nSMA\n1\ny\n",
+                input="git@github.com:user/my-app.git\nmy-app\nSMA\n\n1\ny\n",
             )
 
         assert result.exit_code == 0, result.output
@@ -528,7 +458,7 @@ class TestAddProjectCommand:
             result = runner.invoke(
                 main,
                 ["add-project", "--config", str(config_path)],
-                input="git@github.com:user/my-app.git\nmy-app\nSMA\n1\ny\n",
+                input="git@github.com:user/my-app.git\nmy-app\nSMA\n\n1\ny\n",
             )
 
         assert result.exit_code == 0, result.output

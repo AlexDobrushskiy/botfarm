@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import shutil
 import signal
 import sqlite3
@@ -905,49 +906,6 @@ def init(path, non_interactive):
 # ---------------------------------------------------------------------------
 
 
-def _validate_project_dir(base_dir: str) -> list[str]:
-    """Validate that base_dir is a git repo with a reachable remote.
-
-    Returns a list of error messages (empty means valid).
-    """
-    errors: list[str] = []
-    base = Path(base_dir).expanduser().resolve()
-    if not base.exists():
-        errors.append(f"Directory does not exist: {base}")
-        return errors
-    if not (base / ".git").exists():
-        errors.append(f"Not a git repository: {base}")
-        return errors
-    try:
-        proc = subprocess.run(
-            ["git", "ls-remote", "--exit-code", "origin"],
-            cwd=str(base),
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-        if proc.returncode != 0:
-            errors.append(
-                f"git remote 'origin' not reachable: {proc.stderr.strip()[:200]}"
-            )
-    except subprocess.TimeoutExpired:
-        errors.append("git ls-remote timed out after 15s")
-    except FileNotFoundError:
-        errors.append("git command not found")
-    return errors
-
-
-def _validate_worktree_parent(base_dir: str) -> list[str]:
-    """Validate that the worktree parent directory is writable."""
-    base = Path(base_dir).expanduser().resolve()
-    parent = base.parent
-    if not parent.exists():
-        return [f"Worktree parent dir does not exist: {parent}"]
-    if not os.access(str(parent), os.W_OK):
-        return [f"Worktree parent dir is not writable: {parent}"]
-    return []
-
-
 def _run_readiness_checks(project_dict: dict) -> list[tuple[str, str]]:
     """Run CLAUDE.md and runtime readiness checks for a single project.
 
@@ -1018,8 +976,6 @@ def _extract_repo_name(repo_url: str) -> str:
     Handles SSH (git@github.com:user/repo.git) and HTTPS
     (https://github.com/user/repo.git) URLs.
     """
-    import re
-
     url = repo_url.rstrip("/")
     if url.endswith(".git"):
         url = url[:-4]
@@ -1169,6 +1125,13 @@ def add_project(config_path):
                     linear_project = projects[choice - 1]["name"]
         except LinearAPIError as exc:
             click.echo(f"Warning: Could not fetch projects from Linear: {exc}")
+            linear_project = click.prompt(
+                "Linear project filter (optional, press Enter to skip)", default=""
+            )
+    else:
+        linear_project = click.prompt(
+            "Linear project filter (optional, press Enter to skip)", default=""
+        )
 
     # --- 5. Number of slots ---
     num_slots = click.prompt("Number of slots", type=click.IntRange(1, 20), default=1)
