@@ -51,6 +51,7 @@ from botfarm.linear import LinearClient, LinearPoller, create_pollers
 from botfarm.notifications import Notifier
 from botfarm.preflight import CheckResult, log_preflight_summary, repair_core_bare, run_preflight_checks
 from botfarm.slots import SlotManager, SlotState, _is_pid_alive
+from botfarm.codex_usage import CodexUsagePoller
 from botfarm.usage import DEFAULT_PAUSE_5H_THRESHOLD, DEFAULT_PAUSE_7D_THRESHOLD, UsagePoller
 from botfarm.worker import STAGES, PipelineResult, build_git_env, run_pipeline
 
@@ -165,6 +166,9 @@ class Supervisor(RecoveryMixin, OperationsMixin):
 
         # Usage poller
         self._usage_poller = UsagePoller()
+
+        # Codex (OpenAI) usage poller — optional, no-op if not configured
+        self._codex_usage_poller = CodexUsagePoller(config=config.codex_usage)
 
         # Linear client for capacity monitoring (uses owner API key)
         self._linear_client = LinearClient(api_key=config.linear.api_key)
@@ -567,6 +571,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
         state = self._usage_poller.poll(self._conn)
         if self._usage_poller.last_polled_fresh:
             self._slot_manager.set_usage(state.to_dict())
+        self._codex_usage_poller.poll(self._conn)
         self._check_usage_stalls()
 
     def _check_usage_stalls(self) -> None:
@@ -694,6 +699,15 @@ class Supervisor(RecoveryMixin, OperationsMixin):
             seven_day_threshold=thresholds.pause_seven_day_threshold,
             enabled=thresholds.enabled,
         )
+
+        # Check Codex budget threshold
+        if not should_pause:
+            cu = self._config.codex_usage
+            should_pause, reason = self._codex_usage_poller.state.should_pause(
+                monthly_budget=cu.monthly_budget,
+                pause_threshold=cu.pause_budget_threshold,
+                enabled=cu.enabled,
+            )
 
         if should_pause:
             if not self._slot_manager.dispatch_paused:
@@ -866,6 +880,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
 
         self._slot_manager.save()
         self._usage_poller.close()
+        self._codex_usage_poller.close()
         self._notifier.close()
 
         running = [
@@ -1003,13 +1018,18 @@ class Supervisor(RecoveryMixin, OperationsMixin):
         if state.utilization_5h is not None:
             usage_str = f" | usage 5h={state.utilization_5h * 100:.0f}%"
 
+        codex_str = ""
+        cu_state = self._codex_usage_poller.state
+        if cu_state.monthly_spend is not None:
+            codex_str = f" | codex=${cu_state.monthly_spend:.2f}"
+
         capacity_str = ""
         if self._capacity_level != "normal":
             capacity_str = f" | capacity={self._capacity_level}"
 
         logger.info(
-            "Tick: %s, %s%s%s",
-            busy_desc, ", ".join(counts), usage_str, capacity_str,
+            "Tick: %s, %s%s%s%s",
+            busy_desc, ", ".join(counts), usage_str, codex_str, capacity_str,
         )
 
     # ------------------------------------------------------------------

@@ -580,6 +580,45 @@ def is_extra_usage_active(conn: sqlite3.Connection) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Codex usage snapshot helpers
+# ---------------------------------------------------------------------------
+
+def insert_codex_usage_snapshot(
+    conn: sqlite3.Connection,
+    *,
+    daily_spend: float | None = None,
+    monthly_spend: float | None = None,
+    monthly_budget: float | None = None,
+    budget_utilization: float | None = None,
+    raw_json: str | None = None,
+) -> int:
+    """Insert a codex usage snapshot and return its id."""
+    cur = conn.execute(
+        """
+        INSERT INTO codex_usage_snapshots
+            (daily_spend, monthly_spend, monthly_budget,
+             budget_utilization, raw_json, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            daily_spend, monthly_spend, monthly_budget,
+            budget_utilization, raw_json, _now_iso(),
+        ),
+    )
+    return cur.lastrowid
+
+
+def get_codex_usage_snapshots(
+    conn: sqlite3.Connection, *, limit: int = 100
+) -> list[sqlite3.Row]:
+    """Return recent codex usage snapshots, newest first."""
+    return conn.execute(
+        "SELECT * FROM codex_usage_snapshots ORDER BY created_at DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+
+
+# ---------------------------------------------------------------------------
 # Event helpers
 # ---------------------------------------------------------------------------
 
