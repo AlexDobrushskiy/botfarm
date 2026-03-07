@@ -1046,9 +1046,16 @@ class PauseResumeManager:
             if not self.is_ready_to_resume(slot, now):
                 continue
 
-            # Force-poll once so all resume decisions use fresh data
+            # Force-poll once so all resume decisions use fresh data.
+            # Skip if the API is in 429 backoff — use cached state instead.
             if not polled:
-                self._usage_poller.force_poll(self._conn, bypass_cooldown=True)
+                if not self._usage_poller.in_429_backoff:
+                    self._usage_poller.force_poll(self._conn, bypass_cooldown=True)
+                else:
+                    logger.debug(
+                        "Skipping force_poll in handle_paused_slots — "
+                        "API is in 429 backoff, using cached usage data"
+                    )
                 polled = True
 
             # Re-check usage API to confirm limits have actually reset
