@@ -2211,3 +2211,294 @@ class TestBuildReviewSummary:
 
         result = OperationsMixin._build_review_summary(mock_self, task_id)
         assert result == "Review: Claude APPROVED, Codex APPROVED"
+
+
+class TestRequestAddSlot:
+    """Tests for the thread-safe request_add_slot / _handle_add_slot_requests."""
+
+    def test_request_add_slot_appends_and_wakes(self, supervisor):
+        """request_add_slot adds to the list and sets wake event."""
+        supervisor.request_add_slot("test-project")
+
+        with supervisor._add_slot_lock:
+            assert len(supervisor._add_slot_requests) == 1
+            assert supervisor._add_slot_requests[0] == "test-project"
+        assert supervisor._wake_event.is_set()
+
+    def test_handle_add_slot_requests_drains_list(self, supervisor):
+        """_handle_add_slot_requests processes all pending requests."""
+        supervisor.request_add_slot("test-project")
+
+        with patch.object(supervisor, "add_slot", return_value=3) as mock_add:
+            supervisor._handle_add_slot_requests()
+
+        mock_add.assert_called_once_with("test-project")
+
+        with supervisor._add_slot_lock:
+            assert len(supervisor._add_slot_requests) == 0
+
+    def test_handle_add_slot_requests_no_requests_is_noop(self, supervisor):
+        """_handle_add_slot_requests is a no-op when there are no requests."""
+        with patch.object(supervisor, "add_slot") as mock_add:
+            supervisor._handle_add_slot_requests()
+        mock_add.assert_not_called()
+
+    def test_handle_add_slot_requests_in_tick(self, supervisor):
+        """_handle_add_slot_requests is called during _tick."""
+        supervisor.request_add_slot("test-project")
+
+        with (
+            patch.object(supervisor, "add_slot", return_value=3) as mock_add,
+            patch.object(supervisor, "_reconcile_workers"),
+            patch.object(supervisor, "_handle_stop_requests"),
+            patch.object(supervisor, "_handle_manual_pause_resume"),
+            patch.object(supervisor, "_handle_update_request"),
+            patch.object(supervisor, "_check_timeouts"),
+            patch.object(supervisor, "_handle_finished_slots"),
+            patch.object(supervisor, "_handle_paused_slots"),
+            patch.object(supervisor, "_poll_usage"),
+            patch.object(supervisor, "_poll_capacity"),
+            patch.object(supervisor, "_poll_and_dispatch"),
+            patch.object(supervisor, "_cleanup_old_ticket_logs"),
+            patch.object(supervisor._slot_manager, "refresh_stages_from_disk"),
+            patch.object(supervisor._slot_manager, "refresh_project_pauses"),
+        ):
+            supervisor._tick()
+
+        mock_add.assert_called_once_with("test-project")
+
+    def test_handle_add_slot_requests_deduplicates_by_project(self, supervisor):
+        """Duplicate project names in the queue are deduplicated."""
+        supervisor.request_add_slot("test-project")
+        supervisor.request_add_slot("test-project")
+        supervisor.request_add_slot("test-project")
+
+        with patch.object(supervisor, "add_slot", return_value=3) as mock_add:
+            supervisor._handle_add_slot_requests()
+
+        mock_add.assert_called_once_with("test-project")
+
+    def test_handle_add_slot_requests_error_does_not_crash(self, supervisor):
+        """Errors in add_slot are caught and logged."""
+        supervisor.request_add_slot("test-project")
+
+        with patch.object(
+            supervisor, "add_slot", side_effect=RuntimeError("boom"),
+        ):
+            # Should not raise
+            supervisor._handle_add_slot_requests()
+
+        # List should still be drained
+        with supervisor._add_slot_lock:
+            assert len(supervisor._add_slot_requests) == 0
+
+
+class TestAddSlot:
+    """Tests for Supervisor.add_slot() core logic."""
+
+    def test_add_slot_unknown_project_raises(self, supervisor):
+        """add_slot raises ValueError for unknown project names."""
+        with pytest.raises(ValueError, match="not found"):
+            supervisor.add_slot("nonexistent-project")
+
+    def test_add_slot_picks_next_id(self, supervisor):
+        """add_slot auto-picks max(existing)+1 as the new slot_id."""
+        # Existing slots are 1 and 2, so next should be 3
+        project_cfg = supervisor._projects["test-project"]
+        worktree_parent = Path(project_cfg.base_dir).parent
+        worktree_parent.mkdir(parents=True, exist_ok=True)
+
+        with (
+            patch("botfarm.supervisor_ops.subprocess.run") as mock_run,
+            patch("botfarm.config.write_structural_config_updates"),
+        ):
+            mock_run.return_value = MagicMock(returncode=0)
+            supervisor._config.source_path = ""
+            new_id = supervisor.add_slot("test-project")
+        assert new_id == 3
+
+    def test_add_slot_creates_worktree(self, supervisor):
+        """add_slot calls git worktree add with correct args."""
+        project_cfg = supervisor._projects["test-project"]
+        worktree_parent = Path(project_cfg.base_dir).parent
+        worktree_parent.mkdir(parents=True, exist_ok=True)
+
+        with (
+            patch("botfarm.supervisor_ops.subprocess.run") as mock_run,
+            patch("botfarm.config.write_structural_config_updates"),
+        ):
+            mock_run.return_value = MagicMock(returncode=0)
+            supervisor._config.source_path = ""
+
+            new_id = supervisor.add_slot("test-project")
+
+        # First call: git worktree add
+        first_call = mock_run.call_args_list[0]
+        args = first_call[0][0]
+        assert args[0] == "git"
+        assert args[1] == "worktree"
+        assert args[2] == "add"
+        assert "origin/main" in args
+
+        # Second call: git checkout -b placeholder
+        second_call = mock_run.call_args_list[1]
+        args = second_call[0][0]
+        assert args == ["git", "checkout", "-b", f"slot-{new_id}-placeholder"]
+
+    def test_add_slot_registers_with_slot_manager(self, supervisor):
+        """add_slot registers the new slot with SlotManager."""
+        project_cfg = supervisor._projects["test-project"]
+        worktree_parent = Path(project_cfg.base_dir).parent
+        worktree_parent.mkdir(parents=True, exist_ok=True)
+
+        with (
+            patch("botfarm.supervisor_ops.subprocess.run") as mock_run,
+            patch("botfarm.config.write_structural_config_updates"),
+        ):
+            mock_run.return_value = MagicMock(returncode=0)
+            supervisor._config.source_path = ""
+
+            new_id = supervisor.add_slot("test-project")
+
+        slot = supervisor._slot_manager.get_slot("test-project", new_id)
+        assert slot is not None
+        assert slot.status == "free"
+
+    def test_add_slot_updates_in_memory_config(self, supervisor):
+        """add_slot appends the new slot_id to the project's slots list."""
+        project_cfg = supervisor._projects["test-project"]
+        worktree_parent = Path(project_cfg.base_dir).parent
+        worktree_parent.mkdir(parents=True, exist_ok=True)
+
+        original_slots = list(project_cfg.slots)
+
+        with (
+            patch("botfarm.supervisor_ops.subprocess.run") as mock_run,
+            patch("botfarm.config.write_structural_config_updates"),
+        ):
+            mock_run.return_value = MagicMock(returncode=0)
+            supervisor._config.source_path = ""
+
+            new_id = supervisor.add_slot("test-project")
+
+        assert new_id in project_cfg.slots
+        assert project_cfg.slots == original_slots + [new_id]
+
+    def test_add_slot_persists_config(self, supervisor, tmp_path):
+        """add_slot calls write_structural_config_updates."""
+        project_cfg = supervisor._projects["test-project"]
+        worktree_parent = Path(project_cfg.base_dir).parent
+        worktree_parent.mkdir(parents=True, exist_ok=True)
+
+        with (
+            patch("botfarm.supervisor_ops.subprocess.run") as mock_run,
+            patch("botfarm.config.write_structural_config_updates") as mock_write,
+        ):
+            mock_run.return_value = MagicMock(returncode=0)
+            config_path = tmp_path / "config.yaml"
+            config_path.write_text("projects: []")
+            supervisor._config.source_path = str(config_path)
+
+            new_id = supervisor.add_slot("test-project")
+
+        mock_write.assert_called_once()
+        call_args = mock_write.call_args
+        updates = call_args[0][1]
+        assert updates["projects"][0]["name"] == "test-project"
+        assert new_id in updates["projects"][0]["slots"]
+
+    def test_add_slot_logs_event(self, supervisor):
+        """add_slot inserts a slot_added event in the DB."""
+        project_cfg = supervisor._projects["test-project"]
+        worktree_parent = Path(project_cfg.base_dir).parent
+        worktree_parent.mkdir(parents=True, exist_ok=True)
+
+        with (
+            patch("botfarm.supervisor_ops.subprocess.run") as mock_run,
+            patch("botfarm.config.write_structural_config_updates"),
+        ):
+            mock_run.return_value = MagicMock(returncode=0)
+            supervisor._config.source_path = ""
+
+            new_id = supervisor.add_slot("test-project")
+
+        events = get_events(supervisor._conn, limit=10)
+        slot_added = [e for e in events if e["event_type"] == "slot_added"]
+        assert len(slot_added) == 1
+        detail = json.loads(slot_added[0]["detail"])
+        assert detail["project"] == "test-project"
+        assert detail["slot_id"] == new_id
+
+    def test_add_slot_worktree_failure_raises(self, supervisor):
+        """add_slot raises RuntimeError when git worktree add fails."""
+        import subprocess as _sp
+        project_cfg = supervisor._projects["test-project"]
+        worktree_parent = Path(project_cfg.base_dir).parent
+        worktree_parent.mkdir(parents=True, exist_ok=True)
+
+        with patch("botfarm.supervisor_ops.subprocess.run") as mock_run:
+            mock_run.side_effect = _sp.CalledProcessError(
+                1, "git", stderr="fatal: error",
+            )
+            with pytest.raises(RuntimeError, match="Failed to create git worktree"):
+                supervisor.add_slot("test-project")
+
+        # Slot should NOT be registered after failure
+        slot = supervisor._slot_manager.get_slot("test-project", 3)
+        assert slot is None
+
+    def test_add_slot_cleans_up_worktree_on_post_create_failure(self, supervisor):
+        """If config persistence fails after worktree creation, worktree is cleaned up."""
+        import subprocess as _sp
+        project_cfg = supervisor._projects["test-project"]
+        worktree_parent = Path(project_cfg.base_dir).parent
+        worktree_parent.mkdir(parents=True, exist_ok=True)
+
+        call_count = 0
+
+        def mock_subprocess_run(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 2:
+                # First two calls: worktree add + placeholder branch — succeed
+                return MagicMock(returncode=0)
+            # Third call: worktree remove cleanup — succeed
+            return MagicMock(returncode=0)
+
+        with (
+            patch("botfarm.supervisor_ops.subprocess.run", side_effect=mock_subprocess_run) as mock_run,
+            patch(
+                "botfarm.config.write_structural_config_updates",
+                side_effect=OSError("disk full"),
+            ),
+        ):
+            supervisor._config.source_path = "/fake/config.yaml"
+            with pytest.raises(OSError, match="disk full"):
+                supervisor.add_slot("test-project")
+
+        # The third subprocess call should be worktree remove cleanup
+        assert call_count == 3
+        cleanup_call = mock_run.call_args_list[2]
+        cleanup_args = cleanup_call[0][0]
+        assert cleanup_args[0:3] == ["git", "worktree", "remove"]
+
+        # Slot should NOT be registered
+        slot = supervisor._slot_manager.get_slot("test-project", 3)
+        assert slot is None
+
+    def test_add_slot_no_config_path_skips_persist(self, supervisor):
+        """add_slot skips config persistence when source_path is empty."""
+        project_cfg = supervisor._projects["test-project"]
+        worktree_parent = Path(project_cfg.base_dir).parent
+        worktree_parent.mkdir(parents=True, exist_ok=True)
+
+        with (
+            patch("botfarm.supervisor_ops.subprocess.run") as mock_run,
+            patch("botfarm.config.write_structural_config_updates") as mock_write,
+        ):
+            mock_run.return_value = MagicMock(returncode=0)
+            supervisor._config.source_path = ""
+
+            supervisor.add_slot("test-project")
+
+        mock_write.assert_not_called()

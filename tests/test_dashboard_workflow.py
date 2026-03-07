@@ -2094,3 +2094,80 @@ class TestStopSlotButton:
         resp = client.get("/partials/slots")
         assert resp.status_code == 200
         assert 'id="stop-slot-modal"' not in resp.text
+
+
+class TestAddSlotAPI:
+    """Tests for POST /api/slot/add endpoint."""
+
+    def test_add_calls_callback(self, db_file):
+        """POST /api/slot/add calls on_add_slot with project."""
+        called = []
+        app = create_app(
+            db_path=db_file,
+            on_add_slot=lambda p: called.append(p),
+        )
+        client = TestClient(app)
+        resp = client.post("/api/slot/add", json={"project": "my-project"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "requested"
+        assert "my-project" in data["message"]
+        assert called == ["my-project"]
+
+    def test_add_without_callback_returns_503(self, db_file):
+        """POST /api/slot/add returns 503 when no callback is registered."""
+        app = create_app(db_path=db_file)
+        client = TestClient(app)
+        resp = client.post("/api/slot/add", json={"project": "proj"})
+        assert resp.status_code == 503
+
+    def test_add_missing_project_returns_400(self, db_file):
+        """POST /api/slot/add returns 400 when project is missing."""
+        app = create_app(
+            db_path=db_file,
+            on_add_slot=lambda p: None,
+        )
+        client = TestClient(app)
+        resp = client.post("/api/slot/add", json={})
+        assert resp.status_code == 400
+
+    def test_add_non_string_project_returns_400(self, db_file):
+        """POST /api/slot/add rejects non-string project values."""
+        app = create_app(
+            db_path=db_file,
+            on_add_slot=lambda p: None,
+        )
+        client = TestClient(app)
+        for payload in [1, ["a"], {"x": 1}, True, 0, False]:
+            resp = client.post("/api/slot/add", json={"project": payload})
+            assert resp.status_code == 400, f"Expected 400 for project={payload!r}"
+            assert "project must be a string" in resp.json()["error"]
+
+    def test_add_non_dict_body_returns_400(self, db_file):
+        """POST /api/slot/add returns 400 when body is not a JSON object."""
+        app = create_app(
+            db_path=db_file,
+            on_add_slot=lambda p: None,
+        )
+        client = TestClient(app)
+        for payload in ["[]", '"string"', "123", "null"]:
+            resp = client.post(
+                "/api/slot/add",
+                content=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            assert resp.status_code == 400, f"Expected 400 for body={payload!r}"
+
+    def test_add_invalid_json_returns_400(self, db_file):
+        """POST /api/slot/add returns 400 for invalid JSON."""
+        app = create_app(
+            db_path=db_file,
+            on_add_slot=lambda p: None,
+        )
+        client = TestClient(app)
+        resp = client.post(
+            "/api/slot/add",
+            content="not json",
+            headers={"Content-Type": "application/json"},
+        )
+        assert resp.status_code == 400

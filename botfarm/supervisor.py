@@ -199,6 +199,10 @@ class Supervisor(RecoveryMixin, OperationsMixin):
         self._stop_slot_requests: list[tuple[str, int, str | None]] = []
         self._stop_slot_lock = threading.Lock()
 
+        # Add-slot requests from the dashboard thread.
+        self._add_slot_requests: list[str] = []
+        self._add_slot_lock = threading.Lock()
+
         # Queue for worker results — workers send _WorkerResult here
         self._result_queue: multiprocessing.Queue = multiprocessing.Queue()
 
@@ -306,6 +310,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
                 on_update=self.request_update,
                 on_rerun_preflight=self.request_rerun_preflight,
                 on_stop_slot=self.request_stop_slot,
+                on_add_slot=self.request_add_slot,
                 get_preflight_results=self.get_preflight_results,
                 get_degraded=lambda: self.degraded,
                 update_failed_event=self._update_failed_event,
@@ -450,6 +455,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
         for phase in (
             self._reconcile_workers,
             self._handle_stop_requests,
+            self._handle_add_slot_requests,
             self._handle_manual_pause_resume,
             self._handle_update_request,
             self._check_timeouts,
