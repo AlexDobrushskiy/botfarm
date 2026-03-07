@@ -251,6 +251,7 @@ def run_pipeline(
     codex_reviewer_reasoning_effort: str = "medium",
     codex_reviewer_timeout_minutes: int = 15,
     codex_reviewer_skip_on_reiteration: bool = True,
+    prior_context: str = "",
 ) -> PipelineResult:
     """Execute the full implement→review→fix→pr_checks→merge pipeline.
 
@@ -363,6 +364,7 @@ def run_pipeline(
         max_ci_retries=eff_max_ci_retries,
         max_merge_conflict_retries=eff_max_merge_conflict_retries,
         _refreshable_limits=_compute_refreshable_limits(pipeline_tpl),
+        prior_context=prior_context,
     )
 
     # Build main-stage list: skip loop-managed stages (they're handled
@@ -1047,6 +1049,7 @@ class _PipelineContext:
     _refreshable_limits: frozenset[str] = field(
         default_factory=lambda: frozenset({"max_review_iterations", "max_ci_retries", "max_merge_conflict_retries"}),
     )
+    prior_context: str = ""
 
     def _refresh_runtime_config(self) -> None:
         """Re-read runtime config from DB and update mutable fields.
@@ -1329,6 +1332,7 @@ class _PipelineContext:
                 on_context_fill=on_context_fill,
                 stage_tpl=stage_tpl,
                 shared_mem_path=self.shared_mem_path,
+                prior_context=self.prior_context,
                 **codex_kwargs,
             )
         except Exception as exc:

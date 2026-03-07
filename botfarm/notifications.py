@@ -123,6 +123,10 @@ class Notifier:
             lines.append("_This looks like an environment issue — no auto-retry._")
         if review_summary:
             lines.append(review_summary)
+        lines.append(
+            "_To retry: remove 'Failed' and 'Human' labels in Linear "
+            "and move ticket to Todo. The agent will pick up where it left off._"
+        )
         self._send("task_failed", "\n".join(lines))
 
     def notify_limit_hit(
