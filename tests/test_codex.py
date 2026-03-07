@@ -10,7 +10,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from botfarm.codex import (
+    DEFAULT_CODEX_MODEL,
+    OPENAI_PRICING,
     CodexResult,
+    calculate_codex_cost,
     check_codex_available,
     parse_codex_jsonl,
     run_codex_streaming,
@@ -131,6 +134,7 @@ class TestCodexResultDefaults:
         assert result.input_tokens == 0
         assert result.output_tokens == 0
         assert result.cached_input_tokens == 0
+        assert result.model == ""
 
 
 class TestCodexMalformedJsonl:
@@ -415,3 +419,91 @@ class TestCheckCodexAvailable:
 
         assert ok is False
         assert "permission denied" in msg
+
+
+# ---------------------------------------------------------------------------
+# calculate_codex_cost tests
+# ---------------------------------------------------------------------------
+
+
+class TestCalculateCodexCost:
+    def test_known_model_o4_mini(self):
+        cost = calculate_codex_cost(
+            model="o4-mini",
+            input_tokens=1_000_000,
+            output_tokens=1_000_000,
+            cached_input_tokens=0,
+        )
+        # 1M input @ $1.10 + 1M output @ $4.40 = $5.50
+        assert cost == pytest.approx(5.50)
+
+    def test_known_model_o3(self):
+        cost = calculate_codex_cost(
+            model="o3",
+            input_tokens=500_000,
+            output_tokens=100_000,
+            cached_input_tokens=200_000,
+        )
+        # non-cached: 300k @ $2.00/1M = $0.60
+        # cached: 200k @ $0.50/1M = $0.10
+        # output: 100k @ $8.00/1M = $0.80
+        assert cost == pytest.approx(1.50)
+
+    def test_cached_tokens_reduce_cost(self):
+        full_cost = calculate_codex_cost(
+            model="o4-mini",
+            input_tokens=100_000,
+            output_tokens=10_000,
+            cached_input_tokens=0,
+        )
+        partial_cache_cost = calculate_codex_cost(
+            model="o4-mini",
+            input_tokens=100_000,
+            output_tokens=10_000,
+            cached_input_tokens=50_000,
+        )
+        assert partial_cache_cost < full_cost
+
+    def test_empty_model_uses_default(self):
+        cost = calculate_codex_cost(
+            model="",
+            input_tokens=1_000_000,
+            output_tokens=1_000_000,
+            cached_input_tokens=0,
+        )
+        # Should use DEFAULT_CODEX_MODEL (o4-mini) pricing
+        expected = calculate_codex_cost(
+            model=DEFAULT_CODEX_MODEL,
+            input_tokens=1_000_000,
+            output_tokens=1_000_000,
+            cached_input_tokens=0,
+        )
+        assert cost == expected
+
+    def test_unknown_model_returns_none(self):
+        cost = calculate_codex_cost(
+            model="unknown-model-xyz",
+            input_tokens=1_000,
+            output_tokens=1_000,
+            cached_input_tokens=0,
+        )
+        assert cost is None
+
+    def test_zero_tokens(self):
+        cost = calculate_codex_cost(
+            model="o4-mini",
+            input_tokens=0,
+            output_tokens=0,
+            cached_input_tokens=0,
+        )
+        assert cost == 0.0
+
+    def test_all_cached(self):
+        cost = calculate_codex_cost(
+            model="gpt-4o",
+            input_tokens=1_000_000,
+            output_tokens=0,
+            cached_input_tokens=1_000_000,
+        )
+        # All input cached: 1M @ $1.25/1M = $1.25, no non-cached, no output
+        assert cost == pytest.approx(1.25)
