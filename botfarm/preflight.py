@@ -564,6 +564,99 @@ def check_identity_linear_api_key(config: BotfarmConfig) -> list[CheckResult]:
     return results
 
 
+def check_core_bare(config: BotfarmConfig) -> list[CheckResult]:
+    """Verify core.bare is not set to true in each project's base repo.
+
+    The shared .git/config can get corrupted by worktree edge cases,
+    causing ``git status`` to fail with "this operation must be run in
+    a work tree".  Severity: error (blocks startup).
+    """
+    results: list[CheckResult] = []
+    for project in config.projects:
+        base = Path(project.base_dir).expanduser()
+        if not base.exists() or not (base / ".git").exists():
+            continue  # check_git_repos will report this
+        try:
+            proc = subprocess.run(
+                ["git", "config", "--get", "core.bare"],
+                cwd=str(base),
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            value = proc.stdout.strip().lower()
+            if value == "true":
+                results.append(CheckResult(
+                    name=f"core_bare:{project.name}",
+                    passed=False,
+                    message=(
+                        f"core.bare=true in {base} — git operations will fail. "
+                        f"Fix manually: git -C {base} config --local core.bare false"
+                    ),
+                ))
+            else:
+                results.append(CheckResult(
+                    name=f"core_bare:{project.name}",
+                    passed=True,
+                    message=f"OK — core.bare is not true in {base}",
+                ))
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            results.append(CheckResult(
+                name=f"core_bare:{project.name}",
+                passed=False,
+                message=f"Failed to check core.bare in {base}",
+            ))
+    return results
+
+
+def repair_core_bare(config: BotfarmConfig) -> list[str]:
+    """Detect and auto-fix core.bare=true in each project's base repo.
+
+    Returns a list of project names that were repaired.
+    Called on supervisor startup before preflight checks.
+    """
+    repaired: list[str] = []
+    for project in config.projects:
+        base = Path(project.base_dir).expanduser()
+        if not base.exists() or not (base / ".git").exists():
+            continue
+        try:
+            proc = subprocess.run(
+                ["git", "config", "--get", "core.bare"],
+                cwd=str(base),
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if proc.stdout.strip().lower() != "true":
+                continue
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            continue
+
+        logger.warning(
+            "core.bare=true detected in %s — auto-repairing", base,
+        )
+        try:
+            subprocess.run(
+                ["git", "config", "--local", "core.bare", "false"],
+                cwd=str(base),
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=True,
+            )
+            repaired.append(project.name)
+            logger.warning(
+                "Repaired core.bare for project %s (%s)", project.name, base,
+            )
+        except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError) as exc:
+            logger.error(
+                "Failed to repair core.bare for project %s: %s",
+                project.name, exc,
+            )
+    return repaired
+
+
 def check_codex_reviewer(config: BotfarmConfig) -> list[CheckResult]:
     """Validate Codex reviewer prerequisites when enabled."""
     if not config.agents.codex_reviewer_enabled:
@@ -848,6 +941,7 @@ def run_preflight_checks(
     results.extend(check_config_consistency(config))
     results.extend(check_database(config))
     results.extend(check_git_repos(config, env=env))
+    results.extend(check_core_bare(config))
     results.extend(check_worktree_dirs(config))
     results.extend(check_linear_api(config))
     results.extend(check_credentials())

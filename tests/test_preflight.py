@@ -31,6 +31,7 @@ from botfarm.preflight import (
     check_claude_plugins,
     check_codex_reviewer,
     check_config_consistency,
+    check_core_bare,
     check_credentials,
     check_database,
     check_git_repos,
@@ -45,6 +46,7 @@ from botfarm.preflight import (
     check_systemd_unit,
     check_worktree_dirs,
     log_preflight_summary,
+    repair_core_bare,
     run_preflight_checks,
 )
 
@@ -363,6 +365,144 @@ class TestCheckWorktreeDirs:
         assert len(results) == 1
         assert not results[0].passed
         assert "not writable" in results[0].message
+
+
+# ---------------------------------------------------------------------------
+# check_core_bare
+# ---------------------------------------------------------------------------
+
+
+class TestCheckCoreBare:
+    def test_pass_when_not_bare(self, tmp_path):
+        base = tmp_path / "repo"
+        base.mkdir()
+        (base / ".git").mkdir()
+        config = _make_config(tmp_path, projects=[ProjectConfig(
+            name="p1", linear_team="TST", base_dir=str(base),
+            worktree_prefix="p-", slots=[1],
+        )])
+        with patch("botfarm.preflight.subprocess.run") as mock_run:
+            mock_run.return_value.returncode = 0
+            mock_run.return_value.stdout = "false\n"
+            results = check_core_bare(config)
+        assert len(results) == 1
+        assert results[0].passed
+        assert results[0].name == "core_bare:p1"
+
+    def test_fail_when_bare_true(self, tmp_path):
+        base = tmp_path / "repo"
+        base.mkdir()
+        (base / ".git").mkdir()
+        config = _make_config(tmp_path, projects=[ProjectConfig(
+            name="p1", linear_team="TST", base_dir=str(base),
+            worktree_prefix="p-", slots=[1],
+        )])
+        with patch("botfarm.preflight.subprocess.run") as mock_run:
+            mock_run.return_value.returncode = 0
+            mock_run.return_value.stdout = "true\n"
+            results = check_core_bare(config)
+        assert len(results) == 1
+        assert not results[0].passed
+        assert results[0].critical
+        assert "core.bare=true" in results[0].message
+
+    def test_pass_when_unset(self, tmp_path):
+        """core.bare not set at all → returncode 1, empty stdout."""
+        base = tmp_path / "repo"
+        base.mkdir()
+        (base / ".git").mkdir()
+        config = _make_config(tmp_path, projects=[ProjectConfig(
+            name="p1", linear_team="TST", base_dir=str(base),
+            worktree_prefix="p-", slots=[1],
+        )])
+        with patch("botfarm.preflight.subprocess.run") as mock_run:
+            mock_run.return_value.returncode = 1
+            mock_run.return_value.stdout = ""
+            results = check_core_bare(config)
+        assert len(results) == 1
+        assert results[0].passed
+
+    def test_skip_missing_repo(self, tmp_path):
+        config = _make_config(tmp_path, projects=[ProjectConfig(
+            name="p1", linear_team="TST", base_dir=str(tmp_path / "missing"),
+            worktree_prefix="p-", slots=[1],
+        )])
+        results = check_core_bare(config)
+        assert results == []
+
+    def test_fail_on_timeout(self, tmp_path):
+        base = tmp_path / "repo"
+        base.mkdir()
+        (base / ".git").mkdir()
+        config = _make_config(tmp_path, projects=[ProjectConfig(
+            name="p1", linear_team="TST", base_dir=str(base),
+            worktree_prefix="p-", slots=[1],
+        )])
+        with patch("botfarm.preflight.subprocess.run", side_effect=subprocess.TimeoutExpired("git", 5)):
+            results = check_core_bare(config)
+        assert len(results) == 1
+        assert not results[0].passed
+        assert "Failed to check" in results[0].message
+
+
+class TestRepairCoreBare:
+    def test_repairs_bare_true(self, tmp_path):
+        base = tmp_path / "repo"
+        base.mkdir()
+        (base / ".git").mkdir()
+        config = _make_config(tmp_path, projects=[ProjectConfig(
+            name="p1", linear_team="TST", base_dir=str(base),
+            worktree_prefix="p-", slots=[1],
+        )])
+        with patch("botfarm.preflight.subprocess.run") as mock_run:
+            # First call: git config --get core.bare → "true"
+            # Second call: git config --local core.bare false → success
+            mock_run.side_effect = [
+                type("Proc", (), {"stdout": "true\n", "returncode": 0})(),
+                type("Proc", (), {"stdout": "", "returncode": 0})(),
+            ]
+            repaired = repair_core_bare(config)
+        assert repaired == ["p1"]
+        assert mock_run.call_count == 2
+
+    def test_no_repair_when_not_bare(self, tmp_path):
+        base = tmp_path / "repo"
+        base.mkdir()
+        (base / ".git").mkdir()
+        config = _make_config(tmp_path, projects=[ProjectConfig(
+            name="p1", linear_team="TST", base_dir=str(base),
+            worktree_prefix="p-", slots=[1],
+        )])
+        with patch("botfarm.preflight.subprocess.run") as mock_run:
+            mock_run.return_value.returncode = 1
+            mock_run.return_value.stdout = ""
+            repaired = repair_core_bare(config)
+        assert repaired == []
+        assert mock_run.call_count == 1
+
+    def test_skip_missing_repo(self, tmp_path):
+        config = _make_config(tmp_path, projects=[ProjectConfig(
+            name="p1", linear_team="TST", base_dir=str(tmp_path / "missing"),
+            worktree_prefix="p-", slots=[1],
+        )])
+        repaired = repair_core_bare(config)
+        assert repaired == []
+
+    def test_repair_failure_logged(self, tmp_path):
+        base = tmp_path / "repo"
+        base.mkdir()
+        (base / ".git").mkdir()
+        config = _make_config(tmp_path, projects=[ProjectConfig(
+            name="p1", linear_team="TST", base_dir=str(base),
+            worktree_prefix="p-", slots=[1],
+        )])
+        with patch("botfarm.preflight.subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                type("Proc", (), {"stdout": "true\n", "returncode": 0})(),
+                subprocess.CalledProcessError(1, "git"),
+            ]
+            repaired = repair_core_bare(config)
+        assert repaired == []
 
 
 # ---------------------------------------------------------------------------
@@ -1103,6 +1243,7 @@ class TestRunPreflightChecks:
         assert "config_consistency" in names
         assert "database" in names
         assert "git_repo" in names
+        assert "core_bare" in names
         assert "worktree_dir" in names
         assert "linear_team" in names
         assert "claude_credentials" in names
