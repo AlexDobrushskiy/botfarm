@@ -466,45 +466,46 @@ def _run_review(
     # Submit both reviews concurrently — both are subprocess calls so
     # threading works well (GIL is not an issue).
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
-    claude_future = executor.submit(_claude_review)
-    codex_future = executor.submit(_codex_review)
-
-    # Wait for Claude (required)
-    claude_result = claude_future.result()
-
-    # Short-circuit on Claude error — don't block on Codex
-    stage_name = stage_tpl.name if stage_tpl is not None else "review"
-    if claude_result.is_error:
-        codex_future.cancel()
-        executor.shutdown(wait=False)
-        return StageResult(
-            stage=stage_name,
-            success=False,
-            claude_result=claude_result,
-            error=f"Claude reported error: {claude_result.result_text[:RESULT_TRUNCATE_CHARS]}",
-        )
-
-    # Process Codex result (fail-open)
-    codex_result_obj: CodexResult | None = None
-    codex_approved: bool | None = None
-    codex_verdict_str = "skipped"
-
     try:
-        codex_stage_result = codex_future.result()
-        codex_result_obj = codex_stage_result.codex_result
+        claude_future = executor.submit(_claude_review)
+        codex_future = executor.submit(_codex_review)
 
-        if codex_stage_result.success:
-            codex_approved = codex_stage_result.review_approved
-            codex_verdict_str = "approved" if codex_approved else "changes_requested"
-        else:
-            logger.warning(
-                "Codex review failed (fail-open): %s",
-                codex_stage_result.error or "unknown error",
+        # Wait for Claude (required)
+        claude_result = claude_future.result()
+
+        # Short-circuit on Claude error — don't block on Codex
+        stage_name = stage_tpl.name if stage_tpl is not None else "review"
+        if claude_result.is_error:
+            # Best-effort cancel — won't interrupt an already-running future
+            codex_future.cancel()
+            return StageResult(
+                stage=stage_name,
+                success=False,
+                claude_result=claude_result,
+                error=f"Claude reported error: {claude_result.result_text[:RESULT_TRUNCATE_CHARS]}",
             )
+
+        # Process Codex result (fail-open)
+        codex_result_obj: CodexResult | None = None
+        codex_approved: bool | None = None
+        codex_verdict_str = "skipped"
+
+        try:
+            codex_stage_result = codex_future.result()
+            codex_result_obj = codex_stage_result.codex_result
+
+            if codex_stage_result.success:
+                codex_approved = codex_stage_result.review_approved
+                codex_verdict_str = "approved" if codex_approved else "changes_requested"
+            else:
+                logger.warning(
+                    "Codex review failed (fail-open): %s",
+                    codex_stage_result.error or "unknown error",
+                )
+                codex_verdict_str = "error"
+        except Exception:
+            logger.warning("Codex review raised exception (fail-open)", exc_info=True)
             codex_verdict_str = "error"
-    except Exception:
-        logger.warning("Codex review raised exception (fail-open)", exc_info=True)
-        codex_verdict_str = "error"
     finally:
         executor.shutdown(wait=False)
 
