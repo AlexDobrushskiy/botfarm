@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from botfarm.codex import CodexResult, run_codex_streaming as run_codex_streaming
+from botfarm.codex import CodexResult, calculate_codex_cost, run_codex_streaming as run_codex_streaming
 from botfarm.config import IdentitiesConfig
 from botfarm.db import delete_stage_run, get_task, insert_event, insert_stage_run, is_extra_usage_active, read_runtime_config, update_stage_run_context_fill, update_task
 from botfarm.slots import update_slot_stage
@@ -1192,6 +1192,12 @@ class _PipelineContext:
         self.conn.commit()
 
         # Record separate codex_review stage_runs row
+        cost = calculate_codex_cost(
+            model=codex.model,
+            input_tokens=codex.input_tokens,
+            output_tokens=codex.output_tokens,
+            cached_input_tokens=codex.cached_input_tokens,
+        )
         insert_stage_run(
             self.conn,
             task_id=self.task_id,
@@ -1204,7 +1210,7 @@ class _PipelineContext:
             output_tokens=codex.output_tokens,
             cache_read_input_tokens=codex.cached_input_tokens,
             cache_creation_input_tokens=0,
-            total_cost_usd=0.0,
+            total_cost_usd=cost if cost is not None else 0.0,
             log_file_path=str(codex_log_file) if codex_log_file else None,
             on_extra_usage=on_extra_usage,
         )

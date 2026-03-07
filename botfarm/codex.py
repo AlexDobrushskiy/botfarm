@@ -22,6 +22,47 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# OpenAI model pricing (per 1M tokens)
+# ---------------------------------------------------------------------------
+
+OPENAI_PRICING: dict[str, dict[str, float]] = {
+    "o3": {"input": 2.00, "cached_input": 0.50, "output": 8.00},
+    "o4-mini": {"input": 1.10, "cached_input": 0.275, "output": 4.40},
+    "gpt-4o": {"input": 2.50, "cached_input": 1.25, "output": 10.00},
+    "gpt-4o-mini": {"input": 0.15, "cached_input": 0.075, "output": 0.60},
+}
+
+DEFAULT_CODEX_MODEL = "o4-mini"
+
+
+def calculate_codex_cost(
+    *,
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    cached_input_tokens: int,
+) -> float | None:
+    """Calculate USD cost from token counts using the pricing table.
+
+    Returns the cost in USD, or ``None`` if the model is not in the
+    pricing table (a warning is logged in that case).
+    """
+    effective_model = model or DEFAULT_CODEX_MODEL
+    prices = OPENAI_PRICING.get(effective_model)
+    if prices is None:
+        logger.warning(
+            "Unknown OpenAI model %r — skipping cost calculation", effective_model
+        )
+        return None
+    non_cached = input_tokens - cached_input_tokens
+    return (
+        non_cached * prices["input"] / 1_000_000
+        + cached_input_tokens * prices["cached_input"] / 1_000_000
+        + output_tokens * prices["output"] / 1_000_000
+    )
+
+
+# ---------------------------------------------------------------------------
 # Result dataclass
 # ---------------------------------------------------------------------------
 
@@ -38,6 +79,7 @@ class CodexResult:
     input_tokens: int = 0
     output_tokens: int = 0
     cached_input_tokens: int = 0
+    model: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -250,6 +292,7 @@ def run_codex_streaming(
     # Parse collected JSONL lines
     result = parse_codex_jsonl(stdout_lines)
     result.duration_seconds = duration
+    result.model = model or ""
 
     # Mark errors for timeout or non-zero exit
     if timed_out.is_set():

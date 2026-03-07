@@ -545,7 +545,6 @@ def _run_codex_review(
         env=env,
         timeout=timeout,
     )
-
     if result.is_error:
         return StageResult(
             stage="codex_review",
