@@ -3918,3 +3918,81 @@ class TestPrChecksConflictRouting:
         )
         assert result.success is False
         assert result.failure_stage == "pr_checks"
+
+    @patch("botfarm.worker._check_pr_has_merge_conflict")
+    @patch("botfarm.worker._execute_stage")
+    def test_conflict_inside_merge_loop_continues_retry(
+        self, mock_exec, mock_check, conn, task_id, tmp_path,
+    ):
+        """pr_checks inside merge-conflict loop fails due to conflict → next retry, not CI bail."""
+        # 1st call: initial pr_checks fails, conflict detected → enter loop
+        # 2nd call: loop retry 1 pr_checks fails, conflict detected → continue loop
+        # (no more calls: loop retry 2 pr_checks succeeds)
+        mock_check.side_effect = [True, True]
+        mock_exec.side_effect = [
+            _mock_stage_result("implement", pr_url=PR_URL),
+            _mock_stage_result("review", review_approved=True),
+            # Initial pr_checks: fails
+            _mock_stage_result("pr_checks", success=False),
+            # Conflict loop retry 1:
+            _mock_stage_result("resolve_conflict"),
+            _mock_stage_result("review", review_approved=True),
+            _mock_stage_result("pr_checks", success=False),  # still conflicting
+            # Conflict loop retry 2:
+            _mock_stage_result("resolve_conflict"),
+            _mock_stage_result("review", review_approved=True),
+            _mock_stage_result("pr_checks"),  # passes
+            _mock_stage_result("merge"),
+        ]
+        result = run_pipeline(
+            ticket_id="SMA-99",
+            task_id=task_id,
+            cwd=tmp_path,
+            conn=conn,
+            max_review_iterations=1,
+            max_ci_retries=0,
+            max_merge_conflict_retries=3,
+        )
+        assert result.success is True
+        assert "merge" in result.stages_completed
+
+    @patch("botfarm.worker._check_pr_has_merge_conflict")
+    @patch("botfarm.worker._run_ci_fix")
+    @patch("botfarm.worker._execute_stage")
+    def test_conflict_after_ci_retries_inside_merge_loop_continues(
+        self, mock_exec, mock_ci_fix, mock_check, conn, task_id, tmp_path,
+    ):
+        """CI retries exhausted inside merge-conflict loop, conflict developed → next retry."""
+        # 1st call: initial pr_checks, conflict detected → enter loop
+        # 2nd call: loop retry 1 pr_checks fails, no conflict → CI retry
+        # 3rd call: after CI retries exhausted, conflict detected → continue loop
+        mock_check.side_effect = [True, False, True]
+        mock_ci_fix.return_value = _mock_stage_result("fix")
+        mock_exec.side_effect = [
+            _mock_stage_result("implement", pr_url=PR_URL),
+            _mock_stage_result("review", review_approved=True),
+            # Initial pr_checks: fails
+            _mock_stage_result("pr_checks", success=False),
+            # Conflict loop retry 1:
+            _mock_stage_result("resolve_conflict"),
+            _mock_stage_result("review", review_approved=True),
+            _mock_stage_result("pr_checks", success=False),  # CI failure, not conflict
+            # CI retry pr_checks: fails again (then conflict check returns True)
+            _mock_stage_result("pr_checks", success=False),
+            # Conflict loop retry 2:
+            _mock_stage_result("resolve_conflict"),
+            _mock_stage_result("review", review_approved=True),
+            _mock_stage_result("pr_checks"),  # passes
+            _mock_stage_result("merge"),
+        ]
+        result = run_pipeline(
+            ticket_id="SMA-99",
+            task_id=task_id,
+            cwd=tmp_path,
+            conn=conn,
+            max_review_iterations=1,
+            max_ci_retries=1,
+            max_merge_conflict_retries=3,
+        )
+        assert result.success is True
+        assert "merge" in result.stages_completed

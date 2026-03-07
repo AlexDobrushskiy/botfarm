@@ -915,6 +915,17 @@ def _run_merge_conflict_loop(
         # --- RE-RUN PR_CHECKS ---
         checks_result = ctx.run_and_record("pr_checks", pr_url=pr_url, iteration=retry)
         if checks_result is None:
+            # Check if this pr_checks failure is due to a merge conflict
+            # (e.g. another PR merged to main during review). If so,
+            # continue to the next conflict retry instead of entering
+            # the CI fix path (which can't resolve conflicts).
+            if pr_url and _check_pr_has_merge_conflict(
+                pr_url, ctx.cwd,
+                env={**os.environ, **(ctx.coder_env or {})},
+            ):
+                _reset_for_retry(ctx)
+                continue
+
             # CI failed — attempt CI retries within this conflict retry
             if ctx.max_ci_retries > 0:
                 ci_failure_output = ctx.pipeline.failure_reason or "CI checks failed"
@@ -926,6 +937,14 @@ def _run_merge_conflict_loop(
                     max_retries=ctx.max_ci_retries,
                 )
                 if not ci_success:
+                    # CI retries exhausted — check if a merge conflict
+                    # developed during CI fixes.
+                    if pr_url and _check_pr_has_merge_conflict(
+                        pr_url, ctx.cwd,
+                        env={**os.environ, **(ctx.coder_env or {})},
+                    ):
+                        _reset_for_retry(ctx)
+                        continue
                     return False
             else:
                 return False
