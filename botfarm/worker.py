@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import sqlite3
+import subprocess
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -224,6 +225,85 @@ class PipelineResult:
     result_text: str | None = None
 
 
+def _merge_main_before_retry_resume(
+    cwd: str | Path,
+    pr_url: str,
+    *,
+    env: dict[str, str] | None = None,
+) -> bool:
+    """Check out the PR branch, merge main into it, and push.
+
+    Called before resuming a retry pipeline so the branch is up to date.
+    Returns True on success, False if the merge failed (e.g. conflicts).
+    On failure the merge is aborted and the branch is left on the PR ref
+    so the resumed pipeline stage can deal with it.
+    """
+    subprocess_env = {**os.environ, **(env or {})}
+    cwd_str = str(cwd)
+
+    # Get the branch name from the PR
+    try:
+        proc = subprocess.run(
+            ["gh", "pr", "view", pr_url, "--json", "headRefName", "--jq", ".headRefName"],
+            capture_output=True, text=True, cwd=cwd_str, env=subprocess_env, timeout=30,
+        )
+        if proc.returncode != 0 or not proc.stdout.strip():
+            logger.warning("Could not determine PR branch from %s", pr_url)
+            return False
+        branch = proc.stdout.strip()
+    except (subprocess.TimeoutExpired, OSError):
+        logger.warning("Failed to get PR branch from %s", pr_url, exc_info=True)
+        return False
+
+    try:
+        # Fetch all refs
+        subprocess.run(
+            ["git", "fetch", "origin"],
+            cwd=cwd_str, env=subprocess_env, check=True,
+            capture_output=True, timeout=60,
+        )
+
+        # Check out the PR branch (reset to remote state)
+        subprocess.run(
+            ["git", "checkout", "-B", branch, f"origin/{branch}"],
+            cwd=cwd_str, env=subprocess_env, check=True,
+            capture_output=True, timeout=30,
+        )
+
+        # Merge main
+        result = subprocess.run(
+            ["git", "merge", "origin/main", "--no-edit"],
+            cwd=cwd_str, env=subprocess_env,
+            capture_output=True, text=True, timeout=120,
+        )
+        if result.returncode != 0:
+            subprocess.run(
+                ["git", "merge", "--abort"],
+                cwd=cwd_str, env=subprocess_env, capture_output=True,
+            )
+            logger.warning(
+                "Merge conflict when merging main into %s — pipeline will handle it",
+                branch,
+            )
+            return False
+
+        # Push the merged result
+        subprocess.run(
+            ["git", "push", "origin", branch],
+            cwd=cwd_str, env=subprocess_env, check=True,
+            capture_output=True, timeout=60,
+        )
+        logger.info("Successfully merged main into %s and pushed", branch)
+        return True
+
+    except subprocess.CalledProcessError as e:
+        logger.warning("Git operation failed during merge-main: %s", e)
+        return False
+    except subprocess.TimeoutExpired:
+        logger.warning("Timeout during merge-main for %s", pr_url)
+        return False
+
+
 def run_pipeline(
     *,
     ticket_id: str,
@@ -253,6 +333,7 @@ def run_pipeline(
     codex_reviewer_timeout_minutes: int = 15,
     codex_reviewer_skip_on_reiteration: bool = True,
     prior_context: str = "",
+    merge_main_before_resume: bool = False,
 ) -> PipelineResult:
     """Execute the full implement→review→fix→pr_checks→merge pipeline.
 
@@ -316,11 +397,19 @@ def run_pipeline(
         _record_failure(conn, task_id, pipeline)
         return pipeline
 
-    # When resuming, recover PR URL from existing stage_runs
+    # When resuming, recover PR URL — check task DB first (retry resume
+    # preserves it), then fall back to gh pr view (limit-pause resume).
     if resume_from_stage:
-        pr_url = _recover_pr_url(conn, task_id, cwd, env=coder_env)
+        task_row = get_task(conn, task_id)
+        pr_url = (task_row["pr_url"] if task_row else None) or _recover_pr_url(
+            conn, task_id, cwd, env=coder_env,
+        )
         if pr_url:
             pipeline.pr_url = pr_url
+
+        # On retry resume, check out the PR branch and merge main
+        if merge_main_before_resume and pr_url:
+            _merge_main_before_retry_resume(cwd, pr_url, env=coder_env)
 
     # Determine which stages to skip when resuming
     skipping = resume_from_stage is not None
