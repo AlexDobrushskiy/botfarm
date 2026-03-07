@@ -39,6 +39,11 @@ Key patterns:
 - Usage limits pause slots mid-pipeline and resume from interrupted stage
 - Claude invoked via `claude -p --output-format json` subprocess
 
+Design principle — code over agents:
+- If something can be done deterministically by code (DB queries, API calls, git/gh commands, state checks), do it in supervisor/worker code — not via agent prompt
+- Reserve agent prompts for work that genuinely requires autonomous reasoning (implementation, code review, conflict resolution, investigation)
+- Examples: checking for existing PRs, fetching Linear comments, reading task history from DB, computing retry context — all should be done by code and passed to the agent as structured context
+
 ## Runtime Files
 All runtime data lives under `~/.botfarm/` (see `docs/runtime-files.md` for full details):
 - `config.yaml` / `.env` — configuration and environment variables
@@ -110,3 +115,4 @@ See `docs/refactoring-analysis.md` for the full procedure, decision framework, a
 ## PR Process
 - Clear, concise description
 - Linear-GitHub integration handles ticket linking automatically via branch name
+- Never add "Co-Authored-By" trailers to commit messages or PR descriptions
