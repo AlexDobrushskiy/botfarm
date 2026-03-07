@@ -143,4 +143,69 @@
 {% else %}
 <p>No usage snapshots recorded for this time range.</p>
 {% endif %}
+
+<h2>Codex Spending</h2>
+{% if codex_snapshots %}
+<canvas id="codex-chart" style="max-height:400px"></canvas>
+<script>
+    const codexSnapshots = {{ codex_snapshots | tojson }};
+    const codexLabels = codexSnapshots.map(s => s.created_at ? s.created_at.slice(5, 16) : "");
+    const codexDaily = codexSnapshots.map(s => s.daily_spend != null ? s.daily_spend : null);
+    const codexMonthly = codexSnapshots.map(s => s.monthly_spend != null ? s.monthly_spend : null);
+    const codexBudget = codexSnapshots.map(s => s.monthly_budget != null && s.monthly_budget > 0 ? s.monthly_budget : null);
+
+    new Chart(document.getElementById("codex-chart"), {
+        type: "line",
+        data: {
+            labels: codexLabels,
+            datasets: [
+                { label: "Monthly Spend ($)", data: codexMonthly, borderColor: "#8b5cf6", backgroundColor: "rgba(139,92,246,0.1)", fill: true, tension: 0.3, pointRadius: 2 },
+                { label: "Daily Spend ($)", data: codexDaily, borderColor: "#10b981", backgroundColor: "rgba(16,185,129,0.1)", fill: true, tension: 0.3, pointRadius: 2 },
+                { label: "Budget ($)", data: codexBudget, borderColor: "#94a3b8", borderDash: [5, 5], fill: false, tension: 0, pointRadius: 0 },
+            ]
+        },
+        options: {
+            responsive: true,
+            interaction: { intersect: false, mode: "index" },
+            scales: { y: { min: 0, title: { display: true, text: "USD ($)" } } },
+            plugins: {
+                tooltip: { callbacks: { label: ctx => ctx.dataset.label + ": $" + (ctx.parsed.y != null ? ctx.parsed.y.toFixed(2) : "N/A") } },
+                datalabels: { display: false },
+            },
+        }
+    });
+</script>
+
+<details>
+    <summary>Raw Codex snapshot data ({{ codex_snapshots | length }} records)</summary>
+    <figure>
+    <table>
+        <thead>
+            <tr>
+                <th>Timestamp</th>
+                <th>Daily Spend</th>
+                <th>Monthly Spend</th>
+                <th>Budget</th>
+                <th>Utilization</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for s in codex_snapshots | reverse %}
+            <tr>
+                <td>{% if s.created_at %}<time data-timestamp="{{ s.created_at }}" title="{{ s.created_at[:19] }}">{{ s.created_at[:19] }}</time>{% else %}-{% endif %}</td>
+                <td>{{ "$%.2f"|format(s.daily_spend) if s.daily_spend is not none else "-" }}</td>
+                <td>{{ "$%.2f"|format(s.monthly_spend) if s.monthly_spend is not none else "-" }}</td>
+                <td>{{ "$%.2f"|format(s.monthly_budget) if s.monthly_budget is not none and s.monthly_budget > 0 else "-" }}</td>
+                <td>{{ "%.1f%%"|format(s.budget_utilization * 100) if s.budget_utilization is not none else "-" }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    </figure>
+</details>
+{% elif codex_stage_cost > 0 %}
+<p>No OpenAI API polling configured. Total Codex cost from stage runs: <strong>${{ "%.2f"|format(codex_stage_cost) }}</strong></p>
+{% else %}
+<p>No Codex usage data available.</p>
+{% endif %}
 {% endblock %}

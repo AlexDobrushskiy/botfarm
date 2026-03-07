@@ -279,6 +279,7 @@ def history(config_path, limit, project, status_filter):
     table.add_column("Turns", justify="right", no_wrap=True)
     table.add_column("Duration", justify="right", no_wrap=True)
     table.add_column("Cost", justify="right", no_wrap=True)
+    table.add_column("Codex Cost", justify="right", no_wrap=True)
     table.add_column("Codex In/Out", justify="right", no_wrap=True)
     table.add_column("Codex", justify="center", no_wrap=True)
     table.add_column("Created", no_wrap=True)
@@ -332,6 +333,9 @@ def history(config_path, limit, project, status_filter):
             codex_tokens_display = "-"
             codex_verdict = "-"
 
+        codex_cost = task_codex.get("codex_cost_usd", 0.0) if task_codex else 0.0
+        codex_cost_display = f"${codex_cost:.2f}" if codex_cost else "-"
+
         created = row["created_at"][:16] if row["created_at"] else "-"
 
         table.add_row(
@@ -341,6 +345,7 @@ def history(config_path, limit, project, status_filter):
             turns,
             duration,
             cost_display,
+            codex_cost_display,
             codex_tokens_display,
             codex_verdict,
             created,
@@ -393,6 +398,26 @@ def limits(config_path):
 
         # Read dispatch_paused from DB
         dispatch_paused, dispatch_pause_reason, _heartbeat = load_dispatch_state(conn)
+
+        # Read Codex usage data
+        codex_row = None
+        try:
+            codex_row = conn.execute(
+                "SELECT * FROM codex_usage_snapshots ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+        except sqlite3.OperationalError:
+            pass
+
+        codex_stage_cost = 0.0
+        try:
+            cost_row = conn.execute(
+                "SELECT SUM(total_cost_usd) as total "
+                "FROM stage_runs WHERE stage = 'codex_review'"
+            ).fetchone()
+            if cost_row and cost_row["total"]:
+                codex_stage_cost = cost_row["total"]
+        except sqlite3.OperationalError:
+            pass
     except sqlite3.OperationalError as exc:
         raise click.ClickException(f"Database query failed: {exc}") from exc
     finally:
@@ -403,7 +428,7 @@ def limits(config_path):
         return
 
     console = Console()
-    table = Table(title="Usage Limits")
+    table = Table(title="Claude Usage Limits")
     table.add_column("Metric", style="bold")
     table.add_column("Value")
 
@@ -459,6 +484,36 @@ def limits(config_path):
         table.add_row("Last updated", recorded_at[:19])
 
     console.print(table)
+
+    # Codex Usage section
+    if codex_row or codex_stage_cost > 0:
+        codex_table = Table(title="Codex Usage")
+        codex_table.add_column("Metric", style="bold")
+        codex_table.add_column("Value")
+
+        if codex_row:
+            monthly = codex_row["monthly_spend"]
+            daily = codex_row["daily_spend"]
+            budget = codex_row["monthly_budget"]
+            utilization = codex_row["budget_utilization"]
+
+            if monthly is not None:
+                codex_table.add_row("Monthly spend", f"${monthly:.2f}")
+            if daily is not None:
+                codex_table.add_row("Daily spend", f"${daily:.2f}")
+            if budget and budget > 0:
+                codex_table.add_row("Monthly budget", f"${budget:.2f}")
+                if utilization is not None:
+                    pct = f"{utilization * 100:.1f}%"
+                    color = "green" if utilization < 0.7 else ("yellow" if utilization < 0.9 else "red")
+                    codex_table.add_row("Budget utilization", f"[{color}]{pct}[/{color}]")
+            if codex_row["created_at"]:
+                codex_table.add_row("Last polled", codex_row["created_at"][:19])
+
+        if codex_stage_cost > 0:
+            codex_table.add_row("Total cost (from runs)", f"${codex_stage_cost:.2f}")
+
+        console.print(codex_table)
 
 
 @main.command(name="pause")

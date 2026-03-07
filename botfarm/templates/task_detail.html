@@ -63,6 +63,10 @@
     </article>
     {% if task_totals.codex_runs > 0 %}
     <article class="metric-card">
+        <h2>${{ "%.4f"|format(task_totals.codex_cost) }}</h2>
+        <p>Codex Cost</p>
+    </article>
+    <article class="metric-card">
         <h2>{{ "{:,}".format(task_totals.codex_input_tokens) }}</h2>
         <p>Codex Input Tokens</p>
     </article>
@@ -120,6 +124,7 @@
                 <th>Iteration</th>
                 <th>Verdict</th>
                 <th>Duration</th>
+                <th>Cost</th>
                 <th>Input Tokens</th>
                 <th>Output Tokens</th>
                 <th>Cached Tokens</th>
@@ -144,6 +149,7 @@
                     {% endif %}
                 </td>
                 <td>{{ format_duration(cs.duration_seconds | int) if cs.duration_seconds is not none else "-" }}</td>
+                <td>${{ "%.4f"|format(cs.total_cost_usd) if cs.total_cost_usd else "0.0000" }}</td>
                 <td>{{ "{:,}".format(cs.input_tokens) if cs.input_tokens else "-" }}</td>
                 <td>{{ "{:,}".format(cs.output_tokens) if cs.output_tokens else "-" }}</td>
                 <td>{{ "{:,}".format(cs.cache_read_input_tokens) if cs.cache_read_input_tokens else "-" }}</td>

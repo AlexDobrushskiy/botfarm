@@ -94,6 +94,23 @@ def read_state(app: FastAPI) -> dict:
             }
             last_usage_check = usage_row["created_at"]
 
+        # Read latest codex usage snapshot
+        codex_usage = {}
+        try:
+            codex_row = conn.execute(
+                "SELECT * FROM codex_usage_snapshots ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+            if codex_row:
+                codex_usage = {
+                    "daily_spend": codex_row["daily_spend"],
+                    "monthly_spend": codex_row["monthly_spend"],
+                    "monthly_budget": codex_row["monthly_budget"],
+                    "budget_utilization": codex_row["budget_utilization"],
+                    "last_polled_at": codex_row["created_at"],
+                }
+        except sqlite3.OperationalError:
+            pass
+
         # Read queue entries grouped by project
         queue_rows = conn.execute(
             "SELECT project, position, ticket_id, ticket_title, priority, url, snapshot_at, blocked_by "
@@ -143,6 +160,7 @@ def read_state(app: FastAPI) -> dict:
             "dispatch_pause_reason": reason,
             "supervisor_heartbeat": heartbeat,
             "usage": usage,
+            "codex_usage": codex_usage,
             "last_usage_check": last_usage_check,
             "queue": {"projects": projects_queue} if projects_queue else None,
             "project_pauses": project_pauses,
