@@ -443,7 +443,7 @@ def get_codex_review_stats(
     """Return aggregated Codex review stats per task for a batch of task IDs.
 
     Returns a dict mapping task_id -> {codex_input_tokens, codex_output_tokens,
-    codex_cache_read_tokens, codex_runs, codex_duration_seconds,
+    codex_cache_read_tokens, codex_cost_usd, codex_runs, codex_duration_seconds,
     codex_approved, codex_changes_requested, codex_failed}.
 
     Only considers stage_runs with stage = 'codex_review'.
@@ -456,6 +456,7 @@ def get_codex_review_stats(
         "SUM(input_tokens) as codex_input_tokens, "
         "SUM(output_tokens) as codex_output_tokens, "
         "SUM(cache_read_input_tokens) as codex_cache_read_tokens, "
+        "SUM(total_cost_usd) as codex_cost_usd, "
         "COUNT(*) as codex_runs, "
         "SUM(duration_seconds) as codex_duration_seconds, "
         "SUM(CASE WHEN exit_subtype = 'approved' THEN 1 ELSE 0 END) as codex_approved, "
@@ -470,6 +471,7 @@ def get_codex_review_stats(
             "codex_input_tokens": r["codex_input_tokens"] or 0,
             "codex_output_tokens": r["codex_output_tokens"] or 0,
             "codex_cache_read_tokens": r["codex_cache_read_tokens"] or 0,
+            "codex_cost_usd": r["codex_cost_usd"] or 0.0,
             "codex_runs": r["codex_runs"] or 0,
             "codex_duration_seconds": r["codex_duration_seconds"] or 0.0,
             "codex_approved": r["codex_approved"] or 0,

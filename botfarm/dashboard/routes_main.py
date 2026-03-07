@@ -443,6 +443,7 @@ def _compute_task_totals(stages: list[dict]) -> dict:
     codex_input = sum(s.get("input_tokens") or 0 for s in codex_stages)
     codex_output = sum(s.get("output_tokens") or 0 for s in codex_stages)
     codex_cache_read = sum(s.get("cache_read_input_tokens") or 0 for s in codex_stages)
+    codex_cost_usd = sum(s.get("total_cost_usd") or 0.0 for s in codex_stages)
     codex_runs = len(codex_stages)
 
     return {
@@ -454,6 +455,7 @@ def _compute_task_totals(stages: list[dict]) -> dict:
         "codex_input_tokens": codex_input,
         "codex_output_tokens": codex_output,
         "codex_cache_read_tokens": codex_cache_read,
+        "codex_cost_usd": codex_cost_usd,
         "codex_runs": codex_runs,
         "codex_stages": codex_stages,
     }
@@ -473,6 +475,7 @@ _EMPTY_METRICS: dict = {
     "avg_context_fill_pct": None,
     "tasks_over_80_pct_fill": 0,
     "codex_input_tokens": 0, "codex_output_tokens": 0,
+    "codex_cost_usd": 0.0,
     "codex_runs": 0, "codex_approved": 0, "codex_errors": 0,
     "codex_approval_rate": 0.0, "codex_error_rate": 0.0,
 }
@@ -575,6 +578,7 @@ def _compute_metrics(
         codex_row = conn.execute(
             "SELECT SUM(sr.input_tokens) as codex_in, "
             "SUM(sr.output_tokens) as codex_out, "
+            "SUM(sr.total_cost_usd) as codex_cost, "
             "COUNT(*) as codex_runs, "
             "SUM(CASE WHEN sr.exit_subtype = 'approved' THEN 1 ELSE 0 END) as codex_approved, "
             "SUM(CASE WHEN sr.exit_subtype IN ('failed', 'error', 'timeout') THEN 1 ELSE 0 END) as codex_errors "
@@ -585,6 +589,7 @@ def _compute_metrics(
         if codex_row and codex_row["codex_runs"]:
             metrics["codex_input_tokens"] = codex_row["codex_in"] or 0
             metrics["codex_output_tokens"] = codex_row["codex_out"] or 0
+            metrics["codex_cost_usd"] = codex_row["codex_cost"] or 0.0
             metrics["codex_runs"] = codex_row["codex_runs"] or 0
             metrics["codex_approved"] = codex_row["codex_approved"] or 0
             metrics["codex_errors"] = codex_row["codex_errors"] or 0
@@ -649,6 +654,7 @@ def index(request: Request):
     dispatch_paused = state.get("dispatch_paused", False)
     dispatch_pause_reason = state.get("dispatch_pause_reason")
     usage = state.get("usage", {})
+    codex_usage = state.get("codex_usage", {})
     queue = state.get("queue")
     dashboard_checked = get_dashboard_last_fresh_time(app)
     last_usage_check = dashboard_checked or state.get("last_usage_check")
@@ -659,6 +665,7 @@ def index(request: Request):
         "dispatch_paused": dispatch_paused,
         "dispatch_pause_reason": dispatch_pause_reason,
         "usage": usage,
+        "codex_usage": codex_usage,
         "queue": queue,
         "last_usage_check": last_usage_check,
         "usage_stale": usage_is_stale(last_usage_check),
@@ -794,24 +801,48 @@ def usage_page(request: Request):
         time_range = "7d"
     hours = USAGE_RANGE_HOURS[time_range]
     snapshots = []
+    codex_snapshots = []
+    codex_stage_cost = 0.0
     conn = get_db(app)
     if conn:
         try:
-            rows = conn.execute(
-                "SELECT * FROM usage_snapshots "
-                "WHERE created_at >= datetime('now', ?)"
-                " ORDER BY created_at ASC",
-                (f"-{hours} hours",),
-            ).fetchall()
-            snapshots = [dict(r) for r in rows]
-        except sqlite3.OperationalError:
-            pass
+            try:
+                rows = conn.execute(
+                    "SELECT * FROM usage_snapshots "
+                    "WHERE created_at >= datetime('now', ?)"
+                    " ORDER BY created_at ASC",
+                    (f"-{hours} hours",),
+                ).fetchall()
+                snapshots = [dict(r) for r in rows]
+            except sqlite3.OperationalError:
+                pass
+            try:
+                codex_rows = conn.execute(
+                    "SELECT * FROM codex_usage_snapshots "
+                    "WHERE created_at >= datetime('now', ?)"
+                    " ORDER BY created_at ASC",
+                    (f"-{hours} hours",),
+                ).fetchall()
+                codex_snapshots = [dict(r) for r in codex_rows]
+            except sqlite3.OperationalError:
+                pass
+            try:
+                cost_row = conn.execute(
+                    "SELECT SUM(total_cost_usd) as total "
+                    "FROM stage_runs WHERE stage = 'codex_review'"
+                ).fetchone()
+                if cost_row and cost_row["total"]:
+                    codex_stage_cost = cost_row["total"]
+            except sqlite3.OperationalError:
+                pass
         finally:
             conn.close()
     return templates.TemplateResponse("usage.html", {
         "request": request,
         "usage": usage,
         "snapshots": snapshots,
+        "codex_snapshots": codex_snapshots,
+        "codex_stage_cost": codex_stage_cost,
         "time_range": time_range,
         "supervisor": supervisor_status(app, state),
         "pause_state": manual_pause_state(state),

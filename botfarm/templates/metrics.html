@@ -104,12 +104,16 @@
 <h2>Codex Review</h2>
 <div class="grid">
     <article class="metric-card">
+        <h2>${{ "%.2f"|format(metrics.codex_cost_usd) }}</h2>
+        <p>Codex Cost</p>
+    </article>
+    <article class="metric-card">
         <h2>{{ "{:,}".format(metrics.codex_input_tokens) }}</h2>
-        <p>Codex Input Tokens</p>
+        <p>Codex Input Tokens <small>(incl. reasoning)</small></p>
     </article>
     <article class="metric-card">
         <h2>{{ "{:,}".format(metrics.codex_output_tokens) }}</h2>
-        <p>Codex Output Tokens</p>
+        <p>Codex Output Tokens <small>(incl. reasoning)</small></p>
     </article>
     <article class="metric-card">
         <h2>{{ metrics.codex_runs }}</h2>
