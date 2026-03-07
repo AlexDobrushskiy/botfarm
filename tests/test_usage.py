@@ -896,12 +896,15 @@ class TestAdaptivePollInterval:
 
         with patch.object(poller, "_fetch", side_effect=error):
             poller.force_poll(conn)
-            # Reset both cooldown and backoff timer to allow next force_poll
-            poller._last_force_poll = 0
-            poller._last_poll = 0
+            # Reset both cooldown and backoff timer to allow next force_poll.
+            # Use a far-past timestamp so the backoff guard never triggers
+            # (time.monotonic() can be small in fresh CI containers).
+            far_past = time.monotonic() - MAX_ADAPTIVE_POLL_INTERVAL - 1
+            poller._last_force_poll = far_past
+            poller._last_poll = far_past
             poller.force_poll(conn)
-            poller._last_force_poll = 0
-            poller._last_poll = 0
+            poller._last_force_poll = far_past
+            poller._last_poll = far_past
             poller.force_poll(conn)
 
         assert poller._consecutive_429s == 3
@@ -912,11 +915,14 @@ class TestAdaptivePollInterval:
         response = _make_429_response()
         error = httpx.HTTPStatusError("", request=response.request, response=response)
 
-        # Simulate many 429s to exceed cap
+        # Simulate many 429s to exceed cap.
+        # Use a far-past timestamp so the backoff guard never triggers
+        # (time.monotonic() can be small in fresh CI containers).
+        far_past = time.monotonic() - MAX_ADAPTIVE_POLL_INTERVAL - 1
         with patch.object(poller, "_fetch", side_effect=error):
             for _ in range(20):
-                poller._last_force_poll = 0
-                poller._last_poll = 0
+                poller._last_force_poll = far_past
+                poller._last_poll = far_past
                 poller.force_poll(conn)
 
         assert poller.effective_poll_interval == MAX_ADAPTIVE_POLL_INTERVAL
@@ -934,9 +940,10 @@ class TestAdaptivePollInterval:
         assert poller.effective_poll_interval > poller.poll_interval
 
         # Then: successful poll (backoff expired)
+        far_past = time.monotonic() - MAX_ADAPTIVE_POLL_INTERVAL - 1
         with patch.object(poller, "_fetch", return_value=SAMPLE_USAGE_RESPONSE):
-            poller._last_force_poll = 0
-            poller._last_poll = 0
+            poller._last_force_poll = far_past
+            poller._last_poll = far_past
             poller.force_poll(conn)
 
         assert poller._consecutive_429s == 0
@@ -1140,20 +1147,21 @@ class TestForcePoll429Backoff:
         response = _make_429_response()
         error = httpx.HTTPStatusError("", request=response.request, response=response)
 
+        far_past = time.monotonic() - MAX_ADAPTIVE_POLL_INTERVAL - 1
         with patch.object(poller, "_fetch", side_effect=error):
             # First 429
             poller.force_poll(conn)
             assert poller._consecutive_429s == 1
 
             # Expire the backoff, then trigger another 429
-            poller._last_poll = 0
-            poller._last_force_poll = 0
+            poller._last_poll = far_past
+            poller._last_force_poll = far_past
             poller.force_poll(conn)
             assert poller._consecutive_429s == 2
 
             # Expire again, trigger a third
-            poller._last_poll = 0
-            poller._last_force_poll = 0
+            poller._last_poll = far_past
+            poller._last_force_poll = far_past
             poller.force_poll(conn)
             assert poller._consecutive_429s == 3
 
