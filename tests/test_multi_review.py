@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import subprocess
 import threading
-import time
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
@@ -397,8 +396,7 @@ class TestReviewStageDualReviewer:
         )
 
         assert result.success is False
-        # In parallel mode, Codex runs concurrently so it is invoked,
-        # but its result is ignored when Claude errors.
+        # Claude error short-circuits — we don't wait for Codex.
         mock_submit.assert_not_called()
 
     @patch("botfarm.worker_stages._submit_aggregate_review")
@@ -655,8 +653,7 @@ class TestDBTemplateWithCodex:
         )
 
         assert result.success is False
-        # In parallel mode, Codex runs concurrently so it is invoked,
-        # but its result is ignored when Claude errors.
+        # Claude error short-circuits — we don't wait for Codex.
         mock_submit.assert_not_called()
 
     @patch("botfarm.worker_stages._run_codex_review")
