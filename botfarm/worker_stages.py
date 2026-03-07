@@ -677,6 +677,19 @@ def _run_pr_checks(
 ) -> StageResult:
     """PR_CHECKS stage — Wait for CI checks to pass. No Claude Code invocation."""
     subprocess_env = {**os.environ, **env} if env else None
+
+    # Pre-check: detect merge conflicts before waiting for CI.
+    # When a PR has conflicts, GitHub won't run CI checks, so
+    # `gh pr checks --watch` would return "no checks reported"
+    # which wastes ci_fix retries on the wrong problem.
+    if _check_pr_has_merge_conflict(pr_url, cwd, env=subprocess_env):
+        logger.info("PR has merge conflicts — skipping CI check wait")
+        return StageResult(
+            stage="pr_checks",
+            success=False,
+            error="PR has merge conflicts — CI checks will not run",
+        )
+
     start = time.monotonic()
     try:
         proc = subprocess.run(
@@ -769,6 +782,34 @@ def _run_ci_fix(
 # ---------------------------------------------------------------------------
 
 _CONFLICT_RE = re.compile(r"conflict|isn't mergeable|not mergeable", re.IGNORECASE)
+
+
+def _check_pr_has_merge_conflict(
+    pr_url: str,
+    cwd: str | Path,
+    *,
+    env: dict[str, str] | None = None,
+) -> bool:
+    """Check whether a PR has merge conflicts via the GitHub API.
+
+    Queries ``gh pr view --json mergeable`` and returns ``True`` when the
+    PR state is ``CONFLICTING``.  Returns ``False`` on any other state or
+    on errors (conservative — avoids false positives).
+    """
+    try:
+        proc = subprocess.run(
+            ["gh", "pr", "view", pr_url, "--json", "mergeable", "--jq", ".mergeable"],
+            capture_output=True,
+            text=True,
+            cwd=str(cwd),
+            timeout=30,
+            env=env,
+        )
+        if proc.returncode == 0:
+            return proc.stdout.strip().upper() == "CONFLICTING"
+    except (subprocess.TimeoutExpired, OSError):
+        logger.debug("Could not check PR mergeable state for %s", pr_url, exc_info=True)
+    return False
 
 
 def _is_merge_conflict(
