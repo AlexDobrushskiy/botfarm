@@ -34,6 +34,7 @@ def create_app(
     on_update: Callable[[], None] | None = None,
     on_rerun_preflight: Callable[[], None] | None = None,
     on_stop_slot: Callable[[str, int], None] | None = None,
+    on_add_slot: Callable[[str], None] | None = None,
     get_preflight_results: Callable[[], list] | None = None,
     get_degraded: Callable[[], bool] | None = None,
     update_failed_event: threading.Event | None = None,
@@ -73,6 +74,9 @@ def create_app(
         Callback invoked when the user clicks Stop on a slot. Takes
         ``(project, slot_id)`` arguments (e.g.
         ``supervisor.request_stop_slot``).
+    on_add_slot:
+        Callback invoked when the user requests adding a new slot. Takes
+        ``(project,)`` argument (e.g. ``supervisor.request_add_slot``).
     get_preflight_results:
         Callable that returns the latest list of preflight ``CheckResult``
         objects (e.g. ``supervisor.get_preflight_results``).
@@ -94,6 +98,7 @@ def create_app(
     app.state.on_update = on_update
     app.state.on_rerun_preflight = on_rerun_preflight
     app.state.on_stop_slot = on_stop_slot
+    app.state.on_add_slot = on_add_slot
     app.state.get_preflight_results = get_preflight_results
     app.state.get_degraded = get_degraded
     app.state.resume_requested_at = 0.0
@@ -130,6 +135,7 @@ def start_dashboard(
     on_update: Callable[[], None] | None = None,
     on_rerun_preflight: Callable[[], None] | None = None,
     on_stop_slot: Callable[[str, int], None] | None = None,
+    on_add_slot: Callable[[str], None] | None = None,
     get_preflight_results: Callable[[], list] | None = None,
     get_degraded: Callable[[], bool] | None = None,
     update_failed_event: threading.Event | None = None,
@@ -153,6 +159,7 @@ def start_dashboard(
         on_update=on_update,
         on_rerun_preflight=on_rerun_preflight,
         on_stop_slot=on_stop_slot,
+        on_add_slot=on_add_slot,
         get_preflight_results=get_preflight_results,
         get_degraded=get_degraded,
         update_failed_event=update_failed_event,

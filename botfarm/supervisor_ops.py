@@ -1194,6 +1194,147 @@ Note: The supervisor handles status transitions automatically — do not move th
             )
 
     # ------------------------------------------------------------------
+    # Add slot
+    # ------------------------------------------------------------------
+
+    def request_add_slot(self, project: str) -> None:
+        """Thread-safe request to add a slot (called from dashboard)."""
+        with self._add_slot_lock:
+            self._add_slot_requests.append(project)
+        self._wake_event.set()
+
+    def _handle_add_slot_requests(self) -> None:
+        """Drain pending add-slot requests and execute each."""
+        with self._add_slot_lock:
+            requests = list(self._add_slot_requests)
+            self._add_slot_requests.clear()
+        for project_name in requests:
+            try:
+                self.add_slot(project_name)
+            except Exception:
+                logger.exception(
+                    "Failed to add slot for project %s", project_name,
+                )
+
+    def add_slot(self, project_name: str) -> int:
+        """Add a new slot to a running project.
+
+        Creates a git worktree, registers the slot with SlotManager,
+        persists to config.yaml, and updates in-memory config.
+
+        Returns the new slot_id.
+
+        Raises ``ValueError`` if the project is not found.
+        Raises ``RuntimeError`` if worktree creation fails.
+        """
+        from botfarm.config import write_structural_config_updates
+
+        project_cfg = self._projects.get(project_name)
+        if project_cfg is None:
+            raise ValueError(f"Project '{project_name}' not found")
+
+        # Auto-pick slot_id: max(existing) + 1
+        existing_ids = [
+            s.slot_id
+            for s in self._slot_manager.all_slots()
+            if s.project == project_name
+        ]
+        new_slot_id = max(existing_ids) + 1 if existing_ids else 1
+
+        worktree_path = self._slot_worktree_cwd(project_cfg, new_slot_id)
+
+        # Idempotency: if slot already exists, return success
+        if self._slot_manager.get_slot(project_name, new_slot_id) is not None:
+            logger.info(
+                "Slot %s/%d already exists — skipping add",
+                project_name, new_slot_id,
+            )
+            return new_slot_id
+
+        # Validate worktree path doesn't already exist
+        wt_path = Path(worktree_path)
+        if wt_path.exists():
+            raise RuntimeError(
+                f"Worktree path already exists: {worktree_path}"
+            )
+
+        # Validate parent dir is writable
+        parent = wt_path.parent
+        if not parent.exists() or not os.access(str(parent), os.W_OK):
+            raise RuntimeError(
+                f"Worktree parent directory is not writable: {parent}"
+            )
+
+        # Create git worktree
+        base_dir = project_cfg.base_dir
+        env = self._subprocess_env()
+        try:
+            subprocess.run(
+                ["git", "worktree", "add", "--detach", worktree_path, "origin/main"],
+                cwd=base_dir,
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            raise RuntimeError(
+                f"Failed to create git worktree: {exc.stderr.strip()}"
+            ) from exc
+
+        # Create placeholder branch in the new worktree
+        placeholder = self._slot_placeholder_branch(new_slot_id)
+        try:
+            subprocess.run(
+                ["git", "checkout", "-b", placeholder],
+                cwd=worktree_path,
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            logger.warning(
+                "Failed to create placeholder branch %s: %s",
+                placeholder, exc.stderr.strip(),
+            )
+
+        # Register with SlotManager
+        self._slot_manager.register_slot(project_name, new_slot_id)
+        self._slot_manager.save()
+
+        # Persist to config.yaml
+        config_path = self._config.source_path
+        if config_path:
+            updated_slots = project_cfg.slots + [new_slot_id]
+            write_structural_config_updates(
+                Path(config_path),
+                {"projects": [{"name": project_name, "slots": updated_slots}]},
+            )
+
+        # Update in-memory config
+        if new_slot_id not in project_cfg.slots:
+            project_cfg.slots.append(new_slot_id)
+
+        # Log event
+        insert_event(
+            self._conn,
+            event_type="slot_added",
+            detail=json.dumps({
+                "project": project_name,
+                "slot_id": new_slot_id,
+                "worktree": worktree_path,
+            }),
+        )
+        self._conn.commit()
+
+        logger.info(
+            "Added slot %s/%d with worktree at %s",
+            project_name, new_slot_id, worktree_path,
+        )
+        return new_slot_id
+
+    # ------------------------------------------------------------------
     # Resume paused slots (delegation)
     # ------------------------------------------------------------------
 
