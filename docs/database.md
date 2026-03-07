@@ -2,7 +2,7 @@
 
 Botfarm uses a single SQLite database (`~/.botfarm/botfarm.db`) in WAL mode with foreign keys enabled. Schema is versioned — migrations run automatically on startup (see `db.py`).
 
-Current schema version: **21**
+Current schema version: **28**
 
 ## Tables
 
@@ -225,7 +225,7 @@ botfarm/migrations/
   005_add_resets_at_7d.sql
   006_drop_cost_usd.sql
   ...
-  021_usage_api_audit.sql
+  028_usage_api_audit.sql
 ```
 
 Each file is executed exactly once, in order, with a commit after each step. The `schema_version` table tracks the last successfully applied migration. Fresh databases run all migrations sequentially; existing databases skip already-applied migrations.
@@ -249,5 +249,5 @@ Each file is executed exactly once, in order, with a commit after each step. The
 | 4 | `004_add_supervisor_heartbeat.sql` | Add `supervisor_heartbeat` to dispatch_state |
 | 5 | `005_add_resets_at_7d.sql` | Add `resets_at_7d` to usage_snapshots |
 | 6 | `006_drop_cost_usd.sql` | Drop `cost_usd` from tasks and stage_runs (always $0.00 on Max subscription) |
-| 7–20 | `007_*` – `020_*` | Various additions (queue entries, token usage, workflow definitions, ticket history, cleanup batches, etc.) |
-| 21 | `021_usage_api_audit.sql` | Add `usage_api_calls` and `usage_api_key_sessions` tables for usage API audit logging |
+| 7–27 | `007_*` – `027_*` | Various additions (queue entries, token usage, workflow definitions, ticket history, cleanup batches, merge conflict stage, codex usage snapshots, etc.) |
+| 28 | `028_usage_api_audit.sql` | Add `usage_api_calls` and `usage_api_key_sessions` tables for usage API audit logging |

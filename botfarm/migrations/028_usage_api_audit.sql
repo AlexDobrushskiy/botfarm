@@ -1,4 +1,4 @@
--- Migration 021: Add usage API audit log tables.
+-- Migration 028: Add usage API audit log tables.
 -- Tracks every usage API call attempt and per-key session lifecycle.
 
 CREATE TABLE usage_api_calls (

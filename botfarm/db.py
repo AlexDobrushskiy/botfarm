@@ -1349,7 +1349,7 @@ def upsert_usage_api_key_session(
         if new_consecutive >= 3 and old_status not in ("blocked", "replaced"):
             updates["status"] = "blocked"
             updates["blocked_at"] = now_iso
-        elif old_status == "active":
+        elif old_status not in ("blocked", "replaced"):
             updates["status"] = "erroring"
 
     set_clause = ", ".join(f"{col} = ?" for col in updates)
