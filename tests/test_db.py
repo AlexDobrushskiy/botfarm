@@ -2765,6 +2765,54 @@ class TestUpsertUsageApiKeySession:
         assert row["block_duration_seconds"] is not None
         assert row["block_duration_seconds"] > 0
 
+    def test_re_error_after_recovered_clears_stale_fields(self, conn):
+        t0 = "2026-03-07T10:00:00.000000Z"
+        upsert_usage_api_key_session(conn, token_fingerprint="fp1", success=True, now_iso=t0)
+        for i in range(3):
+            upsert_usage_api_key_session(
+                conn, token_fingerprint="fp1", success=False,
+                now_iso=f"2026-03-07T10:0{i+1}:00.000000Z",
+            )
+        t_recover = "2026-03-07T10:10:00.000000Z"
+        upsert_usage_api_key_session(conn, token_fingerprint="fp1", success=True, now_iso=t_recover)
+        conn.commit()
+        row = conn.execute("SELECT * FROM usage_api_key_sessions WHERE token_fingerprint = 'fp1'").fetchone()
+        assert row["status"] == "recovered"
+        assert row["unblocked_at"] == t_recover
+        assert row["block_duration_seconds"] is not None
+        # Now fail again — stale recovery fields should be cleared
+        upsert_usage_api_key_session(
+            conn, token_fingerprint="fp1", success=False,
+            now_iso="2026-03-07T10:20:00.000000Z",
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM usage_api_key_sessions WHERE token_fingerprint = 'fp1'").fetchone()
+        assert row["status"] == "erroring"
+        assert row["unblocked_at"] is None
+        assert row["block_duration_seconds"] is None
+
+    def test_replaced_after_recovered_preserves_block_duration(self, conn):
+        t0 = "2026-03-07T10:00:00.000000Z"
+        upsert_usage_api_key_session(conn, token_fingerprint="fp1", success=True, now_iso=t0)
+        for i in range(3):
+            upsert_usage_api_key_session(
+                conn, token_fingerprint="fp1", success=False,
+                now_iso=f"2026-03-07T10:0{i+1}:00.000000Z",
+            )
+        t_recover = "2026-03-07T10:10:00.000000Z"
+        upsert_usage_api_key_session(conn, token_fingerprint="fp1", success=True, now_iso=t_recover)
+        conn.commit()
+        row = conn.execute("SELECT * FROM usage_api_key_sessions WHERE token_fingerprint = 'fp1'").fetchone()
+        original_duration = row["block_duration_seconds"]
+        assert original_duration is not None
+        # Replace after recovery — should NOT overwrite block_duration_seconds
+        t_replace = "2026-03-07T11:00:00.000000Z"
+        mark_key_session_replaced(conn, token_fingerprint="fp1", replaced_at=t_replace)
+        conn.commit()
+        row = conn.execute("SELECT * FROM usage_api_key_sessions WHERE token_fingerprint = 'fp1'").fetchone()
+        assert row["status"] == "replaced"
+        assert row["block_duration_seconds"] == original_duration  # preserved from recovery
+
     def test_success_resets_consecutive_errors(self, conn):
         t = "2026-03-07T10:00:00.000000Z"
         upsert_usage_api_key_session(conn, token_fingerprint="fp1", success=True, now_iso=t)

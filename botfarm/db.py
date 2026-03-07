@@ -1346,6 +1346,9 @@ def upsert_usage_api_key_session(
         if row["first_error_at"] is None:
             updates["first_error_at"] = now_iso
         new_consecutive = updates["consecutive_errors"]
+        if old_status == "recovered":
+            updates["unblocked_at"] = None
+            updates["block_duration_seconds"] = None
         if new_consecutive >= 3 and old_status not in ("blocked", "replaced"):
             updates["status"] = "blocked"
             updates["blocked_at"] = now_iso
@@ -1372,12 +1375,12 @@ def mark_key_session_replaced(
         replaced_at = _now_iso()
 
     row = conn.execute(
-        "SELECT blocked_at, first_error_at FROM usage_api_key_sessions WHERE token_fingerprint = ?",
+        "SELECT status, blocked_at, first_error_at FROM usage_api_key_sessions WHERE token_fingerprint = ?",
         (token_fingerprint,),
     ).fetchone()
 
     block_duration = None
-    if row:
+    if row and row["status"] in ("blocked", "erroring"):
         ref = row["blocked_at"] or row["first_error_at"]
         if ref:
             try:
@@ -1387,10 +1390,16 @@ def mark_key_session_replaced(
             except (ValueError, TypeError):
                 pass
 
-    conn.execute(
-        "UPDATE usage_api_key_sessions SET status = 'replaced', replaced_at = ?, block_duration_seconds = ? WHERE token_fingerprint = ?",
-        (replaced_at, block_duration, token_fingerprint),
-    )
+    if block_duration is not None:
+        conn.execute(
+            "UPDATE usage_api_key_sessions SET status = 'replaced', replaced_at = ?, block_duration_seconds = ? WHERE token_fingerprint = ?",
+            (replaced_at, block_duration, token_fingerprint),
+        )
+    else:
+        conn.execute(
+            "UPDATE usage_api_key_sessions SET status = 'replaced', replaced_at = ? WHERE token_fingerprint = ?",
+            (replaced_at, token_fingerprint),
+        )
 
 
 def get_active_key_session(conn: sqlite3.Connection) -> sqlite3.Row | None:
@@ -1425,7 +1434,7 @@ def purge_old_usage_api_calls(
 ) -> None:
     """Delete usage API call rows older than the retention period."""
     conn.execute(
-        "DELETE FROM usage_api_calls WHERE created_at < datetime('now', ?)",
+        "DELETE FROM usage_api_calls WHERE created_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?)",
         (f"-{retention_days} days",),
     )
 
