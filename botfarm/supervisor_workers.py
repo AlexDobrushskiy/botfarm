@@ -1046,7 +1046,7 @@ class PauseResumeManager:
             if not self.is_ready_to_resume(slot, now):
                 continue
 
-            # Force-poll once so all resume decisions use fresh data
+            # Force-poll once so all resume decisions use fresh data.
             if not polled:
                 self._usage_poller.force_poll(self._conn, bypass_cooldown=True)
                 polled = True
