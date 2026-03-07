@@ -8,11 +8,14 @@ Tests cover:
 - Codex disabled skips invocation
 - Full review stage with mocked Claude + Codex
 - Fix loop triggered on Codex rejection
+- Parallel execution of Claude and Codex reviews (SMA-361)
 """
 
 from __future__ import annotations
 
 import subprocess
+import threading
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
@@ -379,8 +382,14 @@ class TestReviewStageDualReviewer:
     @patch("botfarm.worker_stages._run_codex_review")
     @patch("botfarm.worker_stages._invoke_claude")
     def test_claude_error_stops_pipeline(self, mock_claude, mock_codex, mock_submit, tmp_path):
-        """Claude error stops pipeline — Codex is not invoked."""
+        """Claude error stops pipeline — result is failure, no aggregate review."""
         mock_claude.return_value = _make_claude_result("Error", is_error=True)
+        mock_codex.return_value = StageResult(
+            stage="codex_review",
+            success=True,
+            codex_result=_make_codex_result("VERDICT: APPROVED"),
+            review_approved=True,
+        )
 
         result = _run_review(
             PR_URL, cwd=tmp_path, max_turns=10,
@@ -388,7 +397,8 @@ class TestReviewStageDualReviewer:
         )
 
         assert result.success is False
-        mock_codex.assert_not_called()
+        # In parallel mode, Codex runs concurrently so it is invoked,
+        # but its result is ignored when Claude errors.
         mock_submit.assert_not_called()
 
     @patch("botfarm.worker_stages._submit_aggregate_review")
@@ -629,8 +639,14 @@ class TestDBTemplateWithCodex:
     @patch("botfarm.worker_stages._run_codex_review")
     @patch("botfarm.worker_stages._invoke_claude")
     def test_claude_error_stops(self, mock_claude, mock_codex, mock_submit, tmp_path):
-        """DB template + Claude error → no Codex invocation."""
+        """DB template + Claude error → result is failure, no aggregate review."""
         mock_claude.return_value = _make_claude_result("Error", is_error=True)
+        mock_codex.return_value = StageResult(
+            stage="codex_review",
+            success=True,
+            codex_result=_make_codex_result("VERDICT: APPROVED"),
+            review_approved=True,
+        )
 
         result = _run_review(
             PR_URL, cwd=tmp_path, max_turns=10,
@@ -639,7 +655,8 @@ class TestDBTemplateWithCodex:
         )
 
         assert result.success is False
-        mock_codex.assert_not_called()
+        # In parallel mode, Codex runs concurrently so it is invoked,
+        # but its result is ignored when Claude errors.
         mock_submit.assert_not_called()
 
     @patch("botfarm.worker_stages._run_codex_review")
@@ -697,6 +714,91 @@ class TestDBTemplateWithCodex:
 
         assert result.success is True
         assert result.review_approved is True
+        assert result.codex_result is None
+        mock_submit.assert_called_once()
+        assert mock_submit.call_args.kwargs["codex_verdict"] == "error"
+
+
+# ---------------------------------------------------------------------------
+# Parallel execution tests (SMA-361)
+# ---------------------------------------------------------------------------
+
+
+class TestParallelReviewExecution:
+    """Verify Claude and Codex reviews run concurrently."""
+
+    @patch("botfarm.worker_stages._submit_aggregate_review")
+    @patch("botfarm.worker_stages._run_codex_review")
+    @patch("botfarm.worker_stages._invoke_claude")
+    def test_reviews_run_concurrently(self, mock_claude, mock_codex, mock_submit, tmp_path):
+        """Both reviews should overlap in time (run in parallel threads)."""
+        barrier = threading.Barrier(2, timeout=5)
+
+        def slow_claude(*args, **kwargs):
+            barrier.wait()  # wait until codex also starts
+            return _make_claude_result("VERDICT: APPROVED")
+
+        def slow_codex(*args, **kwargs):
+            barrier.wait()  # wait until claude also starts
+            return StageResult(
+                stage="codex_review",
+                success=True,
+                codex_result=_make_codex_result("VERDICT: APPROVED"),
+                review_approved=True,
+            )
+
+        mock_claude.side_effect = slow_claude
+        mock_codex.side_effect = slow_codex
+
+        result = _run_review(
+            PR_URL, cwd=tmp_path, max_turns=10,
+            codex_enabled=True,
+        )
+
+        # If execution were sequential, the barrier would timeout
+        assert result.success is True
+        assert result.review_approved is True
+        mock_claude.assert_called_once()
+        mock_codex.assert_called_once()
+
+    @patch("botfarm.worker_stages._submit_aggregate_review")
+    @patch("botfarm.worker_stages._run_codex_review")
+    @patch("botfarm.worker_stages._invoke_claude")
+    def test_both_fail_returns_claude_error(self, mock_claude, mock_codex, mock_submit, tmp_path):
+        """When both reviewers fail, Claude's error is reported."""
+        mock_claude.return_value = _make_claude_result("Error", is_error=True)
+        mock_codex.return_value = StageResult(
+            stage="codex_review",
+            success=False,
+            codex_result=_make_codex_result("Error", is_error=True),
+            error="Codex error",
+        )
+
+        result = _run_review(
+            PR_URL, cwd=tmp_path, max_turns=10,
+            codex_enabled=True,
+        )
+
+        assert result.success is False
+        assert result.claude_result is not None
+        assert result.claude_result.is_error is True
+        mock_submit.assert_not_called()
+
+    @patch("botfarm.worker_stages._submit_aggregate_review")
+    @patch("botfarm.worker_stages._run_codex_review")
+    @patch("botfarm.worker_stages._invoke_claude")
+    def test_codex_timeout_claude_succeeds(self, mock_claude, mock_codex, mock_submit, tmp_path):
+        """Codex timeout during parallel execution: Claude verdict stands."""
+        mock_claude.return_value = _make_claude_result("VERDICT: CHANGES_REQUESTED")
+        mock_codex.side_effect = TimeoutError("Codex timed out")
+
+        result = _run_review(
+            PR_URL, cwd=tmp_path, max_turns=10,
+            codex_enabled=True,
+        )
+
+        assert result.success is True
+        assert result.review_approved is False  # Claude's verdict
         assert result.codex_result is None
         mock_submit.assert_called_once()
         assert mock_submit.call_args.kwargs["codex_verdict"] == "error"
