@@ -96,6 +96,8 @@ function confirmStopSlot() {
 
 function addSlot(project) {
     if (!confirm("Add a new slot to project \"" + project + "\"?")) return;
+    var btns = document.querySelectorAll(".add-slot-btn");
+    btns.forEach(function(b) { b.disabled = true; });
     fetch("/api/slot/add", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
@@ -104,8 +106,10 @@ function addSlot(project) {
         if (!resp.ok) return resp.json().then(function(d) { throw new Error(d.error || "Request failed"); });
         return resp.json();
     }).then(function(data) {
+        btns.forEach(function(b) { b.disabled = false; });
         showToast("Slot addition requested for " + project, "success");
     }).catch(function(err) {
+        btns.forEach(function(b) { b.disabled = false; });
         showToast("Failed: " + err.message, "error");
     });
 }
