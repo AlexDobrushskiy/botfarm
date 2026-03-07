@@ -10,6 +10,7 @@ on orchestration logic.
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 import os
 import re
@@ -380,64 +381,35 @@ def _run_review(
 ) -> StageResult:
     """REVIEW stage — Claude Code reviews the PR and posts comments.
 
-    When *codex_enabled* is ``True``, runs a sequential dual-reviewer
-    flow: Claude first, then Codex.  Neither reviewer submits
-    ``gh pr review`` — Botfarm aggregates verdicts and submits one
-    final review.
+    When *codex_enabled* is ``True``, runs both reviewers in parallel
+    using a thread pool.  Neither reviewer submits ``gh pr review`` —
+    Botfarm aggregates verdicts and submits one final review.
     """
     owner, repo, number = _parse_pr_url(pr_url)
 
-    # --- DB-driven template path ---
-    if stage_tpl is not None:
-        # When codex is enabled, append multi-reviewer instructions to the
-        # rendered template prompt so Claude does NOT submit gh pr review.
-        prompt_vars = {
-            "pr_url": pr_url,
-            "pr_number": number,
-            "owner": owner,
-            "repo": repo,
-            "worktree_path": str(cwd),
-        }
-        if codex_enabled:
-            # NOTE: This path builds prompt_vars manually instead of going
-            # through _run_claude_stage(), so worktree_path (and any future
-            # vars injected there) must be added explicitly above.
-            # Run Claude via the DB template with the multi-reviewer note
-            prompt = render_prompt(stage_tpl, **prompt_vars)
-            prompt += (
-                "\n\nDo NOT submit a final review via 'gh pr review'. Only post inline "
-                "comments and output your verdict marker."
-            )
-            claude_result = _invoke_claude(
-                prompt, cwd=cwd, max_turns=max_turns, log_file=log_file,
-                env=env, on_context_fill=on_context_fill,
-            )
-            if claude_result.is_error:
-                return StageResult(
-                    stage=stage_tpl.name,
-                    success=False,
-                    claude_result=claude_result,
-                    error=f"Claude reported error: {claude_result.result_text[:RESULT_TRUNCATE_CHARS]}",
-                )
-            claude_approved = _parse_review_approved(claude_result.result_text)
-            # Continue to Codex section below
-        else:
-            # Single-reviewer mode with DB template — unchanged behaviour
+    # --- Single-reviewer mode (no Codex) ---
+    if not codex_enabled:
+        if stage_tpl is not None:
+            prompt_vars = {
+                "pr_url": pr_url,
+                "pr_number": number,
+                "owner": owner,
+                "repo": repo,
+                "worktree_path": str(cwd),
+            }
             return _run_claude_stage(
                 stage_tpl, cwd=cwd, max_turns=max_turns,
                 prompt_vars=prompt_vars,
                 log_file=log_file, env=env, on_context_fill=on_context_fill,
             )
-    else:
-        # --- Legacy fallback ---
+        # Legacy fallback
         prompt = _build_claude_review_prompt(
-            pr_url, owner, repo, number, codex_enabled=codex_enabled,
+            pr_url, owner, repo, number, codex_enabled=False,
         )
         claude_result = _invoke_claude(
             prompt, cwd=cwd, max_turns=max_turns, log_file=log_file,
             env=env, on_context_fill=on_context_fill,
         )
-
         if claude_result.is_error:
             return StageResult(
                 stage="review",
@@ -445,11 +417,7 @@ def _run_review(
                 claude_result=claude_result,
                 error=f"Claude reported error: {claude_result.result_text[:RESULT_TRUNCATE_CHARS]}",
             )
-
         claude_approved = _parse_review_approved(claude_result.result_text)
-
-    # --- Single-reviewer mode: return immediately ---
-    if not codex_enabled:
         return StageResult(
             stage="review",
             success=True,
@@ -458,13 +426,34 @@ def _run_review(
             claude_review_approved=claude_approved,
         )
 
-    # --- Multi-review mode: run Codex sequentially ---
-    codex_result_obj: CodexResult | None = None
-    codex_approved: bool | None = None
-    codex_verdict_str = "skipped"
+    # --- Multi-review mode: run Claude and Codex in parallel ---
 
-    try:
-        codex_stage_result = _run_codex_review(
+    # Build the Claude review callable
+    def _claude_review() -> ClaudeResult:
+        if stage_tpl is not None:
+            prompt_vars = {
+                "pr_url": pr_url,
+                "pr_number": number,
+                "owner": owner,
+                "repo": repo,
+                "worktree_path": str(cwd),
+            }
+            prompt = render_prompt(stage_tpl, **prompt_vars)
+            prompt += (
+                "\n\nDo NOT submit a final review via 'gh pr review'. Only post inline "
+                "comments and output your verdict marker."
+            )
+        else:
+            prompt = _build_claude_review_prompt(
+                pr_url, owner, repo, number, codex_enabled=True,
+            )
+        return _invoke_claude(
+            prompt, cwd=cwd, max_turns=max_turns, log_file=log_file,
+            env=env, on_context_fill=on_context_fill,
+        )
+
+    def _codex_review() -> StageResult:
+        return _run_codex_review(
             pr_url,
             cwd=cwd,
             log_file=codex_log_file,
@@ -473,21 +462,54 @@ def _run_review(
             codex_model=codex_model,
             codex_reasoning_effort=codex_reasoning_effort,
         )
-        codex_result_obj = codex_stage_result.codex_result
 
-        if codex_stage_result.success:
-            codex_approved = codex_stage_result.review_approved
-            codex_verdict_str = "approved" if codex_approved else "changes_requested"
-        else:
-            # Codex errored — fail-open, use Claude-only verdict
-            logger.warning(
-                "Codex review failed (fail-open): %s",
-                codex_stage_result.error or "unknown error",
+    # Submit both reviews concurrently — both are subprocess calls so
+    # threading works well (GIL is not an issue).
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+    try:
+        claude_future = executor.submit(_claude_review)
+        codex_future = executor.submit(_codex_review)
+
+        # Wait for Claude (required)
+        claude_result = claude_future.result()
+
+        # Short-circuit on Claude error — don't block on Codex
+        stage_name = stage_tpl.name if stage_tpl is not None else "review"
+        if claude_result.is_error:
+            # Best-effort cancel — won't interrupt an already-running future
+            codex_future.cancel()
+            return StageResult(
+                stage=stage_name,
+                success=False,
+                claude_result=claude_result,
+                error=f"Claude reported error: {claude_result.result_text[:RESULT_TRUNCATE_CHARS]}",
             )
+
+        # Process Codex result (fail-open)
+        codex_result_obj: CodexResult | None = None
+        codex_approved: bool | None = None
+        codex_verdict_str = "skipped"
+
+        try:
+            codex_stage_result = codex_future.result()
+            codex_result_obj = codex_stage_result.codex_result
+
+            if codex_stage_result.success:
+                codex_approved = codex_stage_result.review_approved
+                codex_verdict_str = "approved" if codex_approved else "changes_requested"
+            else:
+                logger.warning(
+                    "Codex review failed (fail-open): %s",
+                    codex_stage_result.error or "unknown error",
+                )
+                codex_verdict_str = "error"
+        except Exception:
+            logger.warning("Codex review raised exception (fail-open)", exc_info=True)
             codex_verdict_str = "error"
-    except Exception:
-        logger.warning("Codex review raised exception (fail-open)", exc_info=True)
-        codex_verdict_str = "error"
+    finally:
+        executor.shutdown(wait=False)
+
+    claude_approved = _parse_review_approved(claude_result.result_text)
 
     # Merge verdicts
     claude_verdict_str = "approved" if claude_approved else "changes_requested"
