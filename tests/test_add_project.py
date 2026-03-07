@@ -2,7 +2,7 @@
 
 import subprocess
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
@@ -10,11 +10,11 @@ from click.testing import CliRunner
 
 from botfarm.cli import (
     _append_project_to_config,
+    _extract_repo_name,
     _run_readiness_checks,
-    _validate_project_dir,
-    _validate_worktree_parent,
     main,
 )
+from botfarm.linear import LinearAPIError
 
 
 @pytest.fixture()
@@ -48,74 +48,59 @@ def git_repo(tmp_path):
     return repo
 
 
-# ---------------------------------------------------------------------------
-# _validate_project_dir
-# ---------------------------------------------------------------------------
+@pytest.fixture(autouse=True)
+def _isolate_env(monkeypatch, tmp_path):
+    """Prevent load_dotenv from loading real env files."""
+    monkeypatch.setattr("botfarm.cli.ENV_FILE_PATH", tmp_path / "nonexistent.env")
 
 
-class TestValidateProjectDir:
-    def test_nonexistent_dir(self, tmp_path):
-        errors = _validate_project_dir(str(tmp_path / "nonexistent"))
-        assert len(errors) == 1
-        assert "does not exist" in errors[0]
+def _make_mock_run():
+    """Create a subprocess.run mock that simulates git clone and worktree add."""
 
-    def test_not_a_git_repo(self, tmp_path):
-        d = tmp_path / "plain"
-        d.mkdir()
-        errors = _validate_project_dir(str(d))
-        assert len(errors) == 1
-        assert "Not a git repository" in errors[0]
+    def mock_run(cmd, **kwargs):
+        result = MagicMock()
+        result.returncode = 0
+        result.stderr = ""
+        result.stdout = ""
+        if cmd[0] == "git" and "clone" in cmd:
+            target = Path(cmd[-1])
+            target.mkdir(parents=True, exist_ok=True)
+            (target / ".git").mkdir(exist_ok=True)
+        elif cmd[0] == "git" and "worktree" in cmd and "add" in cmd:
+            for i, arg in enumerate(cmd):
+                if arg == "add":
+                    path_idx = i + 3  # add -b <branch> <path>
+                    if path_idx < len(cmd):
+                        Path(cmd[path_idx]).mkdir(parents=True, exist_ok=True)
+                    break
+        return result
 
-    def test_git_repo_remote_unreachable(self, tmp_path):
-        # Create a repo with a .git dir and mock ls-remote to fail
-        repo = tmp_path / "unreachable-repo"
-        repo.mkdir()
-        (repo / ".git").mkdir()
-        with patch("botfarm.cli.subprocess.run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess(
-                args=[], returncode=128, stdout="",
-                stderr="fatal: could not read from remote repository",
-            )
-            errors = _validate_project_dir(str(repo))
-        assert len(errors) == 1
-        assert "not reachable" in errors[0]
-
-    def test_valid_git_repo(self, tmp_path):
-        """A valid repo with reachable remote returns no errors."""
-        with patch("botfarm.cli.subprocess.run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess(
-                args=[], returncode=0, stdout="", stderr=""
-            )
-            repo = tmp_path / "good-repo"
-            repo.mkdir()
-            (repo / ".git").mkdir()
-            errors = _validate_project_dir(str(repo))
-            assert errors == []
+    return mock_run
 
 
 # ---------------------------------------------------------------------------
-# _validate_worktree_parent
+# _extract_repo_name
 # ---------------------------------------------------------------------------
 
 
-class TestValidateWorktreeParent:
-    def test_parent_exists_and_writable(self, tmp_path):
-        repo = tmp_path / "my-repo"
-        repo.mkdir()
-        errors = _validate_worktree_parent(str(repo))
-        assert errors == []
+class TestExtractRepoName:
+    def test_ssh_url(self):
+        assert _extract_repo_name("git@github.com:user/my-app.git") == "my-app"
 
-    def test_parent_not_writable(self, tmp_path):
-        repo = tmp_path / "subdir" / "my-repo"
-        repo.mkdir(parents=True)
-        parent = repo.parent
-        parent.chmod(0o555)
-        try:
-            errors = _validate_worktree_parent(str(repo))
-            assert len(errors) == 1
-            assert "not writable" in errors[0]
-        finally:
-            parent.chmod(0o755)
+    def test_https_url(self):
+        assert _extract_repo_name("https://github.com/user/my-app.git") == "my-app"
+
+    def test_no_git_suffix(self):
+        assert _extract_repo_name("https://github.com/user/my-app") == "my-app"
+
+    def test_trailing_slash(self):
+        assert _extract_repo_name("https://github.com/user/my-app.git/") == "my-app"
+
+    def test_ssh_no_git_suffix(self):
+        assert _extract_repo_name("git@github.com:org/repo-name") == "repo-name"
+
+    def test_plain_name(self):
+        assert _extract_repo_name("my-repo") == "my-repo"
 
 
 # ---------------------------------------------------------------------------
@@ -260,187 +245,262 @@ class TestAddProjectCommand:
         assert result.exit_code != 0
         assert "Config file not found" in result.output
 
-    def test_duplicate_project_name(self, runner, config_dir):
+    def test_duplicate_project_name(self, runner, config_dir, monkeypatch):
         _, config_path = config_dir
-        # Input: base_dir, name (existing-proj), linear_team, etc.
+        monkeypatch.delenv("LINEAR_API_KEY", raising=False)
         result = runner.invoke(
             main,
             ["add-project", "--config", str(config_path)],
-            input="/tmp/somedir\nexisting-proj\n",
+            input="git@github.com:user/existing-proj.git\nexisting-proj\n",
         )
         assert result.exit_code != 0
         assert "already exists" in result.output
 
-    def test_successful_add(self, runner, config_dir, git_repo):
+    def test_full_flow_with_linear_api(self, runner, config_dir, tmp_path, monkeypatch):
+        """Test the full interactive flow with Linear API team/project selection."""
         _, config_path = config_dir
+        monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_DIR", tmp_path / ".botfarm")
+        monkeypatch.setenv("LINEAR_API_KEY", "test-key")
 
-        # Mock git validation to pass
-        with patch("botfarm.cli._validate_project_dir", return_value=[]), \
-             patch("botfarm.cli._validate_worktree_parent", return_value=[]), \
-             patch("botfarm.cli._run_readiness_checks", return_value=[
-                 ("ok", "CLAUDE.md found"),
-             ]):
-            # Input: base_dir, name, linear_team, worktree_prefix, slots, linear_project
-            input_text = (
-                f"{git_repo}\n"  # base_dir
-                "my-repo\n"       # name (accept default)
-                "SMA\n"          # linear_team
-                "\n"             # worktree_prefix (accept default)
-                "1,2\n"          # slots
-                "\n"             # linear_project (skip)
-            )
+        mock_client = MagicMock()
+        mock_client.list_teams.return_value = [
+            {"id": "t1", "name": "Engineering", "key": "ENG"},
+            {"id": "t2", "name": "Smart AI Coach", "key": "SMA"},
+        ]
+        mock_client.list_team_projects.return_value = [
+            {"id": "p1", "name": "Bot farm"},
+            {"id": "p2", "name": "Other project"},
+        ]
+
+        with patch("botfarm.cli.subprocess.run", side_effect=_make_mock_run()), \
+             patch("botfarm.cli.LinearClient", return_value=mock_client):
             result = runner.invoke(
                 main,
                 ["add-project", "--config", str(config_path)],
-                input=input_text,
+                # repo URL, name, team choice, project choice, slots, confirm
+                input="git@github.com:user/my-app.git\nmy-app\n2\n1\n2\ny\n",
             )
 
-        assert result.exit_code == 0, f"Output: {result.output}"
-        assert "added to" in result.output
+        assert result.exit_code == 0, result.output
+        assert "added successfully" in result.output
 
-        # Verify config was updated
-        data = yaml.safe_load(config_path.read_text())
-        assert len(data["projects"]) == 2
-        new_proj = data["projects"][1]
-        assert new_proj["name"] == "my-repo"
-        assert new_proj["linear_team"] == "SMA"
-        assert new_proj["slots"] == [1, 2]
+        config = yaml.safe_load(config_path.read_text())
+        added = next(p for p in config["projects"] if p["name"] == "my-app")
+        assert added["linear_team"] == "SMA"
+        assert added["linear_project"] == "Bot farm"
+        assert added["slots"] == [1, 2]
 
-    def test_invalid_slots_format(self, runner, config_dir):
+    def test_flow_without_linear_key(self, runner, config_dir, tmp_path, monkeypatch):
+        """Test add-project when LINEAR_API_KEY is not set."""
         _, config_path = config_dir
-        input_text = (
-            "/tmp/somedir\n"
-            "new-proj\n"
-            "SMA\n"
-            "\n"
-            "a,b,c\n"  # invalid slots
-            "\n"
-        )
-        result = runner.invoke(
-            main,
-            ["add-project", "--config", str(config_path)],
-            input=input_text,
-        )
-        assert result.exit_code != 0
-        assert "Invalid slot IDs" in result.output
+        monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_DIR", tmp_path / ".botfarm")
+        monkeypatch.delenv("LINEAR_API_KEY", raising=False)
 
-    def test_duplicate_slot_ids(self, runner, config_dir):
-        _, config_path = config_dir
-        input_text = (
-            "/tmp/somedir\n"
-            "new-proj\n"
-            "SMA\n"
-            "\n"
-            "1,1,2\n"  # duplicate slot 1
-            "\n"
-        )
-        result = runner.invoke(
-            main,
-            ["add-project", "--config", str(config_path)],
-            input=input_text,
-        )
-        assert result.exit_code != 0
-        assert "unique" in result.output
-
-    def test_validation_fails_user_aborts(self, runner, config_dir):
-        _, config_path = config_dir
-        with patch("botfarm.cli._validate_project_dir",
-                    return_value=["Not a git repo"]), \
-             patch("botfarm.cli._validate_worktree_parent", return_value=[]):
-            input_text = (
-                "/tmp/somedir\n"
-                "new-proj\n"
-                "SMA\n"
-                "\n"
-                "1\n"
-                "\n"
-                "n\n"  # abort on validation failure
-            )
+        with patch("botfarm.cli.subprocess.run", side_effect=_make_mock_run()):
             result = runner.invoke(
                 main,
                 ["add-project", "--config", str(config_path)],
-                input=input_text,
+                # repo URL, name, team key (manual), project filter (manual), slots, confirm
+                input="git@github.com:user/my-app.git\nmy-app\nSMA\n\n1\ny\n",
             )
+
+        assert result.exit_code == 0, result.output
+        assert "added successfully" in result.output
+
+        config = yaml.safe_load(config_path.read_text())
+        added = next(p for p in config["projects"] if p["name"] == "my-app")
+        assert added["linear_team"] == "SMA"
+        assert added["slots"] == [1]
+
+    def test_aborted_by_user(self, runner, config_dir, tmp_path, monkeypatch):
+        """Test that the user can abort before proceeding."""
+        _, config_path = config_dir
+        monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_DIR", tmp_path / ".botfarm")
+        monkeypatch.delenv("LINEAR_API_KEY", raising=False)
+
+        result = runner.invoke(
+            main,
+            ["add-project", "--config", str(config_path)],
+            input="git@github.com:user/my-app.git\nmy-app\nSMA\n\n1\nn\n",
+        )
 
         assert result.exit_code == 0
         assert "Aborted" in result.output
-        # Config should not be modified
-        data = yaml.safe_load(config_path.read_text())
-        assert len(data["projects"]) == 1
 
-    def test_validation_fails_user_continues(self, runner, config_dir):
+    def test_git_clone_failure(self, runner, config_dir, tmp_path, monkeypatch):
+        """Test error handling when git clone fails."""
         _, config_path = config_dir
-        with patch("botfarm.cli._validate_project_dir",
-                    return_value=["Not a git repo"]), \
-             patch("botfarm.cli._validate_worktree_parent", return_value=[]), \
-             patch("botfarm.cli._run_readiness_checks", return_value=[]):
-            input_text = (
-                "/tmp/somedir\n"
-                "new-proj\n"
-                "SMA\n"
-                "\n"
-                "1\n"
-                "\n"
-                "y\n"  # continue despite validation failure
-            )
+        monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_DIR", tmp_path / ".botfarm")
+        monkeypatch.delenv("LINEAR_API_KEY", raising=False)
+
+        def fail_clone(cmd, **kwargs):
+            result = MagicMock()
+            if "clone" in cmd:
+                result.returncode = 128
+                result.stderr = "fatal: repository not found"
+            else:
+                result.returncode = 0
+                result.stderr = ""
+            return result
+
+        with patch("botfarm.cli.subprocess.run", side_effect=fail_clone):
             result = runner.invoke(
                 main,
                 ["add-project", "--config", str(config_path)],
-                input=input_text,
+                input="git@github.com:user/nonexistent.git\nmy-app\nSMA\n\n1\ny\n",
             )
 
-        assert result.exit_code == 0
-        assert "added to" in result.output
-        data = yaml.safe_load(config_path.read_text())
-        assert len(data["projects"]) == 2
+        assert result.exit_code != 0
+        assert "git clone failed" in result.output
 
-    def test_shows_warnings(self, runner, config_dir):
+    def test_auto_suggests_name_from_url(self, runner, config_dir, tmp_path, monkeypatch):
+        """Test that project name is auto-suggested from repo URL."""
         _, config_path = config_dir
-        with patch("botfarm.cli._validate_project_dir", return_value=[]), \
-             patch("botfarm.cli._validate_worktree_parent", return_value=[]), \
+        monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_DIR", tmp_path / ".botfarm")
+        monkeypatch.delenv("LINEAR_API_KEY", raising=False)
+
+        with patch("botfarm.cli.subprocess.run", side_effect=_make_mock_run()):
+            result = runner.invoke(
+                main,
+                ["add-project", "--config", str(config_path)],
+                # Accept the default name by pressing enter
+                input="git@github.com:user/cool-repo.git\n\nSMA\n\n1\ny\n",
+            )
+
+        assert result.exit_code == 0, result.output
+        config = yaml.safe_load(config_path.read_text())
+        project_names = [p["name"] for p in config["projects"]]
+        assert "cool-repo" in project_names
+
+    def test_multiple_slots_creates_worktrees(self, runner, config_dir, tmp_path, monkeypatch):
+        """Test that multiple worktrees are created for multiple slots."""
+        _, config_path = config_dir
+        monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_DIR", tmp_path / ".botfarm")
+        monkeypatch.delenv("LINEAR_API_KEY", raising=False)
+
+        worktree_cmds = []
+        original_mock = _make_mock_run()
+
+        def tracking_run(cmd, **kwargs):
+            if isinstance(cmd, list) and "worktree" in cmd:
+                worktree_cmds.append(cmd)
+            return original_mock(cmd, **kwargs)
+
+        with patch("botfarm.cli.subprocess.run", side_effect=tracking_run):
+            result = runner.invoke(
+                main,
+                ["add-project", "--config", str(config_path)],
+                input="git@github.com:user/multi.git\nmulti\nSMA\n\n3\ny\n",
+            )
+
+        assert result.exit_code == 0, result.output
+        assert len(worktree_cmds) == 3
+
+        config = yaml.safe_load(config_path.read_text())
+        added = next(p for p in config["projects"] if p["name"] == "multi")
+        assert added["slots"] == [1, 2, 3]
+
+    def test_linear_api_failure_falls_back_to_manual(
+        self, runner, config_dir, tmp_path, monkeypatch
+    ):
+        """Test that Linear API failure falls back to manual input."""
+        _, config_path = config_dir
+        monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_DIR", tmp_path / ".botfarm")
+        monkeypatch.setenv("LINEAR_API_KEY", "test-key")
+
+        mock_client = MagicMock()
+        mock_client.list_teams.side_effect = LinearAPIError("connection failed")
+
+        with patch("botfarm.cli.subprocess.run", side_effect=_make_mock_run()), \
+             patch("botfarm.cli.LinearClient", return_value=mock_client):
+            result = runner.invoke(
+                main,
+                ["add-project", "--config", str(config_path)],
+                input="git@github.com:user/my-app.git\nmy-app\nSMA\n\n1\ny\n",
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "added successfully" in result.output
+
+        config = yaml.safe_load(config_path.read_text())
+        added = next(p for p in config["projects"] if p["name"] == "my-app")
+        assert added["linear_team"] == "SMA"
+
+    def test_readiness_checks_run_after_clone(
+        self, runner, config_dir, tmp_path, monkeypatch
+    ):
+        """Test that readiness checks run after cloning."""
+        _, config_path = config_dir
+        monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_DIR", tmp_path / ".botfarm")
+        monkeypatch.delenv("LINEAR_API_KEY", raising=False)
+
+        with patch("botfarm.cli.subprocess.run", side_effect=_make_mock_run()), \
              patch("botfarm.cli._run_readiness_checks", return_value=[
                  ("warning", "No CLAUDE.md"),
-             ]):
-            input_text = (
-                "/tmp/somedir\n"
-                "new-proj\n"
-                "SMA\n"
-                "\n"
-                "1\n"
-                "\n"
-            )
+             ]) as mock_readiness:
             result = runner.invoke(
                 main,
                 ["add-project", "--config", str(config_path)],
-                input=input_text,
+                input="git@github.com:user/my-app.git\nmy-app\nSMA\n\n1\ny\n",
             )
 
-        assert result.exit_code == 0
+        assert result.exit_code == 0, result.output
+        assert mock_readiness.called
         assert "WARN" in result.output
-        assert "1 warning" in result.output
 
-    def test_suggests_init_claude_md(self, runner, config_dir, tmp_path):
+    def test_partial_worktree_failure_cleanup(
+        self, runner, config_dir, tmp_path, monkeypatch
+    ):
+        """Test cleanup when worktree #2 of 3 fails — repo and worktree #1 are removed."""
         _, config_path = config_dir
-        base = tmp_path / "no-claude-md"
-        base.mkdir()
-        with patch("botfarm.cli._validate_project_dir", return_value=[]), \
-             patch("botfarm.cli._validate_worktree_parent", return_value=[]), \
-             patch("botfarm.cli._run_readiness_checks", return_value=[
-                 ("warning", "No CLAUDE.md"),
-             ]):
-            input_text = (
-                f"{base}\n"
-                "no-claude-md\n"
-                "SMA\n"
-                "\n"
-                "1\n"
-                "\n"
-            )
+        monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_DIR", tmp_path / ".botfarm")
+        monkeypatch.delenv("LINEAR_API_KEY", raising=False)
+
+        worktree_call_count = 0
+        base_mock = _make_mock_run()
+
+        def fail_second_worktree(cmd, **kwargs):
+            nonlocal worktree_call_count
+            if isinstance(cmd, list) and "worktree" in cmd and "add" in cmd:
+                worktree_call_count += 1
+                if worktree_call_count == 2:
+                    result = MagicMock()
+                    result.returncode = 1
+                    result.stderr = "fatal: worktree error"
+                    result.stdout = ""
+                    return result
+            return base_mock(cmd, **kwargs)
+
+        with patch("botfarm.cli.subprocess.run", side_effect=fail_second_worktree):
             result = runner.invoke(
                 main,
                 ["add-project", "--config", str(config_path)],
-                input=input_text,
+                input="git@github.com:user/cleanup-test.git\ncleanup-test\nSMA\n\n3\ny\n",
             )
 
-        assert result.exit_code == 0
+        assert result.exit_code != 0
+        # The projects dir was freshly created, so the entire dir should be removed
+        projects_dir = tmp_path / ".botfarm" / "projects" / "cleanup-test"
+        assert not projects_dir.exists(), (
+            f"Expected {projects_dir} to be cleaned up after partial worktree failure"
+        )
+        # Config should NOT have the failed project
+        config = yaml.safe_load(config_path.read_text())
+        project_names = [p["name"] for p in config["projects"]]
+        assert "cleanup-test" not in project_names
+
+    def test_suggests_init_claude_md(self, runner, config_dir, tmp_path, monkeypatch):
+        """Test that init-claude-md is suggested when CLAUDE.md is missing."""
+        _, config_path = config_dir
+        monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_DIR", tmp_path / ".botfarm")
+        monkeypatch.delenv("LINEAR_API_KEY", raising=False)
+
+        with patch("botfarm.cli.subprocess.run", side_effect=_make_mock_run()):
+            result = runner.invoke(
+                main,
+                ["add-project", "--config", str(config_path)],
+                input="git@github.com:user/my-app.git\nmy-app\nSMA\n\n1\ny\n",
+            )
+
+        assert result.exit_code == 0, result.output
         assert "init-claude-md" in result.output
