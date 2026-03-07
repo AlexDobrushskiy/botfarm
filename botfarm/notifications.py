@@ -233,6 +233,23 @@ class Notifier:
             f"Top concerns: {brief_list}. Details: {linear_ticket_url}",
         )
 
+    def notify_refactoring_due(
+        self,
+        *,
+        ticket_id: str,
+        ticket_url: str,
+    ) -> None:
+        """Notify that a refactoring analysis ticket was created in Backlog.
+
+        Sent only for ticket-count-triggered tickets, since they go to
+        Backlog and need human action to move to Todo for dispatch.
+        """
+        lines = [
+            f"*Refactoring analysis due* — {ticket_id} created in Backlog",
+            f"Move to Todo when ready for dispatch: {ticket_url}",
+        ]
+        self._send("refactoring_due", "\n".join(lines))
+
     def notify_human_blocker(
         self,
         *,

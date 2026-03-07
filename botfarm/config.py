@@ -101,6 +101,7 @@ agents:
 # refactoring_analysis:
 #   enabled: true
 #   cadence_days: 14
+#   cadence_tickets: 20  # Also trigger after N completed tickets (0 = disabled)
 #   linear_label: "Refactoring Analysis"
 #   priority: 4  # Low priority — doesn't preempt feature work
 
@@ -209,6 +210,7 @@ class LoggingConfig:
 class RefactoringAnalysisConfig:
     enabled: bool = False
     cadence_days: int = 14
+    cadence_tickets: int = 20  # 0 = disabled
     linear_label: str = "Refactoring Analysis"
     priority: int = 4  # Low priority
 
@@ -470,6 +472,8 @@ def _validate_config(config: BotfarmConfig) -> None:
         raise ConfigError("refactoring_analysis.linear_label must not be empty")
     if ra.cadence_days < 1:
         raise ConfigError("refactoring_analysis.cadence_days must be at least 1")
+    if ra.cadence_tickets < 0:
+        raise ConfigError("refactoring_analysis.cadence_tickets must be at least 0")
     if ra.priority not in (0, 1, 2, 3, 4):
         raise ConfigError(
             "refactoring_analysis.priority must be 0-4 "
@@ -672,6 +676,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
     refactoring_analysis = RefactoringAnalysisConfig(
         enabled=_parse_bool(ra_data, "enabled", False, section="refactoring_analysis"),
         cadence_days=int(ra_data.get("cadence_days", 14)),
+        cadence_tickets=int(ra_data.get("cadence_tickets", 20)),
         linear_label=str(ra_data.get("linear_label", "Refactoring Analysis")).strip(),
         priority=int(ra_data.get("priority", 4)),
     )
