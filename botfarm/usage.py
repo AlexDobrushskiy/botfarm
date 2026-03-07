@@ -18,6 +18,8 @@ import httpx
 from botfarm.credentials import USAGE_API_TIMEOUT, CredentialManager, fetch_usage
 from botfarm.db import insert_usage_snapshot
 
+_async_sleep = asyncio.sleep  # local alias for testability
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_POLL_INTERVAL = 300  # seconds
@@ -321,7 +323,7 @@ class UsagePoller:
                         exc,
                         delay,
                     )
-                    await asyncio.sleep(delay)
+                    await _async_sleep(delay)
                 else:
                     logger.warning(
                         "Transient error on usage API (attempt %d/%d): %s — "

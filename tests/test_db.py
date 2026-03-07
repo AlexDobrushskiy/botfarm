@@ -8,12 +8,14 @@ from pathlib import Path
 import pytest
 
 from botfarm.db import (
+    DEFAULT_RETENTION_DAYS,
     SCHEMA_VERSION,
     SchemaVersionError,
     _discover_migrations,
     clear_slot_stage,
     count_tasks,
     count_ticket_history,
+    get_active_key_session,
     get_codex_review_stats,
     get_distinct_projects,
     get_events,
@@ -26,11 +28,13 @@ from botfarm.db import (
     get_task_history,
     get_ticket_history_entry,
     get_ticket_history_list,
+    get_usage_api_call_history,
     get_usage_snapshots,
     init_db,
     insert_event,
     insert_stage_run,
     insert_task,
+    insert_usage_api_call,
     insert_usage_snapshot,
     is_extra_usage_active,
     load_all_project_pause_states,
@@ -38,6 +42,8 @@ from botfarm.db import (
     load_capacity_state,
     load_dispatch_state,
     mark_deleted_from_linear,
+    mark_key_session_replaced,
+    purge_old_usage_api_calls,
     resolve_db_path,
     save_capacity_state,
     save_dispatch_state,
@@ -47,6 +53,7 @@ from botfarm.db import (
     update_task,
     upsert_slot,
     upsert_ticket_history,
+    upsert_usage_api_key_session,
 )
 
 
@@ -70,7 +77,7 @@ class TestInitDb:
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()
         }
-        assert tables >= {"tasks", "stage_runs", "usage_snapshots", "task_events", "schema_version", "slots", "dispatch_state", "queue_entries", "pipeline_templates", "stage_templates", "stage_loops", "ticket_history"}
+        assert tables >= {"tasks", "stage_runs", "usage_snapshots", "task_events", "schema_version", "slots", "dispatch_state", "queue_entries", "pipeline_templates", "stage_templates", "stage_loops", "ticket_history", "usage_api_calls", "usage_api_key_sessions"}
         c.close()
 
     def test_wal_mode_enabled(self, conn):
@@ -2567,3 +2574,382 @@ class TestMarkDeletedFromLinear:
         mark_deleted_from_linear(conn, "SMA-99")
         conn.commit()
         assert get_ticket_history_entry(conn, "SMA-99")["deleted_from_linear"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Usage API audit tables
+# ---------------------------------------------------------------------------
+
+
+class TestUsageApiCallsTable:
+    def test_tables_exist(self, conn):
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        assert "usage_api_calls" in tables
+        assert "usage_api_key_sessions" in tables
+
+    def test_indexes_exist(self, conn):
+        indexes = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index'"
+            ).fetchall()
+        }
+        assert "idx_usage_api_calls_created_at" in indexes
+        assert "idx_usage_api_calls_token" in indexes
+        assert "idx_usage_api_calls_success" in indexes
+        assert "idx_usage_api_key_sessions_status" in indexes
+
+
+class TestInsertUsageApiCall:
+    def test_insert_success(self, conn):
+        row_id = insert_usage_api_call(
+            conn,
+            token_fingerprint="abc123",
+            status_code=200,
+            success=True,
+            response_time_ms=150.5,
+            caller="poll",
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM usage_api_calls WHERE id = ?", (row_id,)).fetchone()
+        assert row["token_fingerprint"] == "abc123"
+        assert row["status_code"] == 200
+        assert row["success"] == 1
+        assert row["error_type"] is None
+        assert row["response_time_ms"] == 150.5
+        assert row["caller"] == "poll"
+
+    def test_insert_failure(self, conn):
+        row_id = insert_usage_api_call(
+            conn,
+            token_fingerprint="abc123",
+            status_code=429,
+            success=False,
+            error_type="rate_limit",
+            error_detail="Too many requests",
+            retry_after="60",
+            caller="force_poll",
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM usage_api_calls WHERE id = ?", (row_id,)).fetchone()
+        assert row["success"] == 0
+        assert row["error_type"] == "rate_limit"
+        assert row["error_detail"] == "Too many requests"
+        assert row["retry_after"] == "60"
+
+    def test_insert_connection_error(self, conn):
+        row_id = insert_usage_api_call(
+            conn,
+            token_fingerprint="abc123",
+            status_code=None,
+            success=False,
+            error_type="connection_error",
+            error_detail="Connection refused",
+            caller="poll",
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM usage_api_calls WHERE id = ?", (row_id,)).fetchone()
+        assert row["status_code"] is None
+        assert row["error_type"] == "connection_error"
+
+    def test_defaults(self, conn):
+        row_id = insert_usage_api_call(conn)
+        conn.commit()
+        row = conn.execute("SELECT * FROM usage_api_calls WHERE id = ?", (row_id,)).fetchone()
+        assert row["success"] == 0
+        assert row["token_fingerprint"] is None
+        assert row["status_code"] is None
+
+
+class TestGetUsageApiCallHistory:
+    def test_returns_newest_first(self, conn):
+        insert_usage_api_call(conn, caller="first")
+        insert_usage_api_call(conn, caller="second")
+        conn.commit()
+        rows = get_usage_api_call_history(conn, limit=10)
+        assert len(rows) == 2
+        assert rows[0]["caller"] == "second"
+        assert rows[1]["caller"] == "first"
+
+    def test_limit(self, conn):
+        for i in range(5):
+            insert_usage_api_call(conn, caller=f"call-{i}")
+        conn.commit()
+        rows = get_usage_api_call_history(conn, limit=3)
+        assert len(rows) == 3
+
+    def test_filter_by_token(self, conn):
+        insert_usage_api_call(conn, token_fingerprint="aaa", caller="a1")
+        insert_usage_api_call(conn, token_fingerprint="bbb", caller="b1")
+        insert_usage_api_call(conn, token_fingerprint="aaa", caller="a2")
+        conn.commit()
+        rows = get_usage_api_call_history(conn, limit=10, token_fingerprint="aaa")
+        assert len(rows) == 2
+        assert all(r["token_fingerprint"] == "aaa" for r in rows)
+
+
+class TestUpsertUsageApiKeySession:
+    def test_new_session_success(self, conn):
+        t = "2026-03-07T10:00:00.000000Z"
+        upsert_usage_api_key_session(conn, token_fingerprint="fp1", success=True, now_iso=t)
+        conn.commit()
+        row = conn.execute("SELECT * FROM usage_api_key_sessions WHERE token_fingerprint = 'fp1'").fetchone()
+        assert row["status"] == "active"
+        assert row["total_successes"] == 1
+        assert row["total_errors"] == 0
+        assert row["consecutive_errors"] == 0
+        assert row["last_success_at"] == t
+        assert row["first_error_at"] is None
+
+    def test_new_session_failure(self, conn):
+        t = "2026-03-07T10:00:00.000000Z"
+        upsert_usage_api_key_session(conn, token_fingerprint="fp1", success=False, now_iso=t)
+        conn.commit()
+        row = conn.execute("SELECT * FROM usage_api_key_sessions WHERE token_fingerprint = 'fp1'").fetchone()
+        assert row["status"] == "erroring"
+        assert row["total_errors"] == 1
+        assert row["consecutive_errors"] == 1
+        assert row["first_error_at"] == t
+        assert row["last_error_at"] == t
+
+    def test_active_to_erroring(self, conn):
+        t0 = "2026-03-07T10:00:00.000000Z"
+        t1 = "2026-03-07T10:01:00.000000Z"
+        upsert_usage_api_key_session(conn, token_fingerprint="fp1", success=True, now_iso=t0)
+        upsert_usage_api_key_session(conn, token_fingerprint="fp1", success=False, now_iso=t1)
+        conn.commit()
+        row = conn.execute("SELECT * FROM usage_api_key_sessions WHERE token_fingerprint = 'fp1'").fetchone()
+        assert row["status"] == "erroring"
+        assert row["total_successes"] == 1
+        assert row["total_errors"] == 1
+        assert row["consecutive_errors"] == 1
+
+    def test_erroring_to_blocked(self, conn):
+        t = "2026-03-07T10:00:00.000000Z"
+        upsert_usage_api_key_session(conn, token_fingerprint="fp1", success=True, now_iso=t)
+        for i in range(3):
+            upsert_usage_api_key_session(
+                conn,
+                token_fingerprint="fp1",
+                success=False,
+                now_iso=f"2026-03-07T10:0{i+1}:00.000000Z",
+            )
+        conn.commit()
+        row = conn.execute("SELECT * FROM usage_api_key_sessions WHERE token_fingerprint = 'fp1'").fetchone()
+        assert row["status"] == "blocked"
+        assert row["consecutive_errors"] == 3
+        assert row["blocked_at"] is not None
+
+    def test_blocked_to_recovered(self, conn):
+        t0 = "2026-03-07T10:00:00.000000Z"
+        upsert_usage_api_key_session(conn, token_fingerprint="fp1", success=True, now_iso=t0)
+        for i in range(3):
+            upsert_usage_api_key_session(
+                conn,
+                token_fingerprint="fp1",
+                success=False,
+                now_iso=f"2026-03-07T10:0{i+1}:00.000000Z",
+            )
+        t_recover = "2026-03-07T10:10:00.000000Z"
+        upsert_usage_api_key_session(conn, token_fingerprint="fp1", success=True, now_iso=t_recover)
+        conn.commit()
+        row = conn.execute("SELECT * FROM usage_api_key_sessions WHERE token_fingerprint = 'fp1'").fetchone()
+        assert row["status"] == "recovered"
+        assert row["consecutive_errors"] == 0
+        assert row["unblocked_at"] == t_recover
+        assert row["block_duration_seconds"] is not None
+        assert row["block_duration_seconds"] > 0
+
+    def test_re_error_after_recovered_clears_stale_fields(self, conn):
+        t0 = "2026-03-07T10:00:00.000000Z"
+        upsert_usage_api_key_session(conn, token_fingerprint="fp1", success=True, now_iso=t0)
+        for i in range(3):
+            upsert_usage_api_key_session(
+                conn, token_fingerprint="fp1", success=False,
+                now_iso=f"2026-03-07T10:0{i+1}:00.000000Z",
+            )
+        t_recover = "2026-03-07T10:10:00.000000Z"
+        upsert_usage_api_key_session(conn, token_fingerprint="fp1", success=True, now_iso=t_recover)
+        conn.commit()
+        row = conn.execute("SELECT * FROM usage_api_key_sessions WHERE token_fingerprint = 'fp1'").fetchone()
+        assert row["status"] == "recovered"
+        assert row["unblocked_at"] == t_recover
+        assert row["block_duration_seconds"] is not None
+        # Now fail again — stale recovery fields should be cleared
+        upsert_usage_api_key_session(
+            conn, token_fingerprint="fp1", success=False,
+            now_iso="2026-03-07T10:20:00.000000Z",
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM usage_api_key_sessions WHERE token_fingerprint = 'fp1'").fetchone()
+        assert row["status"] == "erroring"
+        assert row["unblocked_at"] is None
+        assert row["block_duration_seconds"] is None
+        assert row["blocked_at"] is None
+        assert row["first_error_at"] == "2026-03-07T10:20:00.000000Z"
+
+    def test_re_error_after_recovered_correct_block_duration(self, conn):
+        """Full round-trip: blocked → recovered → erroring → recovered again.
+
+        block_duration_seconds must be computed from the NEW error episode,
+        not the old first_error_at / blocked_at.
+        """
+        t0 = "2026-03-07T10:00:00.000000Z"
+        upsert_usage_api_key_session(conn, token_fingerprint="fp1", success=True, now_iso=t0)
+        # First error episode: 3 errors → blocked
+        for i in range(3):
+            upsert_usage_api_key_session(
+                conn, token_fingerprint="fp1", success=False,
+                now_iso=f"2026-03-07T10:0{i+1}:00.000000Z",
+            )
+        # Recover from blocked
+        upsert_usage_api_key_session(
+            conn, token_fingerprint="fp1", success=True,
+            now_iso="2026-03-07T10:10:00.000000Z",
+        )
+        # Second error episode: single error at T20
+        t_new_error = "2026-03-07T10:20:00.000000Z"
+        upsert_usage_api_key_session(
+            conn, token_fingerprint="fp1", success=False, now_iso=t_new_error,
+        )
+        # Recover again at T25
+        t_recover2 = "2026-03-07T10:25:00.000000Z"
+        upsert_usage_api_key_session(
+            conn, token_fingerprint="fp1", success=True, now_iso=t_recover2,
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT * FROM usage_api_key_sessions WHERE token_fingerprint = 'fp1'"
+        ).fetchone()
+        assert row["status"] == "recovered"
+        # Duration should be 5 minutes (T25 - T20), not measured from old episode
+        assert row["block_duration_seconds"] == 300.0
+
+    def test_replaced_after_recovered_preserves_block_duration(self, conn):
+        t0 = "2026-03-07T10:00:00.000000Z"
+        upsert_usage_api_key_session(conn, token_fingerprint="fp1", success=True, now_iso=t0)
+        for i in range(3):
+            upsert_usage_api_key_session(
+                conn, token_fingerprint="fp1", success=False,
+                now_iso=f"2026-03-07T10:0{i+1}:00.000000Z",
+            )
+        t_recover = "2026-03-07T10:10:00.000000Z"
+        upsert_usage_api_key_session(conn, token_fingerprint="fp1", success=True, now_iso=t_recover)
+        conn.commit()
+        row = conn.execute("SELECT * FROM usage_api_key_sessions WHERE token_fingerprint = 'fp1'").fetchone()
+        original_duration = row["block_duration_seconds"]
+        assert original_duration is not None
+        # Replace after recovery — should NOT overwrite block_duration_seconds
+        t_replace = "2026-03-07T11:00:00.000000Z"
+        mark_key_session_replaced(conn, token_fingerprint="fp1", replaced_at=t_replace)
+        conn.commit()
+        row = conn.execute("SELECT * FROM usage_api_key_sessions WHERE token_fingerprint = 'fp1'").fetchone()
+        assert row["status"] == "replaced"
+        assert row["block_duration_seconds"] == original_duration  # preserved from recovery
+
+    def test_success_resets_consecutive_errors(self, conn):
+        t = "2026-03-07T10:00:00.000000Z"
+        upsert_usage_api_key_session(conn, token_fingerprint="fp1", success=True, now_iso=t)
+        upsert_usage_api_key_session(conn, token_fingerprint="fp1", success=False, now_iso="2026-03-07T10:01:00.000000Z")
+        upsert_usage_api_key_session(conn, token_fingerprint="fp1", success=False, now_iso="2026-03-07T10:02:00.000000Z")
+        upsert_usage_api_key_session(conn, token_fingerprint="fp1", success=True, now_iso="2026-03-07T10:03:00.000000Z")
+        conn.commit()
+        row = conn.execute("SELECT * FROM usage_api_key_sessions WHERE token_fingerprint = 'fp1'").fetchone()
+        assert row["consecutive_errors"] == 0
+        assert row["total_errors"] == 2
+
+
+class TestMarkKeySessionReplaced:
+    def test_marks_as_replaced(self, conn):
+        t0 = "2026-03-07T10:00:00.000000Z"
+        upsert_usage_api_key_session(conn, token_fingerprint="fp1", success=True, now_iso=t0)
+        conn.commit()
+        t_replace = "2026-03-07T11:00:00.000000Z"
+        mark_key_session_replaced(conn, token_fingerprint="fp1", replaced_at=t_replace)
+        conn.commit()
+        row = conn.execute("SELECT * FROM usage_api_key_sessions WHERE token_fingerprint = 'fp1'").fetchone()
+        assert row["status"] == "replaced"
+        assert row["replaced_at"] == t_replace
+
+    def test_replaced_with_block_duration(self, conn):
+        t0 = "2026-03-07T10:00:00.000000Z"
+        upsert_usage_api_key_session(conn, token_fingerprint="fp1", success=True, now_iso=t0)
+        for i in range(3):
+            upsert_usage_api_key_session(
+                conn,
+                token_fingerprint="fp1",
+                success=False,
+                now_iso=f"2026-03-07T10:0{i+1}:00.000000Z",
+            )
+        conn.commit()
+        t_replace = "2026-03-07T11:00:00.000000Z"
+        mark_key_session_replaced(conn, token_fingerprint="fp1", replaced_at=t_replace)
+        conn.commit()
+        row = conn.execute("SELECT * FROM usage_api_key_sessions WHERE token_fingerprint = 'fp1'").fetchone()
+        assert row["status"] == "replaced"
+        assert row["block_duration_seconds"] is not None
+        assert row["block_duration_seconds"] > 0
+
+
+class TestGetActiveKeySession:
+    def test_returns_active_session(self, conn):
+        upsert_usage_api_key_session(conn, token_fingerprint="fp1", success=True, now_iso="2026-03-07T10:00:00.000000Z")
+        conn.commit()
+        row = get_active_key_session(conn)
+        assert row is not None
+        assert row["token_fingerprint"] == "fp1"
+
+    def test_excludes_replaced(self, conn):
+        upsert_usage_api_key_session(conn, token_fingerprint="fp1", success=True, now_iso="2026-03-07T10:00:00.000000Z")
+        mark_key_session_replaced(conn, token_fingerprint="fp1", replaced_at="2026-03-07T11:00:00.000000Z")
+        upsert_usage_api_key_session(conn, token_fingerprint="fp2", success=True, now_iso="2026-03-07T12:00:00.000000Z")
+        conn.commit()
+        row = get_active_key_session(conn)
+        assert row is not None
+        assert row["token_fingerprint"] == "fp2"
+
+    def test_returns_none_when_all_replaced(self, conn):
+        upsert_usage_api_key_session(conn, token_fingerprint="fp1", success=True, now_iso="2026-03-07T10:00:00.000000Z")
+        mark_key_session_replaced(conn, token_fingerprint="fp1", replaced_at="2026-03-07T11:00:00.000000Z")
+        conn.commit()
+        assert get_active_key_session(conn) is None
+
+    def test_returns_none_when_empty(self, conn):
+        assert get_active_key_session(conn) is None
+
+
+class TestPurgeOldUsageApiCalls:
+    def test_purge_removes_old_entries(self, conn):
+        # Insert an old entry directly
+        conn.execute(
+            "INSERT INTO usage_api_calls (created_at, success) VALUES (datetime('now', '-60 days'), 1)"
+        )
+        # Insert a recent entry
+        insert_usage_api_call(conn, success=True, caller="recent")
+        conn.commit()
+
+        purge_old_usage_api_calls(conn, retention_days=30)
+        conn.commit()
+
+        rows = get_usage_api_call_history(conn, limit=100)
+        assert len(rows) == 1
+        assert rows[0]["caller"] == "recent"
+
+    def test_purge_keeps_recent(self, conn):
+        insert_usage_api_call(conn, success=True, caller="recent1")
+        insert_usage_api_call(conn, success=True, caller="recent2")
+        conn.commit()
+
+        purge_old_usage_api_calls(conn, retention_days=30)
+        conn.commit()
+
+        rows = get_usage_api_call_history(conn, limit=100)
+        assert len(rows) == 2
+
+    def test_default_retention_days(self):
+        assert DEFAULT_RETENTION_DAYS == 30
