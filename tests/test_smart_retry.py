@@ -364,11 +364,33 @@ class TestMergeMainBeforeRetryResume:
             return result
 
         with patch("botfarm.worker.subprocess.run", side_effect=mock_run):
-            ok = _merge_main_before_retry_resume(
-                tmp_path, "https://github.com/org/repo/pull/1",
-            )
+            with pytest.raises(RuntimeError, match="Could not determine PR branch"):
+                _merge_main_before_retry_resume(
+                    tmp_path, "https://github.com/org/repo/pull/1",
+                )
 
-        assert ok is False
+    def test_checkout_failure_raises(self, tmp_path):
+        """Fetch/checkout failure raises RuntimeError (branch not checked out)."""
+        from botfarm.worker import _merge_main_before_retry_resume
+
+        call_count = 0
+
+        def mock_run(cmd, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            result = MagicMock()
+            result.stdout = "test-branch\n"
+            result.returncode = 0
+            # gh pr view (ok), git fetch (fail)
+            if cmd[:2] == ["git", "fetch"]:
+                raise __import__("subprocess").CalledProcessError(1, cmd)
+            return result
+
+        with patch("botfarm.worker.subprocess.run", side_effect=mock_run):
+            with pytest.raises(RuntimeError, match="Failed to check out PR branch"):
+                _merge_main_before_retry_resume(
+                    tmp_path, "https://github.com/org/repo/pull/1",
+                )
 
 
 # ---------------------------------------------------------------------------
