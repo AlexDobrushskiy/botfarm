@@ -125,7 +125,7 @@ class TestPartialUsage:
     def _mock_refresh(self, monkeypatch):
         """Prevent real API calls during usage partial tests."""
         monkeypatch.setattr(
-            "botfarm.dashboard.refresh_usage_snapshot", lambda conn: None
+            "botfarm.dashboard.refresh_usage_snapshot", lambda conn, **kw: None
         )
 
     def test_returns_200(self, client):
@@ -645,7 +645,7 @@ class TestUsagePanelEnhancements:
     def _mock_refresh(self, monkeypatch):
         """Prevent real API calls during usage panel tests."""
         monkeypatch.setattr(
-            "botfarm.dashboard.refresh_usage_snapshot", lambda conn: None
+            "botfarm.dashboard.refresh_usage_snapshot", lambda conn, **kw: None
         )
 
     def test_progress_bars(self, client):
@@ -705,7 +705,7 @@ class TestUsageFreshness:
         """
         call_count = 0
 
-        def _failing_refresh(conn):
+        def _failing_refresh(conn, **kwargs):
             nonlocal call_count
             call_count += 1
             raise RuntimeError("API down")
@@ -739,7 +739,7 @@ class TestUsageFreshness:
 
         monkeypatch.setattr(
             "botfarm.dashboard.refresh_usage_snapshot",
-            lambda conn: FakeState(),
+            lambda conn, **kw: FakeState(),
         )
 
         app = create_app(db_path=db_file)
@@ -761,7 +761,7 @@ class TestUsageFreshness:
         usage_snapshot.created_at), so staleness is testable there.
         """
         monkeypatch.setattr(
-            "botfarm.dashboard.refresh_usage_snapshot", lambda conn: None,
+            "botfarm.dashboard.refresh_usage_snapshot", lambda conn, **kw: None,
         )
         # Create a DB with a usage snapshot that has an old created_at
         from datetime import datetime, timedelta, timezone
@@ -792,7 +792,7 @@ class TestUsageFreshness:
         cold start (before the dashboard refreshes) when the DB snapshot is old.
         """
         monkeypatch.setattr(
-            "botfarm.dashboard.refresh_usage_snapshot", lambda conn: None,
+            "botfarm.dashboard.refresh_usage_snapshot", lambda conn, **kw: None,
         )
         from datetime import datetime, timedelta, timezone
         old_time = (
@@ -818,7 +818,7 @@ class TestUsageFreshness:
     ):
         """No warning when the usage data was refreshed recently."""
         monkeypatch.setattr(
-            "botfarm.dashboard.refresh_usage_snapshot", lambda conn: None,
+            "botfarm.dashboard.refresh_usage_snapshot", lambda conn, **kw: None,
         )
         # db_file already has a recent usage snapshot (just created)
         app = create_app(db_path=db_file)
@@ -832,7 +832,7 @@ class TestUsageFreshness:
         """Refresh failures should log at WARNING level, not DEBUG."""
         monkeypatch.setattr(
             "botfarm.dashboard.refresh_usage_snapshot",
-            lambda conn: (_ for _ in ()).throw(RuntimeError("API error")),
+            lambda conn, **kw: (_ for _ in ()).throw(RuntimeError("API error")),
         )
         app = create_app(db_path=db_file)
         client = TestClient(app)
@@ -860,7 +860,7 @@ class TestUsageFreshness:
 
         monkeypatch.setattr(
             "botfarm.dashboard.refresh_usage_snapshot",
-            lambda conn: FakeState(),
+            lambda conn, **kw: FakeState(),
         )
         app = create_app(db_path=db_file)
         client = TestClient(app)

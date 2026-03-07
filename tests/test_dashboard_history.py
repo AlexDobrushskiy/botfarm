@@ -737,7 +737,7 @@ class TestEdgeCases:
     def _mock_refresh(self, monkeypatch):
         """Prevent real API calls during edge case tests."""
         monkeypatch.setattr(
-            "botfarm.dashboard.refresh_usage_snapshot", lambda conn: None
+            "botfarm.dashboard.refresh_usage_snapshot", lambda conn, **kw: None
         )
 
     def test_empty_db_index(self, tmp_path):

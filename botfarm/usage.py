@@ -8,6 +8,7 @@ can pause dispatch when limits are close.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import sqlite3
 import time
@@ -16,7 +17,14 @@ from dataclasses import dataclass, field
 import httpx
 
 from botfarm.credentials import USAGE_API_TIMEOUT, CredentialManager, fetch_usage
-from botfarm.db import insert_usage_snapshot
+from botfarm.db import (
+    get_active_key_session,
+    insert_usage_api_call,
+    insert_usage_snapshot,
+    mark_key_session_replaced,
+    purge_old_usage_api_calls,
+    upsert_usage_api_key_session,
+)
 
 _async_sleep = asyncio.sleep  # local alias for testability
 
@@ -39,6 +47,32 @@ TRANSIENT_EXCEPTIONS = (
 
 MAX_ADAPTIVE_POLL_INTERVAL = 1800  # 30 minutes cap for adaptive interval
 FORCE_POLL_COOLDOWN = 30  # minimum seconds between force_poll API calls
+
+
+def token_fingerprint(token: str) -> str:
+    """Compute a non-reversible fingerprint for key rotation detection.
+
+    Uses SHA-256 of the last 8 characters, truncated to 16 hex chars.
+    This is enough to detect when a token changes without leaking it.
+    """
+    return hashlib.sha256(token[-8:].encode()).hexdigest()[:16]
+
+
+def _categorize_error(exc: Exception) -> str:
+    """Map an exception to an error_type string for audit logging."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        code = exc.response.status_code
+        if code == 429:
+            return "rate_limit"
+        elif code == 401:
+            return "auth_error"
+        elif code >= 500:
+            return "server_error"
+    elif isinstance(exc, (httpx.ConnectTimeout, httpx.PoolTimeout)):
+        return "timeout"
+    elif isinstance(exc, httpx.ConnectError):
+        return "connection_error"
+    return "other"
 
 
 @dataclass
@@ -128,6 +162,8 @@ class UsagePoller:
     _consecutive_429s: int = field(default=0, repr=False)
     _active_poll_interval: int | None = field(default=None, repr=False)
     _last_force_poll: float = field(default=0.0, repr=False)
+    _current_caller: str | None = field(default=None, repr=False)
+    _attempt_records: list[dict] = field(default_factory=list, repr=False)
 
     @property
     def state(self) -> UsageState:
@@ -156,6 +192,7 @@ class UsagePoller:
 
         self._last_poll = now
         self._last_polled_fresh = True
+        self._current_caller = "poll"
         self._do_poll(conn)
         return self._state
 
@@ -168,7 +205,11 @@ class UsagePoller:
         return elapsed < self.effective_poll_interval
 
     def force_poll(
-        self, conn: sqlite3.Connection, *, bypass_cooldown: bool = False
+        self,
+        conn: sqlite3.Connection,
+        *,
+        bypass_cooldown: bool = False,
+        caller: str | None = None,
     ) -> UsageState:
         """Poll immediately, ignoring the interval timer.
 
@@ -209,6 +250,12 @@ class UsagePoller:
         self._last_poll = now
         self._last_force_poll = now
         self._last_polled_fresh = True
+        if caller:
+            self._current_caller = caller
+        elif bypass_cooldown:
+            self._current_caller = "force_poll_bypass"
+        else:
+            self._current_caller = "force_poll"
         self._do_poll(conn)
         return self._state
 
@@ -232,9 +279,14 @@ class UsagePoller:
             logger.warning("No OAuth token available — skipping usage poll")
             return
 
+        fp = token_fingerprint(token)
+        self._check_key_rotation(conn, fp)
+        self._attempt_records = []
+
         try:
             data = self._fetch(token)
         except httpx.HTTPStatusError as exc:
+            self._flush_audit_records(conn, fp)
             if exc.response.status_code == 429:
                 self._handle_429()
                 return
@@ -244,11 +296,16 @@ class UsagePoller:
                 if token is None:
                     logger.warning("Token refresh failed — skipping usage poll")
                     return
+                fp = token_fingerprint(token)
+                self._check_key_rotation(conn, fp)
+                self._attempt_records = []
                 try:
                     data = self._fetch(token)
                 except Exception:
+                    self._flush_audit_records(conn, fp)
                     logger.exception("Usage API call failed after token refresh")
                     return
+                self._flush_audit_records(conn, fp)
             else:
                 logger.warning(
                     "Usage API returned HTTP %d — using last known values",
@@ -256,8 +313,11 @@ class UsagePoller:
                 )
                 return
         except Exception:
+            self._flush_audit_records(conn, fp)
             logger.exception("Usage API call failed — using last known values")
             return
+        else:
+            self._flush_audit_records(conn, fp)
 
         self._reset_rate_limit_state()
         self._parse_and_store(data, conn)
@@ -301,17 +361,50 @@ class UsagePoller:
 
         429 responses are NOT retried here — they are raised immediately
         so that ``_do_poll`` can handle them via ``_handle_429()``.
+
+        Each attempt (success or failure) is recorded in
+        ``self._attempt_records`` for audit logging by ``_do_poll``.
         """
         client = self._get_client()
         last_exc: Exception | None = None
         for attempt in range(MAX_RETRIES):
+            start_time = time.monotonic()
             try:
-                return await fetch_usage(token, client=client)
+                result = await fetch_usage(token, client=client)
+                elapsed_ms = (time.monotonic() - start_time) * 1000
+                self._attempt_records.append({
+                    "status_code": 200,
+                    "success": True,
+                    "error_type": None,
+                    "error_detail": None,
+                    "response_time_ms": elapsed_ms,
+                    "retry_after": None,
+                })
+                return result
             except httpx.HTTPStatusError as exc:
+                elapsed_ms = (time.monotonic() - start_time) * 1000
+                retry_after = exc.response.headers.get("retry-after")
+                self._attempt_records.append({
+                    "status_code": exc.response.status_code,
+                    "success": False,
+                    "error_type": _categorize_error(exc),
+                    "error_detail": str(exc)[:500],
+                    "response_time_ms": elapsed_ms,
+                    "retry_after": retry_after,
+                })
                 if exc.response.status_code == 429:
                     raise  # Let _do_poll handle 429 via _handle_429()
                 raise
             except TRANSIENT_EXCEPTIONS as exc:
+                elapsed_ms = (time.monotonic() - start_time) * 1000
+                self._attempt_records.append({
+                    "status_code": None,
+                    "success": False,
+                    "error_type": _categorize_error(exc),
+                    "error_detail": str(exc)[:500],
+                    "response_time_ms": elapsed_ms,
+                    "retry_after": None,
+                })
                 last_exc = exc
                 if attempt < MAX_RETRIES - 1:
                     delay = RETRY_BACKOFF_SECONDS[attempt]
@@ -380,16 +473,61 @@ class UsagePoller:
             extra_msg,
         )
 
+    def _check_key_rotation(self, conn: sqlite3.Connection, fingerprint: str) -> None:
+        """Detect and record when the API token has been rotated."""
+        try:
+            active = get_active_key_session(conn)
+            if active and active["token_fingerprint"] != fingerprint:
+                mark_key_session_replaced(
+                    conn, token_fingerprint=active["token_fingerprint"],
+                )
+                conn.commit()
+        except Exception:
+            logger.warning("Failed to check key rotation", exc_info=True)
+
+    def _flush_audit_records(self, conn: sqlite3.Connection, fingerprint: str) -> None:
+        """Write collected attempt records to the audit tables."""
+        for rec in self._attempt_records:
+            try:
+                insert_usage_api_call(
+                    conn,
+                    token_fingerprint=fingerprint,
+                    status_code=rec["status_code"],
+                    success=rec["success"],
+                    error_type=rec["error_type"],
+                    error_detail=rec["error_detail"],
+                    response_time_ms=rec["response_time_ms"],
+                    retry_after=rec["retry_after"],
+                    caller=self._current_caller,
+                )
+                upsert_usage_api_key_session(
+                    conn,
+                    token_fingerprint=fingerprint,
+                    success=rec["success"],
+                )
+            except Exception:
+                logger.warning("Failed to write usage API audit record", exc_info=True)
+        try:
+            conn.commit()
+        except Exception:
+            logger.warning("Failed to commit usage API audit records", exc_info=True)
+        self._attempt_records = []
+
     def _purge_old_snapshots(self, conn: sqlite3.Connection) -> None:
-        """Delete usage snapshots older than the retention period."""
+        """Delete usage snapshots and old audit rows beyond the retention period."""
         conn.execute(
             "DELETE FROM usage_snapshots "
             "WHERE created_at < datetime('now', ?)",
             (f"-{self.retention_days} days",),
         )
+        purge_old_usage_api_calls(conn, retention_days=self.retention_days)
 
 
-def refresh_usage_snapshot(conn: sqlite3.Connection) -> UsageState | None:
+def refresh_usage_snapshot(
+    conn: sqlite3.Connection,
+    *,
+    caller: str = "cli_refresh",
+) -> UsageState | None:
     """Fetch fresh usage data from the API and store a snapshot.
 
     Returns the new ``UsageState`` on success, or ``None`` if the API call
@@ -398,7 +536,7 @@ def refresh_usage_snapshot(conn: sqlite3.Connection) -> UsageState | None:
     """
     poller = UsagePoller()
     try:
-        poller.force_poll(conn)
+        poller.force_poll(conn, caller=caller)
     except Exception:
         logger.warning("Failed to refresh usage data from API", exc_info=True)
         return None
