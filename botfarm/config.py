@@ -243,6 +243,15 @@ class IdentitiesConfig:
 
 
 @dataclass
+class CodexUsageConfig:
+    enabled: bool = False
+    admin_api_key: str = ""
+    poll_interval_seconds: int = 300
+    monthly_budget: float = 0.0  # 0 = no budget limit
+    pause_budget_threshold: float = 0.90
+
+
+@dataclass
 class DailySummaryConfig:
     enabled: bool = False
     send_hour: int = 18  # UTC hour (0-23)
@@ -264,6 +273,7 @@ class BotfarmConfig:
     refactoring_analysis: RefactoringAnalysisConfig = field(
         default_factory=RefactoringAnalysisConfig
     )
+    codex_usage: CodexUsageConfig = field(default_factory=CodexUsageConfig)
     daily_summary: DailySummaryConfig = field(default_factory=DailySummaryConfig)
     start_paused: bool = True
     source_path: str = ""  # Set by load_config to the source file path
@@ -482,6 +492,16 @@ def _validate_config(config: BotfarmConfig) -> None:
     if ds.min_tasks_for_summary < 0:
         raise ConfigError("daily_summary.min_tasks_for_summary must be at least 0")
 
+    cu = config.codex_usage
+    if cu.poll_interval_seconds < 1:
+        raise ConfigError("codex_usage.poll_interval_seconds must be at least 1")
+    if cu.monthly_budget < 0:
+        raise ConfigError("codex_usage.monthly_budget must be at least 0")
+    if not (0.0 <= cu.pause_budget_threshold <= 1.0):
+        raise ConfigError(
+            "codex_usage.pause_budget_threshold must be between 0.0 and 1.0"
+        )
+
     if config.notifications.webhook_format not in ("slack", "discord"):
         raise ConfigError(
             f"notifications.webhook_format must be 'slack' or 'discord', "
@@ -522,13 +542,24 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
     if not isinstance(data, dict):
         raise ConfigError("Config file must contain a YAML mapping")
 
+    # Extract codex admin key before global env expansion so a missing
+    # OPENAI_ADMIN_API_KEY env var doesn't crash the entire config load.
+    cu_raw = data.get("codex_usage", {})
+    if isinstance(cu_raw, dict):
+        cu_admin_raw = cu_raw.get("admin_api_key", "")
+        if isinstance(cu_admin_raw, str) and "${" in cu_admin_raw:
+            try:
+                cu_raw["admin_api_key"] = expand_env_vars(cu_admin_raw)
+            except ConfigError:
+                cu_raw["admin_api_key"] = ""
+
     data = _expand_env_recursive(data)
 
     known_keys = {
         "projects", "linear", "database", "usage_limits",
         "dashboard", "agents", "logging", "notifications",
-        "identities", "refactoring_analysis", "daily_summary",
-        "start_paused",
+        "identities", "refactoring_analysis", "codex_usage",
+        "daily_summary", "start_paused",
     }
     unknown = set(data.keys()) - known_keys
     if unknown:
@@ -686,6 +717,17 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         webhook_url=str(ds_data.get("webhook_url", "")),
     )
 
+    cu_data = data.get("codex_usage", {})
+    if not isinstance(cu_data, dict):
+        cu_data = {}
+    codex_usage = CodexUsageConfig(
+        enabled=_parse_bool(cu_data, "enabled", False, section="codex_usage"),
+        admin_api_key=str(cu_data.get("admin_api_key", "")),
+        poll_interval_seconds=int(cu_data.get("poll_interval_seconds", 300)),
+        monthly_budget=float(cu_data.get("monthly_budget", 0.0)),
+        pause_budget_threshold=float(cu_data.get("pause_budget_threshold", 0.90)),
+    )
+
     if "failed_status" in linear_data:
         logger.warning(
             "The 'linear.failed_status' config key is deprecated and ignored — "
@@ -712,6 +754,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         notifications=notifications,
         identities=identities,
         refactoring_analysis=refactoring_analysis,
+        codex_usage=codex_usage,
         daily_summary=daily_summary,
         start_paused=start_paused,
     )
