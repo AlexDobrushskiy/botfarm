@@ -83,16 +83,18 @@ agents:
   codex_reviewer_timeout_minutes: 15    # separate from Claude review timeout
   codex_reviewer_skip_on_reiteration: true  # skip codex on review iterations 2+
 
+# Separate coder/reviewer GitHub identities.
+# Without this, all PRs and reviews use your personal GitHub account.
+# With separate accounts, reviews appear as genuine third-party feedback.
+# See docs/configuration.md for full setup instructions.
 # identities:
 #   coder:
-#     github_token: ${CODER_GITHUB_TOKEN}
-#     ssh_key_path: ~/.botfarm/coder_id_ed25519
+#     github_token: ${CODER_GITHUB_TOKEN}          # Fine-grained PAT with repo write access
+#     ssh_key_path: ~/.botfarm/coder_id_ed25519     # SSH key added to coder's GitHub account
 #     git_author_name: "Coder Bot"
 #     git_author_email: "coder-bot@example.com"
-#     linear_api_key: ${CODER_LINEAR_API_KEY}
 #   reviewer:
-#     github_token: ${REVIEWER_GITHUB_TOKEN}
-#     linear_api_key: ${REVIEWER_LINEAR_API_KEY}
+#     github_token: ${REVIEWER_GITHUB_TOKEN}        # Fine-grained PAT with PR read/write access
 
 # Periodic refactoring analysis — auto-creates investigation tickets
 # on a configurable cadence. Disabled by default.
