@@ -49,7 +49,7 @@ from botfarm.db import (
 )
 from botfarm.linear import LinearClient, LinearPoller, create_pollers
 from botfarm.notifications import Notifier
-from botfarm.preflight import CheckResult, log_preflight_summary, run_preflight_checks
+from botfarm.preflight import CheckResult, log_preflight_summary, repair_core_bare, run_preflight_checks
 from botfarm.slots import SlotManager, SlotState, _is_pid_alive
 from botfarm.usage import DEFAULT_PAUSE_5H_THRESHOLD, DEFAULT_PAUSE_7D_THRESHOLD, UsagePoller
 from botfarm.worker import STAGES, PipelineResult, build_git_env, run_pipeline
@@ -312,6 +312,16 @@ class Supervisor(RecoveryMixin, OperationsMixin):
                 git_env=self._git_env,
                 auto_restart=self._auto_restart,
             )
+
+        # Auto-repair core.bare=true corruption before preflight
+        repaired = repair_core_bare(self._config)
+        if repaired:
+            insert_event(
+                self._conn,
+                event_type="core_bare_repaired",
+                detail=f"projects={','.join(repaired)}",
+            )
+            self._conn.commit()
 
         # Run pre-flight health checks
         preflight_results = run_preflight_checks(self._config, env=self._git_env)
