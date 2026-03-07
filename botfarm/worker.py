@@ -46,6 +46,7 @@ from botfarm.worker_claude import (
     parse_stream_json_result as parse_stream_json_result,
 )
 from botfarm.worker_stages import (
+    _check_pr_has_merge_conflict,
     _execute_stage,
     _is_investigation,
     _is_merge_conflict,
@@ -623,6 +624,9 @@ def _dispatch_pipeline_stage(
         )
 
     # ----- Merge with conflict retry loop -----
+    if stage == "merge" and "merge" in ctx.pipeline.stages_completed:
+        return False, pr_url
+
     if stage == "merge":
         return _handle_merge_stage(
             ctx,
@@ -700,6 +704,34 @@ def _handle_pr_checks_stage(
     if result is not None:
         return False, pr_url  # CI passed on first try
 
+    # Check if the failure is due to merge conflicts.
+    # When pr_checks detects a merge conflict (pre-check or "no checks reported"
+    # because GitHub won't run CI on conflicting PRs), route to the conflict
+    # resolution flow instead of wasting ci_fix retries.
+    if pr_url and _check_pr_has_merge_conflict(
+        pr_url, ctx.cwd,
+        env={**os.environ, **(ctx.coder_env or {})},
+    ):
+        ctx._refresh_runtime_config()
+        if ctx.max_merge_conflict_retries > 0:
+            logger.info(
+                "pr_checks failed due to merge conflict for %s — entering conflict resolution",
+                ctx.ticket_id,
+            )
+            _reset_for_retry(ctx)
+            success = _run_merge_conflict_loop(
+                ctx,
+                pr_url=pr_url,
+                max_retries=ctx.max_merge_conflict_retries,
+            )
+            if not success:
+                return True, pr_url
+            if "pr_checks" not in ctx.pipeline.stages_completed:
+                ctx.pipeline.stages_completed.append("pr_checks")
+            return False, pr_url
+        # Merge conflict retries disabled — fail
+        return True, pr_url
+
     # Re-read in case the budget was changed while pr_checks was running
     ctx._refresh_runtime_config()
     eff_max_ci_retries = ctx.max_ci_retries
@@ -713,11 +745,36 @@ def _handle_pr_checks_stage(
             ci_failure_output=ci_failure_output,
             max_retries=eff_max_ci_retries,
         )
-        if not success:
-            return True, pr_url
-        if "pr_checks" not in ctx.pipeline.stages_completed:
-            ctx.pipeline.stages_completed.append("pr_checks")
-        return False, pr_url
+        if success:
+            if "pr_checks" not in ctx.pipeline.stages_completed:
+                ctx.pipeline.stages_completed.append("pr_checks")
+            return False, pr_url
+
+        # CI retries exhausted — check if a merge conflict developed
+        # during the ci_fix loop (e.g. another PR merged to main).
+        if pr_url and _check_pr_has_merge_conflict(
+            pr_url, ctx.cwd,
+            env={**os.environ, **(ctx.coder_env or {})},
+        ):
+            ctx._refresh_runtime_config()
+            if ctx.max_merge_conflict_retries > 0:
+                logger.info(
+                    "Merge conflict detected after CI retries for %s — entering conflict resolution",
+                    ctx.ticket_id,
+                )
+                _reset_for_retry(ctx)
+                mc_success = _run_merge_conflict_loop(
+                    ctx,
+                    pr_url=pr_url,
+                    max_retries=ctx.max_merge_conflict_retries,
+                )
+                if not mc_success:
+                    return True, pr_url
+                if "pr_checks" not in ctx.pipeline.stages_completed:
+                    ctx.pipeline.stages_completed.append("pr_checks")
+                return False, pr_url
+
+        return True, pr_url
 
     # No retries configured — fail
     return True, pr_url

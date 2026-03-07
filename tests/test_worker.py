@@ -49,6 +49,7 @@ from botfarm.worker import (
     _is_merge_conflict,
     _write_subprocess_log,
 )
+from botfarm.worker_stages import _check_pr_has_merge_conflict
 from tests.helpers import make_claude_json
 
 
@@ -3740,3 +3741,180 @@ class TestSharedMemory:
             shared_mem_path=mem_path,
         )
         assert mock_invoke.called
+
+
+class TestCheckPrHasMergeConflict:
+    """Unit tests for _check_pr_has_merge_conflict()."""
+
+    @patch("botfarm.worker_stages.subprocess.run")
+    def test_conflicting_returns_true(self, mock_run, tmp_path):
+        mock_run.return_value = MagicMock(stdout="CONFLICTING\n", returncode=0)
+        assert _check_pr_has_merge_conflict(PR_URL, tmp_path) is True
+
+    @patch("botfarm.worker_stages.subprocess.run")
+    def test_mergeable_returns_false(self, mock_run, tmp_path):
+        mock_run.return_value = MagicMock(stdout="MERGEABLE\n", returncode=0)
+        assert _check_pr_has_merge_conflict(PR_URL, tmp_path) is False
+
+    @patch("botfarm.worker_stages.subprocess.run")
+    def test_unknown_returns_false(self, mock_run, tmp_path):
+        mock_run.return_value = MagicMock(stdout="UNKNOWN\n", returncode=0)
+        assert _check_pr_has_merge_conflict(PR_URL, tmp_path) is False
+
+    @patch("botfarm.worker_stages.subprocess.run")
+    def test_gh_failure_returns_false(self, mock_run, tmp_path):
+        mock_run.return_value = MagicMock(stdout="", returncode=1)
+        assert _check_pr_has_merge_conflict(PR_URL, tmp_path) is False
+
+    @patch("botfarm.worker_stages.subprocess.run")
+    def test_timeout_returns_false(self, mock_run, tmp_path):
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd="gh", timeout=30)
+        assert _check_pr_has_merge_conflict(PR_URL, tmp_path) is False
+
+    @patch("botfarm.worker_stages.subprocess.run")
+    def test_env_passed_through(self, mock_run, tmp_path):
+        mock_run.return_value = MagicMock(stdout="MERGEABLE\n", returncode=0)
+        env = {"GH_TOKEN": "test"}
+        _check_pr_has_merge_conflict(PR_URL, tmp_path, env=env)
+        assert mock_run.call_args.kwargs["env"] == env
+
+
+class TestPrChecksConflictPrecheck:
+    """Tests for merge conflict pre-check in _run_pr_checks()."""
+
+    @patch("botfarm.worker_stages._check_pr_has_merge_conflict", return_value=True)
+    def test_conflict_returns_early_without_waiting(self, mock_check, tmp_path):
+        """When PR has merge conflicts, _run_pr_checks returns immediately."""
+        result = _run_pr_checks(PR_URL, cwd=tmp_path)
+        assert result.success is False
+        assert result.merge_conflict is True
+        assert "merge conflicts" in result.error
+
+    @patch("botfarm.worker_stages._check_pr_has_merge_conflict", return_value=False)
+    @patch("botfarm.worker_stages.subprocess.run")
+    def test_no_conflict_proceeds_normally(self, mock_run, mock_check, tmp_path):
+        """When no merge conflict, _run_pr_checks proceeds to gh pr checks."""
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["gh"], returncode=0, stdout="All checks passed", stderr=""
+        )
+        result = _run_pr_checks(PR_URL, cwd=tmp_path)
+        assert result.success is True
+        assert result.merge_conflict is False
+
+
+class TestPrChecksConflictRouting:
+    """Integration tests for merge conflict routing in _handle_pr_checks_stage."""
+
+    @patch("botfarm.worker._check_pr_has_merge_conflict", return_value=True)
+    @patch("botfarm.worker._execute_stage")
+    def test_pr_checks_conflict_routes_to_resolve(
+        self, mock_exec, mock_check, conn, task_id, tmp_path,
+    ):
+        """pr_checks fails with merge conflict → resolve_conflict runs → pipeline succeeds."""
+        mock_exec.side_effect = [
+            _mock_stage_result("implement", pr_url=PR_URL),
+            _mock_stage_result("review", review_approved=True),
+            # pr_checks: fails (conflict detected by post-check)
+            _mock_stage_result("pr_checks", success=False),
+            # Conflict resolution loop:
+            _mock_stage_result("resolve_conflict"),
+            _mock_stage_result("review", review_approved=True),
+            _mock_stage_result("pr_checks"),
+            _mock_stage_result("merge"),
+        ]
+        result = run_pipeline(
+            ticket_id="SMA-99",
+            task_id=task_id,
+            cwd=tmp_path,
+            conn=conn,
+            max_review_iterations=1,
+            max_ci_retries=0,
+            max_merge_conflict_retries=2,
+        )
+        assert result.success is True
+        assert "merge" in result.stages_completed
+
+    @patch("botfarm.worker._check_pr_has_merge_conflict", return_value=True)
+    @patch("botfarm.worker._execute_stage")
+    def test_pr_checks_conflict_zero_retries_fails(
+        self, mock_exec, mock_check, conn, task_id, tmp_path,
+    ):
+        """pr_checks fails with merge conflict but retries disabled → pipeline fails."""
+        mock_exec.side_effect = [
+            _mock_stage_result("implement", pr_url=PR_URL),
+            _mock_stage_result("review", review_approved=True),
+            _mock_stage_result("pr_checks", success=False),
+        ]
+        result = run_pipeline(
+            ticket_id="SMA-99",
+            task_id=task_id,
+            cwd=tmp_path,
+            conn=conn,
+            max_review_iterations=1,
+            max_ci_retries=0,
+            max_merge_conflict_retries=0,
+        )
+        assert result.success is False
+        assert result.failure_stage == "pr_checks"
+
+    @patch("botfarm.worker._check_pr_has_merge_conflict")
+    @patch("botfarm.worker._run_ci_fix")
+    @patch("botfarm.worker._execute_stage")
+    def test_mid_ci_fix_conflict_routes_to_resolve(
+        self, mock_exec, mock_ci_fix, mock_check, conn, task_id, tmp_path,
+    ):
+        """Merge conflict develops during ci_fix loop → routes to resolve_conflict."""
+        # First call: no conflict (initial pr_checks fails normally)
+        # Second call: conflict detected (after CI retries exhausted)
+        mock_check.side_effect = [False, True]
+        mock_ci_fix.return_value = _mock_stage_result("fix")
+        mock_exec.side_effect = [
+            _mock_stage_result("implement", pr_url=PR_URL),
+            _mock_stage_result("review", review_approved=True),
+            # Initial pr_checks: fails (no conflict)
+            _mock_stage_result("pr_checks", success=False),
+            # CI retry pr_checks: fails again
+            _mock_stage_result("pr_checks", success=False),
+            # Conflict resolution loop:
+            _mock_stage_result("resolve_conflict"),
+            _mock_stage_result("review", review_approved=True),
+            _mock_stage_result("pr_checks"),
+            _mock_stage_result("merge"),
+        ]
+        result = run_pipeline(
+            ticket_id="SMA-99",
+            task_id=task_id,
+            cwd=tmp_path,
+            conn=conn,
+            max_review_iterations=1,
+            max_ci_retries=1,
+            max_merge_conflict_retries=2,
+        )
+        assert result.success is True
+        assert "merge" in result.stages_completed
+
+    @patch("botfarm.worker._check_pr_has_merge_conflict", return_value=False)
+    @patch("botfarm.worker._run_ci_fix")
+    @patch("botfarm.worker._execute_stage")
+    def test_no_conflict_after_ci_retries_fails_normally(
+        self, mock_exec, mock_ci_fix, mock_check, conn, task_id, tmp_path,
+    ):
+        """CI retries exhausted with no merge conflict → normal failure."""
+        mock_ci_fix.return_value = _mock_stage_result("fix")
+        mock_exec.side_effect = [
+            _mock_stage_result("implement", pr_url=PR_URL),
+            _mock_stage_result("review", review_approved=True),
+            _mock_stage_result("pr_checks", success=False),
+            _mock_stage_result("pr_checks", success=False),
+        ]
+        result = run_pipeline(
+            ticket_id="SMA-99",
+            task_id=task_id,
+            cwd=tmp_path,
+            conn=conn,
+            max_review_iterations=1,
+            max_ci_retries=1,
+            max_merge_conflict_retries=2,
+        )
+        assert result.success is False
+        assert result.failure_stage == "pr_checks"

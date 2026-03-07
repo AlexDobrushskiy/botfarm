@@ -440,6 +440,7 @@ class StageResult:
     error: str | None = None
     review_approved: bool | None = None
     claude_review_approved: bool | None = None
+    merge_conflict: bool = False
 
 
 # ---------------------------------------------------------------------------
