@@ -114,14 +114,15 @@ hashlib.sha256(token[-8:].encode()).hexdigest()[:16]
 
 ```
 active ──(error)──> erroring ──(3rd consecutive error)──> blocked
-  │                    │  ▲                                  │
-  │                    │  └──────────(error)─────────────────┤
+  │                    │                                  ╷  │
   │                    │──(success)──> recovered ◄──(success)─┘
   │                    │                  │
-  └──(new key)─┐      └──(new key)─┐     └──(new key)──> replaced
-               ▼                   ▼          └──(error)──> erroring
+  └──(new key)─┐      └──(new key)─┐     ├──(new key)──> replaced
+               ▼                   ▼     └──(error)──> erroring
              replaced           replaced
 ```
+
+**Notes:** `╷` = blocked stays blocked on further errors (no status change). Any non-replaced state (including `blocked`) transitions to `replaced` when a new key is detected.
 
 **State definitions:**
 
