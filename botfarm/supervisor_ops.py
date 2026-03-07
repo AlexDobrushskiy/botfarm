@@ -311,6 +311,14 @@ class OperationsMixin:
             lines.append("")
             lines.append(_truncate_for_comment(result_text))
 
+        lines.append("")
+        lines.append(
+            "**To retry:** remove the `Failed` and `Human` labels and move this "
+            "ticket to Todo. The agent will detect the prior work and continue "
+            "from where it left off (existing PR, completed reviews, etc.) rather "
+            "than starting from scratch."
+        )
+
         try:
             poller.add_comment(slot.ticket_id, "\n".join(lines))
         except Exception:

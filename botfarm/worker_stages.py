@@ -136,12 +136,14 @@ def _run_implement(
     on_context_fill: ContextFillCallback | None = None,
     stage_tpl: StageTemplate | None = None,
     shared_mem_path: Path | None = None,
+    prior_context: str = "",
 ) -> StageResult:
     """IMPLEMENT stage — Claude Code implements the ticket and creates a PR."""
     if stage_tpl is not None:
         prompt_vars: dict[str, str] = {"ticket_id": ticket_id}
         if shared_mem_path:
             prompt_vars["shared_mem_path"] = str(shared_mem_path)
+        prompt_vars["prior_context"] = prior_context
         return _run_claude_stage(
             stage_tpl, cwd=cwd, max_turns=max_turns,
             prompt_vars=prompt_vars,
@@ -149,6 +151,8 @@ def _run_implement(
         )
     # Legacy fallback
     prompt = _build_implement_prompt(ticket_id, ticket_labels)
+    if prior_context:
+        prompt = prior_context + prompt
     if shared_mem_path:
         prompt += (
             f"\n\nAfter completing your implementation, write a brief summary to "
@@ -977,6 +981,7 @@ def _execute_stage(
     on_context_fill: ContextFillCallback | None = None,
     stage_tpl: StageTemplate | None = None,
     shared_mem_path: Path | None = None,
+    prior_context: str = "",
     codex_enabled: bool = False,
     codex_model: str | None = None,
     codex_reasoning_effort: str | None = None,
@@ -1013,6 +1018,7 @@ def _execute_stage(
             prompt_vars: dict[str, str] = {}
             if stage == "implement":
                 prompt_vars["ticket_id"] = ticket_id
+                prompt_vars["prior_context"] = prior_context
             elif pr_url:
                 owner, repo, number = _parse_pr_url(pr_url)
                 prompt_vars.update(
@@ -1051,6 +1057,7 @@ def _execute_stage(
             cwd=cwd, max_turns=max_turns, log_file=log_file,
             env=env, on_context_fill=on_context_fill,
             shared_mem_path=shared_mem_path,
+            prior_context=prior_context,
         )
     elif stage == "review":
         if not pr_url:

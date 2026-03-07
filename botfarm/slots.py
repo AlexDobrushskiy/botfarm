@@ -580,10 +580,25 @@ class SlotManager:
     # Dispatch helpers
     # ------------------------------------------------------------------
 
-    def find_free_slot_for_project(self, project: str) -> SlotState | None:
-        """Return the first free slot for a given project, or None."""
+    def find_free_slot_for_project(
+        self,
+        project: str,
+        preferred_slot_id: int | None = None,
+    ) -> SlotState | None:
+        """Return a free slot for a given project, or None.
+
+        When *preferred_slot_id* is provided and that slot is free,
+        it is returned (slot affinity for retried tickets).  Otherwise
+        falls back to the first available free slot.
+        """
         free = self.free_slots(project=project)
-        return free[0] if free else None
+        if not free:
+            return None
+        if preferred_slot_id is not None:
+            for slot in free:
+                if slot.slot_id == preferred_slot_id:
+                    return slot
+        return free[0]
 
     # ------------------------------------------------------------------
     # Internal
