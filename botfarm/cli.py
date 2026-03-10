@@ -2,6 +2,7 @@ import json
 import os
 import re
 import shutil
+import tempfile
 import signal
 import sqlite3
 import subprocess
@@ -24,7 +25,6 @@ from botfarm.config import (
     ConfigError,
     create_default_config,
     load_config,
-    write_yaml_atomic,
 )
 from botfarm.db import (
     SchemaVersionError,
@@ -1032,34 +1032,116 @@ def _run_readiness_checks(project_dict: dict) -> list[tuple[str, str]]:
     return results
 
 
+def _yaml_scalar(value):
+    """Format a Python value as a YAML scalar or flow-style sequence."""
+    if isinstance(value, list):
+        return "[" + ", ".join(str(x) for x in value) + "]"
+    s = str(value)
+    # Check if the value round-trips as a plain YAML scalar
+    if not s:
+        return '""'
+    try:
+        roundtripped = yaml.safe_load(s)
+    except yaml.YAMLError:
+        roundtripped = None
+    if roundtripped != s:
+        return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    return s
+
+
+def _format_project_entry(project_dict: dict) -> str:
+    """Format a project dict as a YAML list item (2-space indented)."""
+    lines = [
+        f"  - name: {_yaml_scalar(project_dict['name'])}",
+        f"    linear_team: {_yaml_scalar(project_dict['linear_team'])}",
+        f"    base_dir: {_yaml_scalar(project_dict['base_dir'])}",
+        f"    worktree_prefix: {_yaml_scalar(project_dict['worktree_prefix'])}",
+        f"    slots: {_yaml_scalar(project_dict['slots'])}",
+    ]
+    if project_dict.get("linear_project"):
+        lines.append(
+            f"    linear_project: {_yaml_scalar(project_dict['linear_project'])}"
+        )
+    return "\n".join(lines)
+
+
+def _find_projects_insert_point(lines: list[str]) -> int:
+    """Return the line index after the last content line of the projects section."""
+    in_projects = False
+    last_content_idx = 0
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+
+        if not in_projects:
+            if stripped.startswith("projects:") and not line[0].isspace():
+                in_projects = True
+                last_content_idx = i
+            continue
+
+        # Any non-empty, non-indented line ends the projects section
+        if stripped and not line[0].isspace():
+            break
+
+        # Only count indented content lines as part of the projects section
+        if stripped:
+            last_content_idx = i
+
+    return last_content_idx + 1
+
+
+def _write_text_atomic(path: Path, text: str) -> None:
+    """Write text to a file atomically via temp file + rename."""
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+        os.replace(tmp, str(path))
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def _append_project_to_config(config_path: Path, project_dict: dict) -> None:
-    """Append a new project entry to the config.yaml projects list."""
+    """Append a new project entry to the config.yaml projects list.
+
+    Uses text-based insertion instead of full YAML rewrite to preserve
+    comments in the config file.
+    """
     raw = config_path.read_text()
     data = yaml.safe_load(raw)
     if not isinstance(data, dict):
         raise ConfigError("Config file must contain a YAML mapping")
 
-    if "projects" not in data:
-        data["projects"] = []
-    elif not isinstance(data["projects"], list):
+    projects = data.get("projects")
+    if projects is not None and not isinstance(projects, list):
         raise ConfigError(
             "Config 'projects' key exists but is not a list — "
             "fix the config file manually before adding a project"
         )
 
-    # Build the project entry — only include linear_project if non-empty
-    entry: dict = {
-        "name": project_dict["name"],
-        "linear_team": project_dict["linear_team"],
-        "base_dir": project_dict["base_dir"],
-        "worktree_prefix": project_dict["worktree_prefix"],
-        "slots": project_dict["slots"],
-    }
-    if project_dict.get("linear_project"):
-        entry["linear_project"] = project_dict["linear_project"]
+    entry_text = _format_project_entry(project_dict)
 
-    data["projects"].append(entry)
-    write_yaml_atomic(config_path, data)
+    if "projects" not in data:
+        new_raw = f"projects:\n{entry_text}\n\n{raw}"
+    elif not data.get("projects"):
+        # Empty list (projects: []) or null — replace the projects line
+        lines = raw.split("\n")
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith("projects:") and not line[0].isspace():
+                lines[i] = f"projects:\n{entry_text}"
+                break
+        new_raw = "\n".join(lines)
+    else:
+        lines = raw.split("\n")
+        insert_at = _find_projects_insert_point(lines)
+        lines.insert(insert_at, entry_text)
+        new_raw = "\n".join(lines)
+
+    _write_text_atomic(config_path, new_raw)
 
 
 def _extract_repo_name(repo_url: str) -> str:
