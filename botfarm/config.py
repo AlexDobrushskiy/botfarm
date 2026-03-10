@@ -22,12 +22,8 @@ DEFAULT_CONFIG_TEMPLATE = """\
 # Botfarm configuration
 # See documentation for full reference.
 
-projects:
-  - name: my-project
-    linear_team: TEAM
-    base_dir: ~/my-project
-    worktree_prefix: my-project-slot-
-    slots: [1, 2]
+# Projects are configured per-repo via 'botfarm add-project'.
+# projects: []
 
 linear:
   api_key: ${LINEAR_API_KEY}

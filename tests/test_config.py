@@ -92,7 +92,7 @@ def test_create_default_config(tmp_path):
     assert result == config_path
     assert config_path.exists()
     content = config_path.read_text()
-    assert "projects:" in content
+    assert "add-project" in content
     assert "linear:" in content
 
 
