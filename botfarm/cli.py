@@ -2,6 +2,7 @@ import json
 import os
 import re
 import shutil
+import tempfile
 import signal
 import sqlite3
 import subprocess
@@ -1072,7 +1073,7 @@ def _find_projects_insert_point(lines: list[str]) -> int:
         stripped = line.strip()
 
         if not in_projects:
-            if stripped.startswith("projects:") and (not line or not line[0].isspace()):
+            if stripped.startswith("projects:") and not line[0].isspace():
                 in_projects = True
                 last_content_idx = i
             continue
@@ -1086,6 +1087,21 @@ def _find_projects_insert_point(lines: list[str]) -> int:
             last_content_idx = i
 
     return last_content_idx + 1
+
+
+def _write_text_atomic(path: Path, text: str) -> None:
+    """Write text to a file atomically via temp file + rename."""
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+        os.replace(tmp, str(path))
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def _append_project_to_config(config_path: Path, project_dict: dict) -> None:
@@ -1115,7 +1131,7 @@ def _append_project_to_config(config_path: Path, project_dict: dict) -> None:
         lines = raw.split("\n")
         for i, line in enumerate(lines):
             stripped = line.strip()
-            if stripped.startswith("projects:") and (not line or not line[0].isspace()):
+            if stripped.startswith("projects:") and not line[0].isspace():
                 lines[i] = f"projects:\n{entry_text}"
                 break
         new_raw = "\n".join(lines)
@@ -1125,7 +1141,7 @@ def _append_project_to_config(config_path: Path, project_dict: dict) -> None:
         lines.insert(insert_at, entry_text)
         new_raw = "\n".join(lines)
 
-    config_path.write_text(new_raw)
+    _write_text_atomic(config_path, new_raw)
 
 
 def _extract_repo_name(repo_url: str) -> str:
