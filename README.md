@@ -138,3 +138,4 @@ python -m pytest tests/ -v
 - [Runtime Files](docs/runtime-files.md) — `~/.botfarm/` directory layout and logs
 - [Database](docs/database.md) — SQLite schema and migrations
 - [Dashboard](docs/dashboard.md) — optional web dashboard
+# CI timing test
