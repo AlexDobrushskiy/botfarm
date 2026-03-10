@@ -269,6 +269,26 @@
     </figure>
 </section>
 
+{# --- Daily Summary --- #}
+<section class="config-section">
+    <h2>Daily Summary</h2>
+    <figure>
+    <table>
+        <tbody>
+            <tr>
+                <td>Enabled</td>
+                <td class="{{ 'bool-yes' if full_config_values.daily_summary.enabled else 'bool-no' }}">
+                    {{ "Yes" if full_config_values.daily_summary.enabled else "No" }}
+                </td>
+            </tr>
+            <tr><td>Send hour (UTC)</td><td>{{ full_config_values.daily_summary.send_hour }}</td></tr>
+            <tr><td>Min tasks for summary</td><td>{{ full_config_values.daily_summary.min_tasks_for_summary }}</td></tr>
+            <tr><td>Webhook URL</td><td><code>{{ full_config_values.daily_summary.webhook_url or "Falls back to main webhook" }}</code></td></tr>
+        </tbody>
+    </table>
+    </figure>
+</section>
+
 {# --- Notifications --- #}
 <section class="config-section">
     <h2>Notifications</h2>
@@ -385,6 +405,39 @@
             </label>
         </div>
         <button type="submit">Save Usage Limits</button>
+    </form>
+</section>
+
+{# --- Daily Summary section --- #}
+<section class="config-section">
+    <h2>Daily Summary</h2>
+    <div id="feedback-daily_summary"></div>
+    <form onsubmit="return saveSection(event, 'daily_summary')">
+        <fieldset>
+            <label>
+                <input type="checkbox" id="daily_summary-enabled" name="enabled" role="switch"
+                       {% if config_values.daily_summary.enabled %}checked{% endif %}>
+                Enable daily summary
+            </label>
+        </fieldset>
+        <div class="grid">
+            <label for="daily_summary-send_hour">
+                Send hour (0–23 UTC)
+                <input type="number" id="daily_summary-send_hour" name="send_hour"
+                       value="{{ config_values.daily_summary.send_hour }}" min="0" max="23" required>
+            </label>
+            <label for="daily_summary-min_tasks_for_summary">
+                Min tasks for summary
+                <input type="number" id="daily_summary-min_tasks_for_summary" name="min_tasks_for_summary"
+                       value="{{ config_values.daily_summary.min_tasks_for_summary }}" min="0" required>
+            </label>
+        </div>
+        {% if config_values.daily_summary.webhook_url %}
+        <p class="structural-note">Webhook URL: <code>{{ config_values.daily_summary.webhook_url }}</code></p>
+        {% else %}
+        <p class="structural-note">Webhook URL: not set (falls back to main notifications webhook). Edit in config.yaml.</p>
+        {% endif %}
+        <button type="submit">Save Daily Summary Settings</button>
     </form>
 </section>
 
