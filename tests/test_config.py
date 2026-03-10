@@ -920,6 +920,150 @@ def test_cli_init_non_interactive_already_exists(tmp_path):
     assert "already exists" in result.output
 
 
+def test_cli_init_with_flags(tmp_path, monkeypatch):
+    """Non-interactive init with --linear-api-key, --team, --workspace."""
+    from click.testing import CliRunner
+
+    from botfarm.cli import ENV_FILE_PATH, main
+
+    config_path = tmp_path / "config.yaml"
+    env_path = tmp_path / ".env"
+    monkeypatch.setattr("botfarm.cli.ENV_FILE_PATH", env_path)
+
+    runner = CliRunner()
+    result = runner.invoke(main, [
+        "init",
+        "--path", str(config_path),
+        "--linear-api-key", "lin_api_test123",
+        "--team", "SMA",
+        "--workspace", "my-workspace",
+    ])
+    assert result.exit_code == 0, result.output
+    assert "Created config at:" in result.output
+    assert "LINEAR_API_KEY" in result.output
+    assert config_path.exists()
+    assert env_path.exists()
+
+    # Verify config content has substituted values
+    content = config_path.read_text()
+    assert "SMA" in content
+    assert "my-workspace" in content
+
+    # Verify .env has the API key
+    env_content = env_path.read_text()
+    assert "LINEAR_API_KEY=lin_api_test123" in env_content
+
+
+def test_cli_init_with_flags_reads_env_var(tmp_path, monkeypatch):
+    """--linear-api-key falls back to LINEAR_API_KEY env var."""
+    from click.testing import CliRunner
+
+    from botfarm.cli import main
+
+    config_path = tmp_path / "config.yaml"
+    env_path = tmp_path / ".env"
+    monkeypatch.setattr("botfarm.cli.ENV_FILE_PATH", env_path)
+    monkeypatch.setenv("LINEAR_API_KEY", "lin_api_from_env")
+
+    runner = CliRunner()
+    result = runner.invoke(main, [
+        "init",
+        "--path", str(config_path),
+        "--team", "ABC",
+        "--workspace", "ws-slug",
+    ])
+    assert result.exit_code == 0, result.output
+    assert config_path.exists()
+
+    env_content = env_path.read_text()
+    assert "LINEAR_API_KEY=lin_api_from_env" in env_content
+
+
+def test_cli_init_with_flags_missing_api_key(tmp_path, monkeypatch):
+    """Error when no API key provided and env var not set."""
+    from click.testing import CliRunner
+
+    from botfarm.cli import main
+
+    config_path = tmp_path / "config.yaml"
+    # Prevent load_dotenv from loading the real .env
+    monkeypatch.setattr("botfarm.cli.ENV_FILE_PATH", tmp_path / "nonexistent.env")
+    monkeypatch.delenv("LINEAR_API_KEY", raising=False)
+
+    runner = CliRunner()
+    result = runner.invoke(main, [
+        "init",
+        "--path", str(config_path),
+        "--team", "SMA",
+        "--workspace", "ws",
+    ])
+    assert result.exit_code != 0
+    assert "Linear API key required" in result.output
+
+
+def test_cli_init_with_flags_missing_team(tmp_path):
+    """Error when --team not provided with other flags."""
+    from click.testing import CliRunner
+
+    from botfarm.cli import main
+
+    config_path = tmp_path / "config.yaml"
+    runner = CliRunner()
+    result = runner.invoke(main, [
+        "init",
+        "--path", str(config_path),
+        "--linear-api-key", "lin_api_test",
+        "--workspace", "ws",
+    ])
+    assert result.exit_code != 0
+    assert "--team is required" in result.output
+
+
+def test_cli_init_with_flags_missing_workspace(tmp_path):
+    """Error when --workspace not provided with other flags."""
+    from click.testing import CliRunner
+
+    from botfarm.cli import main
+
+    config_path = tmp_path / "config.yaml"
+    runner = CliRunner()
+    result = runner.invoke(main, [
+        "init",
+        "--path", str(config_path),
+        "--linear-api-key", "lin_api_test",
+        "--team", "SMA",
+    ])
+    assert result.exit_code != 0
+    assert "--workspace is required" in result.output
+
+
+def test_cli_init_with_flags_config_exists(tmp_path, monkeypatch):
+    """Non-interactive with flags does not overwrite existing config."""
+    from click.testing import CliRunner
+
+    from botfarm.cli import main
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("existing")
+    env_path = tmp_path / ".env"
+    monkeypatch.setattr("botfarm.cli.ENV_FILE_PATH", env_path)
+
+    runner = CliRunner()
+    result = runner.invoke(main, [
+        "init",
+        "--path", str(config_path),
+        "--linear-api-key", "lin_api_test",
+        "--team", "SMA",
+        "--workspace", "ws",
+    ])
+    assert result.exit_code == 0
+    assert "already exists" in result.output
+    assert config_path.read_text() == "existing"
+    # .env should still be written even when config already exists
+    assert env_path.exists()
+    assert "lin_api_test" in env_path.read_text()
+
+
 # --- source_path ---
 
 

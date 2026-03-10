@@ -884,18 +884,70 @@ def _run_interactive_init(
     default=False,
     help="Skip the interactive flow and just create template files.",
 )
-def init(path, non_interactive):
+@click.option(
+    "--linear-api-key",
+    default=None,
+    help="Linear API key. Falls back to LINEAR_API_KEY env var if not set.",
+)
+@click.option(
+    "--team",
+    default=None,
+    help="Linear team key (e.g. SMA).",
+)
+@click.option(
+    "--workspace",
+    default=None,
+    help="Linear workspace slug.",
+)
+def init(path, non_interactive, linear_api_key, team, workspace):
     """Set up botfarm configuration interactively.
 
     Connects to the Linear API to discover teams and workspace slug,
     then generates config.yaml and .env with the correct values.
 
     Use --non-interactive to just create template files without API calls.
+
+    For scripted deployments, pass --linear-api-key, --team, and --workspace
+    to skip all prompts:
+
+        botfarm init --linear-api-key $LINEAR_API_KEY --team SMA --workspace my-ws
     """
     config_path = DEFAULT_CONFIG_PATH if path is None else Path(path)
+    has_flags = any([linear_api_key, team, workspace])
+
+    if has_flags:
+        # Non-interactive mode with provided values
+        api_key = linear_api_key or os.environ.get("LINEAR_API_KEY", "")
+        if not api_key:
+            raise click.ClickException(
+                "Linear API key required: pass --linear-api-key or set LINEAR_API_KEY env var."
+            )
+        if not team:
+            raise click.ClickException("--team is required for non-interactive init.")
+        if not workspace:
+            raise click.ClickException("--workspace is required for non-interactive init.")
+
+        if config_path.exists():
+            click.echo(f"Config file already exists: {config_path}")
+        else:
+            config_content = _generate_config_yaml(
+                team_key=team,
+                team_name=team,
+                workspace=workspace,
+            )
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            config_path.write_text(config_content)
+            click.echo(f"Created config at: {config_path}")
+
+        env_path = ENV_FILE_PATH
+        if env_path.exists():
+            click.echo(f".env already exists: {env_path} — overwriting LINEAR_API_KEY")
+        _write_env_with_key(env_path, api_key)
+        click.echo(f"Wrote LINEAR_API_KEY to: {env_path}")
+        return
 
     if non_interactive:
-        # Original non-interactive behavior
+        # Template-only non-interactive behavior (no values provided)
         created_config = False
         created_env = False
 
