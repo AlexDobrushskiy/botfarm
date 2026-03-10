@@ -437,7 +437,7 @@ query ListTeams {
 """
 
 LIST_TEAM_PROJECTS_QUERY = """
-query ListTeamProjects($teamId: ID!) {
+query ListTeamProjects($teamId: String!) {
   team(id: $teamId) {
     projects {
       nodes {
