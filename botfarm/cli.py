@@ -67,7 +67,10 @@ def _ensure_local_bin_in_path() -> None:
     local_bin = str(Path.home() / ".local" / "bin")
     current_path = os.environ.get("PATH", "")
     if local_bin not in current_path.split(os.pathsep):
-        os.environ["PATH"] = local_bin + os.pathsep + current_path
+        if current_path:
+            os.environ["PATH"] = local_bin + os.pathsep + current_path
+        else:
+            os.environ["PATH"] = local_bin
 
 
 def _resolve_paths(

@@ -99,7 +99,10 @@ def generate_unit(
     # and non-login shells (systemd, nohup) won't have it by default.
     local_bin = str(Path.home() / ".local" / "bin")
     if local_bin not in captured_path.split(os.pathsep):
-        captured_path = local_bin + os.pathsep + captured_path
+        if captured_path:
+            captured_path = local_bin + os.pathsep + captured_path
+        else:
+            captured_path = local_bin
 
     return _UNIT_TEMPLATE.format(
         exec_start=" ".join(exec_parts),
