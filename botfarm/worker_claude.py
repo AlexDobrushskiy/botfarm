@@ -335,6 +335,8 @@ def run_claude_streaming(
     process when the deadline is exceeded and ``TimeoutError`` is raised.
     If *log_file* is given, each NDJSON line is flushed to disk in
     real-time so that external tools can tail the log during execution.
+
+    Raises ``FileNotFoundError`` if the ``claude`` binary is not on PATH.
     """
     claude_bin = shutil.which("claude")
     if not claude_bin:
