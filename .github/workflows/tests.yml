@@ -6,49 +6,68 @@ on:
 
 jobs:
   unit-tests:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-          cache: pip
+      - name: Setup Python venv
+        run: |
+          python3 -m venv .venv
+          . .venv/bin/activate
+          pip install --upgrade pip
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          . .venv/bin/activate
+          pip install -r requirements.txt
 
       - name: Install package
-        run: pip install -e .
+        run: |
+          . .venv/bin/activate
+          pip install -e .
 
       - name: Run unit tests
-        run: python -m pytest tests/ -v -m "not playwright"
+        run: |
+          . .venv/bin/activate
+          python -m pytest tests/ -v -m "not playwright"
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf .venv
 
   playwright-tests:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-          cache: pip
+      - name: Setup Python venv
+        run: |
+          python3 -m venv .venv
+          . .venv/bin/activate
+          pip install --upgrade pip
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          . .venv/bin/activate
+          pip install -r requirements.txt
 
       - name: Install package
-        run: pip install -e .
+        run: |
+          . .venv/bin/activate
+          pip install -e .
 
       - name: Install Playwright browsers
-        run: playwright install chromium --with-deps
+        run: |
+          . .venv/bin/activate
+          playwright install chromium --with-deps
 
       - name: Run Playwright tests
-        run: >
-          python -m pytest tests/e2e/ -v
-          -m playwright
-          --screenshot=only-on-failure
-          --tracing=retain-on-failure
+        run: |
+          . .venv/bin/activate
+          python -m pytest tests/e2e/ -v \
+            -m playwright \
+            --screenshot=only-on-failure \
+            --tracing=retain-on-failure
 
       - name: Upload test artifacts
         if: failure()
@@ -57,3 +76,7 @@ jobs:
           name: playwright-test-results
           path: test-results/
           retention-days: 7
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf .venv
