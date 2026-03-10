@@ -1315,29 +1315,6 @@ _PROJECT_MARKERS = [
     ("Gemfile", "Ruby", "bundle exec rspec", "bundle install"),
 ]
 
-_CLAUDE_MD_TEMPLATE = """\
-# {project_name}
-
-## Project Context
-Describe your project here.
-
-## Testing
-```bash
-{test_command}
-```
-
-## Development
-```bash
-{dev_command}
-```
-
-## Architecture
-Describe key modules and patterns.
-
-## Conventions
-Describe coding standards and conventions.
-"""
-
 
 def _detect_project(project_dir: Path) -> dict:
     """Detect project characteristics from marker files.
@@ -1360,6 +1337,136 @@ def _detect_project(project_dir: Path) -> dict:
     }
 
 
+def _scan_readme(project_dir: Path) -> str:
+    """Extract a project description from README.md.
+
+    Returns the first non-empty, non-heading paragraph, or a placeholder.
+    """
+    for name in ("README.md", "readme.md", "README.rst", "README"):
+        readme_path = project_dir / name
+        if readme_path.exists():
+            try:
+                text = readme_path.read_text(errors="replace")
+            except OSError:
+                continue
+            # Extract first non-heading, non-empty paragraph
+            for line in text.splitlines():
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                # Skip markdown headings, badges, HTML tags
+                if stripped.startswith(("#", "![", "<", "---", "===")):
+                    continue
+                # Truncate long descriptions
+                if len(stripped) > 300:
+                    stripped = stripped[:297] + "..."
+                return stripped
+    return "Describe your project here."
+
+
+_SKIP_DIRS = {
+    ".git", ".svn", ".hg", "node_modules", "__pycache__", ".venv", "venv",
+    ".tox", ".mypy_cache", ".pytest_cache", "dist", "build", ".eggs",
+    "target", "vendor", ".next", ".nuxt", "coverage", ".cache",
+}
+
+
+def _scan_directory_structure(project_dir: Path) -> str:
+    """Build a concise top-level directory listing for the Architecture section."""
+    entries = []
+    try:
+        items = sorted(project_dir.iterdir())
+    except OSError:
+        return "Describe key modules and patterns."
+
+    for item in items:
+        if item.name.startswith(".") and item.name != ".github":
+            continue
+        if item.name in _SKIP_DIRS:
+            continue
+        if item.is_dir():
+            entries.append(f"- `{item.name}/`")
+        # Only list notable top-level files
+        elif item.name in (
+            "Makefile", "Dockerfile", "docker-compose.yml", "docker-compose.yaml",
+        ):
+            entries.append(f"- `{item.name}`")
+
+    if not entries:
+        return "Describe key modules and patterns."
+    # Cap at 20 entries to keep it manageable
+    if len(entries) > 20:
+        entries = entries[:20] + [f"- ... and {len(entries) - 20} more"]
+    return "Top-level layout:\n" + "\n".join(entries)
+
+
+_CI_FILES = [
+    (".github/workflows", "GitHub Actions"),
+    (".gitlab-ci.yml", "GitLab CI"),
+    ("Jenkinsfile", "Jenkins"),
+    (".circleci/config.yml", "CircleCI"),
+    (".travis.yml", "Travis CI"),
+    ("Makefile", "Makefile"),
+    ("Dockerfile", "Docker"),
+]
+
+
+def _scan_ci_config(project_dir: Path) -> list[str]:
+    """Detect CI/build tooling present in the repository."""
+    found = []
+    for path, label in _CI_FILES:
+        if (project_dir / path).exists():
+            found.append(label)
+    return found
+
+
+def _build_claude_md(project_dir: Path, detection: dict) -> str:
+    """Assemble CLAUDE.md content from detection results and repo scanning."""
+    project_name = project_dir.resolve().name
+    description = _scan_readme(project_dir)
+    architecture = _scan_directory_structure(project_dir)
+    ci_tools = _scan_ci_config(project_dir)
+
+    lines = [f"# {project_name}", ""]
+
+    # Project Context
+    lines.append("## Project Context")
+    lines.append(description)
+    lines.append("")
+
+    # Testing
+    lines.append("## Testing")
+    lines.append("```bash")
+    lines.append(detection["test_command"])
+    lines.append("```")
+    lines.append("")
+
+    # Development
+    lines.append("## Development")
+    lines.append("```bash")
+    lines.append(detection["dev_command"])
+    lines.append("```")
+    lines.append("")
+
+    # CI / Build (only if something was detected)
+    if ci_tools:
+        lines.append("## CI / Build")
+        lines.append("Detected: " + ", ".join(ci_tools))
+        lines.append("")
+
+    # Architecture
+    lines.append("## Architecture")
+    lines.append(architecture)
+    lines.append("")
+
+    # Conventions
+    lines.append("## Conventions")
+    lines.append("Describe coding standards and conventions.")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
 @main.command("init-claude-md")
 @click.argument("project_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
 def init_claude_md(project_dir):
@@ -1370,13 +1477,7 @@ def init_claude_md(project_dir):
         raise click.ClickException(f"CLAUDE.md already exists: {claude_md_path}")
 
     detection = _detect_project(project_dir)
-    project_name = project_dir.resolve().name
-
-    content = _CLAUDE_MD_TEMPLATE.format(
-        project_name=project_name,
-        test_command=detection["test_command"],
-        dev_command=detection["dev_command"],
-    )
+    content = _build_claude_md(project_dir, detection)
 
     claude_md_path.write_text(content)
 
