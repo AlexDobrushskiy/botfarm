@@ -1059,6 +1059,9 @@ def test_cli_init_with_flags_config_exists(tmp_path, monkeypatch):
     assert result.exit_code == 0
     assert "already exists" in result.output
     assert config_path.read_text() == "existing"
+    # .env should still be written even when config already exists
+    assert env_path.exists()
+    assert "lin_api_test" in env_path.read_text()
 
 
 # --- source_path ---

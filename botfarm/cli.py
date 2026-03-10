@@ -912,18 +912,19 @@ def init(path, non_interactive, linear_api_key, team, workspace):
 
         if config_path.exists():
             click.echo(f"Config file already exists: {config_path}")
-            return
+        else:
+            config_content = _generate_config_yaml(
+                team_key=team,
+                team_name=team,
+                workspace=workspace,
+            )
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            config_path.write_text(config_content)
+            click.echo(f"Created config at: {config_path}")
 
         env_path = ENV_FILE_PATH
-        config_content = _generate_config_yaml(
-            team_key=team,
-            team_name=team,
-            workspace=workspace,
-        )
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(config_content)
-        click.echo(f"Created config at: {config_path}")
-
+        if env_path.exists():
+            click.echo(f".env already exists: {env_path} — overwriting LINEAR_API_KEY")
         _write_env_with_key(env_path, api_key)
         click.echo(f"Wrote LINEAR_API_KEY to: {env_path}")
         return
