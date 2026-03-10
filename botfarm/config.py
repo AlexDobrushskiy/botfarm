@@ -388,6 +388,18 @@ def _validate_config(config: BotfarmConfig) -> None:
     if len(names) != len(set(names)):
         raise ConfigError("Duplicate project names found")
 
+    # Check for duplicate linear_project filters (ignoring empty/unset)
+    seen_lp: dict[str, str] = {}  # linear_project -> project name
+    for p in config.projects:
+        if p.linear_project:
+            if p.linear_project in seen_lp:
+                raise ConfigError(
+                    f"Duplicate linear_project filter {p.linear_project!r}: "
+                    f"used by both '{seen_lp[p.linear_project]}' and '{p.name}'. "
+                    f"Each project must have a unique linear_project filter"
+                )
+            seen_lp[p.linear_project] = p.name
+
     for attr in ("pause_five_hour_threshold", "pause_seven_day_threshold"):
         val = getattr(config.usage_limits, attr)
         if not (0.0 <= val <= 1.0):

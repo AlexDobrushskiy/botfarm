@@ -224,6 +224,88 @@ def test_load_config_duplicate_project_names(tmp_path):
         load_config(config_path)
 
 
+def test_load_config_duplicate_linear_project(tmp_path):
+    data = {
+        "projects": [
+            {
+                "name": "proj-a",
+                "linear_team": "TST",
+                "base_dir": "~/a",
+                "worktree_prefix": "a-slot-",
+                "slots": [1],
+                "linear_project": "Shared Project",
+            },
+            {
+                "name": "proj-b",
+                "linear_team": "TST",
+                "base_dir": "~/b",
+                "worktree_prefix": "b-slot-",
+                "slots": [2],
+                "linear_project": "Shared Project",
+            },
+        ],
+        "linear": {"api_key": "test-key"},
+    }
+    config_path = _write_config(tmp_path, data)
+    with pytest.raises(ConfigError, match="Duplicate linear_project filter"):
+        load_config(config_path)
+
+
+def test_load_config_duplicate_linear_project_empty_ok(tmp_path):
+    """Empty linear_project on multiple projects should not trigger duplicate error."""
+    data = {
+        "projects": [
+            {
+                "name": "proj-a",
+                "linear_team": "TST",
+                "base_dir": "~/a",
+                "worktree_prefix": "a-slot-",
+                "slots": [1],
+            },
+            {
+                "name": "proj-b",
+                "linear_team": "TST",
+                "base_dir": "~/b",
+                "worktree_prefix": "b-slot-",
+                "slots": [2],
+            },
+        ],
+        "linear": {"api_key": "test-key"},
+    }
+    config_path = _write_config(tmp_path, data)
+    config = load_config(config_path)
+    assert len(config.projects) == 2
+
+
+def test_load_config_different_linear_projects_ok(tmp_path):
+    """Different linear_project values across projects should be fine."""
+    data = {
+        "projects": [
+            {
+                "name": "proj-a",
+                "linear_team": "TST",
+                "base_dir": "~/a",
+                "worktree_prefix": "a-slot-",
+                "slots": [1],
+                "linear_project": "Project Alpha",
+            },
+            {
+                "name": "proj-b",
+                "linear_team": "TST",
+                "base_dir": "~/b",
+                "worktree_prefix": "b-slot-",
+                "slots": [2],
+                "linear_project": "Project Beta",
+            },
+        ],
+        "linear": {"api_key": "test-key"},
+    }
+    config_path = _write_config(tmp_path, data)
+    config = load_config(config_path)
+    assert config.projects[0].linear_project == "Project Alpha"
+    assert config.projects[1].linear_project == "Project Beta"
+
+
 def test_load_config_env_var_expansion(tmp_path, monkeypatch):
     monkeypatch.setenv("TEST_API_KEY", "sk-test-123")
     data = {
