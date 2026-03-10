@@ -193,6 +193,12 @@ def _make_fake_popen(stdout_lines, returncode=0):
 
 
 class TestRunCodexStreaming:
+    @pytest.fixture(autouse=True)
+    def _mock_codex_which(self):
+        """Mock shutil.which so tests don't depend on codex being installed."""
+        with patch("botfarm.codex.shutil.which", return_value="/usr/local/bin/codex"):
+            yield
+
     def test_successful_run(self, tmp_path):
         proc = _make_fake_popen(SAMPLE_JSONL_LINES, returncode=0)
 
@@ -317,7 +323,7 @@ class TestRunCodexStreaming:
             )
 
         cmd = mock_popen.call_args[0][0]
-        assert cmd[0] == "codex"
+        assert cmd[0] == "/usr/local/bin/codex"
         assert "--dangerously-bypass-approvals-and-sandbox" in cmd
         # -C <cwd> should come before exec
         c_idx = cmd.index("-C")
@@ -330,6 +336,11 @@ class TestRunCodexStreaming:
 
 
 class TestCodexTimeout:
+    @pytest.fixture(autouse=True)
+    def _mock_codex_which(self):
+        with patch("botfarm.codex.shutil.which", return_value="/usr/local/bin/codex"):
+            yield
+
     def test_timeout_kills_process(self, tmp_path):
         """Mock a subprocess that hangs, verify timeout sets is_error."""
         proc = MagicMock()

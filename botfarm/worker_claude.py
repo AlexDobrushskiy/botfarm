@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import threading
 from collections.abc import Callable
@@ -334,16 +335,25 @@ def run_claude_streaming(
     process when the deadline is exceeded and ``TimeoutError`` is raised.
     If *log_file* is given, each NDJSON line is flushed to disk in
     real-time so that external tools can tail the log during execution.
+
+    Raises ``FileNotFoundError`` if the ``claude`` binary is not on PATH.
     """
+    claude_bin = shutil.which("claude")
+    if not claude_bin:
+        raise FileNotFoundError(
+            "Cannot find 'claude' on PATH. "
+            "Ensure Claude Code is installed and ~/.local/bin is in PATH. "
+            "For nohup usage: PATH=$HOME/.local/bin:$PATH nohup botfarm run &"
+        )
     cmd = [
-        "claude",
+        claude_bin,
         "-p",
         "--output-format", "stream-json",
         "--verbose",
         "--dangerously-skip-permissions",
         "--max-turns", str(max_turns),
     ]
-    logger.info("Running claude (streaming) with max_turns=%d in %s", max_turns, cwd)
+    logger.info("Running claude (%s, streaming) with max_turns=%d in %s", claude_bin, max_turns, cwd)
 
     subprocess_env = None
     if env:

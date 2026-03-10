@@ -1232,7 +1232,8 @@ class TestRunPreflightChecks:
              ), \
              patch("botfarm.preflight._load_token", return_value=token), \
              patch("botfarm.preflight.check_installed_unit_stale", return_value=(False, "OK")), \
-             patch("botfarm.preflight.check_claude_plugins", return_value=plugin_results):
+             patch("botfarm.preflight.check_claude_plugins", return_value=plugin_results), \
+             patch("botfarm.preflight.shutil.which", return_value="/usr/local/bin/claude"):
             mock_run.return_value.returncode = 0
             mock_run.return_value.stdout = "git@github.com:org/repo.git\n"
             mock_run.return_value.stderr = ""
@@ -1247,6 +1248,7 @@ class TestRunPreflightChecks:
         assert "worktree_dir" in names
         assert "linear_team" in names
         assert "claude_credentials" in names
+        assert "claude_binary" in names
         assert "claude_plugins" in names
         assert "project_claude_md" in names
 

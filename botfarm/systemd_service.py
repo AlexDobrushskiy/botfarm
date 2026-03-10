@@ -95,6 +95,15 @@ def generate_unit(
 
     captured_path = os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")
 
+    # Ensure ~/.local/bin is in PATH — Claude Code is commonly installed there
+    # and non-login shells (systemd, nohup) won't have it by default.
+    local_bin = str(Path.home() / ".local" / "bin")
+    if local_bin not in captured_path.split(os.pathsep):
+        if captured_path:
+            captured_path = local_bin + os.pathsep + captured_path
+        else:
+            captured_path = local_bin
+
     return _UNIT_TEMPLATE.format(
         exec_start=" ".join(exec_parts),
         working_dir=wd,

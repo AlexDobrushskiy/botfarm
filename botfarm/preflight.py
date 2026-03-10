@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import sqlite3
 import stat
 import subprocess
@@ -260,6 +261,53 @@ def check_credentials() -> list[CheckResult]:
         passed=True,
         message=msg,
     )]
+
+
+def check_claude_binary() -> list[CheckResult]:
+    """Check that the ``claude`` binary is available on PATH."""
+    claude_path = shutil.which("claude")
+    if not claude_path:
+        return [CheckResult(
+            name="claude_binary",
+            passed=False,
+            message=(
+                "'claude' not found on PATH. "
+                "Workers will fail to invoke Claude Code. "
+                "Ensure Claude Code is installed and ~/.local/bin is in PATH. "
+                "For nohup: PATH=$HOME/.local/bin:$PATH nohup botfarm run &"
+            ),
+        )]
+    try:
+        proc = subprocess.run(
+            [claude_path, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if proc.returncode == 0:
+            version = proc.stdout.strip()
+            return [CheckResult(
+                name="claude_binary",
+                passed=True,
+                message=f"OK — {claude_path} ({version})",
+            )]
+        return [CheckResult(
+            name="claude_binary",
+            passed=False,
+            message=f"claude --version exited with code {proc.returncode}",
+        )]
+    except subprocess.TimeoutExpired:
+        return [CheckResult(
+            name="claude_binary",
+            passed=False,
+            message="claude --version timed out",
+        )]
+    except OSError as exc:
+        return [CheckResult(
+            name="claude_binary",
+            passed=False,
+            message=f"claude check failed: {exc}",
+        )]
 
 
 def check_database(config: BotfarmConfig) -> list[CheckResult]:
@@ -945,6 +993,7 @@ def run_preflight_checks(
     results.extend(check_worktree_dirs(config))
     results.extend(check_linear_api(config))
     results.extend(check_credentials())
+    results.extend(check_claude_binary())
     results.extend(check_notifications_webhook(config))
     results.extend(check_identity_ssh_key(config))
     results.extend(check_identity_github_tokens(config))

@@ -95,16 +95,27 @@ class TestGenerateUnit:
 
     def test_captures_current_path(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
-        fake_path = "/home/user/.local/bin:/usr/local/bin:/usr/bin:/bin"
+        local_bin = str(Path.home() / ".local" / "bin")
+        fake_path = f"{local_bin}:/usr/local/bin:/usr/bin:/bin"
         monkeypatch.setenv("PATH", fake_path)
         unit = generate_unit()
+        # ~/.local/bin is already in PATH so should not be duplicated
         assert f"Environment=PATH={fake_path}" in unit
+
+    def test_captures_current_path_prepends_local_bin(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        fake_path = "/usr/local/bin:/usr/bin:/bin"
+        monkeypatch.setenv("PATH", fake_path)
+        unit = generate_unit()
+        local_bin = str(Path.home() / ".local" / "bin")
+        assert f"Environment=PATH={local_bin}:{fake_path}" in unit
 
     def test_path_fallback_when_unset(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         monkeypatch.delenv("PATH", raising=False)
         unit = generate_unit()
-        assert "Environment=PATH=/usr/local/bin:/usr/bin:/bin" in unit
+        local_bin = str(Path.home() / ".local" / "bin")
+        assert f"Environment=PATH={local_bin}:/usr/local/bin:/usr/bin:/bin" in unit
 
 
 # ---------------------------------------------------------------------------

@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import subprocess
 import threading
 import time
@@ -180,9 +181,17 @@ def run_codex_streaming(
 
     On non-zero exit or timeout the result has ``is_error=True`` rather
     than raising an exception.
+
+    Raises ``FileNotFoundError`` if the ``codex`` binary is not on PATH.
     """
+    codex_bin = shutil.which("codex")
+    if not codex_bin:
+        raise FileNotFoundError(
+            "Cannot find 'codex' on PATH. "
+            "Ensure Codex CLI is installed and available in PATH."
+        )
     cmd = [
-        "codex",
+        codex_bin,
         "--dangerously-bypass-approvals-and-sandbox",
     ]
     if model:

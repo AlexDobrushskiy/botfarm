@@ -180,6 +180,22 @@ export XDG_RUNTIME_DIR=/run/user/$(id -u)
 
 Some SSH configurations don't set this automatically. You can add it to your `~/.bashrc`.
 
+## Running with nohup (Alternative to systemd)
+
+If you prefer `nohup` over systemd, be aware that non-login shells don't source `~/.bashrc`, so `~/.local/bin` (where Claude Code is typically installed) may not be in PATH. Botfarm automatically prepends `~/.local/bin` to PATH at startup, but if Claude Code is installed elsewhere, set PATH explicitly:
+
+```bash
+nohup botfarm run >> ~/.botfarm/logs/nohup.log 2>&1 &
+```
+
+If Claude Code is in a non-standard location:
+
+```bash
+PATH=/custom/path:$PATH nohup botfarm run >> ~/.botfarm/logs/nohup.log 2>&1 &
+```
+
+The systemd service is the recommended approach — it handles PATH, restarts on crashes, and integrates with `journalctl` for log viewing.
+
 ## Don't Run Both
 
 Do **not** run `botfarm run` manually while the systemd service is active. This would create two competing supervisor instances polling the same Linear tickets and dispatching duplicate work. Either:
