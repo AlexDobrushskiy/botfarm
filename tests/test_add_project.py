@@ -116,37 +116,42 @@ class TestExtractRepoName:
 
 
 class TestIsPlaceholderProject:
-    def test_nonexistent_base_dir(self):
+    def test_known_name_nonexistent_base_dir(self):
         entry = {"name": "my-project", "base_dir": "/tmp/nonexistent-dir-xyz-9999"}
         assert _is_placeholder_project(entry) is True
 
-    def test_existing_base_dir(self, tmp_path):
-        entry = {"name": "real-project", "base_dir": str(tmp_path)}
+    def test_known_name_existing_base_dir(self, tmp_path):
+        """Known init name but directory exists — not a placeholder."""
+        entry = {"name": "my-project", "base_dir": str(tmp_path)}
         assert _is_placeholder_project(entry) is False
 
-    def test_empty_base_dir(self):
-        entry = {"name": "bad", "base_dir": ""}
+    def test_known_name_empty_base_dir(self):
+        entry = {"name": "my-project", "base_dir": ""}
         assert _is_placeholder_project(entry) is True
 
-    def test_missing_base_dir(self):
-        entry = {"name": "bad"}
+    def test_known_name_missing_base_dir(self):
+        entry = {"name": "project"}
         assert _is_placeholder_project(entry) is True
+
+    def test_unknown_name_not_placeholder(self):
+        """Non-default name is never a placeholder, even if base_dir is missing."""
+        entry = {"name": "production-api", "base_dir": "/tmp/nonexistent-dir-xyz-9999"}
+        assert _is_placeholder_project(entry) is False
 
     def test_tilde_expanded(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HOME", str(tmp_path))
-        (tmp_path / "real-repo").mkdir()
-        entry = {"name": "proj", "base_dir": "~/real-repo"}
+        (tmp_path / "my-project").mkdir()
+        entry = {"name": "my-project", "base_dir": "~/my-project"}
         assert _is_placeholder_project(entry) is False
 
     def test_deleted_repo_under_botfarm_dir_not_placeholder(self, tmp_path, monkeypatch):
-        """Projects under ~/.botfarm/projects/ are not placeholders even if deleted."""
+        """Known init name under ~/.botfarm/projects/ is not a placeholder."""
         botfarm_dir = tmp_path / ".botfarm"
         botfarm_dir.mkdir()
         monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_DIR", botfarm_dir)
-        # base_dir under botfarm projects but directory doesn't exist
         entry = {
-            "name": "proj",
-            "base_dir": str(botfarm_dir / "projects" / "proj" / "repo"),
+            "name": "my-project",
+            "base_dir": str(botfarm_dir / "projects" / "my-project" / "repo"),
         }
         assert _is_placeholder_project(entry) is False
 

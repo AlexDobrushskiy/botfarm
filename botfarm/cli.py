@@ -1150,14 +1150,21 @@ def _remove_project_entry_text(raw: str, name: str) -> str:
     return "\n".join(new_lines)
 
 
-def _is_placeholder_project(entry: dict) -> bool:
-    """Check if a project entry is an unconfigured placeholder.
+# Known default project names created by ``botfarm init`` templates.
+_INIT_PLACEHOLDER_NAMES = frozenset({"my-project", "project"})
 
-    A placeholder is a project whose base_dir doesn't exist on disk and
-    was NOT created by ``add-project``.  Projects created by
-    ``add-project`` live under ``~/.botfarm/projects/`` — those are kept
-    even if the repo directory was later deleted.
+
+def _is_placeholder_project(entry: dict) -> bool:
+    """Check if a project entry is an unconfigured init placeholder.
+
+    Only matches entries whose name is a known init default (e.g.
+    ``my-project``) AND whose ``base_dir`` doesn't exist on disk.
+    Projects with non-default names are never flagged, even if their
+    directory is temporarily missing (unmounted drive, moved, etc.).
     """
+    name = entry.get("name", "")
+    if name not in _INIT_PLACEHOLDER_NAMES:
+        return False
     base_dir = entry.get("base_dir", "")
     if not base_dir:
         return True
