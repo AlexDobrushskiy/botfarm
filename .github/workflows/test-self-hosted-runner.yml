@@ -1,0 +1,37 @@
+name: Test Self-Hosted Runner
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  test-runner:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Runner info
+        run: |
+          echo "Runner: $RUNNER_NAME"
+          echo "OS: $(uname -a)"
+          echo "Python: $(python3 --version)"
+          echo "Node: $(node --version)"
+          echo "Docker: $(docker --version)"
+          echo "Disk: $(df -h / | tail -1)"
+          echo "Memory: $(free -h | grep Mem)"
+
+      - name: Test Python setup
+        run: |
+          python3 -m venv /tmp/test-venv
+          . /tmp/test-venv/bin/activate
+          pip install --upgrade pip
+          echo "Python venv works"
+
+      - name: Test Docker
+        run: |
+          docker run --rm hello-world
+          echo "Docker works"
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf /tmp/test-venv
