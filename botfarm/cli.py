@@ -663,23 +663,15 @@ def _generate_config_yaml(
     team_key: str,
     team_name: str,
     workspace: str,
-    project_name: str = "",
 ) -> str:
     """Generate a config.yaml string with values filled in from the interactive flow."""
-    project_block = ""
-    if project_name:
-        project_block = f'\n    linear_project: "{project_name}"'
-
     return f"""\
 # Botfarm configuration
 # See documentation for full reference.
 
-projects:
-  - name: my-project
-    linear_team: {team_key}  # {team_name}
-    base_dir: ~/my-project
-    worktree_prefix: my-project-slot-{project_block}
-    slots: [1, 2]
+# Projects are configured per-repo via 'botfarm add-project'.
+# Default team: {team_name} ({team_key})
+# projects: []
 
 linear:
   api_key: ${{LINEAR_API_KEY}}
@@ -817,40 +809,7 @@ def _run_interactive_init(
     team_key = selected_team["key"]
     team_name = selected_team["name"]
 
-    # Step 4: Fetch and select project
-    console.print("\nFetching projects...", end=" ")
-    try:
-        projects = client.list_team_projects(selected_team["id"])
-    except LinearAPIError as exc:
-        console.print(f"[red]Failed![/red]\n  {exc}")
-        return False
-    console.print("[green]OK[/green]")
-
-    project_name = ""
-    if projects:
-        console.print(f"\n[bold]Projects ({len(projects)}):[/bold]")
-        for i, proj in enumerate(projects, 1):
-            console.print(f"  {i}. {proj['name']}")
-        console.print(f"  {len(projects) + 1}. (no project filter)")
-
-        if len(projects) == 1:
-            selected_project = projects[0]
-            console.print(
-                f"\nAuto-selected: [bold]{selected_project['name']}[/bold]"
-            )
-            project_name = selected_project["name"]
-        else:
-            choice = Prompt.ask(
-                "Select project",
-                choices=[str(i) for i in range(1, len(projects) + 2)],
-            )
-            idx = int(choice)
-            if idx <= len(projects):
-                project_name = projects[idx - 1]["name"]
-    else:
-        console.print("\nNo projects found for this team.")
-
-    # Step 5: Auto-detect workspace slug
+    # Step 4: Auto-detect workspace slug
     console.print("\nDetecting workspace...", end=" ")
     try:
         org = client.get_organization()
@@ -860,12 +819,11 @@ def _run_interactive_init(
         console.print("[yellow]could not auto-detect[/yellow]")
         workspace = Prompt.ask("Enter your Linear workspace slug")
 
-    # Step 6: Generate files
+    # Step 5: Generate files
     config_content = _generate_config_yaml(
         team_key=team_key,
         team_name=team_name,
         workspace=workspace,
-        project_name=project_name,
     )
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -878,15 +836,12 @@ def _run_interactive_init(
     # Summary
     console.print(f"\n[bold]Configuration summary:[/bold]")
     console.print(f"  Team:      {team_name} ({team_key})")
-    if project_name:
-        console.print(f"  Project:   {project_name}")
     console.print(f"  Workspace: {workspace}")
     console.print(
         "\n[dim]Next steps:[/dim]"
     )
     console.print(
-        "[dim]  1. Edit the 'projects' section in config.yaml to set "
-        "your base_dir, worktree_prefix, and slots.[/dim]"
+        "[dim]  1. Run 'botfarm add-project' to configure your first project.[/dim]"
     )
     # TODO: Add an interactive identity setup prompt here.
     # Ask the user if they want to configure separate coder/reviewer
@@ -915,8 +870,8 @@ def _run_interactive_init(
 def init(path, non_interactive):
     """Set up botfarm configuration interactively.
 
-    Connects to the Linear API to discover teams, projects, and workspace
-    slug, then generates config.yaml and .env with the correct values.
+    Connects to the Linear API to discover teams and workspace slug,
+    then generates config.yaml and .env with the correct values.
 
     Use --non-interactive to just create template files without API calls.
     """
