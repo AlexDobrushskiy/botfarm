@@ -13,6 +13,8 @@ from botfarm.cli import (
     _extract_repo_name,
     _find_projects_insert_point,
     _format_project_entry,
+    _is_placeholder_project,
+    _remove_project_entry_text,
     _run_readiness_checks,
     _yaml_scalar,
     main,
@@ -28,12 +30,14 @@ def runner():
 @pytest.fixture()
 def config_dir(tmp_path):
     """Create a tmp config dir with a minimal valid config.yaml."""
+    base_dir = tmp_path / "existing-proj-repo"
+    base_dir.mkdir()
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         "projects:\n"
         "  - name: existing-proj\n"
         "    linear_team: SMA\n"
-        "    base_dir: /tmp/existing\n"
+        f"    base_dir: {base_dir}\n"
         "    worktree_prefix: existing-slot-\n"
         "    slots: [1]\n"
         "linear:\n"
@@ -104,6 +108,147 @@ class TestExtractRepoName:
 
     def test_plain_name(self):
         assert _extract_repo_name("my-repo") == "my-repo"
+
+
+# ---------------------------------------------------------------------------
+# _is_placeholder_project
+# ---------------------------------------------------------------------------
+
+
+class TestIsPlaceholderProject:
+    def test_known_name_nonexistent_base_dir(self):
+        entry = {"name": "my-project", "base_dir": "/tmp/nonexistent-dir-xyz-9999"}
+        assert _is_placeholder_project(entry) is True
+
+    def test_known_name_existing_base_dir(self, tmp_path):
+        """Known init name but directory exists — not a placeholder."""
+        entry = {"name": "my-project", "base_dir": str(tmp_path)}
+        assert _is_placeholder_project(entry) is False
+
+    def test_known_name_empty_base_dir(self):
+        entry = {"name": "my-project", "base_dir": ""}
+        assert _is_placeholder_project(entry) is True
+
+    def test_known_name_missing_base_dir(self):
+        entry = {"name": "project"}
+        assert _is_placeholder_project(entry) is True
+
+    def test_unknown_name_not_placeholder(self):
+        """Non-default name is never a placeholder, even if base_dir is missing."""
+        entry = {"name": "production-api", "base_dir": "/tmp/nonexistent-dir-xyz-9999"}
+        assert _is_placeholder_project(entry) is False
+
+    def test_tilde_expanded(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        (tmp_path / "my-project").mkdir()
+        entry = {"name": "my-project", "base_dir": "~/my-project"}
+        assert _is_placeholder_project(entry) is False
+
+    def test_deleted_repo_under_botfarm_dir_not_placeholder(self, tmp_path, monkeypatch):
+        """Known init name under ~/.botfarm/projects/ is not a placeholder."""
+        botfarm_dir = tmp_path / ".botfarm"
+        botfarm_dir.mkdir()
+        monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_DIR", botfarm_dir)
+        entry = {
+            "name": "my-project",
+            "base_dir": str(botfarm_dir / "projects" / "my-project" / "repo"),
+        }
+        assert _is_placeholder_project(entry) is False
+
+
+# ---------------------------------------------------------------------------
+# _remove_project_entry_text
+# ---------------------------------------------------------------------------
+
+
+class TestRemoveProjectEntryText:
+    def test_removes_single_entry(self):
+        raw = (
+            "projects:\n"
+            "  - name: my-project\n"
+            "    linear_team: TEAM\n"
+            "    base_dir: ~/my-project\n"
+            "    worktree_prefix: my-project-slot-\n"
+            "    slots: [1, 2]\n"
+            "\n"
+            "linear:\n"
+            "  api_key: test\n"
+        )
+        result = _remove_project_entry_text(raw, "my-project")
+        data = yaml.safe_load(result)
+        # projects key should remain but be empty/null
+        assert "linear" in data
+        assert data.get("projects") is None or data.get("projects") == []
+
+    def test_removes_first_of_two_entries(self):
+        raw = (
+            "projects:\n"
+            "  - name: placeholder\n"
+            "    linear_team: TEAM\n"
+            "    slots: [1]\n"
+            "  - name: real-project\n"
+            "    linear_team: SMA\n"
+            "    slots: [1, 2]\n"
+        )
+        result = _remove_project_entry_text(raw, "placeholder")
+        data = yaml.safe_load(result)
+        assert len(data["projects"]) == 1
+        assert data["projects"][0]["name"] == "real-project"
+
+    def test_removes_second_of_two_entries(self):
+        raw = (
+            "projects:\n"
+            "  - name: real-project\n"
+            "    linear_team: SMA\n"
+            "    slots: [1]\n"
+            "  - name: placeholder\n"
+            "    linear_team: TEAM\n"
+            "    slots: [1, 2]\n"
+        )
+        result = _remove_project_entry_text(raw, "placeholder")
+        data = yaml.safe_load(result)
+        assert len(data["projects"]) == 1
+        assert data["projects"][0]["name"] == "real-project"
+
+    def test_preserves_comments(self):
+        raw = (
+            "# Header comment\n"
+            "projects:\n"
+            "  - name: my-project\n"
+            "    linear_team: TEAM  # inline comment\n"
+            "    slots: [1]\n"
+            "\n"
+            "# Section comment\n"
+            "linear:\n"
+            "  api_key: test\n"
+        )
+        result = _remove_project_entry_text(raw, "my-project")
+        assert "# Header comment" in result
+        assert "# Section comment" in result
+
+    def test_no_match_returns_unchanged(self):
+        raw = "projects:\n  - name: real\n    slots: [1]\n"
+        assert _remove_project_entry_text(raw, "nonexistent") == raw
+
+    def test_handles_quoted_name(self):
+        raw = (
+            "projects:\n"
+            '  - name: "my-project"\n'
+            "    slots: [1]\n"
+        )
+        result = _remove_project_entry_text(raw, "my-project")
+        data = yaml.safe_load(result)
+        assert data.get("projects") is None or data.get("projects") == []
+
+    def test_handles_inline_comment_on_name(self):
+        raw = (
+            "projects:\n"
+            "  - name: my-project  # placeholder\n"
+            "    slots: [1]\n"
+        )
+        result = _remove_project_entry_text(raw, "my-project")
+        data = yaml.safe_load(result)
+        assert data.get("projects") is None or data.get("projects") == []
 
 
 # ---------------------------------------------------------------------------
@@ -341,6 +486,81 @@ class TestAppendProjectToConfig:
         assert added["name"] == "another-project"
         assert added["linear_team"] == "ENG"
         assert added["linear_project"] == "Engineering"
+
+    def test_replaces_placeholder_entry(self, tmp_path):
+        """Verify that replace_names removes placeholder and adds new entry."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "# Botfarm configuration\n"
+            "projects:\n"
+            "  - name: my-project\n"
+            "    linear_team: TEAM\n"
+            "    base_dir: ~/my-project\n"
+            "    worktree_prefix: my-project-slot-\n"
+            "    slots: [1, 2]\n"
+            "\n"
+            "linear:\n"
+            "  api_key: test\n"
+        )
+        project = {
+            "name": "real-project",
+            "linear_team": "SMA",
+            "base_dir": "/tmp/real",
+            "worktree_prefix": "real-slot-",
+            "slots": [1],
+            "linear_project": "Bot farm",
+        }
+        _append_project_to_config(
+            config_path, project, replace_names=frozenset({"my-project"}),
+        )
+
+        result = config_path.read_text()
+        assert "# Botfarm configuration" in result
+        data = yaml.safe_load(result)
+        assert len(data["projects"]) == 1
+        assert data["projects"][0]["name"] == "real-project"
+        assert data["projects"][0]["linear_project"] == "Bot farm"
+        # Placeholder must be gone
+        names = [p["name"] for p in data["projects"]]
+        assert "my-project" not in names
+
+    def test_replaces_placeholder_preserves_other_projects(self, tmp_path):
+        """Verify replace_names only removes specified entries."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "projects:\n"
+            "  - name: my-project\n"
+            "    linear_team: TEAM\n"
+            "    base_dir: ~/my-project\n"
+            "    worktree_prefix: my-project-slot-\n"
+            "    slots: [1]\n"
+            "  - name: existing\n"
+            "    linear_team: SMA\n"
+            "    base_dir: /tmp/existing\n"
+            "    worktree_prefix: existing-slot-\n"
+            "    slots: [1]\n"
+            "\n"
+            "linear:\n"
+            "  api_key: test\n"
+        )
+        project = {
+            "name": "new-proj",
+            "linear_team": "ENG",
+            "base_dir": "/tmp/new",
+            "worktree_prefix": "new-slot-",
+            "slots": [1, 2],
+            "linear_project": "",
+        }
+        _append_project_to_config(
+            config_path, project, replace_names=frozenset({"my-project"}),
+        )
+
+        data = yaml.safe_load(config_path.read_text())
+        names = [p["name"] for p in data["projects"]]
+        assert "my-project" not in names
+        assert "existing" in names
+        assert "new-proj" in names
+        assert len(data["projects"]) == 2
 
     def test_handles_empty_projects_list(self, tmp_path):
         """Verify handling when projects key exists but list is empty."""
@@ -764,3 +984,67 @@ class TestAddProjectCommand:
 
         assert result.exit_code == 0, result.output
         assert "init-claude-md" in result.output
+
+    def test_placeholder_replaced_on_add(self, runner, tmp_path, monkeypatch):
+        """Test that placeholder projects are detected and replaced."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "projects:\n"
+            "  - name: my-project\n"
+            "    linear_team: TEAM\n"
+            "    base_dir: ~/my-project\n"
+            "    worktree_prefix: my-project-slot-\n"
+            "    slots: [1, 2]\n"
+            "\n"
+            "linear:\n"
+            "  api_key: test-key\n"
+        )
+        monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_DIR", tmp_path / ".botfarm")
+        monkeypatch.delenv("LINEAR_API_KEY", raising=False)
+
+        with patch("botfarm.cli.subprocess.run", side_effect=_make_mock_run()):
+            result = runner.invoke(
+                main,
+                ["add-project", "--config", str(config_path)],
+                input="git@github.com:user/real-app.git\nreal-app\nSMA\n\n1\ny\n",
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "placeholder" in result.output.lower()
+
+        config = yaml.safe_load(config_path.read_text())
+        names = [p["name"] for p in config["projects"]]
+        assert "my-project" not in names
+        assert "real-app" in names
+
+    def test_placeholder_name_allowed_for_new_project(self, runner, tmp_path, monkeypatch):
+        """Test that user can reuse the placeholder name for the real project."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "projects:\n"
+            "  - name: my-project\n"
+            "    linear_team: TEAM\n"
+            "    base_dir: ~/my-project\n"
+            "    worktree_prefix: my-project-slot-\n"
+            "    slots: [1, 2]\n"
+            "\n"
+            "linear:\n"
+            "  api_key: test-key\n"
+        )
+        monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_DIR", tmp_path / ".botfarm")
+        monkeypatch.delenv("LINEAR_API_KEY", raising=False)
+
+        with patch("botfarm.cli.subprocess.run", side_effect=_make_mock_run()):
+            # User enters "my-project" as the name — should be allowed
+            result = runner.invoke(
+                main,
+                ["add-project", "--config", str(config_path)],
+                input="git@github.com:user/my-project.git\nmy-project\nSMA\n\n1\ny\n",
+            )
+
+        assert result.exit_code == 0, result.output
+        config = yaml.safe_load(config_path.read_text())
+        # Should have exactly one project — the real one
+        assert len(config["projects"]) == 1
+        assert config["projects"][0]["name"] == "my-project"
+        assert config["projects"][0]["linear_team"] == "SMA"
