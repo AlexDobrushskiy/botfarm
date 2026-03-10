@@ -1104,13 +1104,94 @@ def _write_text_atomic(path: Path, text: str) -> None:
         raise
 
 
-def _append_project_to_config(config_path: Path, project_dict: dict) -> None:
+def _remove_project_entry_text(raw: str, name: str) -> str:
+    """Remove a single project list entry by name from config text.
+
+    Preserves all comments and formatting outside the removed entry.
+    Returns the raw text unchanged if the entry is not found.
+    """
+    lines = raw.split("\n")
+    entry_start = None
+    entry_end = None
+
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped.startswith("- name:"):
+            continue
+        name_part = stripped.split(":", 1)[1]
+        # Strip inline YAML comment
+        if " #" in name_part:
+            name_part = name_part.split(" #")[0]
+        entry_name = name_part.strip().strip('"').strip("'")
+
+        if entry_name != name:
+            continue
+
+        entry_start = i
+        # Scan forward to find the end of this entry
+        for j in range(i + 1, len(lines)):
+            jstripped = lines[j].strip()
+            # Next list item
+            if jstripped.startswith("- "):
+                entry_end = j
+                break
+            # Left the indented section (non-empty, non-indented line)
+            if jstripped and lines[j] and not lines[j][0].isspace():
+                entry_end = j
+                break
+        if entry_end is None:
+            entry_end = len(lines)
+        break
+
+    if entry_start is None:
+        return raw
+
+    new_lines = lines[:entry_start] + lines[entry_end:]
+    return "\n".join(new_lines)
+
+
+def _is_placeholder_project(entry: dict) -> bool:
+    """Check if a project entry is an unconfigured placeholder.
+
+    A placeholder is a project whose base_dir doesn't exist on disk and
+    was NOT created by ``add-project``.  Projects created by
+    ``add-project`` live under ``~/.botfarm/projects/`` — those are kept
+    even if the repo directory was later deleted.
+    """
+    base_dir = entry.get("base_dir", "")
+    if not base_dir:
+        return True
+    expanded = Path(base_dir).expanduser()
+    if expanded.is_dir():
+        return False
+    # Don't flag projects under the botfarm projects directory — they
+    # were likely added via add-project and the repo was later removed.
+    botfarm_projects = (DEFAULT_CONFIG_DIR / "projects").expanduser()
+    try:
+        expanded.relative_to(botfarm_projects)
+        return False
+    except ValueError:
+        return True
+
+
+def _append_project_to_config(
+    config_path: Path,
+    project_dict: dict,
+    *,
+    replace_names: frozenset[str] = frozenset(),
+) -> None:
     """Append a new project entry to the config.yaml projects list.
 
     Uses text-based insertion instead of full YAML rewrite to preserve
-    comments in the config file.
+    comments in the config file.  When *replace_names* is given, those
+    project entries are removed before the new entry is appended.
     """
     raw = config_path.read_text()
+
+    # Remove placeholder entries first
+    for name in replace_names:
+        raw = _remove_project_entry_text(raw, name)
+
     data = yaml.safe_load(raw)
     if not isinstance(data, dict):
         raise ConfigError("Config file must contain a YAML mapping")
@@ -1156,7 +1237,7 @@ def _extract_repo_name(repo_url: str) -> str:
     match = re.search(r"[:/]([^/]+)$", url)
     if match:
         return match.group(1)
-    return url.split("/")[-1] or "my-project"
+    return url.split("/")[-1] or "project"
 
 
 def _clone_repo(repo_url: str, target_dir: Path) -> None:
@@ -1228,13 +1309,26 @@ def add_project(config_path):
             "Run 'botfarm init' first to create a default config."
         )
 
-    # Load existing config to check for duplicate names
+    # Load existing config to check for duplicate names and placeholders
     raw = cfg_path.read_text()
     data = yaml.safe_load(raw) or {}
-    existing_projects = data.get("projects", [])
+    existing_projects = data.get("projects") or []
+
+    # Detect placeholder entries (base_dir doesn't exist)
+    placeholder_names: set[str] = set()
+    for p in existing_projects:
+        if isinstance(p, dict) and "name" in p and _is_placeholder_project(p):
+            placeholder_names.add(p["name"])
+
+    if placeholder_names:
+        console.print(
+            f"[yellow]Detected placeholder project(s) that will be replaced: "
+            f"{', '.join(sorted(placeholder_names))}[/yellow]"
+        )
+
     existing_names = {
         p["name"] for p in existing_projects if isinstance(p, dict) and "name" in p
-    }
+    } - placeholder_names
 
     # Load the Linear API key from environment
     linear_api_key = os.environ.get("LINEAR_API_KEY", "")
@@ -1365,7 +1459,9 @@ def add_project(config_path):
             "linear_project": linear_project,
         }
 
-        _append_project_to_config(cfg_path, project_dict)
+        _append_project_to_config(
+            cfg_path, project_dict, replace_names=frozenset(placeholder_names),
+        )
     except (click.ClickException, ConfigError, OSError) as exc:
         console.print(f"\n[bold red]Error — cleaning up...[/bold red]")
         if created_projects_dir and projects_dir.exists():
