@@ -1376,6 +1376,18 @@ class TestValidateStructuralConfigUpdates:
         errors = validate_structural_config_updates(updates, config)
         assert any("list of integers" in e for e in errors)
 
+    def test_projects_duplicate_linear_project_via_update(self):
+        config = _make_config_for_structural()
+        # project-b already has linear_project="My Filter"; updating
+        # project-a to the same value should be rejected
+        updates = {
+            "projects": [
+                {"name": "project-a", "linear_project": "My Filter"},
+            ],
+        }
+        errors = validate_structural_config_updates(updates, config)
+        assert any("Duplicate linear_project" in e for e in errors)
+
 
 # --- write_structural_config_updates ---
 

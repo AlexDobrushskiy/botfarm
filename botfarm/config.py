@@ -1129,6 +1129,27 @@ def _validate_project_updates(
                 f"cannot edit fields: {sorted(extra)}"
             )
 
+    # Check for duplicate linear_project values after applying updates
+    if not errors:
+        # Map project name -> updated linear_project (only for projects
+        # whose update explicitly includes the field)
+        lp_overrides: dict[str, str] = {}
+        for u in project_updates:
+            if isinstance(u, dict) and "linear_project" in u:
+                lp_overrides[u["name"]] = u["linear_project"]
+
+        seen_lp: dict[str, str] = {}  # linear_project -> project name
+        for p in config.projects:
+            lp = lp_overrides.get(p.name, p.linear_project)
+            if lp:
+                if lp in seen_lp:
+                    errors.append(
+                        f"Duplicate linear_project filter {lp!r}: "
+                        f"used by both '{seen_lp[lp]}' and '{p.name}'. "
+                        f"Each project must have a unique linear_project filter"
+                    )
+                seen_lp[lp] = p.name
+
     return errors
 
 
