@@ -61,6 +61,7 @@ projects:
 
 **Rules:**
 - `name` must be unique across all projects
+- `linear_project` must be unique across all projects (when set). If two projects share the same `linear_project` filter, tickets may be dispatched to the wrong repo.
 - `slots` must be a list of integers with no duplicates within each project
 - Slot IDs are per-project — different projects can reuse the same IDs
 

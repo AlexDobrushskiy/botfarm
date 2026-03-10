@@ -224,6 +224,88 @@ def test_load_config_duplicate_project_names(tmp_path):
         load_config(config_path)
 
 
+def test_load_config_duplicate_linear_project(tmp_path):
+    data = {
+        "projects": [
+            {
+                "name": "proj-a",
+                "linear_team": "TST",
+                "base_dir": "~/a",
+                "worktree_prefix": "a-slot-",
+                "slots": [1],
+                "linear_project": "Shared Project",
+            },
+            {
+                "name": "proj-b",
+                "linear_team": "TST",
+                "base_dir": "~/b",
+                "worktree_prefix": "b-slot-",
+                "slots": [2],
+                "linear_project": "Shared Project",
+            },
+        ],
+        "linear": {"api_key": "test-key"},
+    }
+    config_path = _write_config(tmp_path, data)
+    with pytest.raises(ConfigError, match="Duplicate linear_project filter"):
+        load_config(config_path)
+
+
+def test_load_config_duplicate_linear_project_empty_ok(tmp_path):
+    """Empty linear_project on multiple projects should not trigger duplicate error."""
+    data = {
+        "projects": [
+            {
+                "name": "proj-a",
+                "linear_team": "TST",
+                "base_dir": "~/a",
+                "worktree_prefix": "a-slot-",
+                "slots": [1],
+            },
+            {
+                "name": "proj-b",
+                "linear_team": "TST",
+                "base_dir": "~/b",
+                "worktree_prefix": "b-slot-",
+                "slots": [2],
+            },
+        ],
+        "linear": {"api_key": "test-key"},
+    }
+    config_path = _write_config(tmp_path, data)
+    config = load_config(config_path)
+    assert len(config.projects) == 2
+
+
+def test_load_config_different_linear_projects_ok(tmp_path):
+    """Different linear_project values across projects should be fine."""
+    data = {
+        "projects": [
+            {
+                "name": "proj-a",
+                "linear_team": "TST",
+                "base_dir": "~/a",
+                "worktree_prefix": "a-slot-",
+                "slots": [1],
+                "linear_project": "Project Alpha",
+            },
+            {
+                "name": "proj-b",
+                "linear_team": "TST",
+                "base_dir": "~/b",
+                "worktree_prefix": "b-slot-",
+                "slots": [2],
+                "linear_project": "Project Beta",
+            },
+        ],
+        "linear": {"api_key": "test-key"},
+    }
+    config_path = _write_config(tmp_path, data)
+    config = load_config(config_path)
+    assert config.projects[0].linear_project == "Project Alpha"
+    assert config.projects[1].linear_project == "Project Beta"
+
+
 def test_load_config_env_var_expansion(tmp_path, monkeypatch):
     monkeypatch.setenv("TEST_API_KEY", "sk-test-123")
     data = {
@@ -1293,6 +1375,18 @@ class TestValidateStructuralConfigUpdates:
         updates = {"projects": [{"name": "project-a", "slots": [True]}]}
         errors = validate_structural_config_updates(updates, config)
         assert any("list of integers" in e for e in errors)
+
+    def test_projects_duplicate_linear_project_via_update(self):
+        config = _make_config_for_structural()
+        # project-b already has linear_project="My Filter"; updating
+        # project-a to the same value should be rejected
+        updates = {
+            "projects": [
+                {"name": "project-a", "linear_project": "My Filter"},
+            ],
+        }
+        errors = validate_structural_config_updates(updates, config)
+        assert any("Duplicate linear_project" in e for e in errors)
 
 
 # --- write_structural_config_updates ---

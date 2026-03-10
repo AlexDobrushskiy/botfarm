@@ -388,6 +388,18 @@ def _validate_config(config: BotfarmConfig) -> None:
     if len(names) != len(set(names)):
         raise ConfigError("Duplicate project names found")
 
+    # Check for duplicate linear_project filters (ignoring empty/unset)
+    seen_lp: dict[str, str] = {}  # linear_project -> project name
+    for p in config.projects:
+        if p.linear_project:
+            if p.linear_project in seen_lp:
+                raise ConfigError(
+                    f"Duplicate linear_project filter {p.linear_project!r}: "
+                    f"used by both '{seen_lp[p.linear_project]}' and '{p.name}'. "
+                    f"Each project must have a unique linear_project filter"
+                )
+            seen_lp[p.linear_project] = p.name
+
     for attr in ("pause_five_hour_threshold", "pause_seven_day_threshold"):
         val = getattr(config.usage_limits, attr)
         if not (0.0 <= val <= 1.0):
@@ -1116,6 +1128,27 @@ def _validate_project_updates(
                 f"projects[{i}] '{name}': "
                 f"cannot edit fields: {sorted(extra)}"
             )
+
+    # Check for duplicate linear_project values after applying updates
+    if not errors:
+        # Map project name -> updated linear_project (only for projects
+        # whose update explicitly includes the field)
+        lp_overrides: dict[str, str] = {}
+        for u in project_updates:
+            if isinstance(u, dict) and "linear_project" in u:
+                lp_overrides[u["name"]] = u["linear_project"]
+
+        seen_lp: dict[str, str] = {}  # linear_project -> project name
+        for p in config.projects:
+            lp = lp_overrides.get(p.name, p.linear_project)
+            if lp:
+                if lp in seen_lp:
+                    errors.append(
+                        f"Duplicate linear_project filter {lp!r}: "
+                        f"used by both '{seen_lp[lp]}' and '{p.name}'. "
+                        f"Each project must have a unique linear_project filter"
+                    )
+                seen_lp[lp] = p.name
 
     return errors
 
