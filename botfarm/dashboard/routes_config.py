@@ -92,6 +92,12 @@ def _full_config_values(app) -> dict:
             "webhook_format": cfg.notifications.webhook_format,
             "rate_limit_seconds": cfg.notifications.rate_limit_seconds,
         },
+        "daily_summary": {
+            "enabled": cfg.daily_summary.enabled,
+            "send_hour": cfg.daily_summary.send_hour,
+            "min_tasks_for_summary": cfg.daily_summary.min_tasks_for_summary,
+            "webhook_url": _mask_secret(cfg.daily_summary.webhook_url),
+        },
         "dashboard": {
             "enabled": cfg.dashboard.enabled,
             "host": cfg.dashboard.host,
@@ -133,6 +139,12 @@ def _config_values(app) -> dict:
             "codex_reviewer_model": cfg.agents.codex_reviewer_model,
             "codex_reviewer_reasoning_effort": cfg.agents.codex_reviewer_reasoning_effort,
             "codex_reviewer_timeout_minutes": cfg.agents.codex_reviewer_timeout_minutes,
+        },
+        "daily_summary": {
+            "enabled": cfg.daily_summary.enabled,
+            "send_hour": cfg.daily_summary.send_hour,
+            "min_tasks_for_summary": cfg.daily_summary.min_tasks_for_summary,
+            "webhook_url": _mask_secret(cfg.daily_summary.webhook_url),
         },
         "notifications": {
             "webhook_url": cfg.notifications.webhook_url,

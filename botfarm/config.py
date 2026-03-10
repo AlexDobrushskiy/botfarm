@@ -799,6 +799,9 @@ EDITABLE_FIELDS: dict[tuple[str, str], dict] = {
     ("agents", "codex_reviewer_reasoning_effort"): {"type": "str"},
     ("agents", "codex_reviewer_timeout_minutes"): {"type": "int", "min": 1},
     ("agents", "codex_reviewer_skip_on_reiteration"): {"type": "bool"},
+    ("daily_summary", "enabled"): {"type": "bool"},
+    ("daily_summary", "send_hour"): {"type": "int", "min": 0, "max": 23},
+    ("daily_summary", "min_tasks_for_summary"): {"type": "int", "min": 0},
 }
 
 # Fields that require a supervisor restart to take effect.
@@ -807,6 +810,7 @@ STRUCTURAL_FIELDS: dict[tuple[str, str], dict] = {
     ("notifications", "webhook_url"): {"type": "str"},
     ("notifications", "webhook_format"): {"type": "choice", "choices": ["slack", "discord"]},
     ("notifications", "rate_limit_seconds"): {"type": "int", "min": 0},
+    ("daily_summary", "webhook_url"): {"type": "str"},
 }
 
 
@@ -891,8 +895,11 @@ def _validate_field(
     elif spec["type"] == "int":
         if not isinstance(value, int) or isinstance(value, bool):
             errors.append(f"'{field_name}' must be an integer, got {type(value).__name__}")
-        elif "min" in spec and value < spec["min"]:
-            errors.append(f"'{field_name}' must be at least {spec['min']}")
+        else:
+            if "min" in spec and value < spec["min"]:
+                errors.append(f"'{field_name}' must be at least {spec['min']}")
+            if "max" in spec and value > spec["max"]:
+                errors.append(f"'{field_name}' must be at most {spec['max']}")
 
     elif spec["type"] == "float":
         if not isinstance(value, (int, float)) or isinstance(value, bool):
@@ -945,6 +952,7 @@ def apply_config_updates(config: BotfarmConfig, updates: dict) -> None:
         "linear.capacity_monitoring": config.linear.capacity_monitoring,
         "usage_limits": config.usage_limits,
         "agents": config.agents,
+        "daily_summary": config.daily_summary,
     }
     for section, fields in updates.items():
         obj = section_map.get(section)

@@ -1909,6 +1909,77 @@ class TestAutoRestartBanner:
         assert app.state.auto_restart is True
 
 
+# --- Daily Summary config ---
+
+
+class TestDailySummaryConfig:
+    @pytest.fixture()
+    def config_client(self, tmp_path):
+        db_path = tmp_path / "test.db"
+        conn = init_db(db_path)
+        conn.close()
+        cfg = BotfarmConfig(
+            projects=[ProjectConfig(
+                name="proj", linear_team="team",
+                base_dir="/tmp/test", worktree_prefix="/tmp/test-wt",
+                slots=[1],
+            )],
+            linear=LinearConfig(api_key="test-key", workspace="test"),
+            source_path=str(tmp_path / "config.yaml"),
+        )
+        yaml_data = {"daily_summary": {}}
+        (tmp_path / "config.yaml").write_text(yaml.dump(yaml_data))
+        app = create_app(db_path=db_path, botfarm_config=cfg)
+        return TestClient(app)
+
+    def test_config_view_shows_daily_summary(self, config_client):
+        """Config view tab should show Daily Summary section."""
+        resp = config_client.get("/config")
+        assert resp.status_code == 200
+        assert "Daily Summary" in resp.text
+        assert "Send hour" in resp.text
+
+    def test_config_edit_shows_daily_summary_fields(self, config_client):
+        """Config edit tab should have daily summary form fields."""
+        resp = config_client.get("/config")
+        assert resp.status_code == 200
+        body = resp.text
+        assert "daily_summary-enabled" in body
+        assert "daily_summary-send_hour" in body
+        assert "daily_summary-min_tasks_for_summary" in body
+
+    def test_update_daily_summary_fields(self, config_client):
+        """POST to /config with daily_summary fields should succeed."""
+        resp = config_client.post(
+            "/config",
+            json={"daily_summary": {
+                "enabled": True,
+                "send_hour": 9,
+                "min_tasks_for_summary": 3,
+            }},
+        )
+        assert resp.status_code == 200
+        assert "success" in resp.text
+
+    def test_send_hour_out_of_range_rejected(self, config_client):
+        """send_hour > 23 should be rejected."""
+        resp = config_client.post(
+            "/config",
+            json={"daily_summary": {"send_hour": 25}},
+        )
+        assert resp.status_code == 422
+        assert "at most 23" in resp.text
+
+    def test_negative_min_tasks_rejected(self, config_client):
+        """Negative min_tasks_for_summary should be rejected."""
+        resp = config_client.post(
+            "/config",
+            json={"daily_summary": {"min_tasks_for_summary": -1}},
+        )
+        assert resp.status_code == 422
+        assert "at least 0" in resp.text
+
+
 # --- Workflow page ---
 
 
