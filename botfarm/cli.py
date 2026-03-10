@@ -1349,14 +1349,22 @@ def _scan_readme(project_dir: Path) -> str:
                 text = readme_path.read_text(errors="replace")
             except OSError:
                 continue
-            # Extract first non-heading, non-empty paragraph
-            for line in text.splitlines():
+            lines = text.splitlines()
+            for i, line in enumerate(lines):
                 stripped = line.strip()
                 if not stripped:
                     continue
-                # Skip markdown headings, badges, HTML tags
-                if stripped.startswith(("#", "![", "<", "---", "===")):
+                # Skip markdown headings, badges (including linked [![), HTML tags
+                if stripped.startswith(("#", "![", "[![", "<", "---", "===")):
                     continue
+                # Skip RST underline/overline markers (lines of =, -, ~, etc.)
+                if all(c in "=-~^\"'+`" for c in stripped):
+                    continue
+                # Skip RST titles (text followed by underline on the next line)
+                if i + 1 < len(lines):
+                    next_line = lines[i + 1].strip()
+                    if next_line and all(c in "=-~^\"'+`" for c in next_line):
+                        continue
                 # Truncate long descriptions
                 if len(stripped) > 300:
                     stripped = stripped[:297] + "..."

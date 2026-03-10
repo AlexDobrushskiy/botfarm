@@ -79,6 +79,24 @@ class TestScanReadme:
         )
         assert _scan_readme(tmp_path) == "Actual description."
 
+    def test_skips_linked_badges(self, tmp_path):
+        (tmp_path / "README.md").write_text(
+            "# Title\n[![build](https://img.shields.io/badge)](https://ci)\nActual description.\n"
+        )
+        assert _scan_readme(tmp_path) == "Actual description."
+
+    def test_rst_skips_title(self, tmp_path):
+        (tmp_path / "README.rst").write_text(
+            "My Project\n==========\n\nA Python library for things.\n"
+        )
+        assert _scan_readme(tmp_path) == "A Python library for things."
+
+    def test_rst_skips_overline_title(self, tmp_path):
+        (tmp_path / "README.rst").write_text(
+            "==========\nMy Project\n==========\n\nA Python library for things.\n"
+        )
+        assert _scan_readme(tmp_path) == "A Python library for things."
+
     def test_fallback_when_no_readme(self, tmp_path):
         assert _scan_readme(tmp_path) == "Describe your project here."
 
