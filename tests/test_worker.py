@@ -396,6 +396,12 @@ def _make_stream_ndjson(
 
 
 class TestRunClaudeStreaming:
+    @pytest.fixture(autouse=True)
+    def _mock_claude_which(self):
+        """Mock shutil.which so tests don't depend on claude being installed."""
+        with patch("botfarm.worker_claude.shutil.which", return_value="/usr/local/bin/claude"):
+            yield
+
     @patch("botfarm.worker_claude.subprocess.Popen")
     def test_success_parses_result(self, mock_popen, tmp_path):
         ndjson = _make_stream_ndjson()

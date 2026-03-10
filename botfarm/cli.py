@@ -56,6 +56,20 @@ from botfarm.usage import refresh_usage_snapshot
 ENV_FILE_PATH = DEFAULT_CONFIG_DIR / ".env"
 
 
+def _ensure_local_bin_in_path() -> None:
+    """Prepend ``~/.local/bin`` to ``PATH`` if not already present.
+
+    Non-login shells (``nohup``, systemd) don't source ``.bashrc``, so
+    ``~/.local/bin`` — the default install location for Claude Code —
+    may be missing from PATH.  Called early in ``botfarm run`` so that
+    all child processes (workers, Claude, Codex, gh) inherit the fix.
+    """
+    local_bin = str(Path.home() / ".local" / "bin")
+    current_path = os.environ.get("PATH", "")
+    if local_bin not in current_path.split(os.pathsep):
+        os.environ["PATH"] = local_bin + os.pathsep + current_path
+
+
 def _resolve_paths(
     config_path: Path | None,
 ) -> tuple[Path, "BotfarmConfig | None"]:
@@ -1521,6 +1535,11 @@ def run(config_path, log_dir, auto_restart):
 
     from botfarm.git_update import UPDATE_EXIT_CODE
     from botfarm.supervisor import DEFAULT_LOG_DIR, Supervisor, setup_logging
+
+    # Ensure ~/.local/bin is in PATH — non-login shells (nohup, systemd)
+    # don't source .bashrc so Claude Code (typically installed there) would
+    # not be found by workers.
+    _ensure_local_bin_in_path()
 
     cfg_path = config_path or DEFAULT_CONFIG_PATH
     try:
