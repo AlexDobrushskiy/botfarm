@@ -442,6 +442,19 @@ class Supervisor(RecoveryMixin, OperationsMixin):
         """Whether the supervisor is in degraded mode."""
         return self._degraded
 
+    def _handle_preflight_rerun(self) -> None:
+        """Handle manual preflight rerun request in normal mode."""
+        if not self._rerun_preflight_event.is_set():
+            return
+        self._rerun_preflight_event.clear()
+        logger.info("Re-running preflight checks (manual request)…")
+        results = run_preflight_checks(self._config, env=self._git_env)
+        log_preflight_summary(results)
+        self._last_preflight_rerun = time.monotonic()
+
+        with self._preflight_lock:
+            self._preflight_results = results
+
     def _tick(self) -> None:
         """One iteration of the supervisor loop."""
         # Merge worker-written stage updates from disk before any state writes
@@ -465,6 +478,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
             self._handle_add_slot_requests,
             self._handle_manual_pause_resume,
             self._handle_update_request,
+            self._handle_preflight_rerun,
             self._check_timeouts,
             self._handle_finished_slots,
             self._handle_paused_slots,
