@@ -1665,6 +1665,43 @@ class TestRerunPreflightAPI:
         assert resp.status_code == 503
 
 
+class TestPreflightResultsAPI:
+    def test_returns_check_data(self, db_file):
+        """GET /api/preflight-results returns JSON with checks, degraded, failed_critical."""
+        results = [
+            _FakeCheckResult("git_repo:proj", True, "OK"),
+            _FakeCheckResult("linear_api", False, "Unreachable", critical=True),
+            _FakeCheckResult("credentials", False, "Missing", critical=False),
+        ]
+        app = create_app(
+            db_path=db_file,
+            get_preflight_results=lambda: results,
+            get_degraded=lambda: True,
+        )
+        client = TestClient(app)
+        resp = client.get("/api/preflight-results")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["degraded"] is True
+        assert data["failed_critical"] == 1
+        assert len(data["checks"]) == 3
+        assert data["checks"][0]["name"] == "git_repo:proj"
+        assert data["checks"][0]["passed"] is True
+        assert data["checks"][1]["passed"] is False
+        assert data["checks"][1]["critical"] is True
+
+    def test_returns_empty_when_no_callbacks(self, db_file):
+        """GET /api/preflight-results returns empty checks when no supervisor connected."""
+        app = create_app(db_path=db_file)
+        client = TestClient(app)
+        resp = client.get("/api/preflight-results")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["degraded"] is False
+        assert data["checks"] == []
+        assert data["failed_critical"] == 0
+
+
 # --- Codex JSONL formatter ---
 
 

@@ -2019,6 +2019,115 @@ def uninstall_service_cmd():
     click.echo("Service stopped, disabled, and removed.")
 
 
+@main.command()
+@click.option(
+    "--config",
+    "config_path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help="Path to config file.",
+)
+@click.option(
+    "--no-rerun",
+    is_flag=True,
+    default=False,
+    help="Only show current results without triggering a re-run.",
+)
+def preflight(config_path, no_rerun):
+    """Trigger a preflight check re-run on the running supervisor and show results.
+
+    Communicates with the supervisor's dashboard API to request a preflight
+    re-evaluation, then displays the results. Requires the dashboard to be
+    enabled and running.
+    """
+    import time
+    from urllib.error import URLError
+    from urllib.request import Request, urlopen
+
+    _, cfg = _resolve_paths(config_path)
+    if cfg is None:
+        raise click.ClickException(
+            f"Config file not found at {config_path or DEFAULT_CONFIG_PATH}. "
+            "Cannot determine dashboard port."
+        )
+
+    if not cfg.dashboard.enabled:
+        raise click.ClickException(
+            "Dashboard is not enabled in config. "
+            "Enable it to use the preflight command."
+        )
+
+    base_url = f"http://127.0.0.1:{cfg.dashboard.port}"
+    console = Console()
+
+    # Trigger re-run unless --no-rerun
+    if not no_rerun:
+        console.print("Requesting preflight re-run…", style="bold")
+        try:
+            req = Request(f"{base_url}/api/rerun-preflight", method="POST", data=b"")
+            with urlopen(req, timeout=5) as resp:
+                if resp.status != 200:
+                    raise click.ClickException(
+                        f"Re-run request failed with status {resp.status}"
+                    )
+        except URLError as exc:
+            raise click.ClickException(
+                f"Cannot reach dashboard at {base_url} — is the supervisor running? ({exc.reason})"
+            ) from exc
+
+        # Wait for checks to complete (they're fast — typically <2s)
+        time.sleep(2)
+
+    # Fetch results
+    try:
+        req = Request(f"{base_url}/api/preflight-results")
+        with urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read())
+    except URLError as exc:
+        raise click.ClickException(
+            f"Cannot reach dashboard at {base_url} — is the supervisor running? ({exc.reason})"
+        ) from exc
+
+    checks = data.get("checks", [])
+    degraded = data.get("degraded", False)
+    failed_critical = data.get("failed_critical", 0)
+
+    if not checks:
+        console.print("[yellow]No preflight results available yet.[/yellow]")
+        return
+
+    # Display results
+    table = Table(title="Preflight Checks")
+    table.add_column("Status", justify="center", width=6)
+    table.add_column("Check", style="bold")
+    table.add_column("Message")
+    table.add_column("Severity", justify="center")
+
+    for check in checks:
+        if check["passed"]:
+            icon = "[green]✓[/green]"
+        elif check["critical"]:
+            icon = "[red]✗[/red]"
+        else:
+            icon = "[yellow]⚠[/yellow]"
+
+        severity = "[red]Blocking[/red]" if check["critical"] else "[yellow]Warning[/yellow]"
+        if check["passed"]:
+            severity = "-"
+
+        table.add_row(icon, check["name"], check["message"], severity)
+
+    console.print(table)
+
+    if degraded:
+        console.print(
+            f"\n[bold red]DEGRADED MODE:[/bold red] "
+            f"{failed_critical} critical check(s) failed — dispatch is paused."
+        )
+    else:
+        console.print("\n[bold green]All critical checks passed.[/bold green]")
+
+
 def _days_ago(iso_timestamp: str | None) -> int:
     """Return how many days ago an ISO timestamp is, or 0 if unparseable."""
     if not iso_timestamp:

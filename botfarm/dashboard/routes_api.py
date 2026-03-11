@@ -324,6 +324,13 @@ def api_rerun_preflight(request: Request):
     return JSONResponse({"status": "ok"})
 
 
+@router.get("/api/preflight-results")
+def api_preflight_results(request: Request):
+    """Return preflight check results as JSON (used by CLI ``botfarm preflight``)."""
+    data = _get_preflight_data(request.app)
+    return JSONResponse(data)
+
+
 # --- Workflow API ---
 
 def _pipeline_to_dict(conn: sqlite3.Connection, pipeline_id: int) -> dict | None:
