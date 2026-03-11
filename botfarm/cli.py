@@ -1049,18 +1049,39 @@ def _yaml_scalar(value):
     return s
 
 
-def _format_project_entry(project_dict: dict) -> str:
-    """Format a project dict as a YAML list item (2-space indented)."""
+def _detect_project_indent(raw: str) -> int:
+    """Detect the indentation level of project list items in config text.
+
+    Returns the number of leading spaces before ``- name:`` in the first
+    project entry found under the top-level ``projects:`` key.  Defaults
+    to 2 when no existing entries are found.
+    """
+    in_projects = False
+    for line in raw.split("\n"):
+        stripped = line.strip()
+        if not in_projects:
+            if stripped.startswith("projects:") and line and not line[0].isspace():
+                in_projects = True
+            continue
+        if stripped.startswith("- name:"):
+            return len(line) - len(line.lstrip())
+    return 2
+
+
+def _format_project_entry(project_dict: dict, indent: int = 2) -> str:
+    """Format a project dict as a YAML list item."""
+    prefix = " " * indent
+    cont = " " * (indent + 2)
     lines = [
-        f"  - name: {_yaml_scalar(project_dict['name'])}",
-        f"    linear_team: {_yaml_scalar(project_dict['linear_team'])}",
-        f"    base_dir: {_yaml_scalar(project_dict['base_dir'])}",
-        f"    worktree_prefix: {_yaml_scalar(project_dict['worktree_prefix'])}",
-        f"    slots: {_yaml_scalar(project_dict['slots'])}",
+        f"{prefix}- name: {_yaml_scalar(project_dict['name'])}",
+        f"{cont}linear_team: {_yaml_scalar(project_dict['linear_team'])}",
+        f"{cont}base_dir: {_yaml_scalar(project_dict['base_dir'])}",
+        f"{cont}worktree_prefix: {_yaml_scalar(project_dict['worktree_prefix'])}",
+        f"{cont}slots: {_yaml_scalar(project_dict['slots'])}",
     ]
     if project_dict.get("linear_project"):
         lines.append(
-            f"    linear_project: {_yaml_scalar(project_dict['linear_project'])}"
+            f"{cont}linear_project: {_yaml_scalar(project_dict['linear_project'])}"
         )
     return "\n".join(lines)
 
@@ -1078,11 +1099,11 @@ def _find_projects_insert_point(lines: list[str]) -> int:
                 last_content_idx = i
             continue
 
-        # Any non-empty, non-indented line ends the projects section
-        if stripped and not line[0].isspace():
+        # Any non-empty, non-indented line that isn't a list item ends the section
+        if stripped and not line[0].isspace() and not stripped.startswith("- "):
             break
 
-        # Only count indented content lines as part of the projects section
+        # Count content lines as part of the projects section
         if stripped:
             last_content_idx = i
 
@@ -1195,6 +1216,9 @@ def _append_project_to_config(
     """
     raw = config_path.read_text()
 
+    # Detect indent style before removing entries (removals may empty the list)
+    indent = _detect_project_indent(raw)
+
     # Remove placeholder entries first
     for name in replace_names:
         raw = _remove_project_entry_text(raw, name)
@@ -1210,7 +1234,7 @@ def _append_project_to_config(
             "fix the config file manually before adding a project"
         )
 
-    entry_text = _format_project_entry(project_dict)
+    entry_text = _format_project_entry(project_dict, indent=indent)
 
     if "projects" not in data:
         new_raw = f"projects:\n{entry_text}\n\n{raw}"
