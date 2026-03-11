@@ -906,7 +906,14 @@ class TestPreflightCommand:
 
     def test_supervisor_not_running(self, runner, db_file, monkeypatch):
         """preflight fails gracefully when supervisor is not reachable."""
-        cfg = self._make_config(port=19999)  # unlikely to be in use
+        from http.server import HTTPServer, BaseHTTPRequestHandler
+        # Bind to port 0, read the assigned port, then immediately close —
+        # guarantees no server is listening on that port.
+        tmp_server = HTTPServer(("127.0.0.1", 0), BaseHTTPRequestHandler)
+        unused_port = tmp_server.server_address[1]
+        tmp_server.server_close()
+
+        cfg = self._make_config(port=unused_port)
         monkeypatch.setattr(
             "botfarm.cli._resolve_paths", lambda _: (db_file, cfg)
         )
@@ -916,11 +923,6 @@ class TestPreflightCommand:
 
     def test_successful_rerun(self, runner, db_file, monkeypatch):
         """preflight displays results after a successful re-run."""
-        cfg = self._make_config(port=19998)
-        monkeypatch.setattr(
-            "botfarm.cli._resolve_paths", lambda _: (db_file, cfg)
-        )
-
         api_results = {
             "degraded": False,
             "failed_critical": 0,
@@ -952,7 +954,11 @@ class TestPreflightCommand:
             def log_message(self, *args):
                 pass  # suppress log noise
 
-        server = HTTPServer(("127.0.0.1", 19998), Handler)
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        cfg = self._make_config(port=server.server_address[1])
+        monkeypatch.setattr(
+            "botfarm.cli._resolve_paths", lambda _: (db_file, cfg)
+        )
         t = threading.Thread(target=server.serve_forever, daemon=True)
         t.start()
         try:
@@ -965,11 +971,6 @@ class TestPreflightCommand:
 
     def test_degraded_mode_display(self, runner, db_file, monkeypatch):
         """preflight shows degraded mode warning when checks fail."""
-        cfg = self._make_config(port=19997)
-        monkeypatch.setattr(
-            "botfarm.cli._resolve_paths", lambda _: (db_file, cfg)
-        )
-
         api_results = {
             "degraded": True,
             "failed_critical": 1,
@@ -999,7 +1000,11 @@ class TestPreflightCommand:
             def log_message(self, *args):
                 pass
 
-        server = HTTPServer(("127.0.0.1", 19997), Handler)
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        cfg = self._make_config(port=server.server_address[1])
+        monkeypatch.setattr(
+            "botfarm.cli._resolve_paths", lambda _: (db_file, cfg)
+        )
         t = threading.Thread(target=server.serve_forever, daemon=True)
         t.start()
         try:
@@ -1012,11 +1017,6 @@ class TestPreflightCommand:
 
     def test_no_rerun_flag(self, runner, db_file, monkeypatch):
         """preflight --no-rerun skips the POST and only fetches results."""
-        cfg = self._make_config(port=19996)
-        monkeypatch.setattr(
-            "botfarm.cli._resolve_paths", lambda _: (db_file, cfg)
-        )
-
         api_results = {
             "degraded": False,
             "failed_critical": 0,
@@ -1049,7 +1049,11 @@ class TestPreflightCommand:
             def log_message(self, *args):
                 pass
 
-        server = HTTPServer(("127.0.0.1", 19996), Handler)
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        cfg = self._make_config(port=server.server_address[1])
+        monkeypatch.setattr(
+            "botfarm.cli._resolve_paths", lambda _: (db_file, cfg)
+        )
         t = threading.Thread(target=server.serve_forever, daemon=True)
         t.start()
         try:

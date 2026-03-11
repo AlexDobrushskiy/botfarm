@@ -2041,7 +2041,7 @@ def preflight(config_path, no_rerun):
     enabled and running.
     """
     import time
-    from urllib.error import URLError
+    from urllib.error import HTTPError, URLError
     from urllib.request import Request, urlopen
 
     _, cfg = _resolve_paths(config_path)
@@ -2065,11 +2065,17 @@ def preflight(config_path, no_rerun):
         console.print("Requesting preflight re-run…", style="bold")
         try:
             req = Request(f"{base_url}/api/rerun-preflight", method="POST", data=b"")
-            with urlopen(req, timeout=5) as resp:
-                if resp.status != 200:
-                    raise click.ClickException(
-                        f"Re-run request failed with status {resp.status}"
-                    )
+            with urlopen(req, timeout=5):
+                pass
+        except HTTPError as exc:
+            if exc.code == 503:
+                raise click.ClickException(
+                    "Dashboard is running but preflight re-run is not available "
+                    "(supervisor may not be fully connected)."
+                ) from exc
+            raise click.ClickException(
+                f"Re-run request failed with HTTP {exc.code}"
+            ) from exc
         except URLError as exc:
             raise click.ClickException(
                 f"Cannot reach dashboard at {base_url} — is the supervisor running? ({exc.reason})"
@@ -2083,6 +2089,15 @@ def preflight(config_path, no_rerun):
         req = Request(f"{base_url}/api/preflight-results")
         with urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read())
+    except HTTPError as exc:
+        if exc.code == 503:
+            raise click.ClickException(
+                "Dashboard is running but preflight results are not available "
+                "(supervisor may not be fully connected)."
+            ) from exc
+        raise click.ClickException(
+            f"Failed to fetch preflight results (HTTP {exc.code})"
+        ) from exc
     except URLError as exc:
         raise click.ClickException(
             f"Cannot reach dashboard at {base_url} — is the supervisor running? ({exc.reason})"
