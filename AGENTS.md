@@ -40,6 +40,11 @@ Key patterns:
 - Usage limits pause slots mid-pipeline and resume from interrupted stage
 - Claude invoked via `claude -p --output-format json` subprocess
 
+Design principle — no-restart operations:
+- Users should never need to restart the supervisor for routine operational changes (adding collaborators, fixing credentials, config tweaks)
+- New features should support hot-reload or explicit refresh where possible — avoid designs that require a supervisor restart to pick up changes
+- Preflight checks, config, and runtime state should be refreshable without losing in-flight work
+
 Design principle — code over agents:
 - If something can be done deterministically by code (DB queries, API calls, git/gh commands, state checks), do it in supervisor/worker code — not via agent prompt
 - Reserve agent prompts for work that genuinely requires autonomous reasoning (implementation, code review, conflict resolution, investigation)
