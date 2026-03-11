@@ -10,6 +10,7 @@ from click.testing import CliRunner
 
 from botfarm.cli import (
     _append_project_to_config,
+    _detect_project_indent,
     _extract_repo_name,
     _find_projects_insert_point,
     _format_project_entry,
@@ -249,6 +250,70 @@ class TestRemoveProjectEntryText:
         result = _remove_project_entry_text(raw, "my-project")
         data = yaml.safe_load(result)
         assert data.get("projects") is None or data.get("projects") == []
+
+    def test_removes_entry_zero_indent(self):
+        raw = (
+            "projects:\n"
+            "- name: my-project\n"
+            "  linear_team: TEAM\n"
+            "  base_dir: ~/my-project\n"
+            "  slots: [1, 2]\n"
+            "\n"
+            "linear:\n"
+            "  api_key: test\n"
+        )
+        result = _remove_project_entry_text(raw, "my-project")
+        data = yaml.safe_load(result)
+        assert "linear" in data
+        assert data.get("projects") is None or data.get("projects") == []
+
+    def test_removes_first_of_two_zero_indent(self):
+        raw = (
+            "projects:\n"
+            "- name: placeholder\n"
+            "  linear_team: TEAM\n"
+            "  slots: [1]\n"
+            "- name: real-project\n"
+            "  linear_team: SMA\n"
+            "  slots: [1, 2]\n"
+        )
+        result = _remove_project_entry_text(raw, "placeholder")
+        data = yaml.safe_load(result)
+        assert len(data["projects"]) == 1
+        assert data["projects"][0]["name"] == "real-project"
+
+
+# ---------------------------------------------------------------------------
+# _detect_project_indent
+# ---------------------------------------------------------------------------
+
+
+class TestDetectProjectIndent:
+    def test_two_space_indent(self):
+        raw = "projects:\n  - name: foo\n    slots: [1]\n"
+        assert _detect_project_indent(raw) == 2
+
+    def test_zero_indent(self):
+        raw = "projects:\n- name: foo\n  slots: [1]\n"
+        assert _detect_project_indent(raw) == 0
+
+    def test_no_entries_defaults_to_two(self):
+        raw = "projects: []\nlinear:\n  api_key: test\n"
+        assert _detect_project_indent(raw) == 2
+
+    def test_no_projects_key_defaults_to_two(self):
+        raw = "linear:\n  api_key: test\n"
+        assert _detect_project_indent(raw) == 2
+
+    def test_ignores_nested_name_keys(self):
+        raw = (
+            "linear:\n"
+            "  - name: not-a-project\n"
+            "projects:\n"
+            "- name: real\n"
+            "  slots: [1]\n"
+        )
+        assert _detect_project_indent(raw) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -562,6 +627,71 @@ class TestAppendProjectToConfig:
         assert "new-proj" in names
         assert len(data["projects"]) == 2
 
+    def test_appends_project_zero_indent(self, tmp_path):
+        """Appending to a 0-indent config matches the existing style."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "projects:\n"
+            "- name: existing-proj\n"
+            "  linear_team: SMA\n"
+            "  base_dir: /tmp/existing\n"
+            "  worktree_prefix: existing-slot-\n"
+            "  slots: [1]\n"
+            "\n"
+            "linear:\n"
+            "  api_key: test-key\n"
+        )
+        project = {
+            "name": "new-proj",
+            "linear_team": "TEAM",
+            "base_dir": "/tmp/new",
+            "worktree_prefix": "new-slot-",
+            "slots": [1, 2],
+            "linear_project": "",
+        }
+        _append_project_to_config(config_path, project)
+
+        result = config_path.read_text()
+        data = yaml.safe_load(result)
+        assert len(data["projects"]) == 2
+        assert data["projects"][1]["name"] == "new-proj"
+        # New entry should use 0-indent to match existing style
+        assert "\n- name: new-proj\n" in result
+
+    def test_replaces_placeholder_zero_indent(self, tmp_path):
+        """Replacing a placeholder in 0-indent config preserves style."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "projects:\n"
+            "- name: my-project\n"
+            "  linear_team: TEAM\n"
+            "  base_dir: ~/my-project\n"
+            "  worktree_prefix: my-project-slot-\n"
+            "  slots: [1, 2]\n"
+            "\n"
+            "linear:\n"
+            "  api_key: test\n"
+        )
+        project = {
+            "name": "real-project",
+            "linear_team": "SMA",
+            "base_dir": "/tmp/real",
+            "worktree_prefix": "real-slot-",
+            "slots": [1],
+            "linear_project": "Bot farm",
+        }
+        _append_project_to_config(
+            config_path, project, replace_names=frozenset({"my-project"}),
+        )
+
+        result = config_path.read_text()
+        data = yaml.safe_load(result)
+        assert len(data["projects"]) == 1
+        assert data["projects"][0]["name"] == "real-project"
+        assert "my-project" not in result
+        # Should use 0-indent style
+        assert "\n- name: real-project\n" in result
+
     def test_handles_empty_projects_list(self, tmp_path):
         """Verify handling when projects key exists but list is empty."""
         config_path = tmp_path / "config.yaml"
@@ -660,6 +790,21 @@ class TestFormatProjectEntry:
         data = yaml.safe_load("projects:\n" + result)
         assert data["projects"][0]["linear_project"] == "Bot farm"
 
+    def test_zero_indent(self):
+        project = {
+            "name": "my-app",
+            "linear_team": "SMA",
+            "base_dir": "~/my-app",
+            "worktree_prefix": "my-app-slot-",
+            "slots": [1, 2],
+            "linear_project": "",
+        }
+        result = _format_project_entry(project, indent=0)
+        assert result.startswith("- name:")
+        data = yaml.safe_load("projects:\n" + result)
+        assert data["projects"][0]["name"] == "my-app"
+        assert data["projects"][0]["slots"] == [1, 2]
+
 
 # ---------------------------------------------------------------------------
 # _find_projects_insert_point
@@ -709,6 +854,40 @@ class TestFindProjectsInsertPoint:
         ]
         # Comment is between sections — insert point is after project content
         assert _find_projects_insert_point(lines) == 3
+
+    def test_zero_indent_followed_by_section(self):
+        lines = [
+            "projects:",
+            "- name: proj1",
+            "  slots: [1]",
+            "",
+            "linear:",
+            "  api_key: test",
+        ]
+        assert _find_projects_insert_point(lines) == 3
+
+    def test_zero_indent_multiple_entries(self):
+        lines = [
+            "projects:",
+            "- name: proj1",
+            "  slots: [1]",
+            "- name: proj2",
+            "  slots: [2]",
+            "",
+            "linear:",
+            "  api_key: test",
+        ]
+        assert _find_projects_insert_point(lines) == 5
+
+    def test_zero_indent_at_end_of_file(self):
+        lines = [
+            "linear:",
+            "  api_key: test",
+            "projects:",
+            "- name: proj1",
+            "  slots: [1]",
+        ]
+        assert _find_projects_insert_point(lines) == 5
 
 
 # ---------------------------------------------------------------------------
