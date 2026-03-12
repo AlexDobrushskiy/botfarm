@@ -84,6 +84,7 @@ def _full_config_values(app) -> dict:
         },
         "usage_limits": {
             "enabled": cfg.usage_limits.enabled,
+            "poll_interval_seconds": cfg.usage_limits.poll_interval_seconds,
             "pause_five_hour_threshold": cfg.usage_limits.pause_five_hour_threshold,
             "pause_seven_day_threshold": cfg.usage_limits.pause_seven_day_threshold,
         },
@@ -123,6 +124,7 @@ def _config_values(app) -> dict:
         },
         "usage_limits": {
             "enabled": cfg.usage_limits.enabled,
+            "poll_interval_seconds": cfg.usage_limits.poll_interval_seconds,
             "pause_five_hour_threshold": cfg.usage_limits.pause_five_hour_threshold,
             "pause_seven_day_threshold": cfg.usage_limits.pause_seven_day_threshold,
         },
