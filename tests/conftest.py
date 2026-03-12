@@ -45,6 +45,12 @@ def tmp_config(tmp_path):
 def supervisor(tmp_config, tmp_path, monkeypatch):
     """Create a Supervisor with mocked pollers (no real Linear calls)."""
     monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "test.db"))
+    # Redirect slot DB paths to tmp_path for test isolation (avoid parallel
+    # workers colliding on the real ~/.botfarm/slots/ directory).
+    monkeypatch.setattr(
+        Supervisor, "_slot_db_path",
+        staticmethod(lambda pn, sid: str(tmp_path / "slots" / f"{pn}-{sid}" / "botfarm.db")),
+    )
     mock_poller = MagicMock()
     mock_poller.project_name = "test-project"
     mock_poller.poll.return_value = PollResult(candidates=[], blocked=[], auto_close_parents=[])

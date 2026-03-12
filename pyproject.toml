@@ -19,7 +19,7 @@ dependencies = [
 ]
 
 [tool.setuptools.package-data]
-botfarm = ["migrations/*.sql"]
+botfarm = ["migrations/*.sql", "static/fonts/*.woff2"]
 
 [project.scripts]
 botfarm = "botfarm.cli:main"

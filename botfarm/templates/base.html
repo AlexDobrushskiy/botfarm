@@ -8,8 +8,43 @@
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
     <script src="https://unpkg.com/htmx.org@2.0.4"></script>
     <style>
+        /* Inter — body text (400 regular, 500 medium) */
+        @font-face {
+            font-family: 'Inter';
+            font-style: normal;
+            font-weight: 400 500;
+            font-display: swap;
+            src: url(/static/fonts/inter-latin.woff2) format('woff2');
+            unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+        }
+        @font-face {
+            font-family: 'Inter';
+            font-style: normal;
+            font-weight: 400 500;
+            font-display: swap;
+            src: url(/static/fonts/inter-latin-ext.woff2) format('woff2');
+            unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+        }
+        /* Inter Tight — headings (600 semibold, 700 bold, 800 extrabold) */
+        @font-face {
+            font-family: 'Inter Tight';
+            font-style: normal;
+            font-weight: 600 800;
+            font-display: swap;
+            src: url(/static/fonts/inter-tight-latin.woff2) format('woff2');
+            unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+        }
+        @font-face {
+            font-family: 'Inter Tight';
+            font-style: normal;
+            font-weight: 600 800;
+            font-display: swap;
+            src: url(/static/fonts/inter-tight-latin-ext.woff2) format('woff2');
+            unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+        }
         :root {
             --pico-font-size: 15px;
+            --pico-font-family: 'Inter', system-ui, -apple-system, sans-serif;
             --pico-primary: #F06B3A;
             --pico-primary-hover: #FF8555;
             --pico-primary-focus: rgba(240, 107, 58, 0.25);
@@ -17,6 +52,9 @@
             --pico-primary-background: #F06B3A;
             --pico-primary-hover-background: #FF8555;
             --pico-primary-underline: rgba(240, 107, 58, 0.5);
+        }
+        h1, h2, h3, h4, h5, h6 {
+            font-family: 'Inter Tight', 'Inter', system-ui, -apple-system, sans-serif;
         }
         nav ul { margin-bottom: 0; }
         nav.container-fluid a[aria-current="page"] {
