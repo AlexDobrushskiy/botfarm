@@ -8,6 +8,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from botfarm.config import BotfarmConfig, DashboardConfig
@@ -17,7 +18,7 @@ from .routes_config import router as config_router
 from .routes_logs import router as logs_router
 from .routes_main import router as main_router
 from .routes_partials import router as partials_router
-from .state import TEMPLATES_DIR, init_caches
+from .state import STATIC_DIR, TEMPLATES_DIR, init_caches
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +88,7 @@ def create_app(
         The banner endpoint checks this to reset the "Updating..." state.
     """
     app = FastAPI(title="Botfarm Dashboard", docs_url=None, redoc_url=None)
+    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
     # Store paths on app state for route handlers
     app.state.db_path = Path(db_path).expanduser()

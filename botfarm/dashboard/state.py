@@ -23,6 +23,7 @@ from botfarm.db import (
 logger = logging.getLogger(__name__)
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
+STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
 
 def get_db(app: FastAPI) -> sqlite3.Connection | None:
