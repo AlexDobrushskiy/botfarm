@@ -40,14 +40,17 @@ logger = logging.getLogger(__name__)
 # PR checks timeout (seconds)
 DEFAULT_PR_CHECKS_TIMEOUT = 600
 
-_INVESTIGATION_LABEL = "investigation"
+_NO_PR_LABELS = {"investigation", "refactoring analysis"}
 
 
 def _is_investigation(labels: list[str] | None) -> bool:
-    """Return True if the ticket has an Investigation label (case-insensitive)."""
+    """Return True if the ticket has a no-PR label (case-insensitive).
+
+    Recognized labels: ``Investigation``, ``Refactoring Analysis``.
+    """
     if not labels:
         return False
-    return any(lbl.lower() == _INVESTIGATION_LABEL for lbl in labels)
+    return any(lbl.lower() in _NO_PR_LABELS for lbl in labels)
 
 
 def _build_implement_prompt(ticket_id: str, labels: list[str] | None) -> str:
