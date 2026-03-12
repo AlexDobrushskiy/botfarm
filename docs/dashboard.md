@@ -42,15 +42,16 @@ Supervisor process
 
 Dashboard code lives under `botfarm/dashboard/`:
 
-| Module | Purpose |
-|--------|---------|
-| `dashboard.py` | App factory, startup, Jinja2 config |
-| `state.py` | Shared state reads, caching, rate limiting |
-| `routes_main.py` | Page routes (index, history, tickets, usage, metrics, etc.) |
-| `routes_partials.py` | htmx polling endpoints (slots, queue, badges, banners) |
-| `routes_api.py` | Control API + workflow CRUD + cleanup operations |
-| `routes_logs.py` | Log viewer pages + SSE streaming |
-| `routes_config.py` | Runtime config viewing and editing |
+| Module | Lines | Purpose |
+|--------|-------|---------|
+| `app.py` | ~185 | App factory, startup, Jinja2 config, callback injection |
+| `state.py` | ~415 | SQLite read helpers, caching, rate limiting, state enrichment |
+| `routes_main.py` | ~1021 | Page routes (index, history, tickets, usage, metrics, etc.) |
+| `routes_partials.py` | ~247 | htmx polling endpoints (slots, queue, badges, banners) |
+| `routes_api.py` | ~700 | Control API + workflow CRUD + cleanup operations |
+| `routes_logs.py` | ~273 | Log viewer pages + SSE streaming |
+| `routes_config.py` | ~554 | Runtime config/identity viewing and editing |
+| `formatters.py` | ~319 | NDJSON parsing, log line formatting, pipeline state computation |
 
 ## Routes
 
@@ -66,7 +67,8 @@ Dashboard code lives under `botfarm/dashboard/`:
 | `GET /usage` | Usage trends (24h / 7d / 30d time ranges) |
 | `GET /metrics` | Aggregate metrics — success rate, costs, Codex review stats |
 | `GET /workflow` | Pipeline editor — stages, loops, connections |
-| `GET /config` | Configuration viewer/editor |
+| `GET /config` | Configuration viewer/editor (View/Edit tabs) |
+| `GET /identities` | Identity credentials management |
 | `GET /cleanup` | Bulk ticket archival/deletion interface |
 | `GET /health` | Preflight check results |
 | `GET /task/{id}/logs[/{stage}]` | Log viewer with SSE streaming |
@@ -91,15 +93,16 @@ Dashboard code lives under `botfarm/dashboard/`:
 
 ### Control API
 
-| Route | Description |
-|-------|-------------|
-| `POST /api/pause` | Pause dispatch globally |
-| `POST /api/resume` | Resume dispatch |
-| `POST /api/slot/stop` | Stop a specific slot (validates ticket not reassigned) |
-| `POST /api/project/pause` | Pause dispatch for one project |
-| `POST /api/project/resume` | Resume project dispatch |
-| `POST /api/update` | Git pull + restart (requires `auto_restart=true`) |
-| `POST /api/rerun-preflight` | Re-run preflight checks |
+| Route | Body | Description |
+|-------|------|-------------|
+| `POST /api/pause` | — | Pause dispatch globally |
+| `POST /api/resume` | — | Resume dispatch |
+| `POST /api/slot/stop` | `{project, slot_id, ticket_id?}` | Stop a specific slot (validates ticket not reassigned; 409 if slot reassigned) |
+| `POST /api/slot/add` | `{project}` | Add a new slot to a running project |
+| `POST /api/project/pause` | query: `?project=X&reason=Y` | Pause dispatch for one project |
+| `POST /api/project/resume` | query: `?project=X` | Resume project dispatch |
+| `POST /api/update` | — | Git pull + restart (requires `auto_restart=true`) |
+| `POST /api/rerun-preflight` | — | Re-run preflight checks |
 
 ### Workflow CRUD
 
@@ -135,11 +138,14 @@ Dashboard code lives under `botfarm/dashboard/`:
 | `GET /api/logs/{ticket_id}/{stage}/stream` | SSE stream of live log lines |
 | `GET /api/logs/{ticket_id}/{stage}/content` | Download complete log file |
 
-### Config API
+### Config & Identity API
 
-| Route | Description |
-|-------|-------------|
-| `POST /config` | Update runtime-editable config values |
+| Route | Method | Body | Description |
+|-------|--------|------|-------------|
+| `POST /config` | POST | JSON | Update runtime-editable config values + YAML + DB sync |
+| `GET /identities` | GET | — | Identity credentials page |
+| `POST /identities` | POST | JSON | Update identity secrets (env + YAML) |
+| `GET /api/preflight-results` | GET | — | Preflight check results (used by CLI `botfarm preflight`) |
 
 ## Templates
 
@@ -158,6 +164,118 @@ Templates live under `botfarm/dashboard/templates/`:
 5. **htmx swaps** fragment into the DOM (no full page reload)
 
 For log streaming, the SSE endpoint tail-reads the active log file in a loop (`asyncio.sleep(0.5)`), parsing NDJSON lines into formatted HTML events. The stream closes when the stage completes.
+
+## Supervisor Callbacks
+
+The dashboard communicates with the supervisor via typed callback functions injected at startup in `app.py`:
+
+```python
+start_dashboard(
+    config,
+    db_path=...,
+    on_pause=supervisor.request_pause,
+    on_resume=supervisor.request_resume,
+    on_update=supervisor.request_update,
+    on_rerun_preflight=supervisor.request_rerun_preflight,
+    on_stop_slot=supervisor.request_stop_slot,
+    on_add_slot=supervisor.request_add_slot,
+    get_preflight_results=supervisor.get_preflight_results,
+    get_degraded=supervisor.get_degraded,
+)
+```
+
+Callbacks are stored on `app.state` and called synchronously from route handlers. The supervisor queues the action for its next main-loop iteration (thread-safe via locks + `_wake_event`).
+
+**Adding a new callback:** Add parameter to `start_dashboard()` and `_create_app()` in `app.py`, store on `app.state`, call from the relevant route handler.
+
+## Form & Input Patterns
+
+Existing patterns for user input in the dashboard. Follow these when adding new forms.
+
+### Config Form (`/config`)
+- Page has View/Edit tabs (JS `switchTab()` function)
+- Form fields: `<input>`, `<select>`, number inputs
+- JS collects values into nested JSON object
+- `POST /config` with JSON body → returns HTML fragment (success/warning/error `<div>`)
+- Structural changes (projects, slots) require restart and show a yellow warning banner
+- Runtime changes apply immediately to in-memory config + YAML
+
+### Identities Form (`/identities`)
+- Text inputs for GitHub token, SSH key, Linear API key, git author
+- Secrets masked in display (first 4 + last 4 chars)
+- JS collects into `{coder: {field: value}, reviewer: {field: value}}`
+- `POST /identities` → secrets written to `.env`, plain fields to `config.yaml`
+- Response: HTML fragment with status message
+
+### Stop Slot Modal (`/` index page)
+- Native `<dialog>` element (`#stop-slot-modal`)
+- Opened via `openStopModal(el)` — extracts `data-*` attributes from button
+- Confirmed via `confirmStopSlot()` — `POST /api/slot/stop` with fetch
+- Server validates slot state + ticket ID match (race condition protection)
+- Toast notification on success/error
+
+### Add Slot Button (`/` index page)
+- One button per project: "+ Add Slot (ProjectName)"
+- JS `confirm()` dialog → `POST /api/slot/add` with `{project}`
+- All buttons disabled during request, re-enabled after
+- Toast notification on result
+
+### General Pattern
+```javascript
+// 1. Collect form data into JSON object
+const data = { field1: el.value, field2: el2.value };
+// 2. POST via fetch
+const resp = await fetch('/api/endpoint', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(data),
+});
+// 3. Handle response (JSON for API, HTML fragment for forms)
+if (resp.ok) showToast('Success', 'success');
+else showToast('Error: ' + (await resp.json()).error, 'error');
+```
+
+## JavaScript Helpers
+
+All JS is vanilla (no framework) and lives inline in templates — primarily `base.html` (~150 lines).
+
+| Helper | Location | Purpose |
+|--------|----------|---------|
+| `showToast(message, type)` | `base.html` | 3-second notification popup (success/error/warning) |
+| `timeago(isoString)` | `base.html` | Formats ISO date as "5m ago", "2h ago", "Mar 12" |
+| `updateTimeagos()` | `base.html` | Updates all `[data-timeago]` elements (runs every 60s) |
+| `openStopModal(el)` | `index.html` | Opens stop-slot dialog, populates from `data-*` attributes |
+| `confirmStopSlot()` | `index.html` | Posts stop request, handles response |
+| `addSlot(project)` | `index.html` | Confirm + post add-slot request |
+| `switchTab(tab)` | `config.html` | Toggle View/Edit tabs |
+| Connection recovery | `base.html` | Exponential backoff retry (5s→10s→20s→30s cap) on htmx errors |
+| Countdown timers | `base.html` | Updates `[data-resume]` and `[data-reset]` countdowns every 10s |
+
+## State Access
+
+### Config (live, mutable)
+```python
+cfg = app.state.botfarm_config  # BotfarmConfig instance
+projects = [p.name for p in cfg.projects]
+poll_interval = cfg.linear.poll_interval_seconds
+```
+
+### SQLite (read-only)
+```python
+conn = get_db(app)          # Opens read-only connection (returns None if unavailable)
+state = read_state(app)     # Loads: slots, dispatch_paused, usage, queue, project pause states
+```
+
+### Rate-Limited External Calls
+- **Usage API refresh:** 60s cache via `refresh_and_get_usage(app)` — falls back to DB snapshot
+- **Git update check:** 60s cache via `check_commits_behind(app)`
+- Implemented via `app.state._last_*` timestamps with locks
+
+### State Enrichment (computed in route handlers)
+- Context fill % — from latest task_event
+- Pipeline progress per slot — completed/active/pending stages
+- Codex review status — from last stage_run exit_subtype
+- Capacity ratio — (issue_count / limit) × 100, color-coded
 
 ## Testing
 

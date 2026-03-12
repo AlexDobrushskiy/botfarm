@@ -359,9 +359,13 @@ dashboard:
 | Command | Description |
 |---|---|
 | `botfarm init` | Generate a starter config file |
+| `botfarm add-project` | Interactive wizard to add a new project (clone, worktrees, config) |
 | `botfarm run` | Start the supervisor (foreground) |
 | `botfarm status` | Show current slot states |
 | `botfarm history` | Show recent task history |
 | `botfarm limits` | Show current usage limit utilization |
+| `botfarm preflight` | Run preflight checks against config |
 
 All commands accept `--config <path>` to override the default config location.
+
+See `docs/cli-add-project.md` for detailed add-project implementation reference.

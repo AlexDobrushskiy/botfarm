@@ -31,7 +31,8 @@ Docs under `docs/`:
 - `competitors.md` — Competitor analysis
 - `codex-cli.md` — Codex CLI automation, approval, and non-interactive behavior
 - `refactoring-analysis.md` — Periodic refactoring analysis procedure for agents
-- `dashboard.md` — Dashboard architecture, route reference, templates, and data flow
+- `dashboard.md` — Dashboard architecture, route reference, templates, data flow, callbacks, form patterns, JS helpers
+- `cli-add-project.md` — CLI add-project command implementation, setup pipeline, helper functions, config writing
 - `usage-api-audit.md` — Usage API audit log, key blocking detection, and analysis queries
 
 Key patterns:
