@@ -54,7 +54,7 @@ from botfarm.worker_stages import (
     _run_ci_fix,
     # Re-exported for backward compatibility
     DEFAULT_PR_CHECKS_TIMEOUT as DEFAULT_PR_CHECKS_TIMEOUT,
-    _INVESTIGATION_LABEL as _INVESTIGATION_LABEL,
+    _NO_PR_LABELS as _NO_PR_LABELS,
     _build_claude_review_prompt as _build_claude_review_prompt,
     _build_codex_review_prompt as _build_codex_review_prompt,
     _build_implement_prompt as _build_implement_prompt,

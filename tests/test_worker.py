@@ -2957,6 +2957,16 @@ class TestIsInvestigation:
     def test_investigation_among_others(self):
         assert _is_investigation(["Bug", "Investigation", "Urgent"]) is True
 
+    def test_refactoring_analysis_label(self):
+        assert _is_investigation(["Refactoring Analysis"]) is True
+
+    def test_refactoring_analysis_case_insensitive(self):
+        assert _is_investigation(["refactoring analysis"]) is True
+        assert _is_investigation(["REFACTORING ANALYSIS"]) is True
+
+    def test_refactoring_analysis_among_others(self):
+        assert _is_investigation(["Bug", "Refactoring Analysis"]) is True
+
 
 class TestBuildImplementPrompt:
     def test_standard_prompt(self):
