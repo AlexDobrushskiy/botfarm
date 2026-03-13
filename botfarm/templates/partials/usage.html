@@ -46,9 +46,9 @@
 </div>
 {% endif %}
 {% if last_usage_check %}
-<small style="display: block; margin-top: 0.5rem;">Last checked: {{ elapsed(last_usage_check) }} ago</small>
+<small style="display: block; margin-top: 0.5rem;">Last polled: {{ elapsed(last_usage_check) }} ago</small>
 {% if usage_stale %}
-<br><small class="status-failed"><strong>Warning:</strong> usage data may be stale</small>
+<br><small class="status-failed"><strong>Warning:</strong> usage data may be stale — supervisor poller may not be running</small>
 {% endif %}
 {% endif %}
 {% else %}

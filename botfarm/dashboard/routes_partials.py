@@ -13,7 +13,6 @@ from .state import (
     context_fill_class,
     elapsed,
     get_capacity_data,
-    get_dashboard_last_fresh_time,
     get_db,
     linear_url,
     manual_pause_state,
@@ -102,12 +101,11 @@ def partial_usage(request: Request):
     app = request.app
     templates = request.app.state.templates
     state = read_state(app)
-    fresh = refresh_and_get_usage(app)
+    fresh, snapshot_at = refresh_and_get_usage(app)
     usage = fresh if fresh is not None else state.get("usage", {})
     dispatch_paused = state.get("dispatch_paused", False)
     dispatch_pause_reason = state.get("dispatch_pause_reason")
-    dashboard_checked = get_dashboard_last_fresh_time(app)
-    last_usage_check = dashboard_checked or state.get("last_usage_check")
+    last_usage_check = snapshot_at or state.get("last_usage_check")
     stale = usage_is_stale(last_usage_check)
     return templates.TemplateResponse("partials/usage.html", {
         "request": request,

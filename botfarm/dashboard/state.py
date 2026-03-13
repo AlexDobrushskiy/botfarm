@@ -75,25 +75,15 @@ def read_state(app: FastAPI) -> dict:
 
         paused, reason, heartbeat = load_dispatch_state(conn)
 
-        # Read latest usage snapshot as fallback for when API refresh
-        # is unavailable (replaces the old state.json usage field).
+        # Read latest usage snapshot — this is the primary source of usage
+        # data now that the dashboard reads from DB instead of polling the API.
         usage = {}
         last_usage_check = None
         usage_row = conn.execute(
             "SELECT * FROM usage_snapshots ORDER BY created_at DESC LIMIT 1"
         ).fetchone()
         if usage_row:
-            usage = {
-                "utilization_5h": usage_row["utilization_5h"],
-                "utilization_7d": usage_row["utilization_7d"],
-                "resets_at": usage_row["resets_at"],
-                "resets_at_5h": usage_row["resets_at"],
-                "resets_at_7d": usage_row["resets_at_7d"],
-                "extra_usage_enabled": bool(usage_row["extra_usage_enabled"]) if usage_row["extra_usage_enabled"] is not None else False,
-                "extra_usage_monthly_limit": usage_row["extra_usage_monthly_limit"],
-                "extra_usage_used_credits": usage_row["extra_usage_used_credits"],
-                "extra_usage_utilization": usage_row["extra_usage_utilization"],
-            }
+            usage = _row_to_usage_dict(usage_row)
             last_usage_check = usage_row["created_at"]
 
         # Read latest codex usage snapshot
@@ -311,7 +301,9 @@ def get_capacity_data(app: FastAPI) -> dict | None:
 
 # --- Constants for rate-limiting ---
 
-_USAGE_REFRESH_INTERVAL = 60  # seconds — rate-limit API calls
+_USAGE_CACHE_TTL = 30  # seconds — in-memory cache to avoid DB reads on every htmx poll
+_DB_SNAPSHOT_FRESHNESS = 600  # 10 minutes — only call API if snapshot is older
+_USAGE_STALE_THRESHOLD = 900  # 15 minutes — show staleness warning after this
 _UPDATE_CHECK_INTERVAL = 60  # seconds
 
 
@@ -322,22 +314,43 @@ def init_caches(app: FastAPI) -> None:
     (important for tests and when multiple apps coexist in one process).
     """
     app.state._usage_refresh_lock = threading.Lock()
-    app.state._last_usage_refresh = {"time": None, "data": None}
-    app.state._dashboard_last_fresh = {"time": None}
+    app.state._last_usage_refresh = {"time": None, "data": None, "snapshot_at": None}
     app.state._usage_poller = UsagePoller()
     app.state._update_check_lock = threading.Lock()
     app.state._last_update_check = {"time": None, "commits_behind": 0}
 
 
-def get_dashboard_last_fresh_time(app: FastAPI) -> str | None:
-    return app.state._dashboard_last_fresh["time"]
+def _snapshot_age_seconds(created_at_iso: str) -> float:
+    """Return the age in seconds of a usage snapshot given its ISO timestamp."""
+    dt = datetime.fromisoformat(created_at_iso.replace("Z", "+00:00"))
+    return (datetime.now(timezone.utc) - dt).total_seconds()
 
 
-def refresh_and_get_usage(app: FastAPI) -> dict | None:
-    """Call the usage API and return fresh data as a dict, or None on failure.
+def _row_to_usage_dict(row) -> dict:
+    """Convert a usage_snapshots DB row to a usage dict."""
+    return {
+        "utilization_5h": row["utilization_5h"],
+        "utilization_7d": row["utilization_7d"],
+        "resets_at_5h": row["resets_at"],
+        "resets_at_7d": row["resets_at_7d"],
+        "extra_usage_enabled": bool(row["extra_usage_enabled"]) if row["extra_usage_enabled"] is not None else False,
+        "extra_usage_monthly_limit": row["extra_usage_monthly_limit"],
+        "extra_usage_used_credits": row["extra_usage_used_credits"],
+        "extra_usage_utilization": row["extra_usage_utilization"],
+    }
 
-    Rate-limited to at most one API call per ``_USAGE_REFRESH_INTERVAL``
-    seconds to avoid hammering the API (htmx polls every 5 s).
+
+def refresh_and_get_usage(app: FastAPI) -> tuple[dict | None, str | None]:
+    """Return usage data and its snapshot timestamp, preferring DB snapshots.
+
+    The supervisor's UsagePoller writes snapshots to the ``usage_snapshots``
+    table.  The dashboard reads those directly and only falls back to a live
+    API call when the latest snapshot is older than ``_DB_SNAPSHOT_FRESHNESS``
+    seconds *and* the poller is not in 429 backoff.
+
+    Returns ``(usage_dict, snapshot_iso)`` where *snapshot_iso* is the
+    ISO timestamp of the data source (DB row ``created_at`` or current
+    time for a fresh API call).  Returns ``(None, None)`` on failure.
     """
     import time
 
@@ -346,39 +359,84 @@ def refresh_and_get_usage(app: FastAPI) -> dict | None:
     cache = app.state._last_usage_refresh
     with lock:
         last = cache["time"]
-        if last is not None and now - last < _USAGE_REFRESH_INTERVAL:
-            return cache["data"]
-        # Don't claim the slot yet — wait for the API call to succeed
-        in_flight_time = now
+        if last is not None and now - last < _USAGE_CACHE_TTL:
+            return cache["data"], cache["snapshot_at"]
 
     conn = None
     try:
         conn = init_db(app.state.db_path)
-        # Look up via the package module so tests can mock.patch
-        # "botfarm.dashboard.refresh_usage_snapshot"
+
+        # 1. Read latest DB snapshot (written by supervisor's poller)
+        row = conn.execute(
+            "SELECT * FROM usage_snapshots ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+
+        if row:
+            snapshot_at = row["created_at"]
+            age = _snapshot_age_seconds(snapshot_at)
+            result = _row_to_usage_dict(row)
+
+            if age < _DB_SNAPSHOT_FRESHNESS:
+                # DB snapshot is fresh — no API call needed
+                with lock:
+                    cache["time"] = now
+                    cache["data"] = result
+                    cache["snapshot_at"] = snapshot_at
+                return result, snapshot_at
+
+            # 2. Snapshot is stale — try live API if not in 429 backoff
+            poller = app.state._usage_poller
+            if poller.in_429_backoff:
+                with lock:
+                    cache["time"] = now
+                    cache["data"] = result
+                    cache["snapshot_at"] = snapshot_at
+                return result, snapshot_at
+
+            # 3. Attempt live API refresh
+            import botfarm.dashboard as _pkg
+            state = _pkg.refresh_usage_snapshot(
+                conn, caller="dashboard_refresh", poller=poller,
+            )
+            if state is not None:
+                fresh_result = state.to_dict()
+                fresh_at = datetime.now(timezone.utc).isoformat()
+                with lock:
+                    cache["time"] = now
+                    cache["data"] = fresh_result
+                    cache["snapshot_at"] = fresh_at
+                return fresh_result, fresh_at
+
+            # API failed — return stale DB data
+            with lock:
+                cache["time"] = now
+                cache["data"] = result
+                cache["snapshot_at"] = snapshot_at
+            return result, snapshot_at
+
+        # No DB snapshot — try live API as fallback
         import botfarm.dashboard as _pkg
         state = _pkg.refresh_usage_snapshot(
             conn, caller="dashboard_refresh", poller=app.state._usage_poller,
         )
         if state is not None:
-            result = state.to_dict()
+            fresh_result = state.to_dict()
+            fresh_at = datetime.now(timezone.utc).isoformat()
             with lock:
-                cache["time"] = in_flight_time
-                cache["data"] = result
-            app.state._dashboard_last_fresh["time"] = (
-                datetime.now(timezone.utc).isoformat()
-            )
-            return result
+                cache["time"] = now
+                cache["data"] = fresh_result
+                cache["snapshot_at"] = fresh_at
+            return fresh_result, fresh_at
     except Exception:
         logger.warning("Dashboard usage refresh failed", exc_info=True)
     finally:
         if conn is not None:
             conn.close()
-    return None
+    return None, None
 
 
 def usage_is_stale(last_fresh_iso: str | None) -> bool:
-    """Return True when dashboard usage data is older than 2x refresh."""
+    """Return True when usage data is older than the staleness threshold."""
     if not last_fresh_iso:
         return False
     try:
@@ -386,7 +444,7 @@ def usage_is_stale(last_fresh_iso: str | None) -> bool:
             last_fresh_iso.replace("Z", "+00:00")
         )
         age = (datetime.now(timezone.utc) - last_dt).total_seconds()
-        return age > _USAGE_REFRESH_INTERVAL * 2
+        return age > _USAGE_STALE_THRESHOLD
     except (ValueError, TypeError):
         return False
 
