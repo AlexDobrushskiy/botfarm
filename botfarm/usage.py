@@ -30,7 +30,7 @@ _async_sleep = asyncio.sleep  # local alias for testability
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_POLL_INTERVAL = 300  # seconds
+DEFAULT_POLL_INTERVAL = 600  # seconds
 DEFAULT_RETENTION_DAYS = 30
 # Default thresholds (from ticket SMA-79)
 DEFAULT_PAUSE_5H_THRESHOLD = 0.85

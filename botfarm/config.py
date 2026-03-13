@@ -54,6 +54,7 @@ database:
 
 usage_limits:
   enabled: true
+  poll_interval_seconds: 600
   pause_five_hour_threshold: 0.85
   pause_seven_day_threshold: 0.90
 
@@ -165,6 +166,7 @@ class DatabaseConfig:
 @dataclass
 class UsageLimitsConfig:
     enabled: bool = True
+    poll_interval_seconds: int = 600
     pause_five_hour_threshold: float = 0.85
     pause_seven_day_threshold: float = 0.90
 
@@ -396,6 +398,9 @@ def _validate_config(config: BotfarmConfig) -> None:
                 )
             seen_lp[p.linear_project] = p.name
 
+    if config.usage_limits.poll_interval_seconds < 1:
+        raise ConfigError("usage_limits.poll_interval_seconds must be at least 1")
+
     for attr in ("pause_five_hour_threshold", "pause_seven_day_threshold"):
         val = getattr(config.usage_limits, attr)
         if not (0.0 <= val <= 1.0):
@@ -620,6 +625,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
     ul_data = data.get("usage_limits", {})
     usage_limits = UsageLimitsConfig(
         enabled=_parse_bool(ul_data, "enabled", True, section="usage_limits"),
+        poll_interval_seconds=int(ul_data.get("poll_interval_seconds", 600)),
         pause_five_hour_threshold=float(ul_data.get("pause_five_hour_threshold", 0.85)),
         pause_seven_day_threshold=float(ul_data.get("pause_seven_day_threshold", 0.90)),
     )
@@ -795,6 +801,7 @@ EDITABLE_FIELDS: dict[tuple[str, str], dict] = {
     ("linear.capacity_monitoring", "pause_threshold"): {"type": "float", "min": 0.0, "max": 1.0},
     ("linear.capacity_monitoring", "resume_threshold"): {"type": "float", "min": 0.0, "max": 1.0},
     ("usage_limits", "enabled"): {"type": "bool"},
+    ("usage_limits", "poll_interval_seconds"): {"type": "int", "min": 1},
     ("usage_limits", "pause_five_hour_threshold"): {"type": "float", "min": 0.0, "max": 1.0},
     ("usage_limits", "pause_seven_day_threshold"): {"type": "float", "min": 0.0, "max": 1.0},
     ("agents", "max_review_iterations"): {"type": "int", "min": 1},

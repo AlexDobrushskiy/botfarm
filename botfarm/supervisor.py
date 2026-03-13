@@ -168,7 +168,9 @@ class Supervisor(RecoveryMixin, OperationsMixin):
         self._slot_manager.load()
 
         # Usage poller
-        self._usage_poller = UsagePoller()
+        self._usage_poller = UsagePoller(
+            poll_interval=config.usage_limits.poll_interval_seconds,
+        )
 
         # Codex (OpenAI) usage poller — optional, no-op if not configured
         self._codex_usage_poller = CodexUsagePoller(config=config.codex_usage)
@@ -591,6 +593,8 @@ class Supervisor(RecoveryMixin, OperationsMixin):
 
     def _poll_usage(self) -> None:
         """Poll the usage API and update slot manager state."""
+        # Sync poll interval from config (may be changed at runtime via dashboard)
+        self._usage_poller.poll_interval = self._config.usage_limits.poll_interval_seconds
         state = self._usage_poller.poll(self._conn)
         if self._usage_poller.last_polled_fresh:
             self._slot_manager.set_usage(state.to_dict())

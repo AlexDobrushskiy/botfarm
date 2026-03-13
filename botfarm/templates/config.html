@@ -262,6 +262,7 @@
                     {{ "Yes" if full_config_values.usage_limits.enabled else "No" }}
                 </td>
             </tr>
+            <tr><td>Poll interval</td><td>{{ full_config_values.usage_limits.poll_interval_seconds }}s</td></tr>
             <tr><td>5-hour pause threshold</td><td>{{ full_config_values.usage_limits.pause_five_hour_threshold }}</td></tr>
             <tr><td>7-day pause threshold</td><td>{{ full_config_values.usage_limits.pause_seven_day_threshold }}</td></tr>
         </tbody>
@@ -390,6 +391,11 @@
                 Enable usage-based pausing
             </label>
         </fieldset>
+        <label for="usage_limits-poll_interval_seconds">
+            Poll interval (seconds)
+            <input type="number" id="usage_limits-poll_interval_seconds" name="poll_interval_seconds"
+                   value="{{ config_values.usage_limits.poll_interval_seconds }}" min="1" required>
+        </label>
         <div class="grid">
             <label for="usage_limits-pause_five_hour_threshold">
                 5-hour pause threshold
