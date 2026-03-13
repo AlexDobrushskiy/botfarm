@@ -1,9 +1,7 @@
 """Tests for dashboard add-project routes: Linear lookups, project creation, SSE progress."""
 
-import json
-import threading
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient

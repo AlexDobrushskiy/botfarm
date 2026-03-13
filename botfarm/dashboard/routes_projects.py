@@ -6,6 +6,7 @@ import asyncio
 import logging
 import re
 import uuid
+from pathlib import Path
 from threading import Lock, Thread
 
 from fastapi import APIRouter, Request
@@ -157,7 +158,7 @@ async def api_project_create(request: Request):
                 task_state["messages"].append(msg)
 
         try:
-            config_path = cfg.source_path
+            config_path = Path(cfg.source_path)
             setup_project(
                 repo_url=repo_url,
                 name=name,
@@ -206,27 +207,29 @@ async def api_project_create_progress(request: Request, task_id: str = ""):
 
     async def event_generator():
         cursor = 0
-        while True:
+        try:
+            while True:
+                with _setup_tasks_lock:
+                    messages = task_state["messages"][cursor:]
+                    done = task_state["done"]
+                    error = task_state["error"]
+                cursor += len(messages)
+
+                for msg in messages:
+                    yield {"event": "progress", "data": msg}
+
+                if done:
+                    if error:
+                        yield {"event": "error", "data": error}
+                    else:
+                        yield {"event": "done", "data": ""}
+                    break
+
+                await asyncio.sleep(0.3)
+        finally:
             with _setup_tasks_lock:
-                messages = task_state["messages"][cursor:]
-                done = task_state["done"]
-                error = task_state["error"]
-            cursor += len(messages)
-
-            for msg in messages:
-                yield {"event": "progress", "data": msg}
-
-            if done:
-                if error:
-                    yield {"event": "error", "data": error}
-                else:
-                    yield {"event": "done", "data": ""}
-                break
-
-            await asyncio.sleep(0.3)
-
-        with _setup_tasks_lock:
-            _setup_tasks.pop(task_id, None)
+                if _setup_tasks.get(task_id, {}).get("done"):
+                    _setup_tasks.pop(task_id, None)
 
     return EventSourceResponse(event_generator())
 
