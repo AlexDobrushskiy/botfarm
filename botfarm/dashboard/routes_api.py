@@ -8,9 +8,11 @@ import sqlite3
 import time
 from datetime import datetime, timezone
 
+import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
+from botfarm.credentials import USAGE_API_TIMEOUT, fetch_usage
 from botfarm.db import (
     get_cleanup_batch,
     get_cleanup_batch_items,
@@ -20,6 +22,7 @@ from botfarm.db import (
     load_all_slots,
     save_project_pause_state,
 )
+from botfarm.usage import _get_or_create_event_loop
 from botfarm.linear import LinearClient
 from botfarm.linear_cleanup import CleanupService, CooldownError
 from botfarm.workflow import (
@@ -329,6 +332,93 @@ def api_preflight_results(request: Request):
     """Return preflight check results as JSON (used by CLI ``botfarm preflight``)."""
     data = _get_preflight_data(request.app)
     return JSONResponse(data)
+
+
+# --- Usage Refresh API ---
+
+@router.post("/api/usage/refresh")
+def api_usage_refresh(request: Request):
+    """Manually trigger a usage stats refresh from the Anthropic API.
+
+    Returns fresh usage data on success, or a descriptive error message
+    (including HTTP status codes like 401/429) so the dashboard can
+    surface API problems to the user.
+    """
+    poller = request.app.state._usage_poller
+
+    # Respect 429 backoff — never hammer a rate-limited API
+    if poller.in_429_backoff:
+        remaining = int(
+            poller.effective_poll_interval - (time.monotonic() - poller._last_poll)
+        )
+        return JSONResponse(
+            {"error": f"Rate limited by Anthropic. Retry in {max(remaining, 1)}s."},
+            status_code=429,
+        )
+
+    token = poller.credential_manager.get_token()
+    if token is None:
+        return JSONResponse(
+            {"error": "No OAuth credentials available. Check credential configuration."},
+            status_code=503,
+        )
+
+    # Call API directly (bypassing poller's internal error swallowing)
+    # so we can propagate specific error details to the UI
+    loop = _get_or_create_event_loop()
+    try:
+
+        async def _call():
+            async with httpx.AsyncClient(timeout=USAGE_API_TIMEOUT) as client:
+                return await fetch_usage(token, client=client)
+
+        data = loop.run_until_complete(_call())
+    except httpx.HTTPStatusError as exc:
+        code = exc.response.status_code
+        if code == 401:
+            msg = "Anthropic API returned 401 Unauthorized — check API credentials"
+        elif code == 429:
+            msg = "Anthropic API returned 429 Too Many Requests — try again later"
+        elif code >= 500:
+            msg = f"Anthropic API returned {code} — server error"
+        else:
+            msg = f"Anthropic API returned HTTP {code}"
+        return JSONResponse({"error": msg, "status_code": code}, status_code=502)
+    except (httpx.ConnectTimeout, httpx.PoolTimeout):
+        return JSONResponse(
+            {"error": "Connection to Anthropic API timed out"},
+            status_code=504,
+        )
+    except httpx.ConnectError:
+        return JSONResponse(
+            {"error": "Could not connect to Anthropic API"},
+            status_code=502,
+        )
+    except Exception as exc:
+        return JSONResponse(
+            {"error": f"API call failed: {exc}"},
+            status_code=502,
+        )
+
+    # Success — parse and store via poller's internal helpers
+    conn = None
+    try:
+        conn = init_db(request.app.state.db_path)
+        poller._parse_and_store(data, conn)
+        poller._reset_rate_limit_state(conn)
+        conn.commit()
+
+        # Invalidate usage cache so htmx partials pick up fresh data
+        with request.app.state._usage_refresh_lock:
+            request.app.state._last_usage_refresh["time"] = None
+
+        return JSONResponse({"status": "ok", "usage": poller.state.to_dict()})
+    except Exception as exc:
+        logger.warning("Usage snapshot storage failed: %s", exc)
+        return JSONResponse({"error": f"Storage failed: {exc}"}, status_code=500)
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 # --- Workflow API ---

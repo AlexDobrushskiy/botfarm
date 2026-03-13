@@ -2017,6 +2017,187 @@ class TestDailySummaryConfig:
         assert "at least 0" in resp.text
 
 
+# --- Usage Refresh API ---
+
+
+class TestUsageRefreshAPI:
+    def test_success_returns_fresh_data(self, db_file):
+        """POST /api/usage/refresh returns fresh usage data on success."""
+        mock_response = {
+            "five_hour": {"utilization": 55.0, "resets_at": "2026-03-13T16:00:00Z"},
+            "seven_day": {"utilization": 30.0, "resets_at": "2026-03-19T00:00:00Z"},
+        }
+        app = create_app(db_path=db_file)
+        client = TestClient(app)
+        with patch(
+            "botfarm.dashboard.routes_api.fetch_usage",
+            return_value=mock_response,
+        ), patch.object(
+            app.state._usage_poller.credential_manager,
+            "get_token",
+            return_value="fake-token",
+        ):
+            resp = client.post("/api/usage/refresh")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["usage"]["utilization_5h"] == pytest.approx(0.55)
+        assert data["usage"]["utilization_7d"] == pytest.approx(0.30)
+
+    def test_no_credentials_returns_503(self, db_file):
+        """POST /api/usage/refresh returns 503 when no token is available."""
+        app = create_app(db_path=db_file)
+        client = TestClient(app)
+        with patch.object(
+            app.state._usage_poller.credential_manager,
+            "get_token",
+            return_value=None,
+        ):
+            resp = client.post("/api/usage/refresh")
+        assert resp.status_code == 503
+        assert "credentials" in resp.json()["error"].lower()
+
+    def test_401_returns_error_with_details(self, db_file):
+        """POST /api/usage/refresh surfaces 401 error from Anthropic API."""
+        mock_resp = _FakeHTTPResponse(401)
+        app = create_app(db_path=db_file)
+        client = TestClient(app)
+        with patch(
+            "botfarm.dashboard.routes_api.fetch_usage",
+            side_effect=_make_http_status_error(401, mock_resp),
+        ), patch.object(
+            app.state._usage_poller.credential_manager,
+            "get_token",
+            return_value="fake-token",
+        ):
+            resp = client.post("/api/usage/refresh")
+        assert resp.status_code == 502
+        data = resp.json()
+        assert "401" in data["error"]
+        assert data["status_code"] == 401
+
+    def test_429_returns_error_with_details(self, db_file):
+        """POST /api/usage/refresh surfaces 429 error from Anthropic API."""
+        mock_resp = _FakeHTTPResponse(429)
+        app = create_app(db_path=db_file)
+        client = TestClient(app)
+        with patch(
+            "botfarm.dashboard.routes_api.fetch_usage",
+            side_effect=_make_http_status_error(429, mock_resp),
+        ), patch.object(
+            app.state._usage_poller.credential_manager,
+            "get_token",
+            return_value="fake-token",
+        ):
+            resp = client.post("/api/usage/refresh")
+        assert resp.status_code == 502
+        assert "429" in resp.json()["error"]
+
+    def test_429_backoff_returns_429(self, db_file):
+        """POST /api/usage/refresh returns 429 when poller is in backoff."""
+        app = create_app(db_path=db_file)
+        client = TestClient(app)
+        # Simulate 429 backoff state on the poller
+        poller = app.state._usage_poller
+        poller._consecutive_429s = 2
+        poller._active_poll_interval = 600
+        import time
+        poller._last_poll = time.monotonic()  # just polled
+        resp = client.post("/api/usage/refresh")
+        assert resp.status_code == 429
+        assert "Rate limited" in resp.json()["error"]
+
+    def test_connection_error_returns_502(self, db_file):
+        """POST /api/usage/refresh returns 502 on connection failure."""
+        import httpx
+
+        app = create_app(db_path=db_file)
+        client = TestClient(app)
+        with patch(
+            "botfarm.dashboard.routes_api.fetch_usage",
+            side_effect=httpx.ConnectError("Connection refused"),
+        ), patch.object(
+            app.state._usage_poller.credential_manager,
+            "get_token",
+            return_value="fake-token",
+        ):
+            resp = client.post("/api/usage/refresh")
+        assert resp.status_code == 502
+        assert "connect" in resp.json()["error"].lower()
+
+    def test_timeout_returns_504(self, db_file):
+        """POST /api/usage/refresh returns 504 on timeout."""
+        import httpx
+
+        app = create_app(db_path=db_file)
+        client = TestClient(app)
+        with patch(
+            "botfarm.dashboard.routes_api.fetch_usage",
+            side_effect=httpx.ConnectTimeout("Timed out"),
+        ), patch.object(
+            app.state._usage_poller.credential_manager,
+            "get_token",
+            return_value="fake-token",
+        ):
+            resp = client.post("/api/usage/refresh")
+        assert resp.status_code == 504
+        assert "timed out" in resp.json()["error"].lower()
+
+    def test_refresh_button_in_usage_partial(self, db_file):
+        """The usage partial should contain a Refresh button."""
+        app = create_app(db_path=db_file)
+        client = TestClient(app)
+        resp = client.get("/partials/usage")
+        assert resp.status_code == 200
+        assert "Refresh" in resp.text
+        assert "refreshUsage" in resp.text
+
+    def test_invalidates_usage_cache(self, db_file):
+        """Successful refresh should invalidate the in-memory usage cache."""
+        mock_response = {
+            "five_hour": {"utilization": 10.0},
+            "seven_day": {"utilization": 20.0},
+        }
+        app = create_app(db_path=db_file)
+        client = TestClient(app)
+        # Pre-populate cache
+        app.state._last_usage_refresh["time"] = 99999.0
+        with patch(
+            "botfarm.dashboard.routes_api.fetch_usage",
+            return_value=mock_response,
+        ), patch.object(
+            app.state._usage_poller.credential_manager,
+            "get_token",
+            return_value="fake-token",
+        ):
+            resp = client.post("/api/usage/refresh")
+        assert resp.status_code == 200
+        # Cache should be invalidated
+        assert app.state._last_usage_refresh["time"] is None
+
+
+class _FakeHTTPResponse:
+    """Minimal fake for httpx.Response to construct HTTPStatusError."""
+
+    def __init__(self, status_code):
+        self.status_code = status_code
+        self.headers = {}
+
+    @property
+    def stream(self):
+        return None
+
+
+def _make_http_status_error(status_code, response):
+    import httpx
+
+    return httpx.HTTPStatusError(
+        message=f"HTTP {status_code}",
+        request=httpx.Request("GET", "https://example.com"),
+        response=response,
+    )
+
+
 # --- Workflow page ---
 
 

@@ -46,13 +46,21 @@
 </div>
 {% endif %}
 {% if last_usage_check %}
-<small style="display: block; margin-top: 0.5rem;">Last polled: {{ elapsed(last_usage_check) }} ago</small>
+<div style="display: flex; align-items: center; gap: 0.75rem; margin-top: 0.5rem;">
+    <small>Last polled: {{ elapsed(last_usage_check) }} ago</small>
+    <button class="outline secondary refresh-usage-btn" onclick="refreshUsage(this)" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; margin: 0;">Refresh</button>
+</div>
 {% if usage_stale %}
-<br><small class="status-failed"><strong>Warning:</strong> usage data may be stale — supervisor poller may not be running</small>
+<small class="status-failed" style="display: block; margin-top: 0.25rem;"><strong>Warning:</strong> usage data may be stale — supervisor poller may not be running</small>
 {% endif %}
 {% endif %}
+<div id="usage-refresh-error" style="display: none; margin-top: 0.5rem;"></div>
 {% else %}
-<p>No usage data available.</p>
+<div style="display: flex; align-items: center; gap: 0.75rem;">
+    <p style="margin-bottom: 0;">No usage data available.</p>
+    <button class="outline secondary refresh-usage-btn" onclick="refreshUsage(this)" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; margin: 0;">Refresh</button>
+</div>
+<div id="usage-refresh-error" style="display: none; margin-top: 0.5rem;"></div>
 {% endif %}
 {% if codex_usage and codex_usage.monthly_spend is defined and codex_usage.monthly_spend is not none %}
 <div style="margin-top: 0.75rem; padding: 0.75rem; border: 1px solid var(--pico-muted-border-color); border-radius: var(--pico-border-radius);">
