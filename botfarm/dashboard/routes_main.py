@@ -16,6 +16,8 @@ from botfarm.db import (
     get_distinct_projects,
     get_distinct_ticket_projects,
     get_distinct_ticket_statuses,
+    get_downsampled_codex_usage_snapshots,
+    get_downsampled_usage_snapshots,
     get_events,
     get_latest_context_fill_by_ticket,
     get_stage_run_aggregates,
@@ -461,6 +463,9 @@ def _compute_task_totals(stages: list[dict]) -> dict:
 
 
 USAGE_RANGE_HOURS = {"24h": 24, "7d": 168, "30d": 720}
+# Bucket intervals (minutes) for downsampling usage chart data.
+# None = raw data (no aggregation).
+USAGE_BUCKET_MINUTES: dict[str, int | None] = {"24h": None, "7d": 30, "30d": 180}
 
 _EMPTY_METRICS: dict = {
     "total_tasks": 0, "completed_tasks": 0, "failed_tasks": 0,
@@ -801,6 +806,7 @@ def usage_page(request: Request):
     if time_range not in USAGE_RANGE_HOURS:
         time_range = "7d"
     hours = USAGE_RANGE_HOURS[time_range]
+    bucket_minutes = USAGE_BUCKET_MINUTES[time_range]
     snapshots = []
     codex_snapshots = []
     codex_stage_cost = 0.0
@@ -808,23 +814,15 @@ def usage_page(request: Request):
     if conn:
         try:
             try:
-                rows = conn.execute(
-                    "SELECT * FROM usage_snapshots "
-                    "WHERE created_at >= datetime('now', ?)"
-                    " ORDER BY created_at ASC",
-                    (f"-{hours} hours",),
-                ).fetchall()
-                snapshots = [dict(r) for r in rows]
+                snapshots = get_downsampled_usage_snapshots(
+                    conn, hours=hours, bucket_minutes=bucket_minutes,
+                )
             except sqlite3.OperationalError:
                 pass
             try:
-                codex_rows = conn.execute(
-                    "SELECT * FROM codex_usage_snapshots "
-                    "WHERE created_at >= datetime('now', ?)"
-                    " ORDER BY created_at ASC",
-                    (f"-{hours} hours",),
-                ).fetchall()
-                codex_snapshots = [dict(r) for r in codex_rows]
+                codex_snapshots = get_downsampled_codex_usage_snapshots(
+                    conn, hours=hours, bucket_minutes=bucket_minutes,
+                )
             except sqlite3.OperationalError:
                 pass
             try:

@@ -18,6 +18,8 @@ from botfarm.db import (
     get_active_key_session,
     get_codex_review_stats,
     get_distinct_projects,
+    get_downsampled_codex_usage_snapshots,
+    get_downsampled_usage_snapshots,
     get_events,
     get_latest_context_fill_by_ticket,
     get_schema_version,
@@ -31,6 +33,7 @@ from botfarm.db import (
     get_usage_api_call_history,
     get_usage_snapshots,
     init_db,
+    insert_codex_usage_snapshot,
     insert_event,
     insert_stage_run,
     insert_task,
@@ -1451,6 +1454,115 @@ class TestUsageSnapshots:
         assert row["extra_usage_monthly_limit"] is None
         assert row["extra_usage_used_credits"] is None
         assert row["extra_usage_utilization"] is None
+
+
+# ---------------------------------------------------------------------------
+# Downsampled usage snapshots
+# ---------------------------------------------------------------------------
+
+
+class TestDownsampledUsageSnapshots:
+    def _insert_at(self, conn, ts, **kwargs):
+        """Insert a usage_snapshot with a specific created_at timestamp."""
+        conn.execute(
+            "INSERT INTO usage_snapshots "
+            "(utilization_5h, utilization_7d, extra_usage_utilization, "
+            " extra_usage_used_credits, extra_usage_monthly_limit, "
+            " extra_usage_enabled, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                kwargs.get("utilization_5h"),
+                kwargs.get("utilization_7d"),
+                kwargs.get("extra_usage_utilization"),
+                kwargs.get("extra_usage_used_credits"),
+                kwargs.get("extra_usage_monthly_limit"),
+                kwargs.get("extra_usage_enabled", 0),
+                ts,
+            ),
+        )
+        conn.commit()
+
+    def test_raw_no_bucketing(self, conn):
+        """With bucket_minutes=None, returns raw rows."""
+        insert_usage_snapshot(conn, utilization_5h=0.5)
+        insert_usage_snapshot(conn, utilization_5h=0.6)
+        result = get_downsampled_usage_snapshots(conn, hours=24, bucket_minutes=None)
+        assert len(result) == 2
+        assert result[0]["utilization_5h"] == pytest.approx(0.5)
+        assert result[1]["utilization_5h"] == pytest.approx(0.6)
+
+    def test_bucketing_averages(self, conn):
+        """Two rows in the same 30-min bucket are averaged."""
+        # Insert two snapshots 5 minutes apart, both in the same 30-min bucket
+        self._insert_at(conn, "2099-01-01T12:01:00Z", utilization_5h=0.4, utilization_7d=0.2)
+        self._insert_at(conn, "2099-01-01T12:05:00Z", utilization_5h=0.6, utilization_7d=0.8)
+        # A third in a different bucket
+        self._insert_at(conn, "2099-01-01T12:31:00Z", utilization_5h=0.9, utilization_7d=0.1)
+        result = get_downsampled_usage_snapshots(conn, hours=999999, bucket_minutes=30)
+        assert len(result) == 2
+        # First bucket: avg of 0.4 and 0.6
+        assert result[0]["utilization_5h"] == pytest.approx(0.5)
+        assert result[0]["utilization_7d"] == pytest.approx(0.5)
+        # Second bucket: just 0.9
+        assert result[1]["utilization_5h"] == pytest.approx(0.9)
+
+    def test_bucket_uses_max_for_limit_fields(self, conn):
+        """extra_usage_monthly_limit and extra_usage_enabled use MAX, not AVG."""
+        self._insert_at(
+            conn, "2099-01-01T12:01:00Z",
+            extra_usage_monthly_limit=1000.0, extra_usage_enabled=0,
+        )
+        self._insert_at(
+            conn, "2099-01-01T12:05:00Z",
+            extra_usage_monthly_limit=2000.0, extra_usage_enabled=1,
+        )
+        result = get_downsampled_usage_snapshots(conn, hours=999999, bucket_minutes=30)
+        assert len(result) == 1
+        assert result[0]["extra_usage_monthly_limit"] == pytest.approx(2000.0)
+        assert result[0]["extra_usage_enabled"] == 1
+
+    def test_empty_table(self, conn):
+        result = get_downsampled_usage_snapshots(conn, hours=24, bucket_minutes=30)
+        assert result == []
+
+
+class TestDownsampledCodexUsageSnapshots:
+    def _insert_at(self, conn, ts, **kwargs):
+        conn.execute(
+            "INSERT INTO codex_usage_snapshots "
+            "(daily_spend, monthly_spend, monthly_budget, budget_utilization, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                kwargs.get("daily_spend"),
+                kwargs.get("monthly_spend"),
+                kwargs.get("monthly_budget"),
+                kwargs.get("budget_utilization"),
+                ts,
+            ),
+        )
+        conn.commit()
+
+    def test_raw_no_bucketing(self, conn):
+        insert_codex_usage_snapshot(conn, daily_spend=10.0, monthly_spend=100.0)
+        insert_codex_usage_snapshot(conn, daily_spend=20.0, monthly_spend=200.0)
+        result = get_downsampled_codex_usage_snapshots(conn, hours=24, bucket_minutes=None)
+        assert len(result) == 2
+
+    def test_bucketing_averages(self, conn):
+        self._insert_at(conn, "2099-01-01T12:01:00Z", daily_spend=10.0, monthly_spend=100.0, monthly_budget=500.0)
+        self._insert_at(conn, "2099-01-01T12:05:00Z", daily_spend=20.0, monthly_spend=200.0, monthly_budget=500.0)
+        self._insert_at(conn, "2099-01-01T12:31:00Z", daily_spend=30.0, monthly_spend=300.0, monthly_budget=500.0)
+        result = get_downsampled_codex_usage_snapshots(conn, hours=999999, bucket_minutes=30)
+        assert len(result) == 2
+        # First bucket: avg of 10 and 20
+        assert result[0]["daily_spend"] == pytest.approx(15.0)
+        assert result[0]["monthly_spend"] == pytest.approx(150.0)
+        # monthly_budget should use MAX
+        assert result[0]["monthly_budget"] == pytest.approx(500.0)
+
+    def test_empty_table(self, conn):
+        result = get_downsampled_codex_usage_snapshots(conn, hours=24, bucket_minutes=30)
+        assert result == []
 
 
 # ---------------------------------------------------------------------------

@@ -562,6 +562,84 @@ def get_usage_snapshots(
     ).fetchall()
 
 
+def get_downsampled_usage_snapshots(
+    conn: sqlite3.Connection,
+    *,
+    hours: int,
+    bucket_minutes: int | None = None,
+) -> list[dict]:
+    """Return usage snapshots for the given time range, optionally downsampled.
+
+    When *bucket_minutes* is None, returns raw rows.  Otherwise, groups rows
+    into time buckets of *bucket_minutes* width and returns averaged values.
+    """
+    if bucket_minutes is None:
+        rows = conn.execute(
+            "SELECT * FROM usage_snapshots "
+            "WHERE created_at >= datetime('now', ?) ORDER BY created_at ASC",
+            (f"-{hours} hours",),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    rows = conn.execute(
+        "SELECT"
+        "  strftime('%Y-%m-%d %H:', created_at)"
+        "    || printf('%02d', (CAST(strftime('%M', created_at) AS INTEGER) / ?) * ?) AS bucket,"
+        "  AVG(utilization_5h) AS utilization_5h,"
+        "  AVG(utilization_7d) AS utilization_7d,"
+        "  AVG(extra_usage_utilization) AS extra_usage_utilization,"
+        "  AVG(extra_usage_used_credits) AS extra_usage_used_credits,"
+        "  MAX(extra_usage_monthly_limit) AS extra_usage_monthly_limit,"
+        "  MAX(extra_usage_enabled) AS extra_usage_enabled,"
+        "  MAX(resets_at) AS resets_at,"
+        "  MAX(resets_at_7d) AS resets_at_7d,"
+        "  MAX(created_at) AS created_at"
+        " FROM usage_snapshots"
+        " WHERE created_at >= datetime('now', ?)"
+        " GROUP BY bucket"
+        " ORDER BY bucket ASC",
+        (bucket_minutes, bucket_minutes, f"-{hours} hours"),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_downsampled_codex_usage_snapshots(
+    conn: sqlite3.Connection,
+    *,
+    hours: int,
+    bucket_minutes: int | None = None,
+) -> list[dict]:
+    """Return codex usage snapshots for the given time range, optionally downsampled.
+
+    When *bucket_minutes* is None, returns raw rows.  Otherwise, groups rows
+    into time buckets of *bucket_minutes* width and returns averaged values.
+    """
+    if bucket_minutes is None:
+        rows = conn.execute(
+            "SELECT * FROM codex_usage_snapshots "
+            "WHERE created_at >= datetime('now', ?) ORDER BY created_at ASC",
+            (f"-{hours} hours",),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    rows = conn.execute(
+        "SELECT"
+        "  strftime('%Y-%m-%d %H:', created_at)"
+        "    || printf('%02d', (CAST(strftime('%M', created_at) AS INTEGER) / ?) * ?) AS bucket,"
+        "  AVG(daily_spend) AS daily_spend,"
+        "  AVG(monthly_spend) AS monthly_spend,"
+        "  MAX(monthly_budget) AS monthly_budget,"
+        "  AVG(budget_utilization) AS budget_utilization,"
+        "  MAX(created_at) AS created_at"
+        " FROM codex_usage_snapshots"
+        " WHERE created_at >= datetime('now', ?)"
+        " GROUP BY bucket"
+        " ORDER BY bucket ASC",
+        (bucket_minutes, bucket_minutes, f"-{hours} hours"),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def is_extra_usage_active(conn: sqlite3.Connection) -> bool:
     """Check whether extra usage is currently active based on the latest snapshot.
 
