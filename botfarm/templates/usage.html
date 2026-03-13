@@ -18,6 +18,7 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2"></script>
 
+{% set raw_table_limit = 100 %}
 {% if snapshots %}
 {% set non_null_values = [] %}
 {% for s in snapshots %}
@@ -106,8 +107,9 @@
     {% endif %}
 </script>
 
+{% set raw_rows = snapshots | reverse | list %}
 <details>
-    <summary>Raw snapshot data ({{ snapshots | length }} records)</summary>
+    <summary>Raw snapshot data ({{ snapshots | length }} records{% if raw_rows | length > raw_table_limit %}, showing latest {{ raw_table_limit }}{% endif %})</summary>
     <figure>
     <table>
         <thead>
@@ -124,7 +126,7 @@
             </tr>
         </thead>
         <tbody>
-            {% for s in snapshots | reverse %}
+            {% for s in raw_rows[:raw_table_limit] %}
             <tr>
                 <td>{% if s.created_at %}<time data-timestamp="{{ s.created_at }}" title="{{ s.created_at[:19] }}">{{ s.created_at[:19] }}</time>{% else %}-{% endif %}</td>
                 <td>{{ "%.1f"|format(s.utilization_5h * 100) if s.utilization_5h is not none else "-" }}</td>
@@ -177,8 +179,9 @@
     });
 </script>
 
+{% set codex_raw_rows = codex_snapshots | reverse | list %}
 <details>
-    <summary>Raw Codex snapshot data ({{ codex_snapshots | length }} records)</summary>
+    <summary>Raw Codex snapshot data ({{ codex_snapshots | length }} records{% if codex_raw_rows | length > raw_table_limit %}, showing latest {{ raw_table_limit }}{% endif %})</summary>
     <figure>
     <table>
         <thead>
@@ -191,7 +194,7 @@
             </tr>
         </thead>
         <tbody>
-            {% for s in codex_snapshots | reverse %}
+            {% for s in codex_raw_rows[:raw_table_limit] %}
             <tr>
                 <td>{% if s.created_at %}<time data-timestamp="{{ s.created_at }}" title="{{ s.created_at[:19] }}">{{ s.created_at[:19] }}</time>{% else %}-{% endif %}</td>
                 <td>{{ "$%.2f"|format(s.daily_spend) if s.daily_spend is not none else "-" }}</td>
