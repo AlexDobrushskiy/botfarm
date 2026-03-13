@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -16,6 +17,7 @@ from botfarm.db import (
     get_usage_snapshots,
 )
 from botfarm.usage import (
+    BACKOFF_JITTER_FRACTION,
     DEFAULT_PAUSE_5H_THRESHOLD,
     DEFAULT_PAUSE_7D_THRESHOLD,
     DEFAULT_POLL_INTERVAL,
@@ -952,6 +954,11 @@ class TestFetchWithRetry429:
 
 
 class TestAdaptivePollInterval:
+    @pytest.fixture(autouse=True)
+    def _no_jitter(self):
+        with patch("botfarm.usage.random.uniform", return_value=0):
+            yield
+
     def test_429_increases_poll_interval(self, poller, conn):
         """A 429 from _do_poll increases the effective poll interval."""
         response = _make_429_response()
@@ -1613,6 +1620,11 @@ class TestParseRetryAfter:
 
 
 class TestHandle429RetryAfter:
+    @pytest.fixture(autouse=True)
+    def _no_jitter(self):
+        with patch("botfarm.usage.random.uniform", return_value=0):
+            yield
+
     def test_429_with_retry_after_uses_header_when_larger(self, poller, conn):
         """When Retry-After exceeds exponential backoff, use the header value."""
         # poll_interval=10, first 429 → exponential = 10 * 2^1 = 20
@@ -1793,5 +1805,88 @@ class TestBackoffStatePersistence:
 
         mock_fetch.assert_not_called()
         assert p.last_polled_fresh is False
+
+
+# ---------------------------------------------------------------------------
+# Backoff jitter (SMA-420)
+# ---------------------------------------------------------------------------
+
+
+class TestBackoffJitter:
+    def test_jitter_within_expected_range(self, poller, conn):
+        """Jittered interval is between base and base * (1 + JITTER_FRACTION)."""
+        response = _make_429_response()
+        error = httpx.HTTPStatusError("", request=response.request, response=response)
+
+        base = poller.poll_interval * 2  # first 429 → 2^1
+
+        with patch.object(poller, "_fetch", side_effect=error):
+            poller.force_poll(conn)
+
+        assert poller.effective_poll_interval >= base
+        assert poller.effective_poll_interval <= math.ceil(
+            base * (1 + BACKOFF_JITTER_FRACTION)
+        )
+
+    def test_successive_intervals_not_identical(self, poller, conn):
+        """Successive 429 backoff intervals are not all identical (jitter varies)."""
+        response = _make_429_response()
+        error = httpx.HTTPStatusError("", request=response.request, response=response)
+
+        intervals = []
+        far_past = time.monotonic() - MAX_ADAPTIVE_POLL_INTERVAL - 1
+        cred_mgr = MagicMock(spec=CredentialManager)
+        cred_mgr.get_token.return_value = "test-token"
+        for _ in range(20):
+            p = UsagePoller(credential_manager=cred_mgr, poll_interval=10)
+            with patch.object(p, "_fetch", side_effect=error):
+                p._last_force_poll = far_past
+                p._last_poll = far_past
+                p.force_poll(conn)
+            intervals.append(p.effective_poll_interval)
+
+        # With 20 samples and up to 50% jitter, not all should be equal
+        assert len(set(intervals)) > 1
+
+    def test_jitter_on_restore_backoff(self, conn):
+        """Restored backoff interval includes jitter within expected range."""
+        from botfarm.db import save_backoff_state
+
+        save_backoff_state(conn, consecutive_429s=2, backoff_until=time.time() + 300)
+        base = 10 * (2 ** 2)  # poll_interval=10, consecutive=2
+
+        p = UsagePoller(poll_interval=10)
+        p.restore_backoff_state(conn)
+
+        assert p._active_poll_interval >= base
+        assert p._active_poll_interval <= math.ceil(
+            base * (1 + BACKOFF_JITTER_FRACTION)
+        )
+
+    def test_jitter_still_capped_at_max(self, poller, conn):
+        """Even with maximum jitter, the interval cannot exceed MAX."""
+        with patch("botfarm.usage.random.uniform", return_value=BACKOFF_JITTER_FRACTION):
+            response = _make_429_response()
+            error = httpx.HTTPStatusError("", request=response.request, response=response)
+
+            far_past = time.monotonic() - MAX_ADAPTIVE_POLL_INTERVAL - 1
+            with patch.object(poller, "_fetch", side_effect=error):
+                for _ in range(20):
+                    poller._last_force_poll = far_past
+                    poller._last_poll = far_past
+                    poller.force_poll(conn)
+
+            assert poller.effective_poll_interval == MAX_ADAPTIVE_POLL_INTERVAL
+
+    def test_no_jitter_when_zero_fraction(self, poller, conn):
+        """With jitter fraction = 0, interval equals the base value exactly."""
+        with patch("botfarm.usage.random.uniform", return_value=0):
+            response = _make_429_response()
+            error = httpx.HTTPStatusError("", request=response.request, response=response)
+
+            with patch.object(poller, "_fetch", side_effect=error):
+                poller.force_poll(conn)
+
+            assert poller.effective_poll_interval == poller.poll_interval * 2
 
 
