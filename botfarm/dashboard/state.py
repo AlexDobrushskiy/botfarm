@@ -13,13 +13,11 @@ from pathlib import Path
 from fastapi import FastAPI
 
 from botfarm.db import (
-    init_db,
     load_all_project_pause_states,
     load_all_slots,
     load_capacity_state,
     load_dispatch_state,
 )
-from botfarm.usage import UsagePoller
 
 logger = logging.getLogger(__name__)
 
@@ -302,7 +300,6 @@ def get_capacity_data(app: FastAPI) -> dict | None:
 # --- Constants for rate-limiting ---
 
 _USAGE_CACHE_TTL = 30  # seconds — in-memory cache to avoid DB reads on every htmx poll
-_DB_SNAPSHOT_FRESHNESS = 600  # 10 minutes — only call API if snapshot is older
 _USAGE_STALE_THRESHOLD = 900  # 15 minutes — show staleness warning after this
 _UPDATE_CHECK_INTERVAL = 60  # seconds
 
@@ -313,17 +310,13 @@ def init_caches(app: FastAPI) -> None:
     Called by ``create_app()`` so each app instance gets isolated caches
     (important for tests and when multiple apps coexist in one process).
     """
+    from botfarm.usage import UsagePoller
+
     app.state._usage_refresh_lock = threading.Lock()
     app.state._last_usage_refresh = {"time": None, "data": None, "snapshot_at": None}
-    app.state._usage_poller = UsagePoller()
     app.state._update_check_lock = threading.Lock()
     app.state._last_update_check = {"time": None, "commits_behind": 0}
-
-
-def _snapshot_age_seconds(created_at_iso: str) -> float:
-    """Return the age in seconds of a usage snapshot given its ISO timestamp."""
-    dt = datetime.fromisoformat(created_at_iso.replace("Z", "+00:00"))
-    return (datetime.now(timezone.utc) - dt).total_seconds()
+    app.state._usage_poller = UsagePoller()
 
 
 def _row_to_usage_dict(row) -> dict:
@@ -341,16 +334,15 @@ def _row_to_usage_dict(row) -> dict:
 
 
 def refresh_and_get_usage(app: FastAPI) -> tuple[dict | None, str | None]:
-    """Return usage data and its snapshot timestamp, preferring DB snapshots.
+    """Return usage data and its snapshot timestamp from DB snapshots only.
 
     The supervisor's UsagePoller writes snapshots to the ``usage_snapshots``
-    table.  The dashboard reads those directly and only falls back to a live
-    API call when the latest snapshot is older than ``_DB_SNAPSHOT_FRESHNESS``
-    seconds *and* the poller is not in 429 backoff.
+    table.  The dashboard reads those directly and never makes live API
+    calls — this avoids doubling API load when the supervisor is throttled.
 
     Returns ``(usage_dict, snapshot_iso)`` where *snapshot_iso* is the
-    ISO timestamp of the data source (DB row ``created_at`` or current
-    time for a fresh API call).  Returns ``(None, None)`` on failure.
+    ISO timestamp of the DB snapshot.  Returns ``(None, None)`` when no
+    snapshot exists.
     """
     import time
 
@@ -362,76 +354,26 @@ def refresh_and_get_usage(app: FastAPI) -> tuple[dict | None, str | None]:
         if last is not None and now - last < _USAGE_CACHE_TTL:
             return cache["data"], cache["snapshot_at"]
 
-    conn = None
+    conn = get_db(app)
+    if conn is None:
+        return None, None
     try:
-        conn = init_db(app.state.db_path)
-
-        # 1. Read latest DB snapshot (written by supervisor's poller)
         row = conn.execute(
             "SELECT * FROM usage_snapshots ORDER BY created_at DESC LIMIT 1"
         ).fetchone()
 
         if row:
             snapshot_at = row["created_at"]
-            age = _snapshot_age_seconds(snapshot_at)
             result = _row_to_usage_dict(row)
-
-            if age < _DB_SNAPSHOT_FRESHNESS:
-                # DB snapshot is fresh — no API call needed
-                with lock:
-                    cache["time"] = now
-                    cache["data"] = result
-                    cache["snapshot_at"] = snapshot_at
-                return result, snapshot_at
-
-            # 2. Snapshot is stale — try live API if not in 429 backoff
-            poller = app.state._usage_poller
-            if poller.in_429_backoff:
-                with lock:
-                    cache["time"] = now
-                    cache["data"] = result
-                    cache["snapshot_at"] = snapshot_at
-                return result, snapshot_at
-
-            # 3. Attempt live API refresh
-            import botfarm.dashboard as _pkg
-            state = _pkg.refresh_usage_snapshot(
-                conn, caller="dashboard_refresh", poller=poller,
-            )
-            if state is not None:
-                fresh_result = state.to_dict()
-                fresh_at = datetime.now(timezone.utc).isoformat()
-                with lock:
-                    cache["time"] = now
-                    cache["data"] = fresh_result
-                    cache["snapshot_at"] = fresh_at
-                return fresh_result, fresh_at
-
-            # API failed — return stale DB data
             with lock:
                 cache["time"] = now
                 cache["data"] = result
                 cache["snapshot_at"] = snapshot_at
             return result, snapshot_at
-
-        # No DB snapshot — try live API as fallback
-        import botfarm.dashboard as _pkg
-        state = _pkg.refresh_usage_snapshot(
-            conn, caller="dashboard_refresh", poller=app.state._usage_poller,
-        )
-        if state is not None:
-            fresh_result = state.to_dict()
-            fresh_at = datetime.now(timezone.utc).isoformat()
-            with lock:
-                cache["time"] = now
-                cache["data"] = fresh_result
-                cache["snapshot_at"] = fresh_at
-            return fresh_result, fresh_at
-    except Exception:
-        logger.warning("Dashboard usage refresh failed", exc_info=True)
+    except sqlite3.OperationalError:
+        logger.warning("Dashboard usage DB read failed", exc_info=True)
     finally:
-        if conn is not None:
-            conn.close()
+        conn.close()
     return None, None
 
 

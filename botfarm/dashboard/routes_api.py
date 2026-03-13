@@ -338,9 +338,10 @@ def api_preflight_results(request: Request):
 async def api_usage_refresh(request: Request):
     """Manually trigger a usage stats refresh from the Anthropic API.
 
-    Returns fresh usage data on success, or a descriptive error message
-    (including HTTP status codes like 401/429) so the dashboard can
-    surface API problems to the user.
+    Uses the shared ``app.state._usage_poller`` so that 429 backoff state
+    persists across requests.  Returns fresh usage data on success, or a
+    descriptive error message (including HTTP status codes like 401/429)
+    so the dashboard can surface API problems to the user.
     """
     poller = request.app.state._usage_poller
 
