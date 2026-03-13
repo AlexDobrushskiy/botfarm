@@ -1094,7 +1094,7 @@ class TestAddProjectCommand:
         monkeypatch.delenv("LINEAR_API_KEY", raising=False)
 
         with patch("botfarm.project_setup.subprocess.run", side_effect=_make_mock_run()), \
-             patch("botfarm.cli._run_readiness_checks", return_value=[
+             patch("botfarm.project_setup.run_readiness_checks", return_value=[
                  ("warning", "No CLAUDE.md"),
              ]) as mock_readiness:
             result = runner.invoke(

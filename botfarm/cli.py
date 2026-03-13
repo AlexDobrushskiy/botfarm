@@ -1,7 +1,6 @@
 import json
 import os
 import re
-import shutil
 import signal
 import sqlite3
 import subprocess
@@ -997,35 +996,11 @@ def init(path, non_interactive, linear_api_key, team, workspace):
 # ---------------------------------------------------------------------------
 
 from botfarm.project_setup import (
-    append_project_to_config as _append_project_to_config,
-    clone_repo as _clone_repo_impl,
-    create_worktree as _create_worktree_impl,
-    detect_project_indent as _detect_project_indent,
     extract_repo_name as _extract_repo_name,
-    find_projects_insert_point as _find_projects_insert_point,
-    format_project_entry as _format_project_entry,
     is_placeholder_project as _is_placeholder_project,
     ProjectSetupError,
-    remove_project_entry_text as _remove_project_entry_text,
-    run_readiness_checks as _run_readiness_checks,
-    yaml_scalar as _yaml_scalar,
+    setup_project,
 )
-
-
-def _clone_repo(repo_url: str, target_dir: Path) -> None:
-    """Clone a git repository — wraps ProjectSetupError as click.ClickException."""
-    try:
-        _clone_repo_impl(repo_url, target_dir)
-    except ProjectSetupError as exc:
-        raise click.ClickException(str(exc)) from exc
-
-
-def _create_worktree(repo_dir: Path, worktree_path: Path, branch_name: str) -> None:
-    """Create a git worktree — wraps ProjectSetupError as click.ClickException."""
-    try:
-        _create_worktree_impl(repo_dir, worktree_path, branch_name)
-    except ProjectSetupError as exc:
-        raise click.ClickException(str(exc)) from exc
 
 
 @main.command("add-project")
@@ -1162,81 +1137,29 @@ def add_project(config_path):
         console.print("Aborted.")
         return
 
-    # --- 6. Clone the repo ---
-    if repo_dir.exists():
-        raise click.ClickException(
-            f"Directory already exists: {repo_dir}\n"
-            f"Remove it first or choose a different project name."
-        )
-
-    # Track whether we created projects_dir so we can clean up on failure
-    created_projects_dir = not projects_dir.exists()
-
+    # --- 6. Setup: clone, worktrees, config ---
     try:
-        projects_dir.mkdir(parents=True, exist_ok=True)
-        console.print(f"\n[bold]Cloning repository...[/bold]")
-        _clone_repo(repo_url, repo_dir)
-        console.print(f"  Cloned to {repo_dir}")
-
-        # --- 7. Create worktrees and placeholder branches ---
-        console.print(f"\n[bold]Creating {num_slots} worktree(s)...[/bold]")
-        for slot_id in slots:
-            branch_name = f"slot-{slot_id}-placeholder"
-            worktree_path = projects_dir / f"{worktree_prefix}{slot_id}"
-            _create_worktree(repo_dir, worktree_path, branch_name)
-            console.print(f"  Slot {slot_id}: {worktree_path} (branch: {branch_name})")
-
-        # --- 8. Update config.yaml ---
-        console.print(f"\n[bold]Updating config...[/bold]")
-        project_dict = {
-            "name": name,
-            "linear_team": linear_team,
-            "base_dir": str(repo_dir),
-            "worktree_prefix": str(projects_dir / worktree_prefix),
-            "slots": slots,
-            "linear_project": linear_project,
-        }
-
-        _append_project_to_config(
-            cfg_path, project_dict, replace_names=frozenset(placeholder_names),
+        project_dict = setup_project(
+            repo_url=repo_url,
+            name=name,
+            linear_team=linear_team,
+            linear_project=linear_project,
+            slots=slots,
+            config_path=cfg_path,
+            projects_dir=projects_dir,
+            replace_names=frozenset(placeholder_names),
+            progress_callback=lambda msg: console.print(f"  {msg}"),
         )
-    except (click.ClickException, ConfigError, OSError) as exc:
-        console.print(f"\n[bold red]Error — cleaning up...[/bold red]")
-        if created_projects_dir and projects_dir.exists():
-            shutil.rmtree(projects_dir, ignore_errors=True)
-            console.print(f"  Removed {projects_dir}")
-        elif projects_dir.exists():
-            # Only remove artifacts we created (repo + worktrees), not the parent dir
-            if repo_dir.exists():
-                shutil.rmtree(repo_dir, ignore_errors=True)
-            for slot_id in slots:
-                wt = projects_dir / f"{worktree_prefix}{slot_id}"
-                if wt.exists():
-                    shutil.rmtree(wt, ignore_errors=True)
-            console.print(f"  Cleaned up cloned repo and worktrees from {projects_dir}")
-        if isinstance(exc, click.ClickException):
-            raise
-        raise click.ClickException(f"Failed to write config: {exc}") from exc
-
-    console.print(f"  Updated {cfg_path}")
-
-    # --- Readiness checks (informational) ---
-    readiness = _run_readiness_checks(project_dict)
-    if readiness:
-        console.print(f"\n[bold]Readiness checks:[/bold]")
-        for level, msg in readiness:
-            if level == "ok":
-                console.print(f"  [green]OK[/green]   {msg}")
-            else:
-                console.print(f"  [yellow]WARN[/yellow] {msg}")
+    except ProjectSetupError as exc:
+        raise click.ClickException(str(exc))
 
     # --- Done ---
     console.print(f"\n[bold green]Project '{name}' added successfully![/bold green]")
     console.print("\n  Next steps:")
-    claude_md = repo_dir / "CLAUDE.md"
-    if not claude_md.exists():
+    base_dir = Path(project_dict["base_dir"])
+    if not (base_dir / "CLAUDE.md").exists():
         console.print(
-            f"    - Create a CLAUDE.md: botfarm init-claude-md {repo_dir}"
+            f"    - Create a CLAUDE.md: botfarm init-claude-md {base_dir}"
         )
     console.print("    - Start or restart the supervisor: botfarm run")
 

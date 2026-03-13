@@ -473,7 +473,10 @@ def setup_project(
         raise ProjectSetupError(str(exc)) from exc
 
     # Readiness checks (informational — don't fail setup)
-    readiness = run_readiness_checks(project_dict)
+    try:
+        readiness = run_readiness_checks(project_dict)
+    except Exception:
+        readiness = []
     for level, msg in readiness:
         tag = "OK" if level == "ok" else "WARN"
         _progress(f"  {tag}  {msg}")
