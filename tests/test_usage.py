@@ -1835,8 +1835,10 @@ class TestBackoffJitter:
 
         intervals = []
         far_past = time.monotonic() - MAX_ADAPTIVE_POLL_INTERVAL - 1
+        cred_mgr = MagicMock(spec=CredentialManager)
+        cred_mgr.get_token.return_value = "test-token"
         for _ in range(20):
-            p = UsagePoller(poll_interval=10)
+            p = UsagePoller(credential_manager=cred_mgr, poll_interval=10)
             with patch.object(p, "_fetch", side_effect=error):
                 p._last_force_poll = far_past
                 p._last_poll = far_past
