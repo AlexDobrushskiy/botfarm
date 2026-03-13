@@ -434,7 +434,7 @@ class TestChartJsRendering:
 
     def test_chart_y_axis_max_100(self, live_server, page):
         """P1: Usage chart Y axis is capped at 100%."""
-        page.goto(f"{live_server}/usage")
+        page.goto(f"{live_server}/usage?range=24h")
         page.locator("#usage-chart").wait_for(state="visible")
 
         y_max = page.evaluate(
