@@ -2502,3 +2502,253 @@ class TestAddSlot:
             supervisor.add_slot("test-project")
 
         mock_write.assert_not_called()
+
+
+class TestRequestAddProject:
+    """Tests for the thread-safe request_add_project / _handle_add_project_requests."""
+
+    def test_request_add_project_appends_and_wakes(self, supervisor):
+        """request_add_project adds to the list and sets wake event."""
+        supervisor.request_add_project("new-project")
+
+        with supervisor._add_project_lock:
+            assert len(supervisor._add_project_requests) == 1
+            assert supervisor._add_project_requests[0] == "new-project"
+        assert supervisor._wake_event.is_set()
+
+    def test_handle_add_project_requests_drains_list(self, supervisor):
+        """_handle_add_project_requests processes all pending requests."""
+        supervisor.request_add_project("new-project")
+
+        with patch.object(supervisor, "add_project") as mock_add:
+            supervisor._handle_add_project_requests()
+
+        mock_add.assert_called_once_with("new-project")
+
+        with supervisor._add_project_lock:
+            assert len(supervisor._add_project_requests) == 0
+
+    def test_handle_add_project_requests_no_requests_is_noop(self, supervisor):
+        """_handle_add_project_requests is a no-op when there are no requests."""
+        with patch.object(supervisor, "add_project") as mock_add:
+            supervisor._handle_add_project_requests()
+        mock_add.assert_not_called()
+
+    def test_handle_add_project_requests_in_tick(self, supervisor):
+        """_handle_add_project_requests is called during _tick."""
+        supervisor.request_add_project("new-project")
+
+        with (
+            patch.object(supervisor, "add_project") as mock_add,
+            patch.object(supervisor, "_reconcile_workers"),
+            patch.object(supervisor, "_handle_stop_requests"),
+            patch.object(supervisor, "_handle_add_slot_requests"),
+            patch.object(supervisor, "_handle_manual_pause_resume"),
+            patch.object(supervisor, "_handle_update_request"),
+            patch.object(supervisor, "_check_timeouts"),
+            patch.object(supervisor, "_handle_finished_slots"),
+            patch.object(supervisor, "_handle_paused_slots"),
+            patch.object(supervisor, "_poll_usage"),
+            patch.object(supervisor, "_poll_capacity"),
+            patch.object(supervisor, "_poll_and_dispatch"),
+            patch.object(supervisor, "_cleanup_old_ticket_logs"),
+            patch.object(supervisor._slot_manager, "refresh_stages_from_disk"),
+            patch.object(supervisor._slot_manager, "refresh_project_pauses"),
+        ):
+            supervisor._tick()
+
+        mock_add.assert_called_once_with("new-project")
+
+    def test_handle_add_project_requests_deduplicates(self, supervisor):
+        """Duplicate project names in the queue are deduplicated."""
+        supervisor.request_add_project("new-project")
+        supervisor.request_add_project("new-project")
+        supervisor.request_add_project("new-project")
+
+        with patch.object(supervisor, "add_project") as mock_add:
+            supervisor._handle_add_project_requests()
+
+        mock_add.assert_called_once_with("new-project")
+
+    def test_handle_add_project_requests_error_does_not_crash(self, supervisor):
+        """Errors in add_project are caught and logged."""
+        supervisor.request_add_project("new-project")
+
+        with patch.object(
+            supervisor, "add_project", side_effect=RuntimeError("boom"),
+        ):
+            # Should not raise
+            supervisor._handle_add_project_requests()
+
+        # List should still be drained
+        with supervisor._add_project_lock:
+            assert len(supervisor._add_project_requests) == 0
+
+
+class TestAddProject:
+    """Tests for Supervisor.add_project() core logic."""
+
+    def _make_fresh_config(self, tmp_path, extra_project=None):
+        """Build a config with an optional extra project for load_config to return."""
+        projects = [
+            ProjectConfig(
+                name="test-project",
+                linear_team="TST",
+                base_dir=str(tmp_path / "repo"),
+                worktree_prefix="test-project-slot-",
+                slots=[1, 2],
+            ),
+        ]
+        if extra_project:
+            projects.append(extra_project)
+        from botfarm.config import BotfarmConfig, LinearConfig, DatabaseConfig
+        return BotfarmConfig(
+            projects=projects,
+            linear=LinearConfig(
+                api_key="test-key",
+                poll_interval_seconds=10,
+                exclude_tags=["Human"],
+            ),
+            database=DatabaseConfig(),
+        )
+
+    def test_add_project_already_registered_raises(self, supervisor):
+        """add_project raises ValueError for already-registered project."""
+        with pytest.raises(ValueError, match="already registered"):
+            supervisor.add_project("test-project")
+
+    def test_add_project_no_config_path_raises(self, supervisor):
+        """add_project raises ValueError when source_path is empty."""
+        supervisor._config.source_path = ""
+        with pytest.raises(ValueError, match="No config source_path"):
+            supervisor.add_project("new-project")
+
+    def test_add_project_not_in_config_raises(self, supervisor, tmp_path):
+        """add_project raises ValueError when project not found in config."""
+        # load_config returns config without the new project
+        fresh = self._make_fresh_config(tmp_path)
+        with patch("botfarm.config.load_config", return_value=fresh):
+            supervisor._config.source_path = "/fake/config.yaml"
+            with pytest.raises(ValueError, match="not found in config"):
+                supervisor.add_project("nonexistent-project")
+
+    def test_add_project_registers_in_projects_dict(self, supervisor, tmp_path):
+        """add_project registers the new project in _projects."""
+        new_project = ProjectConfig(
+            name="new-project",
+            linear_team="NEW",
+            base_dir=str(tmp_path / "new-repo"),
+            worktree_prefix="new-project-slot-",
+            slots=[1],
+        )
+        fresh = self._make_fresh_config(tmp_path, extra_project=new_project)
+
+        with patch("botfarm.config.load_config", return_value=fresh):
+            supervisor._config.source_path = "/fake/config.yaml"
+            supervisor.add_project("new-project")
+
+        assert "new-project" in supervisor._projects
+        assert supervisor._projects["new-project"].linear_team == "NEW"
+
+    def test_add_project_appends_to_config_projects(self, supervisor, tmp_path):
+        """add_project appends the new ProjectConfig to config.projects."""
+        new_project = ProjectConfig(
+            name="new-project",
+            linear_team="NEW",
+            base_dir=str(tmp_path / "new-repo"),
+            worktree_prefix="new-project-slot-",
+            slots=[1],
+        )
+        fresh = self._make_fresh_config(tmp_path, extra_project=new_project)
+
+        with patch("botfarm.config.load_config", return_value=fresh):
+            supervisor._config.source_path = "/fake/config.yaml"
+            supervisor.add_project("new-project")
+
+        project_names = [p.name for p in supervisor._config.projects]
+        assert "new-project" in project_names
+
+    def test_add_project_creates_slot_manager_entries(self, supervisor, tmp_path):
+        """add_project registers slots with SlotManager."""
+        new_project = ProjectConfig(
+            name="new-project",
+            linear_team="NEW",
+            base_dir=str(tmp_path / "new-repo"),
+            worktree_prefix="new-project-slot-",
+            slots=[1, 2],
+        )
+        fresh = self._make_fresh_config(tmp_path, extra_project=new_project)
+
+        with patch("botfarm.config.load_config", return_value=fresh):
+            supervisor._config.source_path = "/fake/config.yaml"
+            supervisor.add_project("new-project")
+
+        slot1 = supervisor._slot_manager.get_slot("new-project", 1)
+        slot2 = supervisor._slot_manager.get_slot("new-project", 2)
+        assert slot1 is not None
+        assert slot1.status == "free"
+        assert slot2 is not None
+        assert slot2.status == "free"
+
+    def test_add_project_creates_linear_poller(self, supervisor, tmp_path):
+        """add_project creates and registers a LinearPoller for the new project."""
+        new_project = ProjectConfig(
+            name="new-project",
+            linear_team="NEW",
+            base_dir=str(tmp_path / "new-repo"),
+            worktree_prefix="new-project-slot-",
+            slots=[1],
+        )
+        fresh = self._make_fresh_config(tmp_path, extra_project=new_project)
+
+        with patch("botfarm.config.load_config", return_value=fresh):
+            supervisor._config.source_path = "/fake/config.yaml"
+            supervisor.add_project("new-project")
+
+        assert "new-project" in supervisor._pollers
+        poller = supervisor._pollers["new-project"]
+        assert poller.project_name == "new-project"
+        assert poller.team_key == "NEW"
+
+    def test_add_project_logs_event(self, supervisor, tmp_path):
+        """add_project inserts a project_added event in the DB."""
+        new_project = ProjectConfig(
+            name="new-project",
+            linear_team="NEW",
+            base_dir=str(tmp_path / "new-repo"),
+            worktree_prefix="new-project-slot-",
+            slots=[1, 2],
+        )
+        fresh = self._make_fresh_config(tmp_path, extra_project=new_project)
+
+        with patch("botfarm.config.load_config", return_value=fresh):
+            supervisor._config.source_path = "/fake/config.yaml"
+            supervisor.add_project("new-project")
+
+        events = get_events(supervisor._conn, limit=10)
+        project_added = [e for e in events if e["event_type"] == "project_added"]
+        assert len(project_added) == 1
+        detail = json.loads(project_added[0]["detail"])
+        assert detail["project"] == "new-project"
+        assert detail["slots"] == [1, 2]
+        assert detail["linear_team"] == "NEW"
+
+    def test_add_project_does_not_duplicate_in_config_projects(self, supervisor, tmp_path):
+        """add_project does not duplicate if project already in config.projects list."""
+        new_project = ProjectConfig(
+            name="new-project",
+            linear_team="NEW",
+            base_dir=str(tmp_path / "new-repo"),
+            worktree_prefix="new-project-slot-",
+            slots=[1],
+        )
+        # Pre-add to config.projects (simulating a race or prior partial add)
+        supervisor._config.projects.append(new_project)
+        fresh = self._make_fresh_config(tmp_path, extra_project=new_project)
+
+        with patch("botfarm.config.load_config", return_value=fresh):
+            supervisor._config.source_path = "/fake/config.yaml"
+            supervisor.add_project("new-project")
+
+        count = sum(1 for p in supervisor._config.projects if p.name == "new-project")
+        assert count == 1

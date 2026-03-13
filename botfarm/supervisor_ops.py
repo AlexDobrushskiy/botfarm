@@ -1399,6 +1399,108 @@ Note: The supervisor handles status transitions automatically — do not move th
         return new_slot_id
 
     # ------------------------------------------------------------------
+    # Add project
+    # ------------------------------------------------------------------
+
+    def request_add_project(self, project_name: str) -> None:
+        """Thread-safe request to add a project (called from dashboard)."""
+        with self._add_project_lock:
+            self._add_project_requests.append(project_name)
+        self._wake_event.set()
+
+    def _handle_add_project_requests(self) -> None:
+        """Drain pending add-project requests and execute each."""
+        with self._add_project_lock:
+            requests = list(dict.fromkeys(self._add_project_requests))
+            self._add_project_requests.clear()
+        for project_name in requests:
+            try:
+                self.add_project(project_name)
+            except Exception:
+                logger.exception(
+                    "Failed to add project %s", project_name,
+                )
+
+    def add_project(self, project_name: str) -> None:
+        """Register a new project at runtime.
+
+        Re-reads config from disk (the project entry was already written by
+        ``setup_project``), registers the project in ``_projects``, creates
+        ``SlotManager`` entries for each slot, and creates a ``LinearPoller``
+        for the new project.
+
+        Raises ``ValueError`` if the project is already registered or not
+        found in the on-disk config.
+        """
+        from botfarm.config import load_config
+        from botfarm.linear import LinearClient, LinearPoller
+
+        if project_name in self._projects:
+            raise ValueError(f"Project '{project_name}' is already registered")
+
+        # Re-read config from disk to pick up the new project entry
+        config_path = self._config.source_path
+        if not config_path:
+            raise ValueError("No config source_path — cannot reload config")
+        fresh_config = load_config(Path(config_path))
+
+        # Find the new project in the fresh config
+        new_project_cfg = None
+        for p in fresh_config.projects:
+            if p.name == project_name:
+                new_project_cfg = p
+                break
+        if new_project_cfg is None:
+            raise ValueError(
+                f"Project '{project_name}' not found in config file"
+            )
+
+        # Register in _projects dict
+        self._projects[project_name] = new_project_cfg
+
+        # Also append to the live BotfarmConfig.projects list so dashboard
+        # and other consumers see the new project without a restart.
+        if not any(p.name == project_name for p in self._config.projects):
+            self._config.projects.append(new_project_cfg)
+
+        # Create SlotManager entries for each slot
+        for slot_id in new_project_cfg.slots:
+            self._slot_manager.register_slot(project_name, slot_id)
+        self._slot_manager.save()
+
+        # Create a LinearPoller for the new project
+        client = LinearClient(api_key=self._config.linear.api_key)
+        coder_key = self._config.identities.coder.linear_api_key
+        coder_client = LinearClient(api_key=coder_key) if coder_key else None
+        poller = LinearPoller(
+            client=client,
+            project=new_project_cfg,
+            exclude_tags=self._config.linear.exclude_tags,
+            todo_status=self._config.linear.todo_status,
+            coder_client=coder_client,
+        )
+        self._pollers[project_name] = poller
+
+        # Log event for audit trail
+        insert_event(
+            self._conn,
+            event_type="project_added",
+            detail=json.dumps({
+                "project": project_name,
+                "slots": new_project_cfg.slots,
+                "linear_team": new_project_cfg.linear_team,
+            }),
+        )
+        self._conn.commit()
+
+        logger.info(
+            "Added project '%s' with %d slot(s), polling team '%s'",
+            project_name,
+            len(new_project_cfg.slots),
+            new_project_cfg.linear_team,
+        )
+
+    # ------------------------------------------------------------------
     # Resume paused slots (delegation)
     # ------------------------------------------------------------------
 
