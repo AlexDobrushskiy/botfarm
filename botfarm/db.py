@@ -1489,6 +1489,54 @@ def read_runtime_config(conn: sqlite3.Connection) -> dict[str, object]:
 
 
 # ---------------------------------------------------------------------------
+# 429 backoff state persistence
+# ---------------------------------------------------------------------------
+
+_BACKOFF_KEYS = (
+    "usage_429_consecutive_count",
+    "usage_429_backoff_until",
+)
+
+
+def save_backoff_state(
+    conn: sqlite3.Connection,
+    *,
+    consecutive_429s: int,
+    backoff_until: float,
+) -> None:
+    """Persist 429 backoff state so it survives supervisor restarts."""
+    write_runtime_config(conn, "usage_429_consecutive_count", consecutive_429s)
+    write_runtime_config(conn, "usage_429_backoff_until", backoff_until)
+    conn.commit()
+
+
+def load_backoff_state(
+    conn: sqlite3.Connection,
+) -> dict[str, int | float] | None:
+    """Load persisted 429 backoff state.
+
+    Returns a dict with ``consecutive_429s`` (int) and ``backoff_until``
+    (float, unix timestamp), or ``None`` if no state is stored.
+    """
+    config = read_runtime_config(conn)
+    count = config.get("usage_429_consecutive_count")
+    until = config.get("usage_429_backoff_until")
+    if count is None or until is None:
+        return None
+    return {
+        "consecutive_429s": int(count),
+        "backoff_until": float(until),
+    }
+
+
+def clear_backoff_state(conn: sqlite3.Connection) -> None:
+    """Remove persisted 429 backoff state (called after successful poll)."""
+    for key in _BACKOFF_KEYS:
+        conn.execute("DELETE FROM runtime_config WHERE key = ?", (key,))
+    conn.commit()
+
+
+# ---------------------------------------------------------------------------
 # Daily summary helpers
 # ---------------------------------------------------------------------------
 

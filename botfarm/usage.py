@@ -20,11 +20,14 @@ import httpx
 
 from botfarm.credentials import USAGE_API_TIMEOUT, CredentialManager, fetch_usage
 from botfarm.db import (
+    clear_backoff_state,
     get_active_key_session,
     insert_usage_api_call,
     insert_usage_snapshot,
+    load_backoff_state,
     mark_key_session_replaced,
     purge_old_usage_api_calls,
+    save_backoff_state,
     upsert_usage_api_key_session,
 )
 
@@ -301,6 +304,34 @@ class UsagePoller:
             loop.run_until_complete(self._client.aclose())
             self._client = None
 
+    def restore_backoff_state(self, conn: sqlite3.Connection) -> None:
+        """Restore 429 backoff state from the database after a restart.
+
+        If ``backoff_until`` is still in the future, the poller resumes
+        the backoff so it doesn't immediately hammer a rate-limited API.
+        If the backoff has expired, the persisted state is cleared.
+        """
+        state = load_backoff_state(conn)
+        if state is None:
+            return
+        remaining = state["backoff_until"] - time.time()
+        if remaining <= 0:
+            clear_backoff_state(conn)
+            return
+        self._consecutive_429s = state["consecutive_429s"]
+        self._active_poll_interval = min(
+            self.poll_interval * (2 ** self._consecutive_429s),
+            MAX_ADAPTIVE_POLL_INTERVAL,
+        )
+        # Align monotonic _last_poll so that the remaining backoff is respected
+        self._last_poll = time.monotonic() - (self._active_poll_interval - remaining)
+        logger.info(
+            "Restored 429 backoff state: %d consecutive 429(s), "
+            "backing off for %ds more",
+            self._consecutive_429s,
+            int(remaining),
+        )
+
     def _do_poll(self, conn: sqlite3.Connection) -> None:
         """Execute one poll cycle: fetch → parse → store → purge."""
         token = self.credential_manager.get_token()
@@ -318,7 +349,7 @@ class UsagePoller:
             self._flush_audit_records(conn, fp)
             if exc.response.status_code == 429:
                 retry_after_header = exc.response.headers.get("retry-after")
-                self._handle_429(retry_after_header)
+                self._handle_429(conn, retry_after_header)
                 return
             elif exc.response.status_code == 401:
                 logger.warning("Usage API returned 401 — refreshing token")
@@ -349,17 +380,22 @@ class UsagePoller:
         else:
             self._flush_audit_records(conn, fp)
 
-        self._reset_rate_limit_state()
+        self._reset_rate_limit_state(conn)
         self._parse_and_store(data, conn)
         self._purge_old_snapshots(conn)
         conn.commit()
 
-    def _handle_429(self, retry_after_header: str | None = None) -> None:
+    def _handle_429(
+        self, conn: sqlite3.Connection, retry_after_header: str | None = None,
+    ) -> None:
         """Handle a 429 rate-limit response by increasing the poll interval.
 
         If the response includes a ``Retry-After`` header, the backoff is at
         least that many seconds.  The final interval is the greater of the
         parsed header value and the exponential backoff formula.
+
+        The backoff state is persisted to the database so that it survives
+        supervisor restarts.
         """
         self._consecutive_429s += 1
         exponential = self.poll_interval * (2 ** self._consecutive_429s)
@@ -379,8 +415,13 @@ class UsagePoller:
             retry_after_header or "absent",
             self._active_poll_interval,
         )
+        save_backoff_state(
+            conn,
+            consecutive_429s=self._consecutive_429s,
+            backoff_until=time.time() + self._active_poll_interval,
+        )
 
-    def _reset_rate_limit_state(self) -> None:
+    def _reset_rate_limit_state(self, conn: sqlite3.Connection) -> None:
         """Reset adaptive poll interval after a successful API response."""
         if self._consecutive_429s > 0:
             logger.info(
@@ -391,6 +432,7 @@ class UsagePoller:
             )
             self._consecutive_429s = 0
             self._active_poll_interval = None
+            clear_backoff_state(conn)
 
     def _fetch(self, token: str) -> dict:
         """Call the usage API synchronously via asyncio, with retry for transient errors."""

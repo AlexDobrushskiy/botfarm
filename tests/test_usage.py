@@ -595,8 +595,8 @@ class TestRefreshUsageSnapshot:
 
         orig_handle = UsagePoller._handle_429
 
-        def spy_handle(self, retry_after_header=None):
-            orig_handle(self, retry_after_header)
+        def spy_handle(self, conn, retry_after_header=None):
+            orig_handle(self, conn, retry_after_header)
             consecutive_counts.append(self._consecutive_429s)
 
         with patch("botfarm.usage.fetch_usage", side_effect=_raise_429):
@@ -1697,5 +1697,101 @@ class TestHandle429RetryAfter:
 
         assert poller._consecutive_429s == 2
         assert poller.effective_poll_interval == 40
+
+
+# ---------------------------------------------------------------------------
+# 429 backoff state persistence across restarts
+# ---------------------------------------------------------------------------
+
+
+class TestBackoffStatePersistence:
+    def test_429_persists_backoff_to_db(self, poller, conn):
+        """A 429 response persists backoff state to the database."""
+        from botfarm.db import load_backoff_state
+
+        response = _make_429_response()
+        error = httpx.HTTPStatusError("", request=response.request, response=response)
+
+        with patch.object(poller, "_fetch", side_effect=error):
+            poller.force_poll(conn)
+
+        state = load_backoff_state(conn)
+        assert state is not None
+        assert state["consecutive_429s"] == 1
+        assert state["backoff_until"] > time.time()
+
+    def test_success_clears_persisted_backoff(self, poller, conn):
+        """A successful poll after 429s clears the persisted backoff state."""
+        from botfarm.db import load_backoff_state
+
+        response = _make_429_response()
+        error = httpx.HTTPStatusError("", request=response.request, response=response)
+
+        # Trigger 429
+        with patch.object(poller, "_fetch", side_effect=error):
+            poller.force_poll(conn)
+
+        assert load_backoff_state(conn) is not None
+
+        # Successful poll (backoff expired)
+        far_past = time.monotonic() - MAX_ADAPTIVE_POLL_INTERVAL - 1
+        with patch.object(poller, "_fetch", return_value=SAMPLE_USAGE_RESPONSE):
+            poller._last_force_poll = far_past
+            poller._last_poll = far_past
+            poller.force_poll(conn)
+
+        assert load_backoff_state(conn) is None
+
+    def test_restore_active_backoff(self, conn):
+        """New poller restores unexpired backoff from DB."""
+        from botfarm.db import save_backoff_state
+
+        save_backoff_state(conn, consecutive_429s=3, backoff_until=time.time() + 300)
+
+        p = UsagePoller(poll_interval=10)
+        p.restore_backoff_state(conn)
+
+        assert p._consecutive_429s == 3
+        assert p._active_poll_interval is not None
+        assert p.in_429_backoff is True
+
+    def test_restore_expired_backoff_polls_normally(self, conn):
+        """New poller ignores expired backoff and polls normally."""
+        from botfarm.db import load_backoff_state, save_backoff_state
+
+        save_backoff_state(conn, consecutive_429s=2, backoff_until=time.time() - 10)
+
+        p = UsagePoller(poll_interval=10)
+        p.restore_backoff_state(conn)
+
+        assert p._consecutive_429s == 0
+        assert p._active_poll_interval is None
+        # Expired state should be cleared from DB
+        assert load_backoff_state(conn) is None
+
+    def test_restore_no_state_is_noop(self, conn):
+        """restore_backoff_state is a no-op when no state is stored."""
+        p = UsagePoller(poll_interval=10)
+        p.restore_backoff_state(conn)
+
+        assert p._consecutive_429s == 0
+        assert p._active_poll_interval is None
+
+    def test_restored_backoff_blocks_poll(self, conn):
+        """After restoring active backoff, poll() returns cached data."""
+        from botfarm.db import save_backoff_state
+
+        save_backoff_state(conn, consecutive_429s=2, backoff_until=time.time() + 300)
+
+        cred_mgr = MagicMock(spec=CredentialManager)
+        cred_mgr.get_token.return_value = "test-token"
+        p = UsagePoller(credential_manager=cred_mgr, poll_interval=10)
+        p.restore_backoff_state(conn)
+
+        with patch.object(p, "_fetch", return_value=SAMPLE_USAGE_RESPONSE) as mock_fetch:
+            p.poll(conn)
+
+        mock_fetch.assert_not_called()
+        assert p.last_polled_fresh is False
 
 
