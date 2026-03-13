@@ -982,7 +982,11 @@
                 var errDiv = document.getElementById("usage-refresh-error");
                 if (errDiv) {
                     errDiv.style.display = "block";
-                    errDiv.innerHTML = '<small class="status-failed">' + err.message + '</small>';
+                    errDiv.textContent = "";
+                    var small = document.createElement("small");
+                    small.className = "status-failed";
+                    small.textContent = err.message;
+                    errDiv.appendChild(small);
                 }
             })
             .finally(function() {

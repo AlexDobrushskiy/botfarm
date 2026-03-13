@@ -2023,19 +2023,20 @@ class TestDailySummaryConfig:
 class TestUsageRefreshAPI:
     def test_success_returns_fresh_data(self, db_file):
         """POST /api/usage/refresh returns fresh usage data on success."""
-        mock_response = {
-            "five_hour": {"utilization": 55.0, "resets_at": "2026-03-13T16:00:00Z"},
-            "seven_day": {"utilization": 30.0, "resets_at": "2026-03-19T00:00:00Z"},
-        }
+        from botfarm.usage import UsageState
+
+        mock_state = UsageState(
+            utilization_5h=0.55,
+            utilization_7d=0.30,
+            resets_at_5h="2026-03-13T16:00:00Z",
+            resets_at_7d="2026-03-19T00:00:00Z",
+        )
         app = create_app(db_path=db_file)
         client = TestClient(app)
-        with patch(
-            "botfarm.dashboard.routes_api.fetch_usage",
-            return_value=mock_response,
-        ), patch.object(
-            app.state._usage_poller.credential_manager,
-            "get_token",
-            return_value="fake-token",
+        with patch.object(
+            app.state._usage_poller,
+            "manual_refresh",
+            return_value=mock_state,
         ):
             resp = client.post("/api/usage/refresh")
         assert resp.status_code == 200
@@ -2049,9 +2050,9 @@ class TestUsageRefreshAPI:
         app = create_app(db_path=db_file)
         client = TestClient(app)
         with patch.object(
-            app.state._usage_poller.credential_manager,
-            "get_token",
-            return_value=None,
+            app.state._usage_poller,
+            "manual_refresh",
+            side_effect=ValueError("No OAuth credentials available. Check credential configuration."),
         ):
             resp = client.post("/api/usage/refresh")
         assert resp.status_code == 503
@@ -2062,13 +2063,10 @@ class TestUsageRefreshAPI:
         mock_resp = _FakeHTTPResponse(401)
         app = create_app(db_path=db_file)
         client = TestClient(app)
-        with patch(
-            "botfarm.dashboard.routes_api.fetch_usage",
+        with patch.object(
+            app.state._usage_poller,
+            "manual_refresh",
             side_effect=_make_http_status_error(401, mock_resp),
-        ), patch.object(
-            app.state._usage_poller.credential_manager,
-            "get_token",
-            return_value="fake-token",
         ):
             resp = client.post("/api/usage/refresh")
         assert resp.status_code == 502
@@ -2081,13 +2079,10 @@ class TestUsageRefreshAPI:
         mock_resp = _FakeHTTPResponse(429)
         app = create_app(db_path=db_file)
         client = TestClient(app)
-        with patch(
-            "botfarm.dashboard.routes_api.fetch_usage",
+        with patch.object(
+            app.state._usage_poller,
+            "manual_refresh",
             side_effect=_make_http_status_error(429, mock_resp),
-        ), patch.object(
-            app.state._usage_poller.credential_manager,
-            "get_token",
-            return_value="fake-token",
         ):
             resp = client.post("/api/usage/refresh")
         assert resp.status_code == 502
@@ -2113,13 +2108,10 @@ class TestUsageRefreshAPI:
 
         app = create_app(db_path=db_file)
         client = TestClient(app)
-        with patch(
-            "botfarm.dashboard.routes_api.fetch_usage",
+        with patch.object(
+            app.state._usage_poller,
+            "manual_refresh",
             side_effect=httpx.ConnectError("Connection refused"),
-        ), patch.object(
-            app.state._usage_poller.credential_manager,
-            "get_token",
-            return_value="fake-token",
         ):
             resp = client.post("/api/usage/refresh")
         assert resp.status_code == 502
@@ -2131,13 +2123,10 @@ class TestUsageRefreshAPI:
 
         app = create_app(db_path=db_file)
         client = TestClient(app)
-        with patch(
-            "botfarm.dashboard.routes_api.fetch_usage",
+        with patch.object(
+            app.state._usage_poller,
+            "manual_refresh",
             side_effect=httpx.ConnectTimeout("Timed out"),
-        ), patch.object(
-            app.state._usage_poller.credential_manager,
-            "get_token",
-            return_value="fake-token",
         ):
             resp = client.post("/api/usage/refresh")
         assert resp.status_code == 504
@@ -2154,21 +2143,17 @@ class TestUsageRefreshAPI:
 
     def test_invalidates_usage_cache(self, db_file):
         """Successful refresh should invalidate the in-memory usage cache."""
-        mock_response = {
-            "five_hour": {"utilization": 10.0},
-            "seven_day": {"utilization": 20.0},
-        }
+        from botfarm.usage import UsageState
+
+        mock_state = UsageState(utilization_5h=0.10, utilization_7d=0.20)
         app = create_app(db_path=db_file)
         client = TestClient(app)
         # Pre-populate cache
         app.state._last_usage_refresh["time"] = 99999.0
-        with patch(
-            "botfarm.dashboard.routes_api.fetch_usage",
-            return_value=mock_response,
-        ), patch.object(
-            app.state._usage_poller.credential_manager,
-            "get_token",
-            return_value="fake-token",
+        with patch.object(
+            app.state._usage_poller,
+            "manual_refresh",
+            return_value=mock_state,
         ):
             resp = client.post("/api/usage/refresh")
         assert resp.status_code == 200

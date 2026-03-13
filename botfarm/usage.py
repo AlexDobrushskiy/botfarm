@@ -293,6 +293,52 @@ class UsagePoller:
         self._do_poll(conn)
         return self._state
 
+    def manual_refresh(self, conn: sqlite3.Connection) -> UsageState:
+        """Fetch, parse, and store fresh usage data, raising on errors.
+
+        Unlike ``_do_poll`` / ``force_poll`` which swallow errors internally,
+        this method propagates exceptions so callers (e.g. the dashboard
+        endpoint) can map them to user-facing messages.
+
+        On 429, backoff state is updated via ``_handle_429()`` before
+        re-raising, so the poller's rate-limit safety is maintained.
+
+        Raises:
+            ValueError: No OAuth token available.
+            httpx.HTTPStatusError: API returned non-2xx.
+            httpx.ConnectTimeout / ConnectError / PoolTimeout: Connection issues.
+        """
+        token = self.credential_manager.get_token()
+        if token is None:
+            raise ValueError("No OAuth credentials available. Check credential configuration.")
+
+        fp = token_fingerprint(token)
+        self._check_key_rotation(conn, fp)
+        self._attempt_records = []
+        self._current_caller = "manual_refresh"
+        self._last_poll = time.monotonic()
+        self._last_force_poll = time.monotonic()
+
+        try:
+            data = self._fetch(token)
+        except httpx.HTTPStatusError as exc:
+            self._flush_audit_records(conn, fp)
+            if exc.response.status_code == 429:
+                retry_after = exc.response.headers.get("retry-after")
+                self._handle_429(conn, retry_after)
+            raise
+        except Exception:
+            self._flush_audit_records(conn, fp)
+            raise
+        else:
+            self._flush_audit_records(conn, fp)
+
+        self._reset_rate_limit_state(conn)
+        self._parse_and_store(data, conn)
+        self._purge_old_snapshots(conn)
+        conn.commit()
+        return self._state
+
     def _get_client(self) -> httpx.AsyncClient:
         """Return the persistent HTTP client, creating it on first use."""
         if self._client is None or self._client.is_closed:

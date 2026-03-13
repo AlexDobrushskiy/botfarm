@@ -12,7 +12,6 @@ import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from botfarm.credentials import USAGE_API_TIMEOUT, fetch_usage
 from botfarm.db import (
     get_cleanup_batch,
     get_cleanup_batch_items,
@@ -22,7 +21,6 @@ from botfarm.db import (
     load_all_slots,
     save_project_pause_state,
 )
-from botfarm.usage import _get_or_create_event_loop
 from botfarm.linear import LinearClient
 from botfarm.linear_cleanup import CleanupService, CooldownError
 from botfarm.workflow import (
@@ -337,7 +335,7 @@ def api_preflight_results(request: Request):
 # --- Usage Refresh API ---
 
 @router.post("/api/usage/refresh")
-def api_usage_refresh(request: Request):
+async def api_usage_refresh(request: Request):
     """Manually trigger a usage stats refresh from the Anthropic API.
 
     Returns fresh usage data on success, or a descriptive error message
@@ -356,23 +354,17 @@ def api_usage_refresh(request: Request):
             status_code=429,
         )
 
-    token = poller.credential_manager.get_token()
-    if token is None:
-        return JSONResponse(
-            {"error": "No OAuth credentials available. Check credential configuration."},
-            status_code=503,
-        )
+    def _refresh():
+        conn = init_db(request.app.state.db_path)
+        try:
+            return poller.manual_refresh(conn)
+        finally:
+            conn.close()
 
-    # Call API directly (bypassing poller's internal error swallowing)
-    # so we can propagate specific error details to the UI
-    loop = _get_or_create_event_loop()
     try:
-
-        async def _call():
-            async with httpx.AsyncClient(timeout=USAGE_API_TIMEOUT) as client:
-                return await fetch_usage(token, client=client)
-
-        data = loop.run_until_complete(_call())
+        state = await asyncio.to_thread(_refresh)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=503)
     except httpx.HTTPStatusError as exc:
         code = exc.response.status_code
         if code == 401:
@@ -400,25 +392,11 @@ def api_usage_refresh(request: Request):
             status_code=502,
         )
 
-    # Success — parse and store via poller's internal helpers
-    conn = None
-    try:
-        conn = init_db(request.app.state.db_path)
-        poller._parse_and_store(data, conn)
-        poller._reset_rate_limit_state(conn)
-        conn.commit()
+    # Invalidate usage cache so htmx partials pick up fresh data
+    with request.app.state._usage_refresh_lock:
+        request.app.state._last_usage_refresh["time"] = None
 
-        # Invalidate usage cache so htmx partials pick up fresh data
-        with request.app.state._usage_refresh_lock:
-            request.app.state._last_usage_refresh["time"] = None
-
-        return JSONResponse({"status": "ok", "usage": poller.state.to_dict()})
-    except Exception as exc:
-        logger.warning("Usage snapshot storage failed: %s", exc)
-        return JSONResponse({"error": f"Storage failed: {exc}"}, status_code=500)
-    finally:
-        if conn is not None:
-            conn.close()
+    return JSONResponse({"status": "ok", "usage": state.to_dict()})
 
 
 # --- Workflow API ---
