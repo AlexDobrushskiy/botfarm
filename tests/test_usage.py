@@ -595,8 +595,8 @@ class TestRefreshUsageSnapshot:
 
         orig_handle = UsagePoller._handle_429
 
-        def spy_handle(self):
-            orig_handle(self)
+        def spy_handle(self, retry_after_header=None):
+            orig_handle(self, retry_after_header)
             consecutive_counts.append(self._consecutive_429s)
 
         with patch("botfarm.usage.fetch_usage", side_effect=_raise_429):
