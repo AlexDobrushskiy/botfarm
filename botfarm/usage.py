@@ -656,7 +656,10 @@ class UsagePoller:
             "WHERE created_at < datetime('now', ?)",
             (f"-{self.retention_days} days",),
         )
-        purge_old_usage_api_calls(conn, retention_days=self.retention_days)
+        try:
+            purge_old_usage_api_calls(conn, retention_days=self.retention_days)
+        except Exception:
+            logger.warning("Failed to purge old usage API audit rows", exc_info=True)
 
 
 def refresh_usage_snapshot(
