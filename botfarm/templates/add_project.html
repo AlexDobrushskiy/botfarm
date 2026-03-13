@@ -1,0 +1,212 @@
+{% extends "base.html" %}
+{% set active_page = "add_project" %}
+{% block title %}Add Project - Botfarm{% endblock %}
+{% block content %}
+<h1>Add Project</h1>
+
+<div id="add-project-form-container">
+    <form id="add-project-form" onsubmit="return submitAddProject(event)">
+        <label for="repo_url">
+            Repository URL
+            <input type="text" id="repo_url" name="repo_url" placeholder="git@github.com:user/repo.git" required
+                   oninput="suggestProjectName()">
+        </label>
+
+        <label for="project_name">
+            Project name
+            <input type="text" id="project_name" name="name" placeholder="my-project" required>
+        </label>
+
+        <label for="linear_team">
+            Linear team
+            <select id="linear_team" name="linear_team" required onchange="loadLinearProjects()">
+                <option value="">Loading teams...</option>
+            </select>
+        </label>
+
+        <label for="linear_project">
+            Linear project <small>(optional)</small>
+            <select id="linear_project" name="linear_project">
+                <option value="">— None —</option>
+            </select>
+        </label>
+
+        <label for="slots_count">
+            Number of slots
+            <input type="number" id="slots_count" name="slots" value="1" min="1" max="20" required>
+        </label>
+
+        <div id="form-errors" style="display:none; color: var(--pico-del-color); margin-bottom: 1rem;"></div>
+
+        <button type="submit" id="submit-btn">Add Project</button>
+    </form>
+</div>
+
+<div id="add-project-progress" style="display:none;">
+    <h2>Setting up project...</h2>
+    <div id="progress-log" style="background: var(--pico-card-background-color); border: 1px solid var(--pico-muted-border-color); border-radius: var(--pico-border-radius); padding: 1rem; font-family: monospace; font-size: 0.85rem; min-height: 8rem; max-height: 24rem; overflow-y: auto; white-space: pre-wrap;"></div>
+    <div id="progress-result" style="margin-top: 1rem;"></div>
+</div>
+
+<script>
+var _suggestTimer = null;
+
+function suggestProjectName() {
+    clearTimeout(_suggestTimer);
+    _suggestTimer = setTimeout(function() {
+        var url = document.getElementById("repo_url").value.trim();
+        if (!url) return;
+        var nameField = document.getElementById("project_name");
+        if (nameField.dataset.userEdited) return;
+        fetch("/api/project/suggest-name?repo_url=" + encodeURIComponent(url))
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+                if (d.name && !nameField.dataset.userEdited) {
+                    nameField.value = d.name;
+                }
+            })
+            .catch(function() {});
+    }, 300);
+}
+
+document.getElementById("project_name").addEventListener("input", function() {
+    this.dataset.userEdited = "1";
+});
+
+function loadLinearTeams() {
+    var sel = document.getElementById("linear_team");
+    fetch("/api/linear/teams")
+        .then(function(r) {
+            if (!r.ok) throw new Error("Failed to load teams");
+            return r.json();
+        })
+        .then(function(teams) {
+            sel.innerHTML = '<option value="">— Select team —</option>';
+            teams.forEach(function(t) {
+                var opt = document.createElement("option");
+                opt.value = t.key;
+                opt.textContent = t.name + " (" + t.key + ")";
+                sel.appendChild(opt);
+            });
+        })
+        .catch(function(err) {
+            sel.innerHTML = '<option value="">Failed to load teams</option>';
+        });
+}
+
+function loadLinearProjects() {
+    var teamKey = document.getElementById("linear_team").value;
+    var sel = document.getElementById("linear_project");
+    sel.innerHTML = '<option value="">— None —</option>';
+    if (!teamKey) return;
+
+    fetch("/api/linear/projects?team=" + encodeURIComponent(teamKey))
+        .then(function(r) {
+            if (!r.ok) throw new Error("Failed to load projects");
+            return r.json();
+        })
+        .then(function(projects) {
+            projects.forEach(function(p) {
+                var opt = document.createElement("option");
+                opt.value = p.name;
+                opt.textContent = p.name;
+                sel.appendChild(opt);
+            });
+        })
+        .catch(function() {});
+}
+
+function submitAddProject(evt) {
+    evt.preventDefault();
+    var errDiv = document.getElementById("form-errors");
+    errDiv.style.display = "none";
+    errDiv.textContent = "";
+
+    var btn = document.getElementById("submit-btn");
+    btn.disabled = true;
+    btn.textContent = "Starting...";
+
+    var body = {
+        repo_url: document.getElementById("repo_url").value.trim(),
+        name: document.getElementById("project_name").value.trim(),
+        linear_team: document.getElementById("linear_team").value,
+        linear_project: document.getElementById("linear_project").value,
+        slots: parseInt(document.getElementById("slots_count").value, 10) || 1
+    };
+
+    fetch("/api/project/create", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(body)
+    }).then(function(resp) {
+        return resp.json().then(function(data) {
+            return {ok: resp.ok, data: data};
+        });
+    }).then(function(result) {
+        if (!result.ok) {
+            var errors = result.data.errors || [result.data.error || "Request failed"];
+            errDiv.innerHTML = errors.map(function(e) { return "&#x2022; " + e; }).join("<br>");
+            errDiv.style.display = "block";
+            btn.disabled = false;
+            btn.textContent = "Add Project";
+            return;
+        }
+        streamProgress(result.data.task_id);
+    }).catch(function(err) {
+        errDiv.textContent = "Request failed: " + err.message;
+        errDiv.style.display = "block";
+        btn.disabled = false;
+        btn.textContent = "Add Project";
+    });
+
+    return false;
+}
+
+function streamProgress(taskId) {
+    document.getElementById("add-project-form-container").style.display = "none";
+    var progressDiv = document.getElementById("add-project-progress");
+    progressDiv.style.display = "block";
+    var logDiv = document.getElementById("progress-log");
+    var resultDiv = document.getElementById("progress-result");
+
+    var source = new EventSource("/api/project/create/progress?task_id=" + encodeURIComponent(taskId));
+
+    source.addEventListener("progress", function(e) {
+        logDiv.textContent += e.data + "\n";
+        logDiv.scrollTop = logDiv.scrollHeight;
+    });
+
+    source.addEventListener("done", function(e) {
+        source.close();
+        logDiv.textContent += "\nDone!\n";
+        resultDiv.innerHTML = '<p style="color: var(--pico-ins-color); font-weight: 600;">Project added successfully!</p>' +
+            '<a href="/" role="button">Back to Live Status</a>';
+    });
+
+    source.addEventListener("error", function(e) {
+        if (e.data) {
+            source.close();
+            logDiv.textContent += "\nError: " + e.data + "\n";
+            resultDiv.innerHTML = '<p style="color: var(--pico-del-color); font-weight: 600;">Setup failed</p>' +
+                '<button onclick="showFormAgain()">Try Again</button>';
+        }
+    });
+
+    source.onerror = function() {
+        source.close();
+    };
+}
+
+function showFormAgain() {
+    document.getElementById("add-project-form-container").style.display = "block";
+    document.getElementById("add-project-progress").style.display = "none";
+    document.getElementById("progress-log").textContent = "";
+    document.getElementById("progress-result").innerHTML = "";
+    var btn = document.getElementById("submit-btn");
+    btn.disabled = false;
+    btn.textContent = "Add Project";
+}
+
+document.addEventListener("DOMContentLoaded", loadLinearTeams);
+</script>
+{% endblock %}
