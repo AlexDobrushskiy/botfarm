@@ -733,13 +733,6 @@ class TestDashboardConfig:
 
 
 class TestEdgeCases:
-    @pytest.fixture(autouse=True)
-    def _mock_refresh(self, monkeypatch):
-        """Prevent real API calls during edge case tests."""
-        monkeypatch.setattr(
-            "botfarm.dashboard.refresh_usage_snapshot", lambda conn, **kw: None
-        )
-
     def test_empty_db_index(self, tmp_path):
         """With an empty DB (no slots, no state), index renders gracefully."""
         db_path = tmp_path / "empty.db"

@@ -9,7 +9,6 @@ from .formatters import build_pipeline_state, format_codex_ndjson_line, format_n
 
 # Re-export names that tests and external code patch at botfarm.dashboard.*
 from botfarm.git_update import commits_behind  # noqa: F401
-from botfarm.usage import refresh_usage_snapshot  # noqa: F401
 
 __all__ = [
     "build_pipeline_state",

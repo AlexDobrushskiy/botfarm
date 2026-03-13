@@ -121,13 +121,6 @@ class TestPartialSlots:
 
 
 class TestPartialUsage:
-    @pytest.fixture(autouse=True)
-    def _mock_refresh(self, monkeypatch):
-        """Prevent real API calls during usage partial tests."""
-        monkeypatch.setattr(
-            "botfarm.dashboard.refresh_usage_snapshot", lambda conn, **kw: None
-        )
-
     def test_returns_200(self, client):
         resp = client.get("/partials/usage")
         assert resp.status_code == 200
@@ -641,13 +634,6 @@ class TestIterationContext:
 
 
 class TestUsagePanelEnhancements:
-    @pytest.fixture(autouse=True)
-    def _mock_refresh(self, monkeypatch):
-        """Prevent real API calls during usage panel tests."""
-        monkeypatch.setattr(
-            "botfarm.dashboard.refresh_usage_snapshot", lambda conn, **kw: None
-        )
-
     def test_progress_bars(self, client):
         resp = client.get("/partials/usage")
         assert "<progress" in resp.text
@@ -693,51 +679,19 @@ class TestUsagePanelEnhancements:
 
 
 class TestUsageFreshness:
-    """Tests for SMA-111: dashboard usage data freshness fixes."""
+    """Tests for dashboard usage data freshness — DB-only, no API fallback."""
 
-    def test_fresh_db_snapshot_skips_api_call(
-        self, db_file, monkeypatch,
-    ):
-        """When the DB snapshot is fresh (< 10 min), no API call should be made.
-
-        The dashboard reads from DB snapshots written by the supervisor's
-        poller, only falling back to API when data is stale.
-        """
-        call_count = 0
-
-        def _tracking_refresh(conn, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            return None
-
-        monkeypatch.setattr(
-            "botfarm.dashboard.refresh_usage_snapshot", _tracking_refresh,
-        )
+    def test_fresh_db_snapshot_shows_data(self, db_file):
+        """When a fresh DB snapshot exists, usage data is displayed."""
         app = create_app(db_path=db_file)
         client = TestClient(app)
-
-        # DB snapshot from db_file fixture is fresh — no API call expected
         resp = client.get("/partials/usage")
         assert resp.status_code == 200
-        assert "45.0%" in resp.text  # Data from DB snapshot
-        assert call_count == 0, (
-            "Expected no API call when DB snapshot is fresh"
-        )
+        assert "45.0%" in resp.text
 
-    def test_stale_db_snapshot_triggers_api_call(
-        self, tmp_path, monkeypatch,
-    ):
-        """When the DB snapshot is stale (> 10 min), the dashboard should
-        fall back to a live API call and show the fresh data."""
-        class FakeState:
-            def to_dict(self):
-                return {"utilization_5h": 0.30, "utilization_7d": 0.60}
-
-        monkeypatch.setattr(
-            "botfarm.dashboard.refresh_usage_snapshot",
-            lambda conn, **kw: FakeState(),
-        )
-
+    def test_stale_db_snapshot_shows_stale_data(self, tmp_path):
+        """When the DB snapshot is stale, the dashboard shows stale DB data
+        rather than making a live API call (SMA-441)."""
         from datetime import datetime, timedelta, timezone
         old_time = (
             datetime.now(timezone.utc) - timedelta(minutes=12)
@@ -756,30 +710,19 @@ class TestUsageFreshness:
         client = TestClient(app)
         resp = client.get("/partials/usage")
         body = resp.text
-        # Should show fresh data from API mock, not the stale DB snapshot
-        assert "30.0%" in body
+        # Should show stale DB data (no API fallback)
+        assert "45.0%" in body
         assert "Last polled:" in body
 
-    def test_staleness_warning_shown_when_data_old(
-        self, tmp_path, monkeypatch,
-    ):
+    def test_staleness_warning_shown_when_data_old(self, tmp_path):
         """A visual warning should appear when usage data is older than
-        the staleness threshold (15 minutes).
-
-        The index page falls back to DB's last_usage_check (from
-        usage_snapshot.created_at), so staleness is testable there.
-        """
-        monkeypatch.setattr(
-            "botfarm.dashboard.refresh_usage_snapshot", lambda conn, **kw: None,
-        )
-        # Create a DB with a usage snapshot that has an old created_at
+        the staleness threshold (15 minutes)."""
         from datetime import datetime, timedelta, timezone
         old_time = (
             datetime.now(timezone.utc) - timedelta(minutes=20)
         ).isoformat()
         db_path = tmp_path / "stale.db"
         conn = init_db(db_path)
-        # Insert usage snapshot with old timestamp
         conn.execute(
             "INSERT INTO usage_snapshots (utilization_5h, utilization_7d, resets_at, created_at)"
             " VALUES (?, ?, ?, ?)",
@@ -790,19 +733,12 @@ class TestUsageFreshness:
 
         app = create_app(db_path=db_path)
         client = TestClient(app)
-        # Use index page which falls back to DB's last_usage_check
         resp = client.get("/")
         assert "usage data may be stale" in resp.text
 
-    def test_staleness_warning_on_usage_partial_cold_start(
-        self, tmp_path, monkeypatch,
-    ):
+    def test_staleness_warning_on_usage_partial_cold_start(self, tmp_path):
         """The /partials/usage endpoint should show a staleness warning on
-        cold start (before the dashboard refreshes) when the DB snapshot is old.
-        """
-        monkeypatch.setattr(
-            "botfarm.dashboard.refresh_usage_snapshot", lambda conn, **kw: None,
-        )
+        cold start when the DB snapshot is old."""
         from datetime import datetime, timedelta, timezone
         old_time = (
             datetime.now(timezone.utc) - timedelta(minutes=20)
@@ -822,68 +758,16 @@ class TestUsageFreshness:
         resp = client.get("/partials/usage")
         assert "usage data may be stale" in resp.text
 
-    def test_no_staleness_warning_when_data_fresh(
-        self, db_file, monkeypatch,
-    ):
+    def test_no_staleness_warning_when_data_fresh(self, db_file):
         """No warning when the usage data was refreshed recently."""
-        monkeypatch.setattr(
-            "botfarm.dashboard.refresh_usage_snapshot", lambda conn, **kw: None,
-        )
-        # db_file already has a recent usage snapshot (just created)
         app = create_app(db_path=db_file)
         client = TestClient(app)
         resp = client.get("/partials/usage")
         assert "usage data may be stale" not in resp.text
 
-    def test_warning_level_log_on_refresh_failure(
-        self, tmp_path, monkeypatch, caplog,
-    ):
-        """Refresh failures should log at WARNING level, not DEBUG.
-
-        Uses a stale DB snapshot to trigger the API fallback path.
-        """
-        monkeypatch.setattr(
-            "botfarm.dashboard.refresh_usage_snapshot",
-            lambda conn, **kw: (_ for _ in ()).throw(RuntimeError("API error")),
-        )
-
-        from datetime import datetime, timedelta, timezone
-        old_time = (
-            datetime.now(timezone.utc) - timedelta(minutes=12)
-        ).isoformat()
-        db_path = tmp_path / "stale_log.db"
-        conn = init_db(db_path)
-        conn.execute(
-            "INSERT INTO usage_snapshots (utilization_5h, utilization_7d, resets_at, created_at)"
-            " VALUES (?, ?, ?, ?)",
-            (0.45, 0.72, "2026-02-12T15:00:00+00:00", old_time),
-        )
-        conn.commit()
-        conn.close()
-
-        app = create_app(db_path=db_path)
-        client = TestClient(app)
-
-        import logging
-        with caplog.at_level(logging.WARNING, logger="botfarm.dashboard"):
-            client.get("/partials/usage")
-        assert any(
-            "Dashboard usage refresh failed" in r.message for r in caplog.records
-        )
-        assert all(
-            r.levelno >= logging.WARNING
-            for r in caplog.records
-            if "Dashboard usage refresh failed" in r.message
-        )
-
-    def test_cached_db_snapshot_returned_on_subsequent_calls(
-        self, db_file, monkeypatch,
-    ):
+    def test_cached_db_snapshot_returned_on_subsequent_calls(self, db_file):
         """After reading a fresh DB snapshot, subsequent calls within the
         cache TTL should return the same cached data without re-reading DB."""
-        monkeypatch.setattr(
-            "botfarm.dashboard.refresh_usage_snapshot", lambda conn, **kw: None,
-        )
         app = create_app(db_path=db_file)
         client = TestClient(app)
 
@@ -895,22 +779,9 @@ class TestUsageFreshness:
         resp2 = client.get("/partials/usage")
         assert "45.0%" in resp2.text
 
-    def test_429_backoff_returns_stale_db_data(
-        self, tmp_path, monkeypatch,
-    ):
-        """When the DB snapshot is stale but the poller is in 429 backoff,
-        the dashboard should return stale DB data instead of calling the API."""
-        call_count = 0
-
-        def _tracking_refresh(conn, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            return None
-
-        monkeypatch.setattr(
-            "botfarm.dashboard.refresh_usage_snapshot", _tracking_refresh,
-        )
-
+    def test_stale_db_snapshot_still_returned(self, tmp_path):
+        """When the DB snapshot is stale, dashboard returns stale data
+        without making API calls (SMA-441 — no live API fallback)."""
         from datetime import datetime, timedelta, timezone
         old_time = (
             datetime.now(timezone.utc) - timedelta(minutes=12)
@@ -926,35 +797,14 @@ class TestUsageFreshness:
         conn.close()
 
         app = create_app(db_path=db_path)
-        # Simulate 429 backoff on the poller
-        import time
-        app.state._usage_poller._consecutive_429s = 2
-        app.state._usage_poller._last_poll = time.monotonic()
-        app.state._usage_poller._active_poll_interval = 1200
-
         client = TestClient(app)
         resp = client.get("/partials/usage")
         assert resp.status_code == 200
-        # Should show stale DB data, not call API
         assert "45.0%" in resp.text
-        assert call_count == 0, (
-            "Expected no API call when poller is in 429 backoff"
-        )
 
-    def test_no_db_snapshot_falls_back_to_api(
-        self, tmp_path, monkeypatch,
-    ):
-        """When there are no DB snapshots at all, the dashboard should
-        fall back to a live API call."""
-        class FakeState:
-            def to_dict(self):
-                return {"utilization_5h": 0.33, "utilization_7d": 0.66}
-
-        monkeypatch.setattr(
-            "botfarm.dashboard.refresh_usage_snapshot",
-            lambda conn, **kw: FakeState(),
-        )
-
+    def test_no_db_snapshot_shows_no_data(self, tmp_path):
+        """When there are no DB snapshots, the dashboard shows 'No usage
+        data available' instead of falling back to API (SMA-441)."""
         db_path = tmp_path / "empty_usage.db"
         conn = init_db(db_path)
         conn.commit()
@@ -964,7 +814,7 @@ class TestUsageFreshness:
         client = TestClient(app)
         resp = client.get("/partials/usage")
         assert resp.status_code == 200
-        assert "33.0%" in resp.text
+        assert "No usage data available" in resp.text
 
 
 # --- Index Queue panel ---
