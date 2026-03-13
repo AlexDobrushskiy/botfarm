@@ -662,10 +662,10 @@ class TestUsagePanelEnhancements:
         assert "72.0%" in body
 
     def test_last_usage_check(self, client):
-        """Last checked appears on the index page (which falls back to DB data)."""
+        """Last polled timestamp appears on the index page (which falls back to DB data)."""
         resp = client.get("/")
         body = resp.text
-        assert "Last checked:" in body
+        assert "Last polled:" in body
         assert "ago" in body
 
     def test_no_dispatch_pause_banner_in_usage(self, tmp_path, monkeypatch):
@@ -695,44 +695,40 @@ class TestUsagePanelEnhancements:
 class TestUsageFreshness:
     """Tests for SMA-111: dashboard usage data freshness fixes."""
 
-    def test_rate_limit_slot_not_claimed_on_failure(
+    def test_fresh_db_snapshot_skips_api_call(
         self, db_file, monkeypatch,
     ):
-        """Rate-limit slot should not be consumed when the API call fails.
+        """When the DB snapshot is fresh (< 10 min), no API call should be made.
 
-        After a failed refresh, the next call should retry immediately rather
-        than returning stale cached data for up to 60 seconds.
+        The dashboard reads from DB snapshots written by the supervisor's
+        poller, only falling back to API when data is stale.
         """
         call_count = 0
 
-        def _failing_refresh(conn, **kwargs):
+        def _tracking_refresh(conn, **kwargs):
             nonlocal call_count
             call_count += 1
-            raise RuntimeError("API down")
+            return None
 
         monkeypatch.setattr(
-            "botfarm.dashboard.refresh_usage_snapshot", _failing_refresh,
+            "botfarm.dashboard.refresh_usage_snapshot", _tracking_refresh,
         )
         app = create_app(db_path=db_file)
         client = TestClient(app)
 
-        # First call -- triggers a real refresh attempt which fails
-        resp1 = client.get("/partials/usage")
-        assert resp1.status_code == 200
-        first_call_count = call_count
-
-        # Second call -- should also attempt a refresh (slot was not claimed)
-        resp2 = client.get("/partials/usage")
-        assert resp2.status_code == 200
-        assert call_count > first_call_count, (
-            "Expected retry after failure, but rate-limit slot blocked it"
+        # DB snapshot from db_file fixture is fresh — no API call expected
+        resp = client.get("/partials/usage")
+        assert resp.status_code == 200
+        assert "45.0%" in resp.text  # Data from DB snapshot
+        assert call_count == 0, (
+            "Expected no API call when DB snapshot is fresh"
         )
 
-    def test_dashboard_tracks_own_refresh_timestamp(
-        self, db_file, monkeypatch,
+    def test_stale_db_snapshot_triggers_api_call(
+        self, tmp_path, monkeypatch,
     ):
-        """After a successful refresh, 'Last checked' should reflect the
-        dashboard's own timestamp, not the supervisor's."""
+        """When the DB snapshot is stale (> 10 min), the dashboard should
+        fall back to a live API call and show the fresh data."""
         class FakeState:
             def to_dict(self):
                 return {"utilization_5h": 0.30, "utilization_7d": 0.60}
@@ -742,20 +738,33 @@ class TestUsageFreshness:
             lambda conn, **kw: FakeState(),
         )
 
-        app = create_app(db_path=db_file)
+        from datetime import datetime, timedelta, timezone
+        old_time = (
+            datetime.now(timezone.utc) - timedelta(minutes=12)
+        ).isoformat()
+        db_path = tmp_path / "stale_api.db"
+        conn = init_db(db_path)
+        conn.execute(
+            "INSERT INTO usage_snapshots (utilization_5h, utilization_7d, resets_at, created_at)"
+            " VALUES (?, ?, ?, ?)",
+            (0.45, 0.72, "2026-02-12T15:00:00+00:00", old_time),
+        )
+        conn.commit()
+        conn.close()
+
+        app = create_app(db_path=db_path)
         client = TestClient(app)
         resp = client.get("/partials/usage")
         body = resp.text
-        # Should show fresh data from our mock, not the DB snapshot usage
+        # Should show fresh data from API mock, not the stale DB snapshot
         assert "30.0%" in body
-        # The "Last checked" should be a recent dashboard timestamp
-        assert "Last checked:" in body
+        assert "Last polled:" in body
 
     def test_staleness_warning_shown_when_data_old(
         self, tmp_path, monkeypatch,
     ):
         """A visual warning should appear when usage data is older than
-        2x the refresh interval (>120 seconds with default 60s interval).
+        the staleness threshold (15 minutes).
 
         The index page falls back to DB's last_usage_check (from
         usage_snapshot.created_at), so staleness is testable there.
@@ -766,7 +775,7 @@ class TestUsageFreshness:
         # Create a DB with a usage snapshot that has an old created_at
         from datetime import datetime, timedelta, timezone
         old_time = (
-            datetime.now(timezone.utc) - timedelta(minutes=5)
+            datetime.now(timezone.utc) - timedelta(minutes=20)
         ).isoformat()
         db_path = tmp_path / "stale.db"
         conn = init_db(db_path)
@@ -796,7 +805,7 @@ class TestUsageFreshness:
         )
         from datetime import datetime, timedelta, timezone
         old_time = (
-            datetime.now(timezone.utc) - timedelta(minutes=5)
+            datetime.now(timezone.utc) - timedelta(minutes=20)
         ).isoformat()
         db_path = tmp_path / "stale_partial.db"
         conn = init_db(db_path)
@@ -827,14 +836,32 @@ class TestUsageFreshness:
         assert "usage data may be stale" not in resp.text
 
     def test_warning_level_log_on_refresh_failure(
-        self, db_file, monkeypatch, caplog,
+        self, tmp_path, monkeypatch, caplog,
     ):
-        """Refresh failures should log at WARNING level, not DEBUG."""
+        """Refresh failures should log at WARNING level, not DEBUG.
+
+        Uses a stale DB snapshot to trigger the API fallback path.
+        """
         monkeypatch.setattr(
             "botfarm.dashboard.refresh_usage_snapshot",
             lambda conn, **kw: (_ for _ in ()).throw(RuntimeError("API error")),
         )
-        app = create_app(db_path=db_file)
+
+        from datetime import datetime, timedelta, timezone
+        old_time = (
+            datetime.now(timezone.utc) - timedelta(minutes=12)
+        ).isoformat()
+        db_path = tmp_path / "stale_log.db"
+        conn = init_db(db_path)
+        conn.execute(
+            "INSERT INTO usage_snapshots (utilization_5h, utilization_7d, resets_at, created_at)"
+            " VALUES (?, ?, ?, ?)",
+            (0.45, 0.72, "2026-02-12T15:00:00+00:00", old_time),
+        )
+        conn.commit()
+        conn.close()
+
+        app = create_app(db_path=db_path)
         client = TestClient(app)
 
         import logging
@@ -849,29 +876,95 @@ class TestUsageFreshness:
             if "Dashboard usage refresh failed" in r.message
         )
 
-    def test_successful_refresh_updates_cached_data(
+    def test_cached_db_snapshot_returned_on_subsequent_calls(
         self, db_file, monkeypatch,
     ):
-        """After a successful API refresh, subsequent rate-limited calls
-        should return the fresh data, not None."""
+        """After reading a fresh DB snapshot, subsequent calls within the
+        cache TTL should return the same cached data without re-reading DB."""
+        monkeypatch.setattr(
+            "botfarm.dashboard.refresh_usage_snapshot", lambda conn, **kw: None,
+        )
+        app = create_app(db_path=db_file)
+        client = TestClient(app)
+
+        # First call -- reads from DB snapshot
+        resp1 = client.get("/partials/usage")
+        assert "45.0%" in resp1.text
+
+        # Second call within cache TTL -- should return same cached data
+        resp2 = client.get("/partials/usage")
+        assert "45.0%" in resp2.text
+
+    def test_429_backoff_returns_stale_db_data(
+        self, tmp_path, monkeypatch,
+    ):
+        """When the DB snapshot is stale but the poller is in 429 backoff,
+        the dashboard should return stale DB data instead of calling the API."""
+        call_count = 0
+
+        def _tracking_refresh(conn, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return None
+
+        monkeypatch.setattr(
+            "botfarm.dashboard.refresh_usage_snapshot", _tracking_refresh,
+        )
+
+        from datetime import datetime, timedelta, timezone
+        old_time = (
+            datetime.now(timezone.utc) - timedelta(minutes=12)
+        ).isoformat()
+        db_path = tmp_path / "backoff.db"
+        conn = init_db(db_path)
+        conn.execute(
+            "INSERT INTO usage_snapshots (utilization_5h, utilization_7d, resets_at, created_at)"
+            " VALUES (?, ?, ?, ?)",
+            (0.45, 0.72, "2026-02-12T15:00:00+00:00", old_time),
+        )
+        conn.commit()
+        conn.close()
+
+        app = create_app(db_path=db_path)
+        # Simulate 429 backoff on the poller
+        import time
+        app.state._usage_poller._consecutive_429s = 2
+        app.state._usage_poller._last_poll = time.monotonic()
+        app.state._usage_poller._active_poll_interval = 1200
+
+        client = TestClient(app)
+        resp = client.get("/partials/usage")
+        assert resp.status_code == 200
+        # Should show stale DB data, not call API
+        assert "45.0%" in resp.text
+        assert call_count == 0, (
+            "Expected no API call when poller is in 429 backoff"
+        )
+
+    def test_no_db_snapshot_falls_back_to_api(
+        self, tmp_path, monkeypatch,
+    ):
+        """When there are no DB snapshots at all, the dashboard should
+        fall back to a live API call."""
         class FakeState:
             def to_dict(self):
-                return {"utilization_5h": 0.55, "utilization_7d": 0.80}
+                return {"utilization_5h": 0.33, "utilization_7d": 0.66}
 
         monkeypatch.setattr(
             "botfarm.dashboard.refresh_usage_snapshot",
             lambda conn, **kw: FakeState(),
         )
-        app = create_app(db_path=db_file)
+
+        db_path = tmp_path / "empty_usage.db"
+        conn = init_db(db_path)
+        conn.commit()
+        conn.close()
+
+        app = create_app(db_path=db_path)
         client = TestClient(app)
-
-        # First call -- refreshes from API
-        resp1 = client.get("/partials/usage")
-        assert "55.0%" in resp1.text
-
-        # Second call within rate-limit window -- should return cached data
-        resp2 = client.get("/partials/usage")
-        assert "55.0%" in resp2.text
+        resp = client.get("/partials/usage")
+        assert resp.status_code == 200
+        assert "33.0%" in resp.text
 
 
 # --- Index Queue panel ---

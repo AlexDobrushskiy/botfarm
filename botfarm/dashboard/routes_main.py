@@ -35,7 +35,6 @@ from .state import (
     elapsed,
     format_duration,
     get_capacity_data,
-    get_dashboard_last_fresh_time,
     get_db,
     linear_url,
     manual_pause_state,
@@ -656,8 +655,7 @@ def index(request: Request):
     usage = state.get("usage", {})
     codex_usage = state.get("codex_usage", {})
     queue = state.get("queue")
-    dashboard_checked = get_dashboard_last_fresh_time(app)
-    last_usage_check = dashboard_checked or state.get("last_usage_check")
+    last_usage_check = state.get("last_usage_check")
     _linear_url = lambda tid: linear_url(app, tid)
     cfg = app.state.botfarm_config
     projects = [p.name for p in cfg.projects] if cfg else []
@@ -797,7 +795,7 @@ def usage_page(request: Request):
     app = request.app
     templates = request.app.state.templates
     state = read_state(app)
-    fresh = refresh_and_get_usage(app)
+    fresh, _snapshot_at = refresh_and_get_usage(app)
     usage = fresh if fresh is not None else state.get("usage", {})
     time_range = request.query_params.get("range", "7d")
     if time_range not in USAGE_RANGE_HOURS:
