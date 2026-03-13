@@ -104,6 +104,27 @@ class TestProjectCreateEndpoint:
         assert resp.status_code == 400
         assert "already exists" in resp.json()["errors"][0]
 
+    def test_duplicate_linear_project(self, tmp_path):
+        existing = ProjectConfig(
+            name="other-proj", linear_team="ENG", linear_project="Bot farm",
+            base_dir="/tmp/x", worktree_prefix="/tmp/x-slot-", slots=[1],
+        )
+        cfg = _make_config(projects=[existing])
+        app = _make_app(tmp_path, config=cfg)
+        client = TestClient(app)
+        resp = client.post(
+            "/api/project/create",
+            json={
+                "repo_url": "git@github.com:user/repo.git",
+                "name": "new-proj",
+                "linear_team": "ENG",
+                "linear_project": "Bot farm",
+                "slots": 1,
+            },
+        )
+        assert resp.status_code == 400
+        assert any("already used" in e for e in resp.json()["errors"])
+
     def test_invalid_repo_url(self, tmp_path):
         app = _make_app(tmp_path)
         client = TestClient(app)
@@ -148,10 +169,12 @@ class TestProjectCreateEndpoint:
                     "slots": 2,
                 },
             )
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["status"] == "started"
-        assert "task_id" in data
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["status"] == "started"
+            assert "task_id" in data
+            # Wait for the background thread to call the mocked function
+            time.sleep(0.1)
 
     def test_no_config(self, tmp_path):
         db_path = tmp_path / "test.db"

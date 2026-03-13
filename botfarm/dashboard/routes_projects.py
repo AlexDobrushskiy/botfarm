@@ -12,7 +12,6 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from sse_starlette.sse import EventSourceResponse
 
-from botfarm.config import DEFAULT_CONFIG_PATH
 from botfarm.linear import LinearClient
 from botfarm.project_setup import extract_repo_name, setup_project, ProjectSetupError
 
@@ -122,6 +121,13 @@ async def api_project_create(request: Request):
     elif any(p.name == name for p in cfg.projects):
         errors.append(f"Project '{name}' already exists")
 
+    if linear_project and any(
+        p.linear_project == linear_project for p in cfg.projects
+    ):
+        errors.append(
+            f"Linear project '{linear_project}' is already used by another project"
+        )
+
     if not linear_team:
         errors.append("Linear team is required")
 
@@ -151,7 +157,7 @@ async def api_project_create(request: Request):
                 task_state["messages"].append(msg)
 
         try:
-            config_path = DEFAULT_CONFIG_PATH
+            config_path = cfg.source_path
             setup_project(
                 repo_url=repo_url,
                 name=name,
@@ -218,6 +224,9 @@ async def api_project_create_progress(request: Request, task_id: str = ""):
                 break
 
             await asyncio.sleep(0.3)
+
+        with _setup_tasks_lock:
+            _setup_tasks.pop(task_id, None)
 
     return EventSourceResponse(event_generator())
 

@@ -145,7 +145,11 @@ function submitAddProject(evt) {
     }).then(function(result) {
         if (!result.ok) {
             var errors = result.data.errors || [result.data.error || "Request failed"];
-            errDiv.innerHTML = errors.map(function(e) { return "&#x2022; " + e; }).join("<br>");
+            errDiv.textContent = "";
+            errors.forEach(function(e, i) {
+                if (i > 0) errDiv.appendChild(document.createElement("br"));
+                errDiv.appendChild(document.createTextNode("\u2022 " + e));
+            });
             errDiv.style.display = "block";
             btn.disabled = false;
             btn.textContent = "Add Project";
