@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import math
 import sqlite3
 import time
 from dataclasses import dataclass, field
@@ -370,7 +371,7 @@ class UsagePoller:
             )
         else:
             new_interval = min(exponential, MAX_ADAPTIVE_POLL_INTERVAL)
-        self._active_poll_interval = int(new_interval)
+        self._active_poll_interval = math.ceil(new_interval)
         logger.warning(
             "Usage API returned 429 (consecutive: %d, retry-after: %s) — "
             "increasing poll interval to %ds",
