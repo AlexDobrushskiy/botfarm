@@ -81,7 +81,7 @@ No PR created. Agent researches and posts findings as a Linear comment, then cre
 Review/fix loop happens via Linear comments (not GitHub).
 
 ### Creating Tickets
-- Always use team "Smart AI Coach", project "Bot farm"
+- Use the appropriate team and project for your workspace
 - If a task may consume >60% of 200k context — split into smaller tickets
 - Use parent tickets to group related work; set dependencies (`blocks`/`is blocked by`)
 - Use `Investigation` label for research tasks, `Human` label for tasks requiring human action

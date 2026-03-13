@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "botfarm"
 version = "0.1.0"
 description = "Autonomous Linear ticket dispatcher for Claude Code agents"
+license = "BUSL-1.1"
 requires-python = ">=3.12"
 dependencies = [
     "click",
