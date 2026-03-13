@@ -35,6 +35,13 @@
             onclick='addSlot({{ project | tojson }})'
             {% if not supervisor.running or dispatch_paused %}disabled title="Supervisor not running or dispatch paused"{% else %}title="Add a new slot to {{ project }}"{% endif %}>+ Add Slot ({{ project }})</button>
     {% endfor %}
+    <a href="/projects/add" role="button" class="add-slot-btn" style="text-decoration: none;"
+       title="Add a new project">+ Add Project</a>
+</div>
+{% else %}
+<div class="slot-project-actions">
+    <a href="/projects/add" role="button" class="add-slot-btn" style="text-decoration: none;"
+       title="Add a new project">+ Add Project</a>
 </div>
 {% endif %}
 

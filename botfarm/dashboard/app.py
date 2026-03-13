@@ -18,6 +18,7 @@ from .routes_config import router as config_router
 from .routes_logs import router as logs_router
 from .routes_main import router as main_router
 from .routes_partials import router as partials_router
+from .routes_projects import router as projects_router
 from .state import STATIC_DIR, TEMPLATES_DIR, init_caches
 
 logger = logging.getLogger(__name__)
@@ -124,6 +125,7 @@ def create_app(
     app.include_router(partials_router)
     app.include_router(api_router)
     app.include_router(config_router)
+    app.include_router(projects_router)
     app.include_router(logs_router)
 
     return app
