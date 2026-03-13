@@ -10,9 +10,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import math
 import sqlite3
 import time
 from dataclasses import dataclass, field
+from email.utils import parsedate_to_datetime
 
 import httpx
 
@@ -73,6 +75,33 @@ def _categorize_error(exc: Exception) -> str:
     elif isinstance(exc, httpx.ConnectError):
         return "connection_error"
     return "other"
+
+
+def parse_retry_after(value: str | None) -> float | None:
+    """Parse a Retry-After header value into seconds.
+
+    Handles both formats per RFC 9110:
+    - Integer seconds (e.g. ``"120"``)
+    - HTTP-date (e.g. ``"Fri, 13 Mar 2026 12:00:00 GMT"``)
+
+    Returns ``None`` if the value is missing or unparseable.
+    """
+    if not value:
+        return None
+    # Try integer seconds first (most common for APIs)
+    try:
+        seconds = int(value)
+        return max(seconds, 0)
+    except ValueError:
+        pass
+    # Try HTTP-date format
+    try:
+        dt = parsedate_to_datetime(value)
+        delta = (dt - dt.now(tz=dt.tzinfo)).total_seconds()
+        return max(delta, 0)
+    except Exception:
+        logger.warning("Could not parse Retry-After header: %r", value)
+        return None
 
 
 @dataclass
@@ -288,7 +317,8 @@ class UsagePoller:
         except httpx.HTTPStatusError as exc:
             self._flush_audit_records(conn, fp)
             if exc.response.status_code == 429:
-                self._handle_429()
+                retry_after_header = exc.response.headers.get("retry-after")
+                self._handle_429(retry_after_header)
                 return
             elif exc.response.status_code == 401:
                 logger.warning("Usage API returned 401 — refreshing token")
@@ -324,19 +354,30 @@ class UsagePoller:
         self._purge_old_snapshots(conn)
         conn.commit()
 
-    def _handle_429(self) -> None:
-        """Handle a 429 rate-limit response by increasing the poll interval."""
+    def _handle_429(self, retry_after_header: str | None = None) -> None:
+        """Handle a 429 rate-limit response by increasing the poll interval.
+
+        If the response includes a ``Retry-After`` header, the backoff is at
+        least that many seconds.  The final interval is the greater of the
+        parsed header value and the exponential backoff formula.
+        """
         self._consecutive_429s += 1
-        new_interval = min(
-            self.poll_interval * (2 ** self._consecutive_429s),
-            MAX_ADAPTIVE_POLL_INTERVAL,
-        )
-        self._active_poll_interval = new_interval
+        exponential = self.poll_interval * (2 ** self._consecutive_429s)
+        retry_after = parse_retry_after(retry_after_header)
+        if retry_after is not None:
+            new_interval = min(
+                max(retry_after, exponential),
+                MAX_ADAPTIVE_POLL_INTERVAL,
+            )
+        else:
+            new_interval = min(exponential, MAX_ADAPTIVE_POLL_INTERVAL)
+        self._active_poll_interval = math.ceil(new_interval)
         logger.warning(
-            "Usage API returned 429 (consecutive: %d) — "
+            "Usage API returned 429 (consecutive: %d, retry-after: %s) — "
             "increasing poll interval to %ds",
             self._consecutive_429s,
-            new_interval,
+            retry_after_header or "absent",
+            self._active_poll_interval,
         )
 
     def _reset_rate_limit_state(self) -> None:

@@ -27,6 +27,7 @@ from botfarm.usage import (
     UsagePoller,
     UsageState,
     _categorize_error,
+    parse_retry_after,
     refresh_usage_snapshot,
     token_fingerprint,
 )
@@ -594,8 +595,8 @@ class TestRefreshUsageSnapshot:
 
         orig_handle = UsagePoller._handle_429
 
-        def spy_handle(self):
-            orig_handle(self)
+        def spy_handle(self, retry_after_header=None):
+            orig_handle(self, retry_after_header)
             consecutive_counts.append(self._consecutive_429s)
 
         with patch("botfarm.usage.fetch_usage", side_effect=_raise_429):
@@ -1575,5 +1576,126 @@ class TestRefreshUsageSnapshotCaller:
         rows = get_usage_api_call_history(conn, limit=10)
         assert len(rows) == 1
         assert rows[0]["caller"] == "dashboard_refresh"
+
+
+# ---------------------------------------------------------------------------
+# parse_retry_after
+# ---------------------------------------------------------------------------
+
+
+class TestParseRetryAfter:
+    def test_none_returns_none(self):
+        assert parse_retry_after(None) is None
+
+    def test_empty_string_returns_none(self):
+        assert parse_retry_after("") is None
+
+    def test_integer_seconds(self):
+        assert parse_retry_after("120") == 120
+
+    def test_zero_seconds(self):
+        assert parse_retry_after("0") == 0
+
+    def test_negative_clamped_to_zero(self):
+        assert parse_retry_after("-5") == 0
+
+    def test_non_numeric_non_date_returns_none(self):
+        assert parse_retry_after("not-a-number") is None
+
+    def test_http_date_in_past_returns_zero(self):
+        """An HTTP-date in the past should clamp to 0."""
+        assert parse_retry_after("Fri, 01 Jan 2010 00:00:00 GMT") == 0
+
+
+# ---------------------------------------------------------------------------
+# _handle_429 with Retry-After header
+# ---------------------------------------------------------------------------
+
+
+class TestHandle429RetryAfter:
+    def test_429_with_retry_after_uses_header_when_larger(self, poller, conn):
+        """When Retry-After exceeds exponential backoff, use the header value."""
+        # poll_interval=10, first 429 → exponential = 10 * 2^1 = 20
+        # Retry-After: 600 → should use 600
+        response = _make_429_response(retry_after="600")
+        error = httpx.HTTPStatusError("", request=response.request, response=response)
+
+        with patch.object(poller, "_fetch", side_effect=error):
+            poller.force_poll(conn)
+
+        assert poller._consecutive_429s == 1
+        assert poller.effective_poll_interval == 600
+
+    def test_429_with_retry_after_uses_exponential_when_larger(self, poller, conn):
+        """When exponential backoff exceeds Retry-After, use the exponential value."""
+        # poll_interval=10, first 429 → exponential = 10 * 2^1 = 20
+        # Retry-After: 5 → should use 20
+        response = _make_429_response(retry_after="5")
+        error = httpx.HTTPStatusError("", request=response.request, response=response)
+
+        with patch.object(poller, "_fetch", side_effect=error):
+            poller.force_poll(conn)
+
+        assert poller._consecutive_429s == 1
+        assert poller.effective_poll_interval == 20
+
+    def test_429_without_retry_after_uses_exponential(self, poller, conn):
+        """Without a Retry-After header, fall back to pure exponential backoff."""
+        response = _make_429_response()  # no retry-after
+        error = httpx.HTTPStatusError("", request=response.request, response=response)
+
+        with patch.object(poller, "_fetch", side_effect=error):
+            poller.force_poll(conn)
+
+        assert poller._consecutive_429s == 1
+        assert poller.effective_poll_interval == poller.poll_interval * 2
+
+    def test_429_with_retry_after_capped_at_max(self, poller, conn):
+        """Even with a large Retry-After, the interval is capped at MAX."""
+        response = _make_429_response(retry_after="9999")
+        error = httpx.HTTPStatusError("", request=response.request, response=response)
+
+        with patch.object(poller, "_fetch", side_effect=error):
+            poller.force_poll(conn)
+
+        assert poller.effective_poll_interval == MAX_ADAPTIVE_POLL_INTERVAL
+
+    def test_429_with_unparseable_retry_after_falls_back(self, poller, conn):
+        """An unparseable Retry-After header falls back to exponential backoff."""
+        response = _make_429_response(retry_after="not-a-number")
+        error = httpx.HTTPStatusError("", request=response.request, response=response)
+
+        with patch.object(poller, "_fetch", side_effect=error):
+            poller.force_poll(conn)
+
+        assert poller._consecutive_429s == 1
+        # Falls back to exponential: 10 * 2^1 = 20
+        assert poller.effective_poll_interval == poller.poll_interval * 2
+
+    def test_consecutive_429s_with_retry_after(self, poller, conn):
+        """Consecutive 429s with Retry-After header use max of header and exponential."""
+        far_past = time.monotonic() - MAX_ADAPTIVE_POLL_INTERVAL - 1
+
+        # First 429: Retry-After=30, exponential=10*2=20 → use 30
+        response1 = _make_429_response(retry_after="30")
+        error1 = httpx.HTTPStatusError("", request=response1.request, response=response1)
+
+        with patch.object(poller, "_fetch", side_effect=error1):
+            poller.force_poll(conn)
+
+        assert poller._consecutive_429s == 1
+        assert poller.effective_poll_interval == 30
+
+        # Second 429: Retry-After=30, exponential=10*4=40 → use 40
+        poller._last_force_poll = far_past
+        poller._last_poll = far_past
+        response2 = _make_429_response(retry_after="30")
+        error2 = httpx.HTTPStatusError("", request=response2.request, response=response2)
+
+        with patch.object(poller, "_fetch", side_effect=error2):
+            poller.force_poll(conn)
+
+        assert poller._consecutive_429s == 2
+        assert poller.effective_poll_interval == 40
 
 
