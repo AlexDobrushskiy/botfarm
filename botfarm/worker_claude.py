@@ -511,6 +511,47 @@ def _extract_pr_url(text: str) -> str | None:
     return match.group(0) if match else None
 
 
+def _extract_pr_url_from_log(log_file: Path | None) -> str | None:
+    """Scan a stage log file for a GitHub PR URL.
+
+    The log contains the full NDJSON session transcript, including tool
+    results from ``gh pr create``.  Returns the first PR URL found, or
+    ``None`` if the file is missing / unreadable / contains no URL.
+    """
+    if log_file is None:
+        return None
+    try:
+        text = log_file.read_text(errors="replace")
+    except OSError:
+        logger.debug("Cannot read log file %s for PR URL scan", log_file, exc_info=True)
+        return None
+    return _extract_pr_url(text)
+
+
+def _gh_pr_view_url(cwd: str | Path, *, env: dict[str, str] | None = None) -> str | None:
+    """Get the PR URL for the current branch via ``gh pr view``.
+
+    Returns the URL if a PR exists on the current branch, ``None`` otherwise.
+    """
+    subprocess_env = {**os.environ, **env} if env else None
+    try:
+        proc = subprocess.run(
+            ["gh", "pr", "view", "--json", "url", "--jq", ".url"],
+            capture_output=True,
+            text=True,
+            cwd=str(cwd),
+            timeout=15,
+            env=subprocess_env,
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            url = proc.stdout.strip()
+            if "github.com" in url and "/pull/" in url:
+                return url
+    except Exception:
+        logger.debug("gh pr view failed for PR URL fallback", exc_info=True)
+    return None
+
+
 def _parse_pr_url(pr_url: str) -> tuple[str, str, str]:
     """Extract (owner, repo, number) from a GitHub PR URL.
 
