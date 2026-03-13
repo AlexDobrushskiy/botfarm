@@ -40,6 +40,7 @@ from botfarm.worker import (
     _parse_pr_url,
     _parse_review_approved,
     _recover_pr_url,
+    _run_claude_stage,
     _run_implement,
     _run_review,
     _run_fix,
@@ -49,7 +50,9 @@ from botfarm.worker import (
     _is_merge_conflict,
     _write_subprocess_log,
 )
+from botfarm.worker_claude import _extract_pr_url_from_log, _gh_pr_view_url
 from botfarm.worker_stages import _check_pr_has_merge_conflict
+from botfarm.workflow import get_stage, load_pipeline
 from tests.helpers import make_claude_json
 
 
@@ -822,6 +825,187 @@ class TestExtractPrUrl:
 
 
 # ---------------------------------------------------------------------------
+# _extract_pr_url_from_log
+# ---------------------------------------------------------------------------
+
+
+class TestExtractPrUrlFromLog:
+    def test_extracts_url_from_log_file(self, tmp_path):
+        log = tmp_path / "stage.log"
+        log.write_text(
+            '{"type":"tool_result","content":"https://github.com/owner/repo/pull/275"}\n'
+        )
+        assert _extract_pr_url_from_log(log) == "https://github.com/owner/repo/pull/275"
+
+    def test_returns_last_url_when_multiple(self, tmp_path):
+        log = tmp_path / "stage.log"
+        log.write_text(
+            '{"context":"See https://github.com/owner/repo/pull/100 for prior work"}\n'
+            '{"type":"tool_result","content":"Created https://github.com/owner/repo/pull/275"}\n'
+        )
+        assert _extract_pr_url_from_log(log) == "https://github.com/owner/repo/pull/275"
+
+    def test_returns_none_when_no_url_in_log(self, tmp_path):
+        log = tmp_path / "stage.log"
+        log.write_text('{"type":"result","result":"All done"}\n')
+        assert _extract_pr_url_from_log(log) is None
+
+    def test_returns_none_for_missing_file(self, tmp_path):
+        log = tmp_path / "nonexistent.log"
+        assert _extract_pr_url_from_log(log) is None
+
+    def test_returns_none_when_log_file_is_none(self):
+        assert _extract_pr_url_from_log(None) is None
+
+
+# ---------------------------------------------------------------------------
+# _gh_pr_view_url
+# ---------------------------------------------------------------------------
+
+
+class TestGhPrViewUrl:
+    @patch("botfarm.worker_claude.subprocess.run")
+    def test_returns_url_on_success(self, mock_run, tmp_path):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["gh"], returncode=0,
+            stdout="https://github.com/owner/repo/pull/42\n",
+            stderr="",
+        )
+        assert _gh_pr_view_url(tmp_path) == "https://github.com/owner/repo/pull/42"
+
+    @patch("botfarm.worker_claude.subprocess.run")
+    def test_returns_none_on_failure(self, mock_run, tmp_path):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["gh"], returncode=1, stdout="", stderr="no PR found",
+        )
+        assert _gh_pr_view_url(tmp_path) is None
+
+    @patch("botfarm.worker_claude.subprocess.run")
+    def test_returns_none_on_exception(self, mock_run, tmp_path):
+        mock_run.side_effect = FileNotFoundError("gh not found")
+        assert _gh_pr_view_url(tmp_path) is None
+
+    @patch("botfarm.worker_claude.subprocess.run")
+    def test_passes_env(self, mock_run, tmp_path):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["gh"], returncode=0,
+            stdout="https://github.com/owner/repo/pull/42\n",
+            stderr="",
+        )
+        _gh_pr_view_url(tmp_path, env={"GH_TOKEN": "tok"})
+        call_env = mock_run.call_args[1].get("env") or mock_run.call_args.kwargs.get("env")
+        assert call_env is not None
+        assert call_env["GH_TOKEN"] == "tok"
+
+
+# ---------------------------------------------------------------------------
+# PR URL fallback in _run_claude_stage
+# ---------------------------------------------------------------------------
+
+
+class TestPrUrlFallbackInClaudeStage:
+    @patch("botfarm.worker_stages._gh_pr_view_url", return_value=None)
+    @patch("botfarm.worker_stages._invoke_claude")
+    def test_fallback_to_log_scan(self, mock_invoke, mock_gh, conn, tmp_path):
+        """When result_text and gh pr view lack PR URL, fall back to log scan."""
+        pipeline = load_pipeline(conn, [])
+        stage_tpl = get_stage(pipeline, "implement")
+
+        mock_invoke.return_value = ClaudeResult(
+            session_id="sess-1", num_turns=5, duration_seconds=10.0,
+            exit_subtype="tool_use",
+            result_text="Background test agent timed out",
+        )
+        log_file = tmp_path / "implement.log"
+        log_file.write_text(
+            '{"type":"tool_result","content":"Created https://github.com/org/repo/pull/275"}\n'
+        )
+        result = _run_claude_stage(
+            stage_tpl, cwd=tmp_path, max_turns=100,
+            prompt_vars={"ticket_id": "SMA-42"},
+            log_file=log_file,
+        )
+        assert result.pr_url == "https://github.com/org/repo/pull/275"
+        assert result.success is True
+        mock_gh.assert_called_once()
+
+    @patch("botfarm.worker_stages._gh_pr_view_url", return_value="https://github.com/org/repo/pull/99")
+    @patch("botfarm.worker_stages._invoke_claude")
+    def test_fallback_to_gh_pr_view(self, mock_invoke, mock_gh, conn, tmp_path):
+        """When neither result_text nor log contain PR URL, fall back to gh pr view."""
+        pipeline = load_pipeline(conn, [])
+        stage_tpl = get_stage(pipeline, "implement")
+
+        mock_invoke.return_value = ClaudeResult(
+            session_id="sess-1", num_turns=5, duration_seconds=10.0,
+            exit_subtype="tool_use",
+            result_text="Background test agent timed out",
+        )
+        result = _run_claude_stage(
+            stage_tpl, cwd=tmp_path, max_turns=100,
+            prompt_vars={"ticket_id": "SMA-42"},
+        )
+        assert result.pr_url == "https://github.com/org/repo/pull/99"
+        assert result.success is True
+        mock_gh.assert_called_once()
+
+    @patch("botfarm.worker_stages._gh_pr_view_url", return_value=None)
+    @patch("botfarm.worker_stages._invoke_claude")
+    def test_all_fallbacks_exhausted(self, mock_invoke, mock_gh, conn, tmp_path):
+        """When all fallbacks fail, pr_url is None."""
+        pipeline = load_pipeline(conn, [])
+        stage_tpl = get_stage(pipeline, "implement")
+
+        mock_invoke.return_value = ClaudeResult(
+            session_id="sess-1", num_turns=5, duration_seconds=10.0,
+            exit_subtype="tool_use",
+            result_text="Background test agent timed out",
+        )
+        result = _run_claude_stage(
+            stage_tpl, cwd=tmp_path, max_turns=100,
+            prompt_vars={"ticket_id": "SMA-42"},
+        )
+        assert result.pr_url is None
+        assert result.success is True
+
+
+# ---------------------------------------------------------------------------
+# PR URL fallback in _run_implement (legacy)
+# ---------------------------------------------------------------------------
+
+
+class TestPrUrlFallbackInImplement:
+    @patch("botfarm.worker_stages._gh_pr_view_url", return_value=None)
+    @patch("botfarm.worker_claude.run_claude_streaming")
+    def test_fallback_to_log_scan(self, mock_claude, mock_gh, tmp_path):
+        """Legacy _run_implement falls back to log scan when result_text and gh pr view fail."""
+        mock_claude.return_value = ClaudeResult(
+            session_id="s1", num_turns=10, duration_seconds=30.0,
+            exit_subtype="tool_use",
+            result_text="Background test timed out",
+        )
+        log_file = tmp_path / "implement.log"
+        log_file.write_text(
+            '{"output":"PR created at https://github.com/owner/repo/pull/123"}\n'
+        )
+        result = _run_implement("SMA-1", cwd=tmp_path, max_turns=100, log_file=log_file)
+        assert result.pr_url == "https://github.com/owner/repo/pull/123"
+        mock_gh.assert_called_once()
+
+    @patch("botfarm.worker_stages._gh_pr_view_url", return_value="https://github.com/owner/repo/pull/77")
+    @patch("botfarm.worker_claude.run_claude_streaming")
+    def test_fallback_to_gh_pr_view(self, mock_claude, mock_gh, tmp_path):
+        """Legacy _run_implement falls back to gh pr view."""
+        mock_claude.return_value = ClaudeResult(
+            session_id="s1", num_turns=10, duration_seconds=30.0,
+            exit_subtype="tool_use",
+            result_text="Background test timed out",
+        )
+        result = _run_implement("SMA-1", cwd=tmp_path, max_turns=100)
+        assert result.pr_url == "https://github.com/owner/repo/pull/77"
+
+
+# ---------------------------------------------------------------------------
 # Individual stage runners
 # ---------------------------------------------------------------------------
 
@@ -844,8 +1028,9 @@ class TestRunImplement:
         assert result.pr_url == PR_URL
         assert result.claude_result.num_turns == 10
 
+    @patch("botfarm.worker_stages._gh_pr_view_url", return_value=None)
     @patch("botfarm.worker_claude.run_claude_streaming")
-    def test_success_without_pr_url(self, mock_claude, tmp_path):
+    def test_success_without_pr_url(self, mock_claude, mock_gh, tmp_path):
         mock_claude.return_value = ClaudeResult(
             session_id="s1",
             num_turns=10,
