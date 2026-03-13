@@ -6,6 +6,12 @@ Autonomous Linear ticket dispatcher for Claude Code agents.
 
 Botfarm polls your Linear board for "Todo" tickets, dispatches them to Claude Code agent workers running in parallel git worktrees, and manages the full pipeline: implement → review → fix → PR checks → merge.
 
+## Dashboard
+
+![Live Status](docs/screenshots/dashboard-live-status.png)
+
+![Task History](docs/screenshots/dashboard-task-history.png)
+
 ## Prerequisites
 
 ### System Requirements
