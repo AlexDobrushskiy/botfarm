@@ -964,6 +964,36 @@
             setTimeout(function() { toast.remove(); }, 300);
         }, 3000);
     }
+
+    function refreshUsage(btn) {
+        btn.disabled = true;
+        btn.textContent = "Refreshing...";
+        var errDiv = document.getElementById("usage-refresh-error");
+        if (errDiv) { errDiv.style.display = "none"; errDiv.innerHTML = ""; }
+        fetch("/api/usage/refresh", { method: "POST" })
+            .then(function(resp) {
+                return resp.json().then(function(data) {
+                    if (!resp.ok) throw new Error(data.error || "Request failed");
+                    showToast("Usage stats refreshed", "success");
+                });
+            })
+            .catch(function(err) {
+                showToast(err.message, "error");
+                var errDiv = document.getElementById("usage-refresh-error");
+                if (errDiv) {
+                    errDiv.style.display = "block";
+                    errDiv.textContent = "";
+                    var small = document.createElement("small");
+                    small.className = "status-failed";
+                    small.textContent = err.message;
+                    errDiv.appendChild(small);
+                }
+            })
+            .finally(function() {
+                btn.disabled = false;
+                btn.textContent = "Refresh";
+            });
+    }
     </script>
     <script>
     (function() {

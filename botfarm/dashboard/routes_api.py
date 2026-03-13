@@ -8,6 +8,7 @@ import sqlite3
 import time
 from datetime import datetime, timezone
 
+import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
@@ -329,6 +330,73 @@ def api_preflight_results(request: Request):
     """Return preflight check results as JSON (used by CLI ``botfarm preflight``)."""
     data = _get_preflight_data(request.app)
     return JSONResponse(data)
+
+
+# --- Usage Refresh API ---
+
+@router.post("/api/usage/refresh")
+async def api_usage_refresh(request: Request):
+    """Manually trigger a usage stats refresh from the Anthropic API.
+
+    Returns fresh usage data on success, or a descriptive error message
+    (including HTTP status codes like 401/429) so the dashboard can
+    surface API problems to the user.
+    """
+    poller = request.app.state._usage_poller
+
+    # Respect 429 backoff — never hammer a rate-limited API
+    if poller.in_429_backoff:
+        remaining = int(
+            poller.effective_poll_interval - (time.monotonic() - poller._last_poll)
+        )
+        return JSONResponse(
+            {"error": f"Rate limited by Anthropic. Retry in {max(remaining, 1)}s."},
+            status_code=429,
+        )
+
+    def _refresh():
+        conn = init_db(request.app.state.db_path)
+        try:
+            return poller.manual_refresh(conn)
+        finally:
+            conn.close()
+
+    try:
+        state = await asyncio.to_thread(_refresh)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=503)
+    except httpx.HTTPStatusError as exc:
+        code = exc.response.status_code
+        if code == 401:
+            msg = "Anthropic API returned 401 Unauthorized — check API credentials"
+        elif code == 429:
+            msg = "Anthropic API returned 429 Too Many Requests — try again later"
+        elif code >= 500:
+            msg = f"Anthropic API returned {code} — server error"
+        else:
+            msg = f"Anthropic API returned HTTP {code}"
+        return JSONResponse({"error": msg, "status_code": code}, status_code=502)
+    except (httpx.ConnectTimeout, httpx.PoolTimeout):
+        return JSONResponse(
+            {"error": "Connection to Anthropic API timed out"},
+            status_code=504,
+        )
+    except httpx.ConnectError:
+        return JSONResponse(
+            {"error": "Could not connect to Anthropic API"},
+            status_code=502,
+        )
+    except Exception as exc:
+        return JSONResponse(
+            {"error": f"API call failed: {exc}"},
+            status_code=502,
+        )
+
+    # Invalidate usage cache so htmx partials pick up fresh data
+    with request.app.state._usage_refresh_lock:
+        request.app.state._last_usage_refresh["time"] = None
+
+    return JSONResponse({"status": "ok", "usage": state.to_dict()})
 
 
 # --- Workflow API ---
