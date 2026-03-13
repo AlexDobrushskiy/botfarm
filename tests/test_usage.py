@@ -1662,13 +1662,28 @@ class TestHandle429RetryAfter:
         assert poller._consecutive_429s == 1
         assert poller.effective_poll_interval == poller.poll_interval * 2
 
-    def test_429_with_retry_after_capped_at_max(self, poller, conn):
-        """Even with a large Retry-After, the interval is capped at MAX."""
-        response = _make_429_response(retry_after="9999")
+    def test_429_with_retry_after_above_max_is_respected(self, poller, conn):
+        """Server-specified Retry-After above MAX_ADAPTIVE_POLL_INTERVAL is not capped."""
+        response = _make_429_response(retry_after="3600")
         error = httpx.HTTPStatusError("", request=response.request, response=response)
 
         with patch.object(poller, "_fetch", side_effect=error):
             poller.force_poll(conn)
+
+        assert poller.effective_poll_interval == 3600
+
+    def test_429_without_retry_after_exponential_capped_at_max(self, poller, conn):
+        """Without Retry-After, exponential backoff is still capped at MAX."""
+        response = _make_429_response()  # no retry-after
+        error = httpx.HTTPStatusError("", request=response.request, response=response)
+
+        far_past = time.monotonic() - MAX_ADAPTIVE_POLL_INTERVAL - 1
+        # Drive exponential well past MAX with many consecutive 429s
+        for _ in range(20):
+            poller._last_force_poll = far_past
+            poller._last_poll = far_past
+            with patch.object(poller, "_fetch", side_effect=error):
+                poller.force_poll(conn)
 
         assert poller.effective_poll_interval == MAX_ADAPTIVE_POLL_INTERVAL
 
@@ -1789,6 +1804,20 @@ class TestBackoffStatePersistence:
         assert p._consecutive_429s == 0
         assert p._active_poll_interval is None
 
+    def test_restore_respects_interval_above_max(self, conn):
+        """Restored backoff respects intervals above MAX_ADAPTIVE_POLL_INTERVAL."""
+        from botfarm.db import save_backoff_state
+
+        # Simulate a server retry-after of 3600s that was persisted
+        save_backoff_state(conn, consecutive_429s=1, backoff_until=time.time() + 3600)
+
+        p = UsagePoller(poll_interval=10)
+        p.restore_backoff_state(conn)
+
+        # Should be ~3600, not capped at MAX_ADAPTIVE_POLL_INTERVAL (1800)
+        assert p._active_poll_interval > MAX_ADAPTIVE_POLL_INTERVAL
+        assert p._active_poll_interval == 3600
+
     def test_restored_backoff_blocks_poll(self, conn):
         """After restoring active backoff, poll() returns cached data."""
         from botfarm.db import save_backoff_state
@@ -1848,20 +1877,17 @@ class TestBackoffJitter:
         # With 20 samples and up to 50% jitter, not all should be equal
         assert len(set(intervals)) > 1
 
-    def test_jitter_on_restore_backoff(self, conn):
-        """Restored backoff interval includes jitter within expected range."""
+    def test_restore_uses_remaining_time_directly(self, conn):
+        """Restored backoff uses remaining time from DB, not re-computed exponential."""
         from botfarm.db import save_backoff_state
 
         save_backoff_state(conn, consecutive_429s=2, backoff_until=time.time() + 300)
-        base = 10 * (2 ** 2)  # poll_interval=10, consecutive=2
 
         p = UsagePoller(poll_interval=10)
         p.restore_backoff_state(conn)
 
-        assert p._active_poll_interval >= base
-        assert p._active_poll_interval <= math.ceil(
-            base * (1 + BACKOFF_JITTER_FRACTION)
-        )
+        # Should use remaining time (~300s), not re-compute from exponential (40s)
+        assert p._active_poll_interval == 300
 
     def test_jitter_still_capped_at_max(self, poller, conn):
         """Even with maximum jitter, the interval cannot exceed MAX."""

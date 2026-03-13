@@ -367,12 +367,10 @@ class UsagePoller:
             clear_backoff_state(conn)
             return
         self._consecutive_429s = state["consecutive_429s"]
-        base = self.poll_interval * (2 ** self._consecutive_429s)
-        jittered = base * (1 + random.uniform(0, BACKOFF_JITTER_FRACTION))
-        self._active_poll_interval = min(
-            math.ceil(jittered),
-            MAX_ADAPTIVE_POLL_INTERVAL,
-        )
+        # Use the remaining time from the persisted backoff_until directly.
+        # This preserves server-specified Retry-After values that may exceed
+        # MAX_ADAPTIVE_POLL_INTERVAL.
+        self._active_poll_interval = math.ceil(remaining)
         # Align monotonic _last_poll so that the remaining backoff is respected
         self._last_poll = time.monotonic() - (self._active_poll_interval - remaining)
         logger.info(
@@ -451,16 +449,17 @@ class UsagePoller:
         exponential = self.poll_interval * (2 ** self._consecutive_429s)
         retry_after = parse_retry_after(retry_after_header)
         if retry_after is not None:
-            new_interval = min(
-                max(retry_after, exponential),
-                MAX_ADAPTIVE_POLL_INTERVAL,
-            )
+            # Server-specified Retry-After is authoritative — never cap it.
+            # Only cap the exponential backoff component.
+            new_interval = max(retry_after, min(exponential, MAX_ADAPTIVE_POLL_INTERVAL))
+            jittered = new_interval * (1 + random.uniform(0, BACKOFF_JITTER_FRACTION))
+            self._active_poll_interval = math.ceil(jittered)
         else:
             new_interval = min(exponential, MAX_ADAPTIVE_POLL_INTERVAL)
-        jittered = new_interval * (1 + random.uniform(0, BACKOFF_JITTER_FRACTION))
-        self._active_poll_interval = math.ceil(
-            min(jittered, MAX_ADAPTIVE_POLL_INTERVAL)
-        )
+            jittered = new_interval * (1 + random.uniform(0, BACKOFF_JITTER_FRACTION))
+            self._active_poll_interval = math.ceil(
+                min(jittered, MAX_ADAPTIVE_POLL_INTERVAL)
+            )
         logger.warning(
             "Usage API returned 429 (consecutive: %d, retry-after: %s) — "
             "increasing poll interval to %ds",
