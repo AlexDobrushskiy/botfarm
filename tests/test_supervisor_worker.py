@@ -2752,3 +2752,27 @@ class TestAddProject:
 
         count = sum(1 for p in supervisor._config.projects if p.name == "new-project")
         assert count == 1
+
+    def test_add_project_rolls_back_on_poller_failure(self, supervisor, tmp_path):
+        """add_project rolls back _projects, config.projects, and slots on failure."""
+        new_project = ProjectConfig(
+            name="new-project",
+            linear_team="NEW",
+            base_dir=str(tmp_path / "new-repo"),
+            worktree_prefix="new-project-slot-",
+            slots=[1, 2],
+        )
+        fresh = self._make_fresh_config(tmp_path, extra_project=new_project)
+
+        with patch("botfarm.config.load_config", return_value=fresh), \
+             patch("botfarm.linear.LinearPoller", side_effect=RuntimeError("boom")):
+            supervisor._config.source_path = "/fake/config.yaml"
+            with pytest.raises(RuntimeError, match="boom"):
+                supervisor.add_project("new-project")
+
+        # All mutations should be rolled back
+        assert "new-project" not in supervisor._projects
+        assert not any(p.name == "new-project" for p in supervisor._config.projects)
+        assert supervisor._slot_manager.get_slot("new-project", 1) is None
+        assert supervisor._slot_manager.get_slot("new-project", 2) is None
+        assert "new-project" not in supervisor._pollers

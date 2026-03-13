@@ -1455,43 +1455,73 @@ Note: The supervisor handles status transitions automatically — do not move th
                 f"Project '{project_name}' not found in config file"
             )
 
-        # Register in _projects dict
-        self._projects[project_name] = new_project_cfg
+        # All mutations are wrapped in try/except so we can roll back on
+        # partial failure (mirrors add_slot's rollback approach).
+        added_to_projects = False
+        added_to_config = False
+        registered_slots: list[int] = []
+        added_poller = False
 
-        # Also append to the live BotfarmConfig.projects list so dashboard
-        # and other consumers see the new project without a restart.
-        if not any(p.name == project_name for p in self._config.projects):
-            self._config.projects.append(new_project_cfg)
+        try:
+            # Register in _projects dict
+            self._projects[project_name] = new_project_cfg
+            added_to_projects = True
 
-        # Create SlotManager entries for each slot
-        for slot_id in new_project_cfg.slots:
-            self._slot_manager.register_slot(project_name, slot_id)
-        self._slot_manager.save()
+            # Also append to the live BotfarmConfig.projects list so dashboard
+            # and other consumers see the new project without a restart.
+            if not any(p.name == project_name for p in self._config.projects):
+                self._config.projects.append(new_project_cfg)
+                added_to_config = True
 
-        # Create a LinearPoller for the new project
-        client = LinearClient(api_key=self._config.linear.api_key)
-        coder_key = self._config.identities.coder.linear_api_key
-        coder_client = LinearClient(api_key=coder_key) if coder_key else None
-        poller = LinearPoller(
-            client=client,
-            project=new_project_cfg,
-            exclude_tags=self._config.linear.exclude_tags,
-            todo_status=self._config.linear.todo_status,
-            coder_client=coder_client,
-        )
-        self._pollers[project_name] = poller
+            # Create SlotManager entries for each slot
+            for slot_id in new_project_cfg.slots:
+                self._slot_manager.register_slot(project_name, slot_id)
+                registered_slots.append(slot_id)
+            self._slot_manager.save()
 
-        # Log event for audit trail
-        insert_event(
-            self._conn,
-            event_type="project_added",
-            detail=json.dumps({
-                "project": project_name,
-                "slots": new_project_cfg.slots,
-                "linear_team": new_project_cfg.linear_team,
-            }),
-        )
-        self._conn.commit()
+            # Create a LinearPoller for the new project
+            client = LinearClient(api_key=self._config.linear.api_key)
+            coder_key = self._config.identities.coder.linear_api_key
+            coder_client = LinearClient(api_key=coder_key) if coder_key else None
+            poller = LinearPoller(
+                client=client,
+                project=new_project_cfg,
+                exclude_tags=self._config.linear.exclude_tags,
+                todo_status=self._config.linear.todo_status,
+                coder_client=coder_client,
+            )
+            self._pollers[project_name] = poller
+            added_poller = True
+
+            # Log event for audit trail
+            insert_event(
+                self._conn,
+                event_type="project_added",
+                detail=json.dumps({
+                    "project": project_name,
+                    "slots": new_project_cfg.slots,
+                    "linear_team": new_project_cfg.linear_team,
+                }),
+            )
+            self._conn.commit()
+        except Exception:
+            # Roll back all mutations performed so far
+            if added_poller:
+                self._pollers.pop(project_name, None)
+            for sid in reversed(registered_slots):
+                self._slot_manager._slots.pop((project_name, sid), None)
+            if registered_slots:
+                try:
+                    self._slot_manager.save()
+                except Exception:
+                    pass
+            if added_to_config:
+                self._config.projects = [
+                    p for p in self._config.projects if p.name != project_name
+                ]
+            if added_to_projects:
+                self._projects.pop(project_name, None)
+            raise
 
         logger.info(
             "Added project '%s' with %d slot(s), polling team '%s'",
