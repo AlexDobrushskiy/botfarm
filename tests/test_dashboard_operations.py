@@ -2021,17 +2021,16 @@ class TestDailySummaryConfig:
 
 
 class TestUsageRefreshAPI:
-    def _mock_poller(self, **kwargs):
-        """Create a mock UsagePoller class whose instances have the given behaviour."""
-        mock_instance = MagicMock()
-        for key, value in kwargs.items():
-            setattr(mock_instance.manual_refresh, key, value)
-        if "return_value" in kwargs:
-            mock_instance.manual_refresh.return_value = kwargs["return_value"]
-        if "side_effect" in kwargs:
-            mock_instance.manual_refresh.side_effect = kwargs["side_effect"]
-        mock_cls = MagicMock(return_value=mock_instance)
-        return mock_cls
+    def _setup_app(self, db_file, **mock_kwargs):
+        """Create an app and patch its shared _usage_poller."""
+        app = create_app(db_path=db_file)
+        mock_poller = MagicMock()
+        mock_poller.in_429_backoff = False
+        for key, value in mock_kwargs.items():
+            if key in ("return_value", "side_effect"):
+                setattr(mock_poller.manual_refresh, key, value)
+        app.state._usage_poller = mock_poller
+        return app, mock_poller
 
     def test_success_returns_fresh_data(self, db_file):
         """POST /api/usage/refresh returns fresh usage data on success."""
@@ -2043,13 +2042,9 @@ class TestUsageRefreshAPI:
             resets_at_5h="2026-03-13T16:00:00Z",
             resets_at_7d="2026-03-19T00:00:00Z",
         )
-        app = create_app(db_path=db_file)
+        app, _ = self._setup_app(db_file, return_value=mock_state)
         client = TestClient(app)
-        with patch(
-            "botfarm.usage.UsagePoller",
-            self._mock_poller(return_value=mock_state),
-        ):
-            resp = client.post("/api/usage/refresh")
+        resp = client.post("/api/usage/refresh")
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "ok"
@@ -2058,28 +2053,23 @@ class TestUsageRefreshAPI:
 
     def test_no_credentials_returns_503(self, db_file):
         """POST /api/usage/refresh returns 503 when no token is available."""
-        app = create_app(db_path=db_file)
+        app, _ = self._setup_app(
+            db_file,
+            side_effect=ValueError("No OAuth credentials available. Check credential configuration."),
+        )
         client = TestClient(app)
-        with patch(
-            "botfarm.usage.UsagePoller",
-            self._mock_poller(
-                side_effect=ValueError("No OAuth credentials available. Check credential configuration."),
-            ),
-        ):
-            resp = client.post("/api/usage/refresh")
+        resp = client.post("/api/usage/refresh")
         assert resp.status_code == 503
         assert "credentials" in resp.json()["error"].lower()
 
     def test_401_returns_error_with_details(self, db_file):
         """POST /api/usage/refresh surfaces 401 error from Anthropic API."""
         mock_resp = _FakeHTTPResponse(401)
-        app = create_app(db_path=db_file)
+        app, _ = self._setup_app(
+            db_file, side_effect=_make_http_status_error(401, mock_resp),
+        )
         client = TestClient(app)
-        with patch(
-            "botfarm.usage.UsagePoller",
-            self._mock_poller(side_effect=_make_http_status_error(401, mock_resp)),
-        ):
-            resp = client.post("/api/usage/refresh")
+        resp = client.post("/api/usage/refresh")
         assert resp.status_code == 502
         data = resp.json()
         assert "401" in data["error"]
@@ -2088,27 +2078,34 @@ class TestUsageRefreshAPI:
     def test_429_returns_error_with_details(self, db_file):
         """POST /api/usage/refresh surfaces 429 error from Anthropic API."""
         mock_resp = _FakeHTTPResponse(429)
-        app = create_app(db_path=db_file)
+        app, _ = self._setup_app(
+            db_file, side_effect=_make_http_status_error(429, mock_resp),
+        )
         client = TestClient(app)
-        with patch(
-            "botfarm.usage.UsagePoller",
-            self._mock_poller(side_effect=_make_http_status_error(429, mock_resp)),
-        ):
-            resp = client.post("/api/usage/refresh")
+        resp = client.post("/api/usage/refresh")
         assert resp.status_code == 502
         assert "429" in resp.json()["error"]
+
+    def test_429_backoff_returns_429(self, db_file):
+        """POST /api/usage/refresh returns 429 when poller is in backoff."""
+        app, mock_poller = self._setup_app(db_file)
+        mock_poller.in_429_backoff = True
+        mock_poller.effective_poll_interval = 600
+        mock_poller._last_poll = 0.0  # far in the past → large remaining
+        client = TestClient(app)
+        resp = client.post("/api/usage/refresh")
+        assert resp.status_code == 429
+        assert "rate limited" in resp.json()["error"].lower()
 
     def test_connection_error_returns_502(self, db_file):
         """POST /api/usage/refresh returns 502 on connection failure."""
         import httpx
 
-        app = create_app(db_path=db_file)
+        app, _ = self._setup_app(
+            db_file, side_effect=httpx.ConnectError("Connection refused"),
+        )
         client = TestClient(app)
-        with patch(
-            "botfarm.usage.UsagePoller",
-            self._mock_poller(side_effect=httpx.ConnectError("Connection refused")),
-        ):
-            resp = client.post("/api/usage/refresh")
+        resp = client.post("/api/usage/refresh")
         assert resp.status_code == 502
         assert "connect" in resp.json()["error"].lower()
 
@@ -2116,13 +2113,11 @@ class TestUsageRefreshAPI:
         """POST /api/usage/refresh returns 504 on timeout."""
         import httpx
 
-        app = create_app(db_path=db_file)
+        app, _ = self._setup_app(
+            db_file, side_effect=httpx.ConnectTimeout("Timed out"),
+        )
         client = TestClient(app)
-        with patch(
-            "botfarm.usage.UsagePoller",
-            self._mock_poller(side_effect=httpx.ConnectTimeout("Timed out")),
-        ):
-            resp = client.post("/api/usage/refresh")
+        resp = client.post("/api/usage/refresh")
         assert resp.status_code == 504
         assert "timed out" in resp.json()["error"].lower()
 
@@ -2140,15 +2135,11 @@ class TestUsageRefreshAPI:
         from botfarm.usage import UsageState
 
         mock_state = UsageState(utilization_5h=0.10, utilization_7d=0.20)
-        app = create_app(db_path=db_file)
+        app, _ = self._setup_app(db_file, return_value=mock_state)
         client = TestClient(app)
         # Pre-populate cache
         app.state._last_usage_refresh["time"] = 99999.0
-        with patch(
-            "botfarm.usage.UsagePoller",
-            self._mock_poller(return_value=mock_state),
-        ):
-            resp = client.post("/api/usage/refresh")
+        resp = client.post("/api/usage/refresh")
         assert resp.status_code == 200
         # Cache should be invalidated
         assert app.state._last_usage_refresh["time"] is None

@@ -310,10 +310,13 @@ def init_caches(app: FastAPI) -> None:
     Called by ``create_app()`` so each app instance gets isolated caches
     (important for tests and when multiple apps coexist in one process).
     """
+    from botfarm.usage import UsagePoller
+
     app.state._usage_refresh_lock = threading.Lock()
     app.state._last_usage_refresh = {"time": None, "data": None, "snapshot_at": None}
     app.state._update_check_lock = threading.Lock()
     app.state._last_update_check = {"time": None, "commits_behind": 0}
+    app.state._usage_poller = UsagePoller()
 
 
 def _row_to_usage_dict(row) -> dict:
