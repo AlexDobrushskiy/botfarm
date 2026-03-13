@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import logging
 import math
+import random
 import sqlite3
 import time
 from dataclasses import dataclass, field
@@ -51,6 +52,7 @@ TRANSIENT_EXCEPTIONS = (
 )
 
 MAX_ADAPTIVE_POLL_INTERVAL = 1800  # 30 minutes cap for adaptive interval
+BACKOFF_JITTER_FRACTION = 0.5  # add up to 50% random jitter to backoff intervals
 FORCE_POLL_COOLDOWN = 30  # minimum seconds between force_poll API calls
 
 
@@ -319,8 +321,10 @@ class UsagePoller:
             clear_backoff_state(conn)
             return
         self._consecutive_429s = state["consecutive_429s"]
+        base = self.poll_interval * (2 ** self._consecutive_429s)
+        jittered = base * (1 + random.uniform(0, BACKOFF_JITTER_FRACTION))
         self._active_poll_interval = min(
-            self.poll_interval * (2 ** self._consecutive_429s),
+            math.ceil(jittered),
             MAX_ADAPTIVE_POLL_INTERVAL,
         )
         # Align monotonic _last_poll so that the remaining backoff is respected
@@ -407,7 +411,10 @@ class UsagePoller:
             )
         else:
             new_interval = min(exponential, MAX_ADAPTIVE_POLL_INTERVAL)
-        self._active_poll_interval = math.ceil(new_interval)
+        jittered = new_interval * (1 + random.uniform(0, BACKOFF_JITTER_FRACTION))
+        self._active_poll_interval = math.ceil(
+            min(jittered, MAX_ADAPTIVE_POLL_INTERVAL)
+        )
         logger.warning(
             "Usage API returned 429 (consecutive: %d, retry-after: %s) — "
             "increasing poll interval to %ds",
