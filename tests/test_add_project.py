@@ -8,19 +8,19 @@ import pytest
 import yaml
 from click.testing import CliRunner
 
-from botfarm.cli import (
-    _append_project_to_config,
-    _detect_project_indent,
-    _extract_repo_name,
-    _find_projects_insert_point,
-    _format_project_entry,
-    _is_placeholder_project,
-    _remove_project_entry_text,
-    _run_readiness_checks,
-    _yaml_scalar,
-    main,
-)
+from botfarm.cli import main
 from botfarm.linear import LinearAPIError
+from botfarm.project_setup import (
+    append_project_to_config,
+    detect_project_indent,
+    extract_repo_name,
+    find_projects_insert_point,
+    format_project_entry,
+    is_placeholder_project,
+    remove_project_entry_text,
+    run_readiness_checks,
+    yaml_scalar,
+)
 
 
 @pytest.fixture()
@@ -93,22 +93,22 @@ def _make_mock_run():
 
 class TestExtractRepoName:
     def test_ssh_url(self):
-        assert _extract_repo_name("git@github.com:user/my-app.git") == "my-app"
+        assert extract_repo_name("git@github.com:user/my-app.git") == "my-app"
 
     def test_https_url(self):
-        assert _extract_repo_name("https://github.com/user/my-app.git") == "my-app"
+        assert extract_repo_name("https://github.com/user/my-app.git") == "my-app"
 
     def test_no_git_suffix(self):
-        assert _extract_repo_name("https://github.com/user/my-app") == "my-app"
+        assert extract_repo_name("https://github.com/user/my-app") == "my-app"
 
     def test_trailing_slash(self):
-        assert _extract_repo_name("https://github.com/user/my-app.git/") == "my-app"
+        assert extract_repo_name("https://github.com/user/my-app.git/") == "my-app"
 
     def test_ssh_no_git_suffix(self):
-        assert _extract_repo_name("git@github.com:org/repo-name") == "repo-name"
+        assert extract_repo_name("git@github.com:org/repo-name") == "repo-name"
 
     def test_plain_name(self):
-        assert _extract_repo_name("my-repo") == "my-repo"
+        assert extract_repo_name("my-repo") == "my-repo"
 
 
 # ---------------------------------------------------------------------------
@@ -119,42 +119,42 @@ class TestExtractRepoName:
 class TestIsPlaceholderProject:
     def test_known_name_nonexistent_base_dir(self):
         entry = {"name": "my-project", "base_dir": "/tmp/nonexistent-dir-xyz-9999"}
-        assert _is_placeholder_project(entry) is True
+        assert is_placeholder_project(entry) is True
 
     def test_known_name_existing_base_dir(self, tmp_path):
         """Known init name but directory exists — not a placeholder."""
         entry = {"name": "my-project", "base_dir": str(tmp_path)}
-        assert _is_placeholder_project(entry) is False
+        assert is_placeholder_project(entry) is False
 
     def test_known_name_empty_base_dir(self):
         entry = {"name": "my-project", "base_dir": ""}
-        assert _is_placeholder_project(entry) is True
+        assert is_placeholder_project(entry) is True
 
     def test_known_name_missing_base_dir(self):
         entry = {"name": "project"}
-        assert _is_placeholder_project(entry) is True
+        assert is_placeholder_project(entry) is True
 
     def test_unknown_name_not_placeholder(self):
         """Non-default name is never a placeholder, even if base_dir is missing."""
         entry = {"name": "production-api", "base_dir": "/tmp/nonexistent-dir-xyz-9999"}
-        assert _is_placeholder_project(entry) is False
+        assert is_placeholder_project(entry) is False
 
     def test_tilde_expanded(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HOME", str(tmp_path))
         (tmp_path / "my-project").mkdir()
         entry = {"name": "my-project", "base_dir": "~/my-project"}
-        assert _is_placeholder_project(entry) is False
+        assert is_placeholder_project(entry) is False
 
     def test_deleted_repo_under_botfarm_dir_not_placeholder(self, tmp_path, monkeypatch):
         """Known init name under ~/.botfarm/projects/ is not a placeholder."""
         botfarm_dir = tmp_path / ".botfarm"
         botfarm_dir.mkdir()
-        monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_DIR", botfarm_dir)
+        monkeypatch.setattr("botfarm.project_setup.DEFAULT_CONFIG_DIR", botfarm_dir)
         entry = {
             "name": "my-project",
             "base_dir": str(botfarm_dir / "projects" / "my-project" / "repo"),
         }
-        assert _is_placeholder_project(entry) is False
+        assert is_placeholder_project(entry) is False
 
 
 # ---------------------------------------------------------------------------
@@ -175,7 +175,7 @@ class TestRemoveProjectEntryText:
             "linear:\n"
             "  api_key: test\n"
         )
-        result = _remove_project_entry_text(raw, "my-project")
+        result = remove_project_entry_text(raw, "my-project")
         data = yaml.safe_load(result)
         # projects key should remain but be empty/null
         assert "linear" in data
@@ -191,7 +191,7 @@ class TestRemoveProjectEntryText:
             "    linear_team: SMA\n"
             "    slots: [1, 2]\n"
         )
-        result = _remove_project_entry_text(raw, "placeholder")
+        result = remove_project_entry_text(raw, "placeholder")
         data = yaml.safe_load(result)
         assert len(data["projects"]) == 1
         assert data["projects"][0]["name"] == "real-project"
@@ -206,7 +206,7 @@ class TestRemoveProjectEntryText:
             "    linear_team: TEAM\n"
             "    slots: [1, 2]\n"
         )
-        result = _remove_project_entry_text(raw, "placeholder")
+        result = remove_project_entry_text(raw, "placeholder")
         data = yaml.safe_load(result)
         assert len(data["projects"]) == 1
         assert data["projects"][0]["name"] == "real-project"
@@ -223,13 +223,13 @@ class TestRemoveProjectEntryText:
             "linear:\n"
             "  api_key: test\n"
         )
-        result = _remove_project_entry_text(raw, "my-project")
+        result = remove_project_entry_text(raw, "my-project")
         assert "# Header comment" in result
         assert "# Section comment" in result
 
     def test_no_match_returns_unchanged(self):
         raw = "projects:\n  - name: real\n    slots: [1]\n"
-        assert _remove_project_entry_text(raw, "nonexistent") == raw
+        assert remove_project_entry_text(raw, "nonexistent") == raw
 
     def test_handles_quoted_name(self):
         raw = (
@@ -237,7 +237,7 @@ class TestRemoveProjectEntryText:
             '  - name: "my-project"\n'
             "    slots: [1]\n"
         )
-        result = _remove_project_entry_text(raw, "my-project")
+        result = remove_project_entry_text(raw, "my-project")
         data = yaml.safe_load(result)
         assert data.get("projects") is None or data.get("projects") == []
 
@@ -247,7 +247,7 @@ class TestRemoveProjectEntryText:
             "  - name: my-project  # placeholder\n"
             "    slots: [1]\n"
         )
-        result = _remove_project_entry_text(raw, "my-project")
+        result = remove_project_entry_text(raw, "my-project")
         data = yaml.safe_load(result)
         assert data.get("projects") is None or data.get("projects") == []
 
@@ -262,7 +262,7 @@ class TestRemoveProjectEntryText:
             "linear:\n"
             "  api_key: test\n"
         )
-        result = _remove_project_entry_text(raw, "my-project")
+        result = remove_project_entry_text(raw, "my-project")
         data = yaml.safe_load(result)
         assert "linear" in data
         assert data.get("projects") is None or data.get("projects") == []
@@ -277,7 +277,7 @@ class TestRemoveProjectEntryText:
             "  linear_team: SMA\n"
             "  slots: [1, 2]\n"
         )
-        result = _remove_project_entry_text(raw, "placeholder")
+        result = remove_project_entry_text(raw, "placeholder")
         data = yaml.safe_load(result)
         assert len(data["projects"]) == 1
         assert data["projects"][0]["name"] == "real-project"
@@ -291,19 +291,19 @@ class TestRemoveProjectEntryText:
 class TestDetectProjectIndent:
     def test_two_space_indent(self):
         raw = "projects:\n  - name: foo\n    slots: [1]\n"
-        assert _detect_project_indent(raw) == 2
+        assert detect_project_indent(raw) == 2
 
     def test_zero_indent(self):
         raw = "projects:\n- name: foo\n  slots: [1]\n"
-        assert _detect_project_indent(raw) == 0
+        assert detect_project_indent(raw) == 0
 
     def test_no_entries_defaults_to_two(self):
         raw = "projects: []\nlinear:\n  api_key: test\n"
-        assert _detect_project_indent(raw) == 2
+        assert detect_project_indent(raw) == 2
 
     def test_no_projects_key_defaults_to_two(self):
         raw = "linear:\n  api_key: test\n"
-        assert _detect_project_indent(raw) == 2
+        assert detect_project_indent(raw) == 2
 
     def test_ignores_nested_name_keys(self):
         raw = (
@@ -313,7 +313,7 @@ class TestDetectProjectIndent:
             "- name: real\n"
             "  slots: [1]\n"
         )
-        assert _detect_project_indent(raw) == 0
+        assert detect_project_indent(raw) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -334,7 +334,7 @@ class TestRunReadinessChecks:
             "slots": [1],
             "linear_project": "",
         }
-        results = _run_readiness_checks(project)
+        results = run_readiness_checks(project)
         ok_results = [r for r in results if r[0] == "ok"]
         assert any("CLAUDE.md found" in msg for _, msg in ok_results)
 
@@ -349,7 +349,7 @@ class TestRunReadinessChecks:
             "slots": [1],
             "linear_project": "",
         }
-        results = _run_readiness_checks(project)
+        results = run_readiness_checks(project)
         warnings = [r for r in results if r[0] == "warning"]
         assert any("No CLAUDE.md" in msg for _, msg in warnings)
 
@@ -365,7 +365,7 @@ class TestRunReadinessChecks:
             "slots": [1],
             "linear_project": "",
         }
-        results = _run_readiness_checks(project)
+        results = run_readiness_checks(project)
         ok_results = [r for r in results if r[0] == "ok"]
         assert any("Python runtime" in msg for _, msg in ok_results)
 
@@ -386,7 +386,7 @@ class TestAppendProjectToConfig:
             "slots": [1, 2],
             "linear_project": "",
         }
-        _append_project_to_config(config_path, project)
+        append_project_to_config(config_path, project)
 
         data = yaml.safe_load(config_path.read_text())
         assert len(data["projects"]) == 2
@@ -406,7 +406,7 @@ class TestAppendProjectToConfig:
             "slots": [1],
             "linear_project": "My Project",
         }
-        _append_project_to_config(config_path, project)
+        append_project_to_config(config_path, project)
 
         data = yaml.safe_load(config_path.read_text())
         added = data["projects"][1]
@@ -423,7 +423,7 @@ class TestAppendProjectToConfig:
             "slots": [1],
             "linear_project": "",
         }
-        _append_project_to_config(config_path, project)
+        append_project_to_config(config_path, project)
 
         data = yaml.safe_load(config_path.read_text())
         assert len(data["projects"]) == 1
@@ -441,7 +441,7 @@ class TestAppendProjectToConfig:
             "linear_project": "",
         }
         with pytest.raises(Exception, match="not a list"):
-            _append_project_to_config(config_path, project)
+            append_project_to_config(config_path, project)
 
     def test_preserves_yaml_comments(self, tmp_path):
         """Verify that add-project preserves all YAML comments in config."""
@@ -474,7 +474,7 @@ class TestAppendProjectToConfig:
             "slots": [1, 2],
             "linear_project": "",
         }
-        _append_project_to_config(config_path, project)
+        append_project_to_config(config_path, project)
 
         result = config_path.read_text()
         # All comments must be preserved
@@ -534,7 +534,7 @@ class TestAppendProjectToConfig:
             "slots": [1],
             "linear_project": "Engineering",
         }
-        _append_project_to_config(config_path, project)
+        append_project_to_config(config_path, project)
 
         result = config_path.read_text()
         # Every commented-out section must survive
@@ -575,7 +575,7 @@ class TestAppendProjectToConfig:
             "slots": [1],
             "linear_project": "Bot farm",
         }
-        _append_project_to_config(
+        append_project_to_config(
             config_path, project, replace_names=frozenset({"my-project"}),
         )
 
@@ -616,7 +616,7 @@ class TestAppendProjectToConfig:
             "slots": [1, 2],
             "linear_project": "",
         }
-        _append_project_to_config(
+        append_project_to_config(
             config_path, project, replace_names=frozenset({"my-project"}),
         )
 
@@ -649,7 +649,7 @@ class TestAppendProjectToConfig:
             "slots": [1, 2],
             "linear_project": "",
         }
-        _append_project_to_config(config_path, project)
+        append_project_to_config(config_path, project)
 
         result = config_path.read_text()
         data = yaml.safe_load(result)
@@ -680,7 +680,7 @@ class TestAppendProjectToConfig:
             "slots": [1],
             "linear_project": "Bot farm",
         }
-        _append_project_to_config(
+        append_project_to_config(
             config_path, project, replace_names=frozenset({"my-project"}),
         )
 
@@ -711,7 +711,7 @@ class TestAppendProjectToConfig:
             "slots": [1],
             "linear_project": "",
         }
-        _append_project_to_config(config_path, project)
+        append_project_to_config(config_path, project)
 
         result = config_path.read_text()
         assert "# Config" in result
@@ -728,30 +728,30 @@ class TestAppendProjectToConfig:
 
 class TestYamlScalar:
     def test_simple_string(self):
-        assert _yaml_scalar("hello") == "hello"
+        assert yaml_scalar("hello") == "hello"
 
     def test_string_with_colon_space(self):
         # "key: value" would be parsed as a mapping
-        result = _yaml_scalar("key: value")
+        result = yaml_scalar("key: value")
         assert result.startswith('"')
         assert yaml.safe_load(result) == "key: value"
 
     def test_boolean_like_string(self):
-        result = _yaml_scalar("true")
+        result = yaml_scalar("true")
         assert result.startswith('"')
         assert yaml.safe_load(result) == "true"
 
     def test_empty_string(self):
-        assert _yaml_scalar("") == '""'
+        assert yaml_scalar("") == '""'
 
     def test_list_of_ints(self):
-        assert _yaml_scalar([1, 2, 3]) == "[1, 2, 3]"
+        assert yaml_scalar([1, 2, 3]) == "[1, 2, 3]"
 
     def test_path_with_tilde(self):
-        assert _yaml_scalar("~/my-project") == "~/my-project"
+        assert yaml_scalar("~/my-project") == "~/my-project"
 
     def test_string_with_quotes(self):
-        result = _yaml_scalar('say "hello"')
+        result = yaml_scalar('say "hello"')
         assert yaml.safe_load(result) == 'say "hello"'
 
 
@@ -770,7 +770,7 @@ class TestFormatProjectEntry:
             "slots": [1, 2],
             "linear_project": "",
         }
-        result = _format_project_entry(project)
+        result = format_project_entry(project)
         # Should be valid YAML when combined with "projects:\n"
         data = yaml.safe_load("projects:\n" + result)
         assert data["projects"][0]["name"] == "my-app"
@@ -786,7 +786,7 @@ class TestFormatProjectEntry:
             "slots": [1],
             "linear_project": "Bot farm",
         }
-        result = _format_project_entry(project)
+        result = format_project_entry(project)
         data = yaml.safe_load("projects:\n" + result)
         assert data["projects"][0]["linear_project"] == "Bot farm"
 
@@ -799,7 +799,7 @@ class TestFormatProjectEntry:
             "slots": [1, 2],
             "linear_project": "",
         }
-        result = _format_project_entry(project, indent=0)
+        result = format_project_entry(project, indent=0)
         assert result.startswith("- name:")
         data = yaml.safe_load("projects:\n" + result)
         assert data["projects"][0]["name"] == "my-app"
@@ -821,7 +821,7 @@ class TestFindProjectsInsertPoint:
             "linear:",
             "  api_key: test",
         ]
-        assert _find_projects_insert_point(lines) == 3
+        assert find_projects_insert_point(lines) == 3
 
     def test_projects_at_end_of_file(self):
         lines = [
@@ -831,7 +831,7 @@ class TestFindProjectsInsertPoint:
             "  - name: proj1",
             "    slots: [1]",
         ]
-        assert _find_projects_insert_point(lines) == 5
+        assert find_projects_insert_point(lines) == 5
 
     def test_empty_projects_inline(self):
         lines = [
@@ -840,7 +840,7 @@ class TestFindProjectsInsertPoint:
             "linear:",
             "  api_key: test",
         ]
-        assert _find_projects_insert_point(lines) == 1
+        assert find_projects_insert_point(lines) == 1
 
     def test_projects_with_comment_between_sections(self):
         lines = [
@@ -853,7 +853,7 @@ class TestFindProjectsInsertPoint:
             "  api_key: test",
         ]
         # Comment is between sections — insert point is after project content
-        assert _find_projects_insert_point(lines) == 3
+        assert find_projects_insert_point(lines) == 3
 
     def test_zero_indent_followed_by_section(self):
         lines = [
@@ -864,7 +864,7 @@ class TestFindProjectsInsertPoint:
             "linear:",
             "  api_key: test",
         ]
-        assert _find_projects_insert_point(lines) == 3
+        assert find_projects_insert_point(lines) == 3
 
     def test_zero_indent_multiple_entries(self):
         lines = [
@@ -877,7 +877,7 @@ class TestFindProjectsInsertPoint:
             "linear:",
             "  api_key: test",
         ]
-        assert _find_projects_insert_point(lines) == 5
+        assert find_projects_insert_point(lines) == 5
 
     def test_zero_indent_at_end_of_file(self):
         lines = [
@@ -887,7 +887,7 @@ class TestFindProjectsInsertPoint:
             "- name: proj1",
             "  slots: [1]",
         ]
-        assert _find_projects_insert_point(lines) == 5
+        assert find_projects_insert_point(lines) == 5
 
 
 # ---------------------------------------------------------------------------
@@ -931,7 +931,7 @@ class TestAddProjectCommand:
             {"id": "p2", "name": "Other project"},
         ]
 
-        with patch("botfarm.cli.subprocess.run", side_effect=_make_mock_run()), \
+        with patch("botfarm.project_setup.subprocess.run", side_effect=_make_mock_run()), \
              patch("botfarm.cli.LinearClient", return_value=mock_client):
             result = runner.invoke(
                 main,
@@ -955,7 +955,7 @@ class TestAddProjectCommand:
         monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_DIR", tmp_path / ".botfarm")
         monkeypatch.delenv("LINEAR_API_KEY", raising=False)
 
-        with patch("botfarm.cli.subprocess.run", side_effect=_make_mock_run()):
+        with patch("botfarm.project_setup.subprocess.run", side_effect=_make_mock_run()):
             result = runner.invoke(
                 main,
                 ["add-project", "--config", str(config_path)],
@@ -1002,7 +1002,7 @@ class TestAddProjectCommand:
                 result.stderr = ""
             return result
 
-        with patch("botfarm.cli.subprocess.run", side_effect=fail_clone):
+        with patch("botfarm.project_setup.subprocess.run", side_effect=fail_clone):
             result = runner.invoke(
                 main,
                 ["add-project", "--config", str(config_path)],
@@ -1018,7 +1018,7 @@ class TestAddProjectCommand:
         monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_DIR", tmp_path / ".botfarm")
         monkeypatch.delenv("LINEAR_API_KEY", raising=False)
 
-        with patch("botfarm.cli.subprocess.run", side_effect=_make_mock_run()):
+        with patch("botfarm.project_setup.subprocess.run", side_effect=_make_mock_run()):
             result = runner.invoke(
                 main,
                 ["add-project", "--config", str(config_path)],
@@ -1045,7 +1045,7 @@ class TestAddProjectCommand:
                 worktree_cmds.append(cmd)
             return original_mock(cmd, **kwargs)
 
-        with patch("botfarm.cli.subprocess.run", side_effect=tracking_run):
+        with patch("botfarm.project_setup.subprocess.run", side_effect=tracking_run):
             result = runner.invoke(
                 main,
                 ["add-project", "--config", str(config_path)],
@@ -1070,7 +1070,7 @@ class TestAddProjectCommand:
         mock_client = MagicMock()
         mock_client.list_teams.side_effect = LinearAPIError("connection failed")
 
-        with patch("botfarm.cli.subprocess.run", side_effect=_make_mock_run()), \
+        with patch("botfarm.project_setup.subprocess.run", side_effect=_make_mock_run()), \
              patch("botfarm.cli.LinearClient", return_value=mock_client):
             result = runner.invoke(
                 main,
@@ -1093,8 +1093,8 @@ class TestAddProjectCommand:
         monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_DIR", tmp_path / ".botfarm")
         monkeypatch.delenv("LINEAR_API_KEY", raising=False)
 
-        with patch("botfarm.cli.subprocess.run", side_effect=_make_mock_run()), \
-             patch("botfarm.cli._run_readiness_checks", return_value=[
+        with patch("botfarm.project_setup.subprocess.run", side_effect=_make_mock_run()), \
+             patch("botfarm.project_setup.run_readiness_checks", return_value=[
                  ("warning", "No CLAUDE.md"),
              ]) as mock_readiness:
             result = runner.invoke(
@@ -1130,7 +1130,7 @@ class TestAddProjectCommand:
                     return result
             return base_mock(cmd, **kwargs)
 
-        with patch("botfarm.cli.subprocess.run", side_effect=fail_second_worktree):
+        with patch("botfarm.project_setup.subprocess.run", side_effect=fail_second_worktree):
             result = runner.invoke(
                 main,
                 ["add-project", "--config", str(config_path)],
@@ -1154,7 +1154,7 @@ class TestAddProjectCommand:
         monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_DIR", tmp_path / ".botfarm")
         monkeypatch.delenv("LINEAR_API_KEY", raising=False)
 
-        with patch("botfarm.cli.subprocess.run", side_effect=_make_mock_run()):
+        with patch("botfarm.project_setup.subprocess.run", side_effect=_make_mock_run()):
             result = runner.invoke(
                 main,
                 ["add-project", "--config", str(config_path)],
@@ -1181,7 +1181,7 @@ class TestAddProjectCommand:
         monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_DIR", tmp_path / ".botfarm")
         monkeypatch.delenv("LINEAR_API_KEY", raising=False)
 
-        with patch("botfarm.cli.subprocess.run", side_effect=_make_mock_run()):
+        with patch("botfarm.project_setup.subprocess.run", side_effect=_make_mock_run()):
             result = runner.invoke(
                 main,
                 ["add-project", "--config", str(config_path)],
@@ -1213,7 +1213,7 @@ class TestAddProjectCommand:
         monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_DIR", tmp_path / ".botfarm")
         monkeypatch.delenv("LINEAR_API_KEY", raising=False)
 
-        with patch("botfarm.cli.subprocess.run", side_effect=_make_mock_run()):
+        with patch("botfarm.project_setup.subprocess.run", side_effect=_make_mock_run()):
             # User enters "my-project" as the name — should be allowed
             result = runner.invoke(
                 main,
