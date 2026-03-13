@@ -1551,6 +1551,21 @@ class TestUsageAuditInstrumentation:
         assert len(rows) == 1
         assert rows[0]["caller"] == "force_poll"
 
+    def test_purge_survives_missing_audit_table(self, audit_poller, conn):
+        """_purge_old_snapshots doesn't break when usage_api_calls table is missing."""
+        conn.execute("DROP TABLE IF EXISTS usage_api_calls")
+        conn.commit()
+
+        # Should succeed — the purge failure is logged but doesn't propagate
+        self._poll_with_fetch(audit_poller, conn, response=SAMPLE_USAGE_RESPONSE)
+
+        # Usage data was still stored despite the purge warning
+        row = conn.execute(
+            "SELECT * FROM usage_snapshots ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+        assert row is not None
+        assert row["utilization_5h"] is not None
+
 
 # ---------------------------------------------------------------------------
 # refresh_usage_snapshot caller parameter
