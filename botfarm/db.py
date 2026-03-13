@@ -581,10 +581,10 @@ def get_downsampled_usage_snapshots(
         ).fetchall()
         return [dict(r) for r in rows]
 
+    bucket_seconds = bucket_minutes * 60
     rows = conn.execute(
         "SELECT"
-        "  strftime('%Y-%m-%d %H:', created_at)"
-        "    || printf('%02d', (CAST(strftime('%M', created_at) AS INTEGER) / ?) * ?) AS bucket,"
+        "  CAST(strftime('%s', created_at) AS INTEGER) / ? AS bucket,"
         "  AVG(utilization_5h) AS utilization_5h,"
         "  AVG(utilization_7d) AS utilization_7d,"
         "  AVG(extra_usage_utilization) AS extra_usage_utilization,"
@@ -598,7 +598,7 @@ def get_downsampled_usage_snapshots(
         " WHERE created_at >= datetime('now', ?)"
         " GROUP BY bucket"
         " ORDER BY bucket ASC",
-        (bucket_minutes, bucket_minutes, f"-{hours} hours"),
+        (bucket_seconds, f"-{hours} hours"),
     ).fetchall()
     return [dict(r) for r in rows]
 
@@ -622,10 +622,10 @@ def get_downsampled_codex_usage_snapshots(
         ).fetchall()
         return [dict(r) for r in rows]
 
+    bucket_seconds = bucket_minutes * 60
     rows = conn.execute(
         "SELECT"
-        "  strftime('%Y-%m-%d %H:', created_at)"
-        "    || printf('%02d', (CAST(strftime('%M', created_at) AS INTEGER) / ?) * ?) AS bucket,"
+        "  CAST(strftime('%s', created_at) AS INTEGER) / ? AS bucket,"
         "  AVG(daily_spend) AS daily_spend,"
         "  AVG(monthly_spend) AS monthly_spend,"
         "  MAX(monthly_budget) AS monthly_budget,"
@@ -635,7 +635,7 @@ def get_downsampled_codex_usage_snapshots(
         " WHERE created_at >= datetime('now', ?)"
         " GROUP BY bucket"
         " ORDER BY bucket ASC",
-        (bucket_minutes, bucket_minutes, f"-{hours} hours"),
+        (bucket_seconds, f"-{hours} hours"),
     ).fetchall()
     return [dict(r) for r in rows]
 

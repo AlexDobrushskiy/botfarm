@@ -1506,6 +1506,19 @@ class TestDownsampledUsageSnapshots:
         # Second bucket: just 0.9
         assert result[1]["utilization_5h"] == pytest.approx(0.9)
 
+    def test_bucketing_3_hour_buckets(self, conn):
+        """Four rows spanning 4 hours group into two 3-hour buckets (bucket_minutes=180)."""
+        self._insert_at(conn, "2099-01-01T12:01:00Z", utilization_5h=0.1)
+        self._insert_at(conn, "2099-01-01T13:01:00Z", utilization_5h=0.2)
+        self._insert_at(conn, "2099-01-01T14:01:00Z", utilization_5h=0.3)
+        self._insert_at(conn, "2099-01-01T15:01:00Z", utilization_5h=0.9)
+        result = get_downsampled_usage_snapshots(conn, hours=999999, bucket_minutes=180)
+        assert len(result) == 2
+        # First bucket (12:00-14:59): avg of 0.1, 0.2, 0.3
+        assert result[0]["utilization_5h"] == pytest.approx(0.2)
+        # Second bucket (15:00-17:59): just 0.9
+        assert result[1]["utilization_5h"] == pytest.approx(0.9)
+
     def test_bucket_uses_max_for_limit_fields(self, conn):
         """extra_usage_monthly_limit and extra_usage_enabled use MAX, not AVG."""
         self._insert_at(
@@ -1559,6 +1572,20 @@ class TestDownsampledCodexUsageSnapshots:
         assert result[0]["monthly_spend"] == pytest.approx(150.0)
         # monthly_budget should use MAX
         assert result[0]["monthly_budget"] == pytest.approx(500.0)
+
+    def test_bucketing_3_hour_buckets(self, conn):
+        """Four rows spanning 4 hours group into two 3-hour buckets (bucket_minutes=180)."""
+        self._insert_at(conn, "2099-01-01T12:01:00Z", daily_spend=10.0, monthly_spend=100.0)
+        self._insert_at(conn, "2099-01-01T13:01:00Z", daily_spend=20.0, monthly_spend=200.0)
+        self._insert_at(conn, "2099-01-01T14:01:00Z", daily_spend=30.0, monthly_spend=300.0)
+        self._insert_at(conn, "2099-01-01T15:01:00Z", daily_spend=90.0, monthly_spend=900.0)
+        result = get_downsampled_codex_usage_snapshots(conn, hours=999999, bucket_minutes=180)
+        assert len(result) == 2
+        # First bucket (12:00-14:59): avg of 10, 20, 30
+        assert result[0]["daily_spend"] == pytest.approx(20.0)
+        assert result[0]["monthly_spend"] == pytest.approx(200.0)
+        # Second bucket (15:00-17:59): just 90
+        assert result[1]["daily_spend"] == pytest.approx(90.0)
 
     def test_empty_table(self, conn):
         result = get_downsampled_codex_usage_snapshots(conn, hours=24, bucket_minutes=30)
