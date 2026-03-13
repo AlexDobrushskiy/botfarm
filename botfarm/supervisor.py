@@ -171,6 +171,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
         self._usage_poller = UsagePoller(
             poll_interval=config.usage_limits.poll_interval_seconds,
         )
+        self._usage_poller.restore_backoff_state(self._conn)
 
         # Codex (OpenAI) usage poller — optional, no-op if not configured
         self._codex_usage_poller = CodexUsagePoller(config=config.codex_usage)
