@@ -3,7 +3,6 @@
 import time
 from unittest.mock import patch
 
-import pytest
 from fastapi.testclient import TestClient
 
 from botfarm.config import BotfarmConfig, LinearConfig, ProjectConfig

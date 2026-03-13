@@ -198,6 +198,9 @@ function streamProgress(taskId) {
 
     source.onerror = function() {
         source.close();
+        logDiv.textContent += "\nConnection lost.\n";
+        resultDiv.innerHTML = '<p style="color: var(--pico-del-color); font-weight: 600;">Connection lost</p>' +
+            '<button onclick="showFormAgain()">Try Again</button>';
     };
 }
 
