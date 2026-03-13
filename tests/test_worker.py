@@ -837,6 +837,14 @@ class TestExtractPrUrlFromLog:
         )
         assert _extract_pr_url_from_log(log) == "https://github.com/owner/repo/pull/275"
 
+    def test_returns_last_url_when_multiple(self, tmp_path):
+        log = tmp_path / "stage.log"
+        log.write_text(
+            '{"context":"See https://github.com/owner/repo/pull/100 for prior work"}\n'
+            '{"type":"tool_result","content":"Created https://github.com/owner/repo/pull/275"}\n'
+        )
+        assert _extract_pr_url_from_log(log) == "https://github.com/owner/repo/pull/275"
+
     def test_returns_none_when_no_url_in_log(self, tmp_path):
         log = tmp_path / "stage.log"
         log.write_text('{"type":"result","result":"All done"}\n')
@@ -896,10 +904,10 @@ class TestGhPrViewUrl:
 
 
 class TestPrUrlFallbackInClaudeStage:
-    @patch("botfarm.worker_stages._gh_pr_view_url")
+    @patch("botfarm.worker_stages._gh_pr_view_url", return_value=None)
     @patch("botfarm.worker_stages._invoke_claude")
     def test_fallback_to_log_scan(self, mock_invoke, mock_gh, conn, tmp_path):
-        """When result_text lacks PR URL but log file contains it, extract from log."""
+        """When result_text and gh pr view lack PR URL, fall back to log scan."""
         pipeline = load_pipeline(conn, [])
         stage_tpl = get_stage(pipeline, "implement")
 
@@ -919,7 +927,7 @@ class TestPrUrlFallbackInClaudeStage:
         )
         assert result.pr_url == "https://github.com/org/repo/pull/275"
         assert result.success is True
-        mock_gh.assert_not_called()
+        mock_gh.assert_called_once()
 
     @patch("botfarm.worker_stages._gh_pr_view_url", return_value="https://github.com/org/repo/pull/99")
     @patch("botfarm.worker_stages._invoke_claude")
@@ -967,10 +975,10 @@ class TestPrUrlFallbackInClaudeStage:
 
 
 class TestPrUrlFallbackInImplement:
-    @patch("botfarm.worker_stages._gh_pr_view_url")
+    @patch("botfarm.worker_stages._gh_pr_view_url", return_value=None)
     @patch("botfarm.worker_claude.run_claude_streaming")
     def test_fallback_to_log_scan(self, mock_claude, mock_gh, tmp_path):
-        """Legacy _run_implement falls back to log scan when result_text has no PR URL."""
+        """Legacy _run_implement falls back to log scan when result_text and gh pr view fail."""
         mock_claude.return_value = ClaudeResult(
             session_id="s1", num_turns=10, duration_seconds=30.0,
             exit_subtype="tool_use",
@@ -982,7 +990,7 @@ class TestPrUrlFallbackInImplement:
         )
         result = _run_implement("SMA-1", cwd=tmp_path, max_turns=100, log_file=log_file)
         assert result.pr_url == "https://github.com/owner/repo/pull/123"
-        mock_gh.assert_not_called()
+        mock_gh.assert_called_once()
 
     @patch("botfarm.worker_stages._gh_pr_view_url", return_value="https://github.com/owner/repo/pull/77")
     @patch("botfarm.worker_claude.run_claude_streaming")
@@ -1020,8 +1028,9 @@ class TestRunImplement:
         assert result.pr_url == PR_URL
         assert result.claude_result.num_turns == 10
 
+    @patch("botfarm.worker_stages._gh_pr_view_url", return_value=None)
     @patch("botfarm.worker_claude.run_claude_streaming")
-    def test_success_without_pr_url(self, mock_claude, tmp_path):
+    def test_success_without_pr_url(self, mock_claude, mock_gh, tmp_path):
         mock_claude.return_value = ClaudeResult(
             session_id="s1",
             num_turns=10,

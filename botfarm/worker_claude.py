@@ -515,7 +515,8 @@ def _extract_pr_url_from_log(log_file: Path | None) -> str | None:
     """Scan a stage log file for a GitHub PR URL.
 
     The log contains the full NDJSON session transcript, including tool
-    results from ``gh pr create``.  Returns the first PR URL found, or
+    results from ``gh pr create``.  Returns the **last** PR URL found
+    (earlier matches may be unrelated URLs from ticket context), or
     ``None`` if the file is missing / unreadable / contains no URL.
     """
     if log_file is None:
@@ -525,7 +526,12 @@ def _extract_pr_url_from_log(log_file: Path | None) -> str | None:
     except OSError:
         logger.debug("Cannot read log file %s for PR URL scan", log_file, exc_info=True)
         return None
-    return _extract_pr_url(text)
+    matches = _PR_URL_RE.findall(text)
+    if not matches:
+        return None
+    # findall returns tuples of groups; reconstruct the full URL from the last match
+    owner, repo, number = matches[-1]
+    return f"https://github.com/{owner}/{repo}/pull/{number}"
 
 
 def _gh_pr_view_url(cwd: str | Path, *, env: dict[str, str] | None = None) -> str | None:

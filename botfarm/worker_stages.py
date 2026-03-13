@@ -119,13 +119,13 @@ def _run_claude_stage(
     if stage_tpl.result_parser == "pr_url":
         pr_url = _extract_pr_url(result.result_text)
         if pr_url is None:
-            logger.info("PR URL not found in result_text, scanning log file")
-            pr_url = _extract_pr_url_from_log(log_file)
-        if pr_url is None:
-            logger.info("PR URL not found in log file, trying gh pr view")
+            logger.info("PR URL not found in result_text, trying gh pr view")
             pr_url = _gh_pr_view_url(cwd, env=env)
-        if pr_url:
-            logger.info("Recovered PR URL: %s", pr_url)
+            if pr_url is None:
+                logger.info("PR URL not found via gh pr view, scanning log file")
+                pr_url = _extract_pr_url_from_log(log_file)
+            if pr_url:
+                logger.info("Recovered PR URL via fallback: %s", pr_url)
     elif stage_tpl.result_parser == "review_verdict":
         review_approved = _parse_review_approved(result.result_text)
 
@@ -190,13 +190,13 @@ def _run_implement(
 
     pr_url = _extract_pr_url(result.result_text)
     if pr_url is None:
-        logger.info("PR URL not found in result_text, scanning log file")
-        pr_url = _extract_pr_url_from_log(log_file)
-    if pr_url is None:
-        logger.info("PR URL not found in log file, trying gh pr view")
+        logger.info("PR URL not found in result_text, trying gh pr view")
         pr_url = _gh_pr_view_url(cwd, env=env)
-    if pr_url:
-        logger.info("Recovered PR URL: %s", pr_url)
+        if pr_url is None:
+            logger.info("PR URL not found via gh pr view, scanning log file")
+            pr_url = _extract_pr_url_from_log(log_file)
+        if pr_url:
+            logger.info("Recovered PR URL via fallback: %s", pr_url)
 
     return StageResult(
         stage="implement",
