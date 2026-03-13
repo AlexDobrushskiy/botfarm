@@ -562,6 +562,64 @@ class TestRefreshUsageSnapshot:
         assert len(snapshots) == 1
         assert snapshots[0]["utilization_5h"] == pytest.approx(0.42)
 
+    def test_shared_poller_preserves_backoff(self, conn):
+        """When a shared poller is passed, 429 backoff state persists across calls."""
+        shared = UsagePoller()
+        resp_429 = httpx.Response(429, request=httpx.Request("GET", "https://x"))
+
+        async def _raise_429(token, *, client=None):
+            raise httpx.HTTPStatusError("rate limited", request=resp_429.request, response=resp_429)
+
+        with patch("botfarm.usage.fetch_usage", side_effect=_raise_429):
+            with patch("botfarm.usage.CredentialManager.get_token", return_value="t"):
+                # First call — triggers 429, consecutive count → 1
+                refresh_usage_snapshot(conn, poller=shared)
+                assert shared._consecutive_429s == 1
+
+                # Reset timers so force_poll doesn't skip due to backoff/cooldown
+                shared._last_poll = 0.0
+                shared._last_force_poll = 0.0
+
+                # Second call with same poller — should increment to 2
+                refresh_usage_snapshot(conn, poller=shared)
+                assert shared._consecutive_429s == 2
+
+    def test_throwaway_poller_resets_backoff(self, conn):
+        """Without a shared poller, backoff state resets every call (the bug)."""
+        resp_429 = httpx.Response(429, request=httpx.Request("GET", "https://x"))
+
+        async def _raise_429(token, *, client=None):
+            raise httpx.HTTPStatusError("rate limited", request=resp_429.request, response=resp_429)
+
+        consecutive_counts = []
+
+        orig_handle = UsagePoller._handle_429
+
+        def spy_handle(self):
+            orig_handle(self)
+            consecutive_counts.append(self._consecutive_429s)
+
+        with patch("botfarm.usage.fetch_usage", side_effect=_raise_429):
+            with patch("botfarm.usage.CredentialManager.get_token", return_value="t"):
+                with patch.object(UsagePoller, "_handle_429", spy_handle):
+                    refresh_usage_snapshot(conn)
+                    refresh_usage_snapshot(conn)
+
+        # Without shared poller, each call creates a fresh instance → always 1
+        assert consecutive_counts == [1, 1]
+
+    def test_shared_poller_not_closed(self, conn):
+        """A shared poller's HTTP client is NOT closed after the call."""
+        shared = UsagePoller()
+
+        with patch("botfarm.usage.UsagePoller._fetch", return_value=SAMPLE_USAGE_RESPONSE):
+            with patch("botfarm.usage.CredentialManager.get_token", return_value="t"):
+                refresh_usage_snapshot(conn, poller=shared)
+
+        # The shared poller should still be usable (not closed)
+        assert shared._client is None or not shared._client.is_closed
+        shared.close()
+
 
 # ---------------------------------------------------------------------------
 # Retry logic

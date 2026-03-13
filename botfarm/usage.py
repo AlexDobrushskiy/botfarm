@@ -568,21 +568,31 @@ def refresh_usage_snapshot(
     conn: sqlite3.Connection,
     *,
     caller: str = "cli_refresh",
+    poller: UsagePoller | None = None,
 ) -> UsageState | None:
     """Fetch fresh usage data from the API and store a snapshot.
 
     Returns the new ``UsageState`` on success, or ``None`` if the API call
     fails (e.g. no credentials, network error).  Callers can fall back to
     the latest DB snapshot when ``None`` is returned.
+
+    When *poller* is provided, it is reused across calls so that 429
+    backoff state (``_consecutive_429s``, ``_active_poll_interval``)
+    persists.  When omitted, a throwaway poller is created — acceptable
+    for short-lived CLI invocations but NOT for long-lived processes
+    like the dashboard.
     """
-    poller = UsagePoller()
+    owns_poller = poller is None
+    if owns_poller:
+        poller = UsagePoller()
     try:
         poller.force_poll(conn, caller=caller)
     except Exception:
         logger.warning("Failed to refresh usage data from API", exc_info=True)
         return None
     finally:
-        poller.close()
+        if owns_poller:
+            poller.close()
     if poller.last_polled_fresh and poller.state.utilization_5h is not None:
         return poller.state
     return None

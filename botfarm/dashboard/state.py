@@ -19,6 +19,7 @@ from botfarm.db import (
     load_capacity_state,
     load_dispatch_state,
 )
+from botfarm.usage import UsagePoller
 
 logger = logging.getLogger(__name__)
 
@@ -323,6 +324,7 @@ def init_caches(app: FastAPI) -> None:
     app.state._usage_refresh_lock = threading.Lock()
     app.state._last_usage_refresh = {"time": None, "data": None}
     app.state._dashboard_last_fresh = {"time": None}
+    app.state._usage_poller = UsagePoller()
     app.state._update_check_lock = threading.Lock()
     app.state._last_update_check = {"time": None, "commits_behind": 0}
 
@@ -355,7 +357,9 @@ def refresh_and_get_usage(app: FastAPI) -> dict | None:
         # Look up via the package module so tests can mock.patch
         # "botfarm.dashboard.refresh_usage_snapshot"
         import botfarm.dashboard as _pkg
-        state = _pkg.refresh_usage_snapshot(conn, caller="dashboard_refresh")
+        state = _pkg.refresh_usage_snapshot(
+            conn, caller="dashboard_refresh", poller=app.state._usage_poller,
+        )
         if state is not None:
             result = state.to_dict()
             with lock:
