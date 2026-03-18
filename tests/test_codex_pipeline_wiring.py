@@ -15,6 +15,7 @@ from unittest.mock import patch
 import pytest
 
 from botfarm.codex import CodexResult
+from botfarm.config import AdapterConfig
 from botfarm.db import get_events, get_stage_runs, insert_task
 from botfarm.worker import (
     ClaudeResult,
@@ -101,6 +102,19 @@ def _make_ctx(conn, task_id, tmp_path, **overrides):
     return _PipelineContext(**defaults)
 
 
+def _codex_adapters(enabled=True, model="", timeout_minutes=15, reasoning_effort="medium", skip_on_reiteration=True):
+    """Build agent_adapters_config dict for test convenience."""
+    return {
+        "codex": AdapterConfig(
+            enabled=enabled,
+            model=model,
+            timeout_minutes=timeout_minutes,
+            reasoning_effort=reasoning_effort,
+            skip_on_reiteration=skip_on_reiteration,
+        ),
+    }
+
+
 # ---------------------------------------------------------------------------
 # test_pipeline_context_codex_fields
 # ---------------------------------------------------------------------------
@@ -159,10 +173,10 @@ class TestPipelineContextCodexFields:
             cwd=tmp_path,
             conn=conn,
             max_review_iterations=3,
-            codex_reviewer_enabled=True,
-            codex_reviewer_model="o3",
-            codex_reviewer_reasoning_effort="low",
-            codex_reviewer_timeout_minutes=20,
+            agent_adapters_config=_codex_adapters(
+                enabled=True, model="o3",
+                reasoning_effort="low", timeout_minutes=20,
+            ),
         )
         # If it ran without error, the params were accepted.
         # Verify codex kwargs were passed to _execute_stage for the review stage.
@@ -201,9 +215,7 @@ class TestCodexStageRunRecorded:
             cwd=tmp_path,
             conn=conn,
             max_review_iterations=3,
-            codex_reviewer_enabled=True,
-            codex_reviewer_model="o3",
-            codex_reviewer_timeout_minutes=15,
+            agent_adapters_config=_codex_adapters(enabled=True, model="o3"),
         )
 
         runs = get_stage_runs(conn, task_id)
@@ -233,7 +245,7 @@ class TestCodexStageRunRecorded:
             cwd=tmp_path,
             conn=conn,
             max_review_iterations=3,
-            codex_reviewer_enabled=False,
+            agent_adapters_config=_codex_adapters(enabled=False),
         )
 
         runs = get_stage_runs(conn, task_id)
@@ -262,7 +274,7 @@ class TestCodexStageRunRecorded:
             cwd=tmp_path,
             conn=conn,
             max_review_iterations=3,
-            codex_reviewer_enabled=True,
+            agent_adapters_config=_codex_adapters(enabled=True),
         )
 
         runs = get_stage_runs(conn, task_id)
@@ -317,7 +329,7 @@ class TestCodexLogFileSeparate:
             conn=conn,
             log_dir=str(log_dir),
             max_review_iterations=3,
-            codex_reviewer_enabled=True,
+            agent_adapters_config=_codex_adapters(enabled=True),
         )
 
         runs = get_stage_runs(conn, task_id)
@@ -358,7 +370,7 @@ class TestCodexEventsRecorded:
             cwd=tmp_path,
             conn=conn,
             max_review_iterations=3,
-            codex_reviewer_enabled=True,
+            agent_adapters_config=_codex_adapters(enabled=True),
         )
 
         events = get_events(conn, task_id=task_id)
@@ -393,7 +405,7 @@ class TestCodexEventsRecorded:
             cwd=tmp_path,
             conn=conn,
             max_review_iterations=3,
-            codex_reviewer_enabled=True,
+            agent_adapters_config=_codex_adapters(enabled=True),
         )
 
         events = get_events(conn, task_id=task_id)
@@ -423,7 +435,7 @@ class TestCodexEventsRecorded:
             cwd=tmp_path,
             conn=conn,
             max_review_iterations=3,
-            codex_reviewer_enabled=True,
+            agent_adapters_config=_codex_adapters(enabled=True),
         )
 
         events = get_events(conn, task_id=task_id)
@@ -445,7 +457,7 @@ class TestCodexEventsRecorded:
             cwd=tmp_path,
             conn=conn,
             max_review_iterations=3,
-            codex_reviewer_enabled=True,
+            agent_adapters_config=_codex_adapters(enabled=True),
         )
 
         events = get_events(conn, task_id=task_id)
@@ -467,7 +479,7 @@ class TestCodexEventsRecorded:
             cwd=tmp_path,
             conn=conn,
             max_review_iterations=3,
-            codex_reviewer_enabled=True,
+            agent_adapters_config=_codex_adapters(enabled=True),
         )
 
         events = get_events(conn, task_id=task_id)
@@ -496,7 +508,7 @@ class TestCodexEventsRecorded:
             cwd=tmp_path,
             conn=conn,
             max_review_iterations=3,
-            codex_reviewer_enabled=True,
+            agent_adapters_config=_codex_adapters(enabled=True),
         )
 
         events = get_events(conn, task_id=task_id)
@@ -520,7 +532,7 @@ class TestCodexEventsRecorded:
             cwd=tmp_path,
             conn=conn,
             max_review_iterations=3,
-            codex_reviewer_enabled=False,
+            agent_adapters_config=_codex_adapters(enabled=False),
         )
 
         events = get_events(conn, task_id=task_id)
@@ -549,7 +561,7 @@ class TestCodexEventsRecorded:
             cwd=tmp_path,
             conn=conn,
             max_review_iterations=3,
-            codex_reviewer_enabled=True,
+            agent_adapters_config=_codex_adapters(enabled=True),
         )
 
         # Iteration 1 review should have codex kwargs

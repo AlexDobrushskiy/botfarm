@@ -10,6 +10,7 @@ from unittest.mock import patch
 import pytest
 
 from botfarm.config import (
+    AdapterConfig,
     AgentsConfig,
     BotfarmConfig,
     CoderIdentity,
@@ -1263,7 +1264,10 @@ class TestCheckCodexReviewer:
     def _make_config_with_codex(self, tmp_path, enabled=True):
         return _make_config(
             tmp_path,
-            agents=AgentsConfig(codex_reviewer_enabled=enabled),
+            agents=AgentsConfig(adapters={
+                "claude": AdapterConfig(enabled=True),
+                "codex": AdapterConfig(enabled=enabled, timeout_minutes=15, reasoning_effort="medium"),
+            }),
         )
 
     def test_disabled_returns_empty(self, tmp_path):
