@@ -395,3 +395,74 @@ class TestPackageImports:
         from botfarm.bugtracker.base import BugtrackerClient, BugtrackerPoller  # noqa: F401
         from botfarm.bugtracker.errors import BugtrackerError  # noqa: F401
         from botfarm.bugtracker.types import ActiveIssuesCount, Comment, CreatedIssue, Issue, IssueDetails, PollResult  # noqa: F401
+
+    def test_factory_functions_importable(self):
+        from botfarm.bugtracker import create_client, create_pollers  # noqa: F401
+
+
+# ---------------------------------------------------------------------------
+# Factory function tests
+# ---------------------------------------------------------------------------
+
+
+class TestCreateClient:
+    """Test bugtracker.create_client factory."""
+
+    def test_creates_linear_client(self):
+        from botfarm.bugtracker import create_client
+        from botfarm.config import BotfarmConfig, LinearBugtrackerConfig
+        from botfarm.linear import LinearClient
+
+        config = BotfarmConfig(
+            projects=[],
+            bugtracker=LinearBugtrackerConfig(api_key="test-key"),
+        )
+        client = create_client(config)
+        assert isinstance(client, LinearClient)
+
+    def test_unknown_type_raises(self):
+        from botfarm.bugtracker import create_client
+        from botfarm.config import BotfarmConfig, LinearBugtrackerConfig
+
+        config = BotfarmConfig(
+            projects=[],
+            bugtracker=LinearBugtrackerConfig(type="jira", api_key="k"),
+        )
+        with pytest.raises(ValueError, match="Unknown bugtracker type"):
+            create_client(config)
+
+
+class TestCreatePollers:
+    """Test bugtracker.create_pollers factory."""
+
+    def test_creates_linear_pollers(self, monkeypatch):
+        from botfarm.bugtracker import create_pollers
+        from botfarm.config import BotfarmConfig, LinearBugtrackerConfig, ProjectConfig
+        from botfarm.linear import LinearPoller
+
+        config = BotfarmConfig(
+            projects=[
+                ProjectConfig(
+                    name="proj",
+                    team="TST",
+                    base_dir="~/d",
+                    worktree_prefix="s-",
+                    slots=[1],
+                ),
+            ],
+            bugtracker=LinearBugtrackerConfig(api_key="test-key"),
+        )
+        pollers = create_pollers(config)
+        assert len(pollers) == 1
+        assert isinstance(pollers[0], LinearPoller)
+
+    def test_unknown_type_raises(self):
+        from botfarm.bugtracker import create_pollers
+        from botfarm.config import BotfarmConfig, LinearBugtrackerConfig
+
+        config = BotfarmConfig(
+            projects=[],
+            bugtracker=LinearBugtrackerConfig(type="jira", api_key="k"),
+        )
+        with pytest.raises(ValueError, match="Unknown bugtracker type"):
+            create_pollers(config)

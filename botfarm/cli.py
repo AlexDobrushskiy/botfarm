@@ -689,7 +689,8 @@ def _generate_config_yaml(
 # Default team: {team_name} ({team_key})
 # projects: []
 
-linear:
+bugtracker:
+  type: linear  # "linear" (future: "jira", "github")
   api_key: ${{LINEAR_API_KEY}}
   workspace: "{workspace}"
   poll_interval_seconds: 30
