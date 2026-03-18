@@ -19,7 +19,7 @@ from botfarm.db import (
     update_task,
     upsert_slot,
 )
-from botfarm.linear import PollResult
+from botfarm.bugtracker import PollResult
 from botfarm.supervisor import Supervisor
 from tests.helpers import make_config, seed_slot as _seed_slot
 

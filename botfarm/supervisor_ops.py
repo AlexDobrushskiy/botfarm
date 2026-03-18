@@ -1426,14 +1426,14 @@ Note: The supervisor handles status transitions automatically — do not move th
 
         Re-reads config from disk (the project entry was already written by
         ``setup_project``), registers the project in ``_projects``, creates
-        ``SlotManager`` entries for each slot, and creates a ``LinearPoller``
+        ``SlotManager`` entries for each slot, and creates a poller
         for the new project.
 
         Raises ``ValueError`` if the project is already registered or not
         found in the on-disk config.
         """
         from botfarm.config import load_config
-        from botfarm.linear import LinearClient, LinearPoller
+        from botfarm.bugtracker import create_poller
 
         if project_name in self._projects:
             raise ValueError(f"Project '{project_name}' is already registered")
@@ -1479,17 +1479,8 @@ Note: The supervisor handles status transitions automatically — do not move th
                 registered_slots.append(slot_id)
             self._slot_manager.save()
 
-            # Create a LinearPoller for the new project
-            client = LinearClient(api_key=self._config.linear.api_key)
-            coder_key = self._config.identities.coder.linear_api_key
-            coder_client = LinearClient(api_key=coder_key) if coder_key else None
-            poller = LinearPoller(
-                client=client,
-                project=new_project_cfg,
-                exclude_tags=self._config.linear.exclude_tags,
-                todo_status=self._config.linear.todo_status,
-                coder_client=coder_client,
-            )
+            # Create a poller for the new project
+            poller = create_poller(self._config, new_project_cfg)
             self._pollers[project_name] = poller
             added_poller = True
 

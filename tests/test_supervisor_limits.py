@@ -11,7 +11,7 @@ import pytest
 
 from botfarm.config import CapacityConfig
 from botfarm.db import get_events, get_task, init_db, insert_task, load_capacity_state
-from botfarm.linear import ActiveIssuesCount, PollResult
+from botfarm.bugtracker import ActiveIssuesCount, PollResult
 from botfarm.supervisor import (
     Supervisor,
     _StallInfo,

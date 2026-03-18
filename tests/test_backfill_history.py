@@ -100,7 +100,7 @@ class TestBackfillHistory:
         assert result.exit_code == 0
         assert "No tickets found" in result.output
 
-    @patch("botfarm.linear.LinearClient")
+    @patch("botfarm.bugtracker.create_client")
     def test_discovers_tickets_from_tasks(self, mock_client_cls, runner, db_file, monkeypatch):
         """Command discovers ticket_ids from the tasks table and fetches them."""
         config = _make_config()
@@ -131,7 +131,7 @@ class TestBackfillHistory:
         assert entry["title"] == "Title for SMA-1"
         conn.close()
 
-    @patch("botfarm.linear.LinearClient")
+    @patch("botfarm.bugtracker.create_client")
     def test_skips_already_captured(self, mock_client_cls, runner, db_file, monkeypatch):
         """Tickets already in ticket_history are skipped by default."""
         config = _make_config()
@@ -166,7 +166,7 @@ class TestBackfillHistory:
         # Only SMA-11 should have been fetched
         mock_client.fetch_issue_details.assert_called_once_with("SMA-11")
 
-    @patch("botfarm.linear.LinearClient")
+    @patch("botfarm.bugtracker.create_client")
     def test_force_refetches_existing(self, mock_client_cls, runner, db_file, monkeypatch):
         """--force re-fetches tickets even if they already exist."""
         config = _make_config()
@@ -206,7 +206,7 @@ class TestBackfillHistory:
         assert entry["capture_source"] == "backfill"
         conn.close()
 
-    @patch("botfarm.linear.LinearClient")
+    @patch("botfarm.bugtracker.create_client")
     def test_handles_deleted_tickets(self, mock_client_cls, runner, db_file, monkeypatch):
         """Gracefully handles tickets that no longer exist in Linear."""
         from botfarm.linear import LinearAPIError
@@ -236,7 +236,7 @@ class TestBackfillHistory:
         assert "1 fetched" in result.output
         assert "1 failed" in result.output
 
-    @patch("botfarm.linear.LinearClient")
+    @patch("botfarm.bugtracker.create_client")
     def test_project_filter(self, mock_client_cls, runner, db_file, monkeypatch):
         """--project filters to only tickets from the specified project."""
         config = _make_config()
@@ -257,7 +257,7 @@ class TestBackfillHistory:
         assert "Backfilling 1 ticket(s)" in result.output
         mock_client.fetch_issue_details.assert_called_once_with("SMA-1")
 
-    @patch("botfarm.linear.LinearClient")
+    @patch("botfarm.bugtracker.create_client")
     def test_dry_run(self, mock_client_cls, runner, db_file, monkeypatch):
         """--dry-run shows what would be fetched without actually fetching."""
         monkeypatch.setattr(

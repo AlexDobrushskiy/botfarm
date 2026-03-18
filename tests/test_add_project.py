@@ -9,7 +9,7 @@ import yaml
 from click.testing import CliRunner
 
 from botfarm.cli import main
-from botfarm.linear import LinearAPIError
+from botfarm.bugtracker import BugtrackerError as LinearAPIError
 from botfarm.project_setup import (
     append_project_to_config,
     detect_project_indent,
@@ -932,7 +932,7 @@ class TestAddProjectCommand:
         ]
 
         with patch("botfarm.project_setup.subprocess.run", side_effect=_make_mock_run()), \
-             patch("botfarm.cli.LinearClient", return_value=mock_client):
+             patch("botfarm.cli.create_client", return_value=mock_client):
             result = runner.invoke(
                 main,
                 ["add-project", "--config", str(config_path)],
@@ -1071,7 +1071,7 @@ class TestAddProjectCommand:
         mock_client.list_teams.side_effect = LinearAPIError("connection failed")
 
         with patch("botfarm.project_setup.subprocess.run", side_effect=_make_mock_run()), \
-             patch("botfarm.cli.LinearClient", return_value=mock_client):
+             patch("botfarm.cli.create_client", return_value=mock_client):
             result = runner.invoke(
                 main,
                 ["add-project", "--config", str(config_path)],

@@ -18,7 +18,7 @@ from botfarm.config import (
     ProjectConfig,
 )
 from botfarm.db import save_dispatch_state, upsert_slot
-from botfarm.linear import LinearIssue
+from botfarm.bugtracker import Issue as LinearIssue
 from botfarm.worker import ClaudeResult
 
 

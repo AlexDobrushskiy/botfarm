@@ -20,7 +20,7 @@ from botfarm.config import (
     ProjectConfig,
 )
 from botfarm.db import get_events, get_task, init_db, insert_task, update_task
-from botfarm.linear import PollResult
+from botfarm.bugtracker import PollResult
 from botfarm.supervisor import (
     Supervisor,
     _WorkerResult,
@@ -785,7 +785,7 @@ class TestCoderAutoAssignment:
 
         with (
             patch("botfarm.supervisor.create_pollers", return_value=[mock_poller]),
-            patch("botfarm.supervisor.LinearClient", return_value=mock_coder_client),
+            patch("botfarm.supervisor.create_client", return_value=mock_coder_client),
         ):
             sup = Supervisor(config, log_dir=tmp_path / "logs")
 
@@ -821,7 +821,7 @@ class TestCoderAutoAssignment:
 
         with (
             patch("botfarm.supervisor.create_pollers", return_value=[mock_poller]),
-            patch("botfarm.supervisor.LinearClient", return_value=mock_coder_client),
+            patch("botfarm.supervisor.create_client", return_value=mock_coder_client),
         ):
             sup = Supervisor(config, log_dir=tmp_path / "logs")
 

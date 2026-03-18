@@ -21,8 +21,7 @@ from botfarm.db import (
     load_all_slots,
     save_project_pause_state,
 )
-from botfarm.linear import LinearClient
-from botfarm.linear_cleanup import CleanupService, CooldownError
+from botfarm.bugtracker import CleanupService, CooldownError, create_client
 from botfarm.workflow import (
     create_loop,
     create_pipeline,
@@ -885,11 +884,11 @@ def _get_cleanup_service(
 ) -> CleanupService | None:
     """Build a CleanupService from the current config, or None."""
     cfg = app.state.botfarm_config
-    if cfg is None or not cfg.linear.api_key:
+    if cfg is None or not cfg.bugtracker.api_key:
         return None
     if not cfg.projects:
         return None
-    client = LinearClient(api_key=cfg.linear.api_key)
+    client = create_client(cfg)
     team_key = cfg.projects[0].linear_team
     project_name = cfg.projects[0].linear_project
     return CleanupService(
@@ -926,7 +925,7 @@ def cleanup_page(request: Request):
         finally:
             conn.close()
     cfg = app.state.botfarm_config
-    if cfg and cfg.linear.api_key:
+    if cfg and cfg.bugtracker.api_key:
         has_config = True
     state = read_state(app)
     return templates.TemplateResponse("cleanup.html", {

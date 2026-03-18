@@ -33,7 +33,7 @@ class TestLinearTeamsEndpoint:
         app = _make_app(tmp_path)
         client = TestClient(app)
         mock_teams = [{"id": "1", "name": "Engineering", "key": "ENG"}]
-        with patch("botfarm.dashboard.routes_projects.LinearClient") as MockClient:
+        with patch("botfarm.dashboard.routes_projects.create_client") as MockClient:
             MockClient.return_value.list_teams.return_value = mock_teams
             resp = client.get("/api/linear/teams")
         assert resp.status_code == 200
@@ -53,7 +53,7 @@ class TestLinearProjectsEndpoint:
         app = _make_app(tmp_path)
         client = TestClient(app)
         mock_projects = [{"id": "p1", "name": "Bot farm"}]
-        with patch("botfarm.dashboard.routes_projects.LinearClient") as MockClient:
+        with patch("botfarm.dashboard.routes_projects.create_client") as MockClient:
             MockClient.return_value.get_team_id.return_value = "team-uuid"
             MockClient.return_value.list_team_projects.return_value = mock_projects
             resp = client.get("/api/linear/projects?team=ENG")

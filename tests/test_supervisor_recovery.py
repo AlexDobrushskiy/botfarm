@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from botfarm.db import get_events, get_task, insert_task, update_task
-from botfarm.linear import PollResult
+from botfarm.bugtracker import PollResult
 from botfarm.supervisor import Supervisor
 from botfarm.supervisor_workers import (
     _collect_descendant_pids,

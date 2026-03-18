@@ -13,7 +13,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from sse_starlette.sse import EventSourceResponse
 
-from botfarm.linear import LinearClient
+from botfarm.bugtracker import create_client
 from botfarm.project_setup import extract_repo_name, setup_project, ProjectSetupError
 
 from .state import get_capacity_data, manual_pause_state, read_state, supervisor_status
@@ -33,11 +33,11 @@ _GIT_URL_RE = re.compile(
 )
 
 
-def _get_linear_client(app) -> LinearClient | None:
+def _get_linear_client(app):
     cfg = app.state.botfarm_config
-    if cfg is None or not cfg.linear.api_key:
+    if cfg is None or not cfg.bugtracker.api_key:
         return None
-    return LinearClient(api_key=cfg.linear.api_key)
+    return create_client(cfg)
 
 
 # --- Linear data endpoints ---

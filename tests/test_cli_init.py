@@ -184,7 +184,7 @@ class TestInteractiveInit:
         }
         return mock_client
 
-    @patch("botfarm.cli.LinearClient")
+    @patch("botfarm.cli.create_client")
     def test_interactive_single_team(self, mock_cls, tmp_path, monkeypatch):
         from click.testing import CliRunner
         from botfarm.cli import main
@@ -216,7 +216,7 @@ class TestInteractiveInit:
         env_content = env_path.read_text()
         assert "LINEAR_API_KEY=lin_api_test123" in env_content
 
-    @patch("botfarm.cli.LinearClient")
+    @patch("botfarm.cli.create_client")
     def test_interactive_multiple_teams(self, mock_cls, tmp_path, monkeypatch):
         from click.testing import CliRunner
         from botfarm.cli import main
@@ -244,7 +244,7 @@ class TestInteractiveInit:
         assert 'workspace: "smart-ai-coach"' in config_content
         assert "linear_project" not in config_content
 
-    @patch("botfarm.cli.LinearClient")
+    @patch("botfarm.cli.create_client")
     def test_interactive_api_key_failure(self, mock_cls, tmp_path, monkeypatch):
         from click.testing import CliRunner
         from botfarm.cli import main
@@ -267,7 +267,7 @@ class TestInteractiveInit:
         assert "Failed" in result.output
         assert not config_path.exists()
 
-    @patch("botfarm.cli.LinearClient")
+    @patch("botfarm.cli.create_client")
     def test_interactive_empty_api_key(self, mock_cls, tmp_path, monkeypatch):
         from click.testing import CliRunner
         from botfarm.cli import main
@@ -286,7 +286,7 @@ class TestInteractiveInit:
         assert "empty" in result.output
         assert not config_path.exists()
 
-    @patch("botfarm.cli.LinearClient")
+    @patch("botfarm.cli.create_client")
     def test_interactive_workspace_fallback_to_manual(self, mock_cls, tmp_path, monkeypatch):
         from click.testing import CliRunner
         from botfarm.cli import main

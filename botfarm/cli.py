@@ -44,9 +44,13 @@ from botfarm.db import (
     upsert_slot,
     upsert_ticket_history,
 )
-from botfarm.bugtracker.types import issue_details_to_history_kwargs as _issue_details_to_history_kwargs
-from botfarm.linear import LinearAPIError, LinearClient
-from botfarm.linear_cleanup import CleanupService, CooldownError
+from botfarm.bugtracker import (
+    BugtrackerError,
+    CleanupService,
+    CooldownError,
+    create_client,
+    issue_details_to_history_kwargs as _issue_details_to_history_kwargs,
+)
 from botfarm.slots import SlotState, _is_pid_alive
 from botfarm.worker import build_git_env, is_protected_branch
 from botfarm.systemd_service import UNIT_PATH, generate_unit, install_service, uninstall_service
@@ -796,10 +800,10 @@ def _run_interactive_init(
 
     # Step 2: Validate key and fetch teams
     console.print("\nValidating API key...", end=" ")
-    client = LinearClient(api_key=api_key)
+    client = create_client(api_key=api_key)
     try:
         teams = client.list_teams()
-    except LinearAPIError as exc:
+    except BugtrackerError as exc:
         console.print(f"[red]Failed![/red]\n  {exc}")
         return False
 
@@ -832,7 +836,7 @@ def _run_interactive_init(
         org = client.get_organization()
         workspace = org["urlKey"]
         console.print(f"[green]{workspace}[/green]")
-    except (LinearAPIError, KeyError):
+    except (BugtrackerError, KeyError):
         console.print("[yellow]could not auto-detect[/yellow]")
         workspace = Prompt.ask("Enter your Linear workspace slug")
 
@@ -1068,7 +1072,7 @@ def add_project(config_path):
     client = None
     if linear_api_key:
         try:
-            client = LinearClient(api_key=linear_api_key)
+            client = create_client(api_key=linear_api_key)
             teams = client.list_teams()
             if teams:
                 console.print("\n[bold]Available Linear teams:[/bold]")
@@ -1082,7 +1086,7 @@ def add_project(config_path):
                 linear_team = selected_team["key"]
             else:
                 linear_team = click.prompt("Linear team key (e.g. SMA)")
-        except LinearAPIError as exc:
+        except BugtrackerError as exc:
             click.echo(f"Warning: Could not fetch teams from Linear: {exc}")
             linear_team = click.prompt("Linear team key (e.g. SMA)")
     else:
@@ -1106,7 +1110,7 @@ def add_project(config_path):
                 )
                 if choice > 0:
                     linear_project = projects[choice - 1]["name"]
-        except LinearAPIError as exc:
+        except BugtrackerError as exc:
             click.echo(f"Warning: Could not fetch projects from Linear: {exc}")
             linear_project = click.prompt(
                 "Linear project filter (optional, press Enter to skip)", default=""
@@ -1881,7 +1885,7 @@ def cleanup(action, count, min_age, status_filter, project, dry_run, yes, config
         raise click.ClickException(f"Failed to open database: {exc}") from exc
 
     try:
-        client = LinearClient(api_key=cfg.linear.api_key)
+        client = create_client(cfg)
         svc = CleanupService(
             client,
             conn,
@@ -1896,7 +1900,7 @@ def cleanup(action, count, min_age, status_filter, project, dry_run, yes, config
             candidates = svc.fetch_candidates(
                 limit=count, status_filter=status_filter
             )
-        except LinearAPIError as exc:
+        except BugtrackerError as exc:
             raise click.ClickException(f"Linear API error: {exc}") from exc
 
         if not candidates:
@@ -1948,7 +1952,7 @@ def cleanup(action, count, min_age, status_filter, project, dry_run, yes, config
                 )
             except CooldownError as exc:
                 raise click.ClickException(str(exc)) from exc
-            except LinearAPIError as exc:
+            except BugtrackerError as exc:
                 raise click.ClickException(f"Linear API error: {exc}") from exc
 
         # Summary
@@ -1992,7 +1996,7 @@ def cleanup(action, count, min_age, status_filter, project, dry_run, yes, config
 )
 def backfill_history(config_path, project, force, dry_run):
     """Backfill ticket_history from Linear for all tickets in the tasks table."""
-    from botfarm.linear import LinearAPIError, LinearClient
+    from botfarm.bugtracker import BugtrackerError, create_client
 
     db_path, config = _resolve_paths(config_path)
 
@@ -2056,7 +2060,7 @@ def backfill_history(config_path, project, force, dry_run):
                 "Use --config or ensure ~/.botfarm/config.yaml exists."
             )
 
-        client = LinearClient(api_key=config.linear.api_key)
+        client = create_client(config)
         fetched = 0
         failed = 0
 
@@ -2070,7 +2074,7 @@ def backfill_history(config_path, project, force, dry_run):
                 )
                 conn.commit()
                 fetched += 1
-            except LinearAPIError as exc:
+            except BugtrackerError as exc:
                 click.echo(
                     f"  Warning: failed to fetch {ticket_id} from Linear, skipping ({exc})"
                 )
@@ -2270,7 +2274,7 @@ def _stop_linear_cleanup(
         return False
 
     try:
-        client = LinearClient(api_key=config.linear.api_key)
+        client = create_client(config)
         states = client.get_team_states(project_cfg.linear_team)
 
         if pr_was_merged:
