@@ -120,9 +120,6 @@ def _compute_context_fill(
     return None
 
 
-# ContextFillCallback is now defined in botfarm.agent and imported above.
-
-
 def _compute_turn_context_fill(
     usage: dict,
     context_window: int,

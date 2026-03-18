@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 # Type alias for the per-turn context fill callback.
 # Called with (turn_number, fill_percentage).
@@ -29,7 +29,7 @@ class AgentResult:
     output_tokens: int = 0
     cost_usd: float = 0.0
     context_fill_pct: float | None = None
-    extra: dict = field(default_factory=dict)
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 @runtime_checkable
