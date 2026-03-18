@@ -1462,11 +1462,11 @@ class TestValidateStructuralConfigUpdates:
         errors = validate_structural_config_updates(updates, config)
         assert any("must be a list" in e for e in errors)
 
-    def test_projects_unknown_project(self):
+    def test_projects_unknown_project_missing_fields(self):
         config = _make_config_for_structural()
         updates = {"projects": [{"name": "nonexistent", "slots": [1]}]}
         errors = validate_structural_config_updates(updates, config)
-        assert any("does not exist" in e for e in errors)
+        assert any("missing required fields" in e for e in errors)
 
     def test_projects_missing_name(self):
         config = _make_config_for_structural()
@@ -1531,6 +1531,151 @@ class TestValidateStructuralConfigUpdates:
         }
         errors = validate_structural_config_updates(updates, config)
         assert any("Duplicate tracker_project" in e for e in errors)
+
+    # --- New project creation validation ---
+
+    def test_new_project_valid(self):
+        config = _make_config_for_structural()
+        updates = {
+            "projects": [
+                {
+                    "name": "project-c",
+                    "team": "NEW",
+                    "base_dir": "~/c",
+                    "worktree_prefix": "c-slot-",
+                    "slots": [1, 2],
+                },
+            ],
+        }
+        errors = validate_structural_config_updates(updates, config)
+        assert errors == []
+
+    def test_new_project_with_tracker_project(self):
+        config = _make_config_for_structural()
+        updates = {
+            "projects": [
+                {
+                    "name": "project-c",
+                    "team": "NEW",
+                    "base_dir": "~/c",
+                    "worktree_prefix": "c-slot-",
+                    "slots": [1],
+                    "tracker_project": "New Filter",
+                },
+            ],
+        }
+        errors = validate_structural_config_updates(updates, config)
+        assert errors == []
+
+    def test_new_project_missing_required_fields(self):
+        config = _make_config_for_structural()
+        updates = {
+            "projects": [
+                {"name": "project-c", "slots": [1]},
+            ],
+        }
+        errors = validate_structural_config_updates(updates, config)
+        assert any("missing required fields" in e for e in errors)
+
+    def test_new_project_empty_team(self):
+        config = _make_config_for_structural()
+        updates = {
+            "projects": [
+                {
+                    "name": "project-c",
+                    "team": "  ",
+                    "base_dir": "~/c",
+                    "worktree_prefix": "c-slot-",
+                    "slots": [1],
+                },
+            ],
+        }
+        errors = validate_structural_config_updates(updates, config)
+        assert any("must not be empty" in e for e in errors)
+
+    def test_new_project_team_not_string(self):
+        config = _make_config_for_structural()
+        updates = {
+            "projects": [
+                {
+                    "name": "project-c",
+                    "team": 123,
+                    "base_dir": "~/c",
+                    "worktree_prefix": "c-slot-",
+                    "slots": [1],
+                },
+            ],
+        }
+        errors = validate_structural_config_updates(updates, config)
+        assert any("team must be a string" in e for e in errors)
+
+    def test_new_project_unknown_field(self):
+        config = _make_config_for_structural()
+        updates = {
+            "projects": [
+                {
+                    "name": "project-c",
+                    "team": "NEW",
+                    "base_dir": "~/c",
+                    "worktree_prefix": "c-slot-",
+                    "slots": [1],
+                    "unknown_field": "bad",
+                },
+            ],
+        }
+        errors = validate_structural_config_updates(updates, config)
+        assert any("unknown fields" in e for e in errors)
+
+    def test_new_project_duplicate_tracker_project(self):
+        config = _make_config_for_structural()
+        # project-b already has tracker_project="My Filter"
+        updates = {
+            "projects": [
+                {
+                    "name": "project-c",
+                    "team": "NEW",
+                    "base_dir": "~/c",
+                    "worktree_prefix": "c-slot-",
+                    "slots": [1],
+                    "tracker_project": "My Filter",
+                },
+            ],
+        }
+        errors = validate_structural_config_updates(updates, config)
+        assert any("Duplicate tracker_project" in e for e in errors)
+
+    def test_new_project_duplicate_slots(self):
+        config = _make_config_for_structural()
+        updates = {
+            "projects": [
+                {
+                    "name": "project-c",
+                    "team": "NEW",
+                    "base_dir": "~/c",
+                    "worktree_prefix": "c-slot-",
+                    "slots": [1, 1],
+                },
+            ],
+        }
+        errors = validate_structural_config_updates(updates, config)
+        assert any("duplicate" in e for e in errors)
+
+    def test_mixed_new_and_existing_projects(self):
+        config = _make_config_for_structural()
+        updates = {
+            "projects": [
+                {"name": "project-a", "slots": [1, 2, 3]},
+                {
+                    "name": "project-c",
+                    "team": "NEW",
+                    "base_dir": "~/c",
+                    "worktree_prefix": "c-slot-",
+                    "slots": [4],
+                },
+            ],
+        }
+        errors = validate_structural_config_updates(updates, config)
+        assert errors == []
 
 
 # --- write_structural_config_updates ---
@@ -1653,6 +1798,85 @@ class TestWriteStructuralConfigUpdates:
         })
         data = yaml.safe_load(config_path.read_text())
         assert data["bugtracker"]["api_key"] == "${LINEAR_API_KEY}"
+
+    def test_write_new_project(self, tmp_path):
+        config_path = _write_config(tmp_path, MINIMAL_CONFIG)
+        write_structural_config_updates(config_path, {
+            "projects": [
+                {
+                    "name": "new-project",
+                    "team": "NEW",
+                    "base_dir": "~/new",
+                    "worktree_prefix": "new-slot-",
+                    "slots": [1, 2],
+                },
+            ],
+        })
+        data = yaml.safe_load(config_path.read_text())
+        assert len(data["projects"]) == 2
+        new = data["projects"][1]
+        assert new["name"] == "new-project"
+        assert new["team"] == "NEW"
+        assert new["base_dir"] == "~/new"
+        assert new["worktree_prefix"] == "new-slot-"
+        assert new["slots"] == [1, 2]
+        # Original project preserved
+        assert data["projects"][0]["name"] == "test-project"
+
+    def test_write_new_project_with_tracker_project(self, tmp_path):
+        config_path = _write_config(tmp_path, MINIMAL_CONFIG)
+        write_structural_config_updates(config_path, {
+            "projects": [
+                {
+                    "name": "new-project",
+                    "team": "NEW",
+                    "base_dir": "~/new",
+                    "worktree_prefix": "new-slot-",
+                    "slots": [1],
+                    "tracker_project": "My New Filter",
+                },
+            ],
+        })
+        data = yaml.safe_load(config_path.read_text())
+        new = data["projects"][1]
+        assert new["tracker_project"] == "My New Filter"
+
+    def test_write_new_project_empty_tracker_project_omitted(self, tmp_path):
+        config_path = _write_config(tmp_path, MINIMAL_CONFIG)
+        write_structural_config_updates(config_path, {
+            "projects": [
+                {
+                    "name": "new-project",
+                    "team": "NEW",
+                    "base_dir": "~/new",
+                    "worktree_prefix": "new-slot-",
+                    "slots": [1],
+                    "tracker_project": "",
+                },
+            ],
+        })
+        data = yaml.safe_load(config_path.read_text())
+        new = data["projects"][1]
+        assert "tracker_project" not in new
+
+    def test_write_mixed_new_and_existing_projects(self, tmp_path):
+        config_path = _write_config(tmp_path, MINIMAL_CONFIG)
+        write_structural_config_updates(config_path, {
+            "projects": [
+                {"name": "test-project", "slots": [1, 2, 3]},
+                {
+                    "name": "new-project",
+                    "team": "NEW",
+                    "base_dir": "~/new",
+                    "worktree_prefix": "new-slot-",
+                    "slots": [4],
+                },
+            ],
+        })
+        data = yaml.safe_load(config_path.read_text())
+        assert len(data["projects"]) == 2
+        assert data["projects"][0]["slots"] == [1, 2, 3]
+        assert data["projects"][1]["name"] == "new-project"
 
 
 # --- Identities config ---

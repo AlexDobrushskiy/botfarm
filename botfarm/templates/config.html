@@ -541,6 +541,43 @@
     </div>
     {% endfor %}
     <button type="button" onclick="saveProjects()">Save Project Settings</button>
+
+    <hr>
+    <h3>Create New Project</h3>
+    <div class="project-card" id="new-project-card">
+        <div class="grid">
+            <label for="new-project-name">
+                Name <small>(required)</small>
+                <input type="text" id="new-project-name" placeholder="my-project" required>
+            </label>
+            <label for="new-project-team">
+                Team <small>(required)</small>
+                <input type="text" id="new-project-team" placeholder="My Team" required>
+            </label>
+        </div>
+        <div class="grid">
+            <label for="new-project-base_dir">
+                Base directory <small>(required)</small>
+                <input type="text" id="new-project-base_dir" placeholder="~/projects/my-project" required>
+            </label>
+            <label for="new-project-worktree_prefix">
+                Worktree prefix <small>(required)</small>
+                <input type="text" id="new-project-worktree_prefix" placeholder="my-project-slot-" required>
+            </label>
+        </div>
+        <div class="grid">
+            <label for="new-project-slots">
+                Slots <small>(required, comma-separated integers)</small>
+                <input type="text" id="new-project-slots" placeholder="1, 2, 3" required>
+            </label>
+            <label for="new-project-tracker_project">
+                Project filter <small>(optional)</small>
+                <input type="text" id="new-project-tracker_project" placeholder="My Linear Project">
+            </label>
+        </div>
+        <div id="feedback-new-project"></div>
+        <button type="button" onclick="createProject()">Create Project</button>
+    </div>
 </section>
 
 {# --- Notifications section (structural — restart required) --- #}
@@ -704,6 +741,83 @@ function addSlot(projectIdx) {
     chip.innerHTML = slotNum + ' <button type="button" onclick="removeSlot(' + projectIdx + ', ' + slotNum + ')" aria-label="Remove slot ' + slotNum + '">&times;</button>';
     container.appendChild(chip);
     input.value = "";
+}
+
+function createProject() {
+    var feedbackEl = document.getElementById("feedback-new-project");
+    feedbackEl.innerHTML = "";
+
+    var name = document.getElementById("new-project-name").value.trim();
+    var team = document.getElementById("new-project-team").value.trim();
+    var baseDir = document.getElementById("new-project-base_dir").value.trim();
+    var worktreePrefix = document.getElementById("new-project-worktree_prefix").value.trim();
+    var slotsRaw = document.getElementById("new-project-slots").value.trim();
+    var trackerProject = document.getElementById("new-project-tracker_project").value.trim();
+
+    // Client-side validation
+    var missing = [];
+    if (!name) missing.push("name");
+    if (!team) missing.push("team");
+    if (!baseDir) missing.push("base directory");
+    if (!worktreePrefix) missing.push("worktree prefix");
+    if (!slotsRaw) missing.push("slots");
+    if (missing.length > 0) {
+        feedbackEl.innerHTML = '<div class="config-feedback error" role="alert">Missing required fields: ' + missing.join(", ") + '</div>';
+        return;
+    }
+
+    // Parse slots
+    var slotParts = slotsRaw.split(",");
+    var slots = [];
+    for (var i = 0; i < slotParts.length; i++) {
+        var s = parseInt(slotParts[i].trim(), 10);
+        if (isNaN(s) || s < 1) {
+            feedbackEl.innerHTML = '<div class="config-feedback error" role="alert">Slots must be comma-separated positive integers.</div>';
+            return;
+        }
+        slots.push(s);
+    }
+
+    var newProject = {
+        name: name,
+        team: team,
+        base_dir: baseDir,
+        worktree_prefix: worktreePrefix,
+        slots: slots
+    };
+    if (trackerProject) {
+        newProject.tracker_project = trackerProject;
+    }
+
+    var btn = document.querySelector("#new-project-card button[onclick='createProject()']");
+    if (btn) btn.setAttribute("aria-busy", "true");
+
+    fetch("/config", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({projects: [newProject]})
+    })
+    .then(function(resp) { return resp.text().then(function(html) { return {ok: resp.ok, html: html}; }); })
+    .then(function(result) {
+        if (btn) btn.removeAttribute("aria-busy");
+        if (result.ok) {
+            feedbackEl.innerHTML = '<div class="config-feedback success" role="alert">Project created. Restart required to take effect.</div>';
+            showRestartBannerIfStructural("projects");
+            // Clear form fields
+            document.getElementById("new-project-name").value = "";
+            document.getElementById("new-project-team").value = "";
+            document.getElementById("new-project-base_dir").value = "";
+            document.getElementById("new-project-worktree_prefix").value = "";
+            document.getElementById("new-project-slots").value = "";
+            document.getElementById("new-project-tracker_project").value = "";
+        } else {
+            feedbackEl.innerHTML = result.html;
+        }
+    })
+    .catch(function() {
+        feedbackEl.innerHTML = '<div class="config-feedback error" role="alert">Network error.</div>';
+        if (btn) btn.removeAttribute("aria-busy");
+    });
 }
 
 function saveProjects() {

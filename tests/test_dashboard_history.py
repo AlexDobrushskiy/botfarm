@@ -1148,7 +1148,7 @@ class TestStructuralConfigUpdate:
         assert resp.status_code == 422
         assert "duplicate" in resp.text
 
-    def test_structural_unknown_project_rejected(self, setup):
+    def test_structural_unknown_project_missing_fields(self, setup):
         client, _, _, _ = setup
         resp = client.post("/config", json={
             "projects": [
@@ -1156,7 +1156,7 @@ class TestStructuralConfigUpdate:
             ],
         })
         assert resp.status_code == 422
-        assert "does not exist" in resp.text
+        assert "missing required fields" in resp.text
 
     def test_structural_non_editable_project_field_rejected(self, setup):
         client, _, _, _ = setup
