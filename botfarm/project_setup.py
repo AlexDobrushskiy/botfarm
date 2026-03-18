@@ -299,6 +299,167 @@ def append_project_to_config(
 # ---------------------------------------------------------------------------
 
 
+# GIT_* environment variables that override which repository git operates on.
+# These must be stripped when spawning git subprocesses that target a different
+# repo (e.g. a newly-inited project) so the parent context (such as a
+# pre-commit hook's GIT_DIR) doesn't leak through.
+_GIT_REPO_ENV_VARS = frozenset({
+    "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CEILING_DIRECTORIES",
+})
+
+
+def _clean_git_env() -> dict[str, str]:
+    """Return a copy of os.environ without repo-binding ``GIT_*`` vars.
+
+    Preserves identity vars (``GIT_AUTHOR_*``, ``GIT_COMMITTER_*``) so
+    that commits still work when the global git config lacks ``user.*``.
+    """
+    return {k: v for k, v in os.environ.items()
+            if k not in _GIT_REPO_ENV_VARS}
+
+
+def is_git_repo(path: Path) -> bool:
+    """Check if a directory is the root of a git repository (or worktree).
+
+    Uses a filesystem check (presence of ``.git`` dir or file) rather than
+    spawning ``git`` so that the result is unaffected by inherited ``GIT_*``
+    environment variables (e.g. inside a pre-commit hook).
+    """
+    git_indicator = path / ".git"
+    # .git is a directory in a normal repo, or a file in a worktree
+    return git_indicator.is_dir() or git_indicator.is_file()
+
+
+_GITIGNORE_TEMPLATE = """\
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+"""
+
+_README_TEMPLATE = """\
+# {name}
+
+Project managed by [botfarm](https://github.com/AlexDobrushskiy/botfarm).
+"""
+
+_CLAUDE_MD_TEMPLATE = """\
+# CLAUDE.md
+
+## Project Context
+<!-- Describe what this project does and its architecture -->
+
+## Development
+<!-- Commands to build, test, and run the project -->
+
+## Guidelines
+<!-- Coding conventions, patterns, and things to watch out for -->
+"""
+
+
+def init_repo(target_dir: Path, name: str) -> None:
+    """Initialize a new git repository with basic project structure.
+
+    Creates the directory, runs ``git init``, writes .gitignore, README.md,
+    and CLAUDE.md template, then makes an initial commit.
+
+    Raises ProjectSetupError on failure.
+    """
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise ProjectSetupError(f"Cannot create directory {target_dir}: {exc}")
+
+    env = _clean_git_env()
+    try:
+        result = subprocess.run(
+            ["git", "init", str(target_dir)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=env,
+        )
+        if result.returncode != 0:
+            raise ProjectSetupError(
+                f"git init failed:\n{result.stderr.strip()}"
+            )
+    except FileNotFoundError:
+        raise ProjectSetupError("git is not installed or not in PATH")
+    except subprocess.TimeoutExpired:
+        raise ProjectSetupError("git init timed out")
+
+    # Write starter files
+    (target_dir / ".gitignore").write_text(_GITIGNORE_TEMPLATE)
+    (target_dir / "README.md").write_text(_README_TEMPLATE.format(name=name))
+    (target_dir / "CLAUDE.md").write_text(_CLAUDE_MD_TEMPLATE)
+
+    # Initial commit
+    subprocess.run(
+        ["git", "-C", str(target_dir), "add", "."],
+        capture_output=True, text=True, timeout=10, env=env,
+    )
+    result = subprocess.run(
+        ["git", "-C", str(target_dir), "commit", "-m", "Initial commit"],
+        capture_output=True, text=True, timeout=10, env=env,
+    )
+    if result.returncode != 0:
+        raise ProjectSetupError(
+            f"Initial commit failed:\n{result.stderr.strip()}"
+        )
+
+
+def create_github_repo(repo_dir: Path, name: str, *, private: bool = True) -> str:
+    """Create a GitHub repository and push the local repo to it.
+
+    Uses the ``gh`` CLI.  Returns the URL of the created repository.
+
+    Raises ProjectSetupError on failure.
+    """
+    visibility = "--private" if private else "--public"
+    try:
+        result = subprocess.run(
+            [
+                "gh", "repo", "create", name,
+                visibility, "--source", str(repo_dir), "--push",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if result.returncode != 0:
+            raise ProjectSetupError(
+                f"gh repo create failed:\n{result.stderr.strip()}"
+            )
+        # gh prints the repo URL on stdout
+        return result.stdout.strip()
+    except FileNotFoundError:
+        raise ProjectSetupError(
+            "GitHub CLI (gh) is not installed or not in PATH"
+        )
+    except subprocess.TimeoutExpired:
+        raise ProjectSetupError("gh repo create timed out after 60 seconds")
+
+
 def extract_repo_name(repo_url: str) -> str:
     """Extract a project name from a git repo URL.
 
@@ -325,6 +486,7 @@ def clone_repo(repo_url: str, target_dir: Path) -> None:
             capture_output=True,
             text=True,
             timeout=300,
+            env=_clean_git_env(),
         )
         if result.returncode != 0:
             raise ProjectSetupError(
@@ -352,6 +514,7 @@ def create_worktree(repo_dir: Path, worktree_path: Path, branch_name: str) -> No
             capture_output=True,
             text=True,
             timeout=30,
+            env=_clean_git_env(),
         )
         if result.returncode != 0:
             raise ProjectSetupError(
@@ -378,16 +541,27 @@ def setup_project(
     config_path: Path,
     projects_dir: Path | None = None,
     *,
+    create_github: bool = False,
     replace_names: frozenset[str] = frozenset(),
     progress_callback: Callable[[str], None] | None = None,
 ) -> dict:
-    """Set up a new project end-to-end: clone, worktrees, config update.
+    """Set up a new project end-to-end: clone or init, worktrees, config update.
 
     This is the main entry point for both CLI and dashboard. It is
     synchronous (designed to run in a thread for non-blocking callers).
 
+    When *repo_url* is provided the repo is cloned.  When empty, the
+    behaviour depends on whether the target directory already exists:
+
+    * Existing git repo → reuse as-is.
+    * Non-existent directory → ``git init`` with starter files.
+
+    When *create_github* is ``True`` (and no *repo_url*), a GitHub
+    repository is created via the ``gh`` CLI and the local repo is pushed.
+
     Args:
-        repo_url: Git repository URL (SSH or HTTPS).
+        repo_url: Git repository URL (SSH or HTTPS).  Empty string to
+            initialise a new repo instead of cloning.
         name: Project name.
         team: Bugtracker team key (e.g. "SMA").
         tracker_project: Bugtracker project filter (empty string for none).
@@ -395,6 +569,8 @@ def setup_project(
         config_path: Path to config.yaml.
         projects_dir: Directory for repo clone and worktrees.
             Defaults to ``~/.botfarm/projects/<name>``.
+        create_github: When True and *repo_url* is empty, create a GitHub
+            repo via ``gh repo create`` and push.
         replace_names: Set of project names to remove from config
             before adding the new entry (used for placeholder replacement).
         progress_callback: Optional callback invoked with status messages
@@ -417,11 +593,32 @@ def setup_project(
     repo_dir = projects_dir / "repo"
     worktree_prefix = f"{name}-slot-"
 
-    if repo_dir.exists():
+    # Validate parent directory is writable
+    parent = projects_dir.parent
+    if parent.exists() and not os.access(str(parent), os.W_OK):
         raise ProjectSetupError(
-            f"Directory already exists: {repo_dir}\n"
-            f"Remove it first or choose a different project name."
+            f"Parent directory is not writable: {parent}"
         )
+
+    # Determine which repo setup path to take
+    reuse_existing = False
+    if repo_url:
+        # Clone path — repo_dir must not exist
+        if repo_dir.exists():
+            raise ProjectSetupError(
+                f"Directory already exists: {repo_dir}\n"
+                f"Remove it first or choose a different project name."
+            )
+    elif repo_dir.exists() and is_git_repo(repo_dir):
+        # Existing git repo at the expected path — reuse it
+        reuse_existing = True
+        _progress(f"Using existing git repo at {repo_dir}")
+    elif repo_dir.exists():
+        raise ProjectSetupError(
+            f"Directory exists but is not a git repo: {repo_dir}\n"
+            f"Remove it or run 'git init' manually."
+        )
+    # else: repo_dir doesn't exist → will init below
 
     # Track whether we created projects_dir so we can clean up on failure
     created_projects_dir = not projects_dir.exists()
@@ -429,9 +626,19 @@ def setup_project(
     try:
         projects_dir.mkdir(parents=True, exist_ok=True)
 
-        _progress("Cloning repository...")
-        clone_repo(repo_url, repo_dir)
-        _progress(f"Cloned to {repo_dir}")
+        if repo_url:
+            _progress("Cloning repository...")
+            clone_repo(repo_url, repo_dir)
+            _progress(f"Cloned to {repo_dir}")
+        elif not reuse_existing:
+            _progress("Initializing new git repository...")
+            init_repo(repo_dir, name)
+            _progress(f"Initialized {repo_dir}")
+
+        if create_github and not repo_url:
+            _progress("Creating GitHub repository...")
+            gh_url = create_github_repo(repo_dir, name)
+            _progress(f"GitHub repo created: {gh_url}")
 
         _progress(f"Creating {len(slots)} worktree(s)...")
         for slot_id in slots:
@@ -460,7 +667,7 @@ def setup_project(
         if created_projects_dir and projects_dir.exists():
             shutil.rmtree(projects_dir, ignore_errors=True)
             _progress(f"Removed {projects_dir}")
-        elif projects_dir.exists():
+        elif projects_dir.exists() and not reuse_existing:
             if repo_dir.exists():
                 shutil.rmtree(repo_dir, ignore_errors=True)
             for slot_id in slots:
@@ -483,3 +690,76 @@ def setup_project(
 
     _progress(f"Project '{name}' added successfully!")
     return project_dict
+
+
+def setup_project_git(
+    name: str,
+    config_path: Path,
+    *,
+    create_github: bool = False,
+    progress_callback: Callable[[str], None] | None = None,
+) -> None:
+    """Set up or repair git repo and worktrees for an existing project in config.
+
+    Reads the project entry from config, then ensures the repo directory and
+    all worktrees exist.  Useful as a retry mechanism when the initial setup
+    failed partway through or when worktrees need to be recreated.
+
+    Raises ProjectSetupError on failure.
+    """
+
+    def _progress(msg: str) -> None:
+        if progress_callback is not None:
+            progress_callback(msg)
+
+    import yaml as _yaml
+
+    raw = config_path.read_text()
+    data = _yaml.safe_load(raw)
+    projects = data.get("projects") or []
+    project_entry = None
+    for p in projects:
+        if p.get("name") == name:
+            project_entry = p
+            break
+    if project_entry is None:
+        raise ProjectSetupError(f"Project '{name}' not found in config")
+
+    repo_dir = Path(project_entry["base_dir"]).expanduser()
+    wt_prefix = project_entry.get("worktree_prefix", "")
+    slot_ids = project_entry.get("slots", [])
+
+    # Validate parent is writable
+    parent = repo_dir.parent
+    if parent.exists() and not os.access(str(parent), os.W_OK):
+        raise ProjectSetupError(f"Parent directory is not writable: {parent}")
+
+    # Repo setup
+    if repo_dir.exists() and is_git_repo(repo_dir):
+        _progress(f"Git repo already exists at {repo_dir}")
+    elif repo_dir.exists():
+        raise ProjectSetupError(
+            f"Directory exists but is not a git repo: {repo_dir}"
+        )
+    else:
+        _progress("Initializing new git repository...")
+        init_repo(repo_dir, name)
+        _progress(f"Initialized {repo_dir}")
+
+    if create_github:
+        _progress("Creating GitHub repository...")
+        gh_url = create_github_repo(repo_dir, name)
+        _progress(f"GitHub repo created: {gh_url}")
+
+    # Worktree setup — skip slots that already have worktrees
+    for slot_id in slot_ids:
+        branch_name = f"slot-{slot_id}-placeholder"
+        worktree_path = Path(f"{wt_prefix}{slot_id}").expanduser()
+        if worktree_path.exists():
+            _progress(f"Slot {slot_id}: worktree already exists at {worktree_path}")
+            continue
+        _progress(f"Creating worktree for slot {slot_id}...")
+        create_worktree(repo_dir, worktree_path, branch_name)
+        _progress(f"Slot {slot_id}: {worktree_path} (branch: {branch_name})")
+
+    _progress(f"Git setup for '{name}' complete!")
