@@ -1233,7 +1233,7 @@ class TestRunPreflightChecks:
              patch("botfarm.preflight._load_token", return_value=token), \
              patch("botfarm.preflight.check_installed_unit_stale", return_value=(False, "OK")), \
              patch("botfarm.preflight.check_claude_plugins", return_value=plugin_results), \
-             patch("botfarm.preflight.shutil.which", return_value="/usr/local/bin/claude"):
+             patch("botfarm.preflight.check_claude_available", return_value=(True, "claude 1.0.30")):
             mock_run.return_value.returncode = 0
             mock_run.return_value.stdout = "git@github.com:org/repo.git\n"
             mock_run.return_value.stderr = ""
