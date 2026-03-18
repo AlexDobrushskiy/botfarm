@@ -25,6 +25,7 @@ from botfarm.db import (
     record_refactoring_analysis_created,
     update_task,
 )
+from botfarm.bugtracker.types import CreatedIssue
 from botfarm.linear import LinearAPIError, PollResult
 from botfarm.supervisor import Supervisor
 
@@ -99,11 +100,11 @@ def _setup_linear_mocks(sup, *, states=None):
     sup._linear_client.get_team_states = MagicMock(return_value=states)
     sup._linear_client.get_project_id = MagicMock(return_value=None)
     sup._linear_client.create_issue = MagicMock(
-        return_value={
-            "id": "issue-uuid",
-            "identifier": "TST-100",
-            "url": "https://linear.app/test/TST-100",
-        }
+        return_value=CreatedIssue(
+            id="issue-uuid",
+            identifier="TST-100",
+            url="https://linear.app/test/TST-100",
+        )
     )
     sup._linear_client.fetch_open_issues_with_label = MagicMock(
         return_value=[]
@@ -423,11 +424,11 @@ class TestRefactoringScheduler:
         )
         sup._linear_client.get_project_id = MagicMock(return_value=None)
         sup._linear_client.create_issue = MagicMock(
-            return_value={
-                "id": "issue-uuid",
-                "identifier": "TST-100",
-                "url": "https://linear.app/test/TST-100",
-            }
+            return_value=CreatedIssue(
+                id="issue-uuid",
+                identifier="TST-100",
+                url="https://linear.app/test/TST-100",
+            )
         )
         sup._linear_client.fetch_open_issues_with_label = MagicMock(
             return_value=[]
@@ -488,11 +489,11 @@ class TestRefactoringScheduler:
         )
         sup._linear_client.get_project_id = MagicMock(return_value=None)
         sup._linear_client.create_issue = MagicMock(
-            return_value={
-                "id": "new-uuid",
-                "identifier": "TST-101",
-                "url": "https://linear.app/test/TST-101",
-            }
+            return_value=CreatedIssue(
+                id="new-uuid",
+                identifier="TST-101",
+                url="https://linear.app/test/TST-101",
+            )
         )
         sup._linear_client.fetch_open_issues_with_label = MagicMock(
             return_value=[]
@@ -563,11 +564,11 @@ class TestRefactoringScheduler:
         )
         sup._linear_client.get_project_id = MagicMock(return_value=None)
         sup._linear_client.create_issue = MagicMock(
-            return_value={
-                "id": "issue-uuid",
-                "identifier": "TST-200",
-                "url": "https://linear.app/test/TST-200",
-            }
+            return_value=CreatedIssue(
+                id="issue-uuid",
+                identifier="TST-200",
+                url="https://linear.app/test/TST-200",
+            )
         )
         sup._linear_client.fetch_open_issues_with_label = MagicMock(
             return_value=[]
@@ -597,11 +598,11 @@ class TestRefactoringScheduler:
         )
         sup._linear_client.get_project_id = MagicMock(return_value=None)
         sup._linear_client.create_issue = MagicMock(
-            return_value={
-                "id": "issue-uuid",
-                "identifier": "TST-300",
-                "url": "https://linear.app/test/TST-300",
-            }
+            return_value=CreatedIssue(
+                id="issue-uuid",
+                identifier="TST-300",
+                url="https://linear.app/test/TST-300",
+            )
         )
         sup._linear_client.fetch_open_issues_with_label = MagicMock(
             return_value=[]
@@ -662,11 +663,11 @@ class TestRefactoringScheduler:
             return_value="project-uuid"
         )
         sup._linear_client.create_issue = MagicMock(
-            return_value={
-                "id": "issue-uuid",
-                "identifier": "TST-400",
-                "url": "https://linear.app/test/TST-400",
-            }
+            return_value=CreatedIssue(
+                id="issue-uuid",
+                identifier="TST-400",
+                url="https://linear.app/test/TST-400",
+            )
         )
         sup._linear_client.fetch_open_issues_with_label = MagicMock(
             return_value=[]
@@ -756,11 +757,11 @@ class TestRefactoringScheduler:
         )
         sup._linear_client.get_project_id = MagicMock(return_value=None)
         sup._linear_client.create_issue = MagicMock(
-            return_value={
-                "id": "issue-uuid",
-                "identifier": "TST-500",
-                "url": "https://linear.app/test/TST-500",
-            }
+            return_value=CreatedIssue(
+                id="issue-uuid",
+                identifier="TST-500",
+                url="https://linear.app/test/TST-500",
+            )
         )
         sup._linear_client.fetch_open_issues_with_label = MagicMock(
             return_value=[]
@@ -785,7 +786,7 @@ class TestRefactoringScheduler:
         )
         sup._linear_client.get_project_id = MagicMock(return_value=None)
         sup._linear_client.create_issue = MagicMock(
-            return_value={"id": "issue-uuid"}  # No "identifier" key
+            return_value=CreatedIssue(id="issue-uuid", identifier="", url="")
         )
         sup._linear_client.fetch_open_issues_with_label = MagicMock(
             return_value=[]
@@ -849,7 +850,7 @@ class TestLinearClientMethods:
                 label_ids=["lbl-1", "lbl-2"],
             )
 
-        assert result["identifier"] == "TST-1"
+        assert result.identifier == "TST-1"
 
     def test_create_issue_passes_project_and_state(self):
         from botfarm.linear import LinearClient
@@ -934,7 +935,7 @@ class TestLinearClientMethods:
             result = client.fetch_open_issues_with_label("TST", "Refactoring Analysis")
 
         assert len(result) == 1
-        assert result[0]["identifier"] == "TST-5"
+        assert result[0].identifier == "TST-5"
 
     def test_get_or_create_label_returns_existing(self):
         from botfarm.linear import LinearClient

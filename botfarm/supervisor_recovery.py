@@ -14,6 +14,7 @@ import signal
 import subprocess
 from datetime import datetime, timezone
 
+from botfarm.bugtracker.types import issue_details_to_history_kwargs
 from botfarm.db import (
     get_task,
     get_task_by_ticket,
@@ -703,12 +704,13 @@ class RecoveryMixin:
 
         try:
             details = client.fetch_issue_details(ticket_id)
-            details["capture_source"] = capture_source
+            kwargs = issue_details_to_history_kwargs(details)
+            kwargs["capture_source"] = capture_source
             if pr_url:
-                details["pr_url"] = pr_url
+                kwargs["pr_url"] = pr_url
             if branch_name:
-                details["branch_name"] = branch_name
-            upsert_ticket_history(self._conn, **details)
+                kwargs["branch_name"] = branch_name
+            upsert_ticket_history(self._conn, **kwargs)
             self._conn.commit()
             logger.info("Captured ticket history for %s (source=%s)", ticket_id, capture_source)
         except Exception:

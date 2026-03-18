@@ -7,7 +7,15 @@ Re-exports all public types for clean imports::
 
 from .base import BugtrackerClient, BugtrackerPoller
 from .errors import BugtrackerError
-from .types import ActiveIssuesCount, Comment, CreatedIssue, Issue, IssueDetails, PollResult
+from .types import (
+    ActiveIssuesCount,
+    Comment,
+    CreatedIssue,
+    Issue,
+    IssueDetails,
+    PollResult,
+    issue_details_to_history_kwargs,
+)
 
 __all__ = [
     "ActiveIssuesCount",
@@ -19,4 +27,5 @@ __all__ = [
     "Issue",
     "IssueDetails",
     "PollResult",
+    "issue_details_to_history_kwargs",
 ]
