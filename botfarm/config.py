@@ -1186,6 +1186,7 @@ def _validate_project_updates(
     _NEW_PROJECT_REQUIRED = {"name", "team", "base_dir", "worktree_prefix", "slots"}
     _NEW_PROJECT_OPTIONAL = {"tracker_project"}
     _NEW_PROJECT_ALLOWED = _NEW_PROJECT_REQUIRED | _NEW_PROJECT_OPTIONAL
+    seen_names: set[str] = set()
 
     for i, proj in enumerate(project_updates):
         if not isinstance(proj, dict):
@@ -1196,6 +1197,14 @@ def _validate_project_updates(
         if not name or not isinstance(name, str):
             errors.append(f"projects[{i}]: 'name' is required")
             continue
+
+        # Reject duplicate names within the same payload
+        if name in seen_names:
+            errors.append(
+                f"projects[{i}] '{name}': duplicate project name in request"
+            )
+            continue
+        seen_names.add(name)
 
         is_new = name not in existing_names
 

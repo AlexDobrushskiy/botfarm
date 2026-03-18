@@ -1660,6 +1660,30 @@ class TestValidateStructuralConfigUpdates:
         errors = validate_structural_config_updates(updates, config)
         assert any("duplicate" in e for e in errors)
 
+    def test_new_project_duplicate_name_in_payload(self):
+        config = _make_config_for_structural()
+        updates = {
+            "projects": [
+                {
+                    "name": "project-c",
+                    "team": "NEW",
+                    "base_dir": "~/c",
+                    "worktree_prefix": "c-slot-",
+                    "slots": [1],
+                },
+                {
+                    "name": "project-c",
+                    "team": "NEW2",
+                    "base_dir": "~/c2",
+                    "worktree_prefix": "c2-slot-",
+                    "slots": [2],
+                },
+            ],
+        }
+        errors = validate_structural_config_updates(updates, config)
+        assert len(errors) == 1
+        assert "duplicate project name" in errors[0]
+
     def test_mixed_new_and_existing_projects(self):
         config = _make_config_for_structural()
         updates = {
