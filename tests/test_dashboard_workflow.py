@@ -1240,7 +1240,7 @@ class TestCleanupExecuteAPI:
         )
         assert resp.status_code == 503
 
-    @patch("botfarm.linear_cleanup.time.sleep")
+    @patch("botfarm.bugtracker.linear.cleanup.time.sleep")
     def test_execute_archive_success(self, mock_sleep, tmp_path):
         from datetime import datetime, timedelta, timezone
         client = self._make_client(tmp_path)

@@ -790,7 +790,7 @@ Note: The supervisor handles status transitions automatically — do not move th
                 state_id=state_id,
             )
 
-            identifier = issue.get("identifier")
+            identifier = issue.identifier
             if not identifier:
                 logger.error(
                     "Linear returned issue without identifier — "
@@ -804,13 +804,13 @@ Note: The supervisor handles status transitions automatically — do not move th
             logger.info(
                 "Created refactoring analysis ticket: %s (%s)",
                 identifier,
-                issue.get("url", ""),
+                issue.url,
             )
 
             if use_backlog:
                 self._notifier.notify_refactoring_due(
                     ticket_id=identifier,
-                    ticket_url=issue.get("url", ""),
+                    ticket_url=issue.url,
                 )
 
         except Exception:

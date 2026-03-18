@@ -680,33 +680,25 @@ class TestNextStageAfterWorker:
 
 class TestTicketHistoryCapture:
     def _mock_fetch_issue_details(self, identifier):
-        """Return a dict mimicking LinearClient.fetch_issue_details()."""
-        return {
-            "ticket_id": identifier,
-            "linear_uuid": f"uuid-{identifier}",
-            "title": f"Title for {identifier}",
-            "description": "Some description",
-            "status": "In Progress",
-            "priority": 2,
-            "url": f"https://linear.app/test/{identifier}",
-            "assignee_name": "Bot",
-            "assignee_email": "bot@test.com",
-            "creator_name": "User",
-            "project_name": "test-project",
-            "team_name": "TST",
-            "estimate": None,
-            "due_date": None,
-            "parent_id": None,
-            "children_ids": json.dumps([]),
-            "blocked_by": json.dumps([]),
-            "blocks": json.dumps([]),
-            "labels": json.dumps([]),
-            "comments_json": json.dumps([]),
-            "linear_created_at": "2026-01-01T00:00:00Z",
-            "linear_updated_at": "2026-02-01T00:00:00Z",
-            "linear_completed_at": None,
-            "raw_json": json.dumps({"id": f"uuid-{identifier}"}),
-        }
+        """Return an IssueDetails mimicking LinearClient.fetch_issue_details()."""
+        from botfarm.bugtracker.types import IssueDetails
+        return IssueDetails(
+            id=f"uuid-{identifier}",
+            ticket_id=identifier,
+            title=f"Title for {identifier}",
+            url=f"https://linear.app/test/{identifier}",
+            description="Some description",
+            status="In Progress",
+            priority=2,
+            assignee_name="Bot",
+            assignee_email="bot@test.com",
+            creator_name="User",
+            project_name="test-project",
+            team_name="TST",
+            created_at="2026-01-01T00:00:00Z",
+            updated_at="2026-02-01T00:00:00Z",
+            raw={"id": f"uuid-{identifier}"},
+        )
 
     def test_dispatch_captures_ticket_history(self, supervisor):
         """Dispatch should capture ticket details into ticket_history."""

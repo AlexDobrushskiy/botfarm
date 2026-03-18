@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from click.testing import CliRunner
 
+from botfarm.bugtracker.types import IssueDetails
 from botfarm.cli import main
 from botfarm.db import (
     get_ticket_history_entry,
@@ -50,33 +51,24 @@ def _make_config():
 
 
 def _fake_issue_details(ticket_id):
-    """Return a dict mimicking LinearClient.fetch_issue_details()."""
-    return {
-        "ticket_id": ticket_id,
-        "linear_uuid": f"uuid-{ticket_id}",
-        "title": f"Title for {ticket_id}",
-        "description": f"Description for {ticket_id}",
-        "status": "Done",
-        "priority": 2,
-        "url": f"https://linear.app/test/{ticket_id}",
-        "assignee_name": "Test User",
-        "assignee_email": "test@example.com",
-        "creator_name": "Creator",
-        "project_name": "Bot farm",
-        "team_name": "Smart AI Coach",
-        "estimate": None,
-        "due_date": None,
-        "parent_id": None,
-        "children_ids": "[]",
-        "blocked_by": "[]",
-        "blocks": "[]",
-        "labels": "[]",
-        "comments_json": "[]",
-        "linear_created_at": "2026-01-01T00:00:00Z",
-        "linear_updated_at": "2026-01-02T00:00:00Z",
-        "linear_completed_at": "2026-01-03T00:00:00Z",
-        "raw_json": "{}",
-    }
+    """Return an IssueDetails mimicking LinearClient.fetch_issue_details()."""
+    return IssueDetails(
+        id=f"uuid-{ticket_id}",
+        ticket_id=ticket_id,
+        title=f"Title for {ticket_id}",
+        url=f"https://linear.app/test/{ticket_id}",
+        description=f"Description for {ticket_id}",
+        status="Done",
+        priority=2,
+        assignee_name="Test User",
+        assignee_email="test@example.com",
+        creator_name="Creator",
+        project_name="Bot farm",
+        team_name="Smart AI Coach",
+        created_at="2026-01-01T00:00:00Z",
+        updated_at="2026-01-02T00:00:00Z",
+        completed_at="2026-01-03T00:00:00Z",
+    )
 
 
 class TestBackfillHistory:

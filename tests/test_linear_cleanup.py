@@ -174,7 +174,7 @@ class TestFetchCompletedIssues:
         with patch.object(httpx, "post", return_value=resp):
             result = client.fetch_completed_issues(team_key="SMA")
         assert len(result) == 1
-        assert result[0]["identifier"] == "SMA-100"
+        assert result[0].identifier == "SMA-100"
 
     def test_with_project_name(self, client):
         nodes = [_make_completed_issue_node()]
@@ -443,7 +443,7 @@ class TestCleanupServiceRun:
         )
         return [fetch_resp, detail_resp, archive_resp]
 
-    @patch("botfarm.linear_cleanup.time.sleep")
+    @patch("botfarm.bugtracker.linear.cleanup.time.sleep")
     def test_archive_single_issue(self, mock_sleep, client, conn):
         nodes = [_make_completed_issue_node()]
         responses = self._mock_fetch_and_archive(nodes)
@@ -474,7 +474,7 @@ class TestCleanupServiceRun:
         ticket = get_ticket_history_entry(conn, "SMA-100")
         assert ticket is not None
 
-    @patch("botfarm.linear_cleanup.time.sleep")
+    @patch("botfarm.bugtracker.linear.cleanup.time.sleep")
     def test_delete_single_issue(self, mock_sleep, client, conn):
         nodes = [_make_completed_issue_node()]
         fetch_resp = _graphql_response({"issues": {"nodes": nodes}})
@@ -515,7 +515,7 @@ class TestCleanupServiceRun:
         with pytest.raises(ValueError, match="Invalid action"):
             svc.run_cleanup(action="purge")
 
-    @patch("botfarm.linear_cleanup.time.sleep")
+    @patch("botfarm.bugtracker.linear.cleanup.time.sleep")
     def test_dry_run_does_not_execute(self, mock_sleep, client, conn):
         nodes = [_make_completed_issue_node()]
         resp = _graphql_response({"issues": {"nodes": nodes}})
@@ -528,7 +528,7 @@ class TestCleanupServiceRun:
         # No batch should be in DB
         assert get_cleanup_batch(conn, result.batch_id) is None
 
-    @patch("botfarm.linear_cleanup.time.sleep")
+    @patch("botfarm.bugtracker.linear.cleanup.time.sleep")
     def test_no_candidates_returns_empty_result(self, mock_sleep, client, conn):
         resp = _graphql_response({"issues": {"nodes": []}})
         with patch.object(httpx, "post", return_value=resp):
@@ -545,7 +545,7 @@ class TestCleanupServiceRun:
         with pytest.raises(CooldownError):
             svc.run_cleanup(action="archive")
 
-    @patch("botfarm.linear_cleanup.time.sleep")
+    @patch("botfarm.bugtracker.linear.cleanup.time.sleep")
     def test_backup_failure_skips_issue(self, mock_sleep, client, conn):
         nodes = [_make_completed_issue_node()]
         fetch_resp = _graphql_response({"issues": {"nodes": nodes}})
@@ -567,7 +567,7 @@ class TestCleanupServiceRun:
         assert len(items) == 1
         assert items[0]["error"] == "backup_failed"
 
-    @patch("botfarm.linear_cleanup.time.sleep")
+    @patch("botfarm.bugtracker.linear.cleanup.time.sleep")
     def test_archive_api_failure_continues(self, mock_sleep, client, conn):
         nodes = [
             _make_completed_issue_node(id="uuid-1", identifier="SMA-100"),
@@ -619,7 +619,7 @@ class TestCleanupServiceRun:
         assert result.succeeded == 1
         assert len(result.errors) == 1
 
-    @patch("botfarm.linear_cleanup.time.sleep")
+    @patch("botfarm.bugtracker.linear.cleanup.time.sleep")
     def test_rate_limit_pause(self, mock_sleep, client, conn):
         """When rate limit is low, service pauses before next operation."""
         nodes = [_make_completed_issue_node()]
@@ -671,7 +671,7 @@ class TestCleanupServiceRun:
 
 
 class TestCleanupServiceUndo:
-    @patch("botfarm.linear_cleanup.time.sleep")
+    @patch("botfarm.bugtracker.linear.cleanup.time.sleep")
     def test_undo_archive_batch(self, mock_sleep, conn):
         client = LinearClient(api_key="test-key")
         # Set up a batch with two archived items
@@ -706,7 +706,7 @@ class TestCleanupServiceUndo:
         events = get_events(conn, event_type="cleanup_unarchive")
         assert len(events) == 2
 
-    @patch("botfarm.linear_cleanup.time.sleep")
+    @patch("botfarm.bugtracker.linear.cleanup.time.sleep")
     def test_undo_skips_failed_items(self, mock_sleep, conn):
         client = LinearClient(api_key="test-key")
         insert_cleanup_batch(conn, batch_id="undo-batch-2", action="archive", total=2)
@@ -752,7 +752,7 @@ class TestCleanupServiceUndo:
         with pytest.raises(ValueError, match="only archive batches"):
             svc.undo_batch("del-batch")
 
-    @patch("botfarm.linear_cleanup.time.sleep")
+    @patch("botfarm.bugtracker.linear.cleanup.time.sleep")
     def test_undo_partial_failure(self, mock_sleep, conn):
         client = LinearClient(api_key="test-key")
         insert_cleanup_batch(conn, batch_id="undo-partial", action="archive", total=2)

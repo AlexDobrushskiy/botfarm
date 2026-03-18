@@ -44,6 +44,7 @@ from botfarm.db import (
     upsert_slot,
     upsert_ticket_history,
 )
+from botfarm.bugtracker.types import issue_details_to_history_kwargs as _issue_details_to_history_kwargs
 from botfarm.linear import LinearAPIError, LinearClient
 from botfarm.linear_cleanup import CleanupService, CooldownError
 from botfarm.slots import SlotState, _is_pid_alive
@@ -2061,8 +2062,11 @@ def backfill_history(config_path, project, force, dry_run):
         for i, ticket_id in enumerate(to_fetch, 1):
             try:
                 details = client.fetch_issue_details(ticket_id)
-                details["capture_source"] = "backfill"
-                upsert_ticket_history(conn, **details)
+                upsert_ticket_history(
+                    conn,
+                    **_issue_details_to_history_kwargs(details),
+                    capture_source="backfill",
+                )
                 conn.commit()
                 fetched += 1
             except LinearAPIError as exc:
