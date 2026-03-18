@@ -25,7 +25,7 @@ def _make_config(tmp_path, project_name="proj"):
         projects=[
             ProjectConfig(
                 name=project_name,
-                linear_team="TEST",
+                team="TEST",
                 base_dir=str(tmp_path / f"botfarm-{project_name}"),
                 worktree_prefix=f"botfarm-{project_name}-",
                 slots=[1],

@@ -1,4 +1,4 @@
-"""Tests for botfarm.linear — LinearClient, LinearPoller, and create_pollers."""
+"""Tests for botfarm.bugtracker.linear — LinearClient, LinearPoller, and create_pollers."""
 
 from __future__ import annotations
 
@@ -15,19 +15,14 @@ from botfarm.config import (
     LinearConfig,
     ProjectConfig,
 )
-from botfarm.linear import (
+from botfarm.bugtracker.linear.client import LINEAR_API_URL, LinearAPIError, LinearClient
+from botfarm.bugtracker.linear.poller import LinearPoller, create_pollers
+from botfarm.bugtracker.linear.queries import (
     ACTIVE_ISSUES_COUNT_QUERY,
     ACTIVE_ISSUES_FOR_PROJECT_COUNT_QUERY,
     ISSUE_DETAILS_QUERY,
-    LINEAR_API_URL,
-    ActiveIssuesCount,
-    LinearAPIError,
-    LinearClient,
-    LinearIssue,
-    LinearPoller,
-    PollResult,
-    create_pollers,
 )
+from botfarm.bugtracker.types import ActiveIssuesCount, Issue as LinearIssue, PollResult
 
 
 # ---------------------------------------------------------------------------
@@ -45,7 +40,7 @@ def _make_project(
 ) -> ProjectConfig:
     return ProjectConfig(
         name=name,
-        linear_team=team,
+        team=team,
         base_dir="~/proj-a",
         worktree_prefix="proj-a-slot-",
         slots=slots or [1, 2],
@@ -1108,7 +1103,7 @@ class TestCreatePollers:
                 _make_project(name="proj-a", team="SMA", slots=[1]),
                 _make_project(name="proj-b", team="TPP", slots=[2]),
             ],
-            linear=LinearConfig(api_key="test-key", exclude_tags=["Human", "Skip"]),
+            bugtracker=LinearConfig(api_key="test-key", exclude_tags=["Human", "Skip"]),
             database=DatabaseConfig(),
         )
         pollers = create_pollers(config)
@@ -1124,7 +1119,7 @@ class TestCreatePollers:
                 _make_project(name="a", slots=[1]),
                 _make_project(name="b", slots=[2]),
             ],
-            linear=LinearConfig(api_key="key"),
+            bugtracker=LinearConfig(api_key="key"),
             database=DatabaseConfig(),
         )
         pollers = create_pollers(config)
@@ -1133,7 +1128,7 @@ class TestCreatePollers:
     def test_exclude_tags_passed(self):
         config = BotfarmConfig(
             projects=[_make_project(slots=[1])],
-            linear=LinearConfig(api_key="key", exclude_tags=["Human", "Bot"]),
+            bugtracker=LinearConfig(api_key="key", exclude_tags=["Human", "Bot"]),
             database=DatabaseConfig(),
         )
         pollers = create_pollers(config)
@@ -1142,7 +1137,7 @@ class TestCreatePollers:
     def test_todo_status_passed(self):
         config = BotfarmConfig(
             projects=[_make_project(slots=[1])],
-            linear=LinearConfig(api_key="key", todo_status="Backlog"),
+            bugtracker=LinearConfig(api_key="key", todo_status="Backlog"),
             database=DatabaseConfig(),
         )
         pollers = create_pollers(config)
@@ -1151,7 +1146,7 @@ class TestCreatePollers:
     def test_todo_status_default(self):
         config = BotfarmConfig(
             projects=[_make_project(slots=[1])],
-            linear=LinearConfig(api_key="key"),
+            bugtracker=LinearConfig(api_key="key"),
             database=DatabaseConfig(),
         )
         pollers = create_pollers(config)
@@ -1213,7 +1208,7 @@ class TestFetchTeamIssuesWithProject:
         })
 
     def test_uses_project_query_when_project_set(self):
-        from botfarm.linear import ISSUES_WITH_PROJECT_QUERY
+        from botfarm.bugtracker.linear.queries import ISSUES_WITH_PROJECT_QUERY
 
         client = LinearClient(api_key="key")
         with patch.object(
@@ -1228,7 +1223,7 @@ class TestFetchTeamIssuesWithProject:
         assert sent_vars["projectName"] == "Botfarm"
 
     def test_uses_default_query_when_project_empty(self):
-        from botfarm.linear import ISSUES_QUERY
+        from botfarm.bugtracker.linear.queries import ISSUES_QUERY
 
         client = LinearClient(api_key="key")
         with patch.object(
@@ -1243,7 +1238,7 @@ class TestFetchTeamIssuesWithProject:
         assert "projectName" not in sent_vars
 
     def test_uses_default_query_when_project_omitted(self):
-        from botfarm.linear import ISSUES_QUERY
+        from botfarm.bugtracker.linear.queries import ISSUES_QUERY
 
         client = LinearClient(api_key="key")
         with patch.object(
@@ -1266,7 +1261,7 @@ class TestLinearPollerProjectFilter:
         client = MagicMock(spec=LinearClient)
         client.fetch_team_issues.return_value = []
         project = _make_project()
-        project.linear_project = "Botfarm"
+        project.tracker_project = "Botfarm"
         poller = LinearPoller(
             client=client,
             project=project,
@@ -1387,7 +1382,7 @@ class TestCreatePollersCoderClient:
     def test_coder_client_created_when_key_set(self):
         config = BotfarmConfig(
             projects=[_make_project(slots=[1])],
-            linear=LinearConfig(api_key="owner-key"),
+            bugtracker=LinearConfig(api_key="owner-key"),
             database=DatabaseConfig(),
             identities=IdentitiesConfig(
                 coder=CoderIdentity(linear_api_key="coder-key"),
@@ -1402,7 +1397,7 @@ class TestCreatePollersCoderClient:
     def test_no_coder_client_when_key_empty(self):
         config = BotfarmConfig(
             projects=[_make_project(slots=[1])],
-            linear=LinearConfig(api_key="owner-key"),
+            bugtracker=LinearConfig(api_key="owner-key"),
             database=DatabaseConfig(),
             identities=IdentitiesConfig(
                 coder=CoderIdentity(linear_api_key=""),
@@ -1415,7 +1410,7 @@ class TestCreatePollersCoderClient:
     def test_no_coder_client_when_identities_default(self):
         config = BotfarmConfig(
             projects=[_make_project(slots=[1])],
-            linear=LinearConfig(api_key="owner-key"),
+            bugtracker=LinearConfig(api_key="owner-key"),
             database=DatabaseConfig(),
         )
         pollers = create_pollers(config)
@@ -1428,7 +1423,7 @@ class TestCreatePollersCoderClient:
                 _make_project(name="a", slots=[1]),
                 _make_project(name="b", slots=[2]),
             ],
-            linear=LinearConfig(api_key="owner-key"),
+            bugtracker=LinearConfig(api_key="owner-key"),
             database=DatabaseConfig(),
             identities=IdentitiesConfig(
                 coder=CoderIdentity(linear_api_key="coder-key"),

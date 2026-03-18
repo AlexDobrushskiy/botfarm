@@ -13,7 +13,7 @@ from botfarm.db import init_db
 def _make_config(*, projects=None, api_key="test-key"):
     return BotfarmConfig(
         projects=projects or [],
-        linear=LinearConfig(api_key=api_key),
+        bugtracker=LinearConfig(api_key=api_key),
     )
 
 
@@ -75,7 +75,7 @@ class TestProjectCreateEndpoint:
         client = TestClient(app)
         resp = client.post(
             "/api/project/create",
-            json={"repo_url": "", "name": "", "linear_team": "", "slots": 0},
+            json={"repo_url": "", "name": "", "team": "", "slots": 0},
         )
         assert resp.status_code == 400
         data = resp.json()
@@ -83,7 +83,7 @@ class TestProjectCreateEndpoint:
 
     def test_duplicate_project_name(self, tmp_path):
         existing = ProjectConfig(
-            name="my-proj", linear_team="ENG",
+            name="my-proj", team="ENG",
             base_dir="/tmp/x", worktree_prefix="/tmp/x-slot-", slots=[1],
         )
         cfg = _make_config(projects=[existing])
@@ -94,7 +94,7 @@ class TestProjectCreateEndpoint:
             json={
                 "repo_url": "git@github.com:user/repo.git",
                 "name": "my-proj",
-                "linear_team": "ENG",
+                "team": "ENG",
                 "slots": 1,
             },
         )
@@ -103,7 +103,7 @@ class TestProjectCreateEndpoint:
 
     def test_duplicate_linear_project(self, tmp_path):
         existing = ProjectConfig(
-            name="other-proj", linear_team="ENG", linear_project="Bot farm",
+            name="other-proj", team="ENG", tracker_project="Bot farm",
             base_dir="/tmp/x", worktree_prefix="/tmp/x-slot-", slots=[1],
         )
         cfg = _make_config(projects=[existing])
@@ -114,8 +114,8 @@ class TestProjectCreateEndpoint:
             json={
                 "repo_url": "git@github.com:user/repo.git",
                 "name": "new-proj",
-                "linear_team": "ENG",
-                "linear_project": "Bot farm",
+                "team": "ENG",
+                "tracker_project": "Bot farm",
                 "slots": 1,
             },
         )
@@ -130,7 +130,7 @@ class TestProjectCreateEndpoint:
             json={
                 "repo_url": "not-a-url",
                 "name": "test",
-                "linear_team": "ENG",
+                "team": "ENG",
                 "slots": 1,
             },
         )
@@ -145,7 +145,7 @@ class TestProjectCreateEndpoint:
             json={
                 "repo_url": "git@github.com:user/repo.git",
                 "name": "test",
-                "linear_team": "ENG",
+                "team": "ENG",
                 "slots": 25,
             },
         )
@@ -162,7 +162,7 @@ class TestProjectCreateEndpoint:
                 json={
                     "repo_url": "git@github.com:user/repo.git",
                     "name": "repo",
-                    "linear_team": "ENG",
+                    "team": "ENG",
                     "slots": 2,
                 },
             )
@@ -184,7 +184,7 @@ class TestProjectCreateEndpoint:
             json={
                 "repo_url": "git@github.com:user/repo.git",
                 "name": "test",
-                "linear_team": "ENG",
+                "team": "ENG",
                 "slots": 1,
             },
         )

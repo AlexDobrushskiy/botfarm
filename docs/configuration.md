@@ -47,47 +47,46 @@ The file is YAML. Below is the full reference with all sections, defaults, and e
 
 ### `projects` (required)
 
-A list of projects to manage. Each project maps to a Linear team and a local git checkout.
+A list of projects to manage. Each project maps to a bugtracker team and a local git checkout.
 
 ```yaml
 projects:
   - name: my-project            # Unique project name
-    linear_team: TEAM            # Linear team key (e.g. "SMA")
+    team: TEAM                   # Bugtracker team key (e.g. "SMA")
     base_dir: ~/my-project       # Path to the git repository
     worktree_prefix: my-project-slot-  # Prefix for git worktree directories
     slots: [1, 2]                # Slot IDs assigned to this project
-    linear_project: ""           # Optional: filter to a specific Linear project within the team
+    tracker_project: ""          # Optional: filter to a specific project within the team
 ```
 
 **Rules:**
 - `name` must be unique across all projects
-- `linear_project` must be unique across all projects (when set). If two projects share the same `linear_project` filter, tickets may be dispatched to the wrong repo.
+- `tracker_project` must be unique across all projects (when set). If two projects share the same `tracker_project` filter, tickets may be dispatched to the wrong repo.
 - `slots` must be a list of integers with no duplicates within each project
 - Slot IDs are per-project — different projects can reuse the same IDs
 
 ---
 
-### `linear`
+### `bugtracker`
 
-Linear API connection and workflow configuration.
+Bugtracker API connection and workflow configuration. Currently supports Linear (`type: linear`).
 
 ```yaml
-linear:
+bugtracker:
+  type: linear                      # "linear" (future: "jira", "github")
   api_key: ${LINEAR_API_KEY}        # Required. Supports env var expansion
-  workspace: my-workspace           # Linear workspace slug
+  workspace: my-workspace           # Workspace slug
   poll_interval_seconds: 120        # How often to poll for new tickets (default: 120)
   exclude_tags:                     # Tickets with these labels are skipped
     - Human
 
-  # Workflow status names — must match your Linear team's workflow
+  # Workflow status names — must match your bugtracker's workflow
   todo_status: Todo                 # Status to poll for new work (default: "Todo")
   in_progress_status: In Progress   # Set when a worker picks up a ticket (default: "In Progress")
   done_status: Done                 # Set on successful completion (default: "Done")
   in_review_status: In Review       # Set when a PR is created (default: "In Review")
-  # Note: failed_status has been removed. Failed tickets now keep their
-  # current status and receive "Failed" + "Human" labels instead.
 
-  # Comment posting on Linear tickets
+  # Comment posting on tickets
   comment_on_failure: true          # Post a comment when a task fails (default: true)
   comment_on_completion: false      # Post a comment on success (default: false)
   comment_on_limit_pause: false     # Post when paused by usage limits (default: false)
@@ -293,12 +292,13 @@ When identities are configured, `botfarm run` automatically validates them at st
 ```yaml
 projects:
   - name: my-app
-    linear_team: APP
+    team: APP
     base_dir: ~/code/my-app
     worktree_prefix: my-app-slot-
     slots: [1]
 
-linear:
+bugtracker:
+  type: linear
   api_key: ${LINEAR_API_KEY}
   workspace: my-workspace
 ```
@@ -320,19 +320,20 @@ botfarm run
 ```yaml
 projects:
   - name: backend
-    linear_team: BE
+    team: BE
     base_dir: ~/code/backend
     worktree_prefix: backend-slot-
     slots: [1, 2, 3]
 
   - name: frontend
-    linear_team: FE
+    team: FE
     base_dir: ~/code/frontend
     worktree_prefix: frontend-slot-
     slots: [1, 2]
-    linear_project: "Web App"
+    tracker_project: "Web App"
 
-linear:
+bugtracker:
+  type: linear
   api_key: ${LINEAR_API_KEY}
   workspace: acme
   poll_interval_seconds: 60

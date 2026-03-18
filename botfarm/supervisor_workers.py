@@ -740,7 +740,7 @@ class WorkerLifecycleManager:
         branch = f"{project_cfg.worktree_prefix}{slot.slot_id}"
 
         # Move issue to In Progress on Linear
-        in_progress = self._config.linear.in_progress_status
+        in_progress = self._config.bugtracker.in_progress_status
         try:
             poller.move_issue(issue.identifier, in_progress)
         except Exception:

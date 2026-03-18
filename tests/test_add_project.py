@@ -37,11 +37,11 @@ def config_dir(tmp_path):
     config_path.write_text(
         "projects:\n"
         "  - name: existing-proj\n"
-        "    linear_team: SMA\n"
+        "    team: SMA\n"
         f"    base_dir: {base_dir}\n"
         "    worktree_prefix: existing-slot-\n"
         "    slots: [1]\n"
-        "linear:\n"
+        "bugtracker:\n"
         "  api_key: test-key\n"
     )
     return tmp_path, config_path
@@ -167,28 +167,28 @@ class TestRemoveProjectEntryText:
         raw = (
             "projects:\n"
             "  - name: my-project\n"
-            "    linear_team: TEAM\n"
+            "    team: TEAM\n"
             "    base_dir: ~/my-project\n"
             "    worktree_prefix: my-project-slot-\n"
             "    slots: [1, 2]\n"
             "\n"
-            "linear:\n"
+            "bugtracker:\n"
             "  api_key: test\n"
         )
         result = remove_project_entry_text(raw, "my-project")
         data = yaml.safe_load(result)
         # projects key should remain but be empty/null
-        assert "linear" in data
+        assert "bugtracker" in data
         assert data.get("projects") is None or data.get("projects") == []
 
     def test_removes_first_of_two_entries(self):
         raw = (
             "projects:\n"
             "  - name: placeholder\n"
-            "    linear_team: TEAM\n"
+            "    team: TEAM\n"
             "    slots: [1]\n"
             "  - name: real-project\n"
-            "    linear_team: SMA\n"
+            "    team: SMA\n"
             "    slots: [1, 2]\n"
         )
         result = remove_project_entry_text(raw, "placeholder")
@@ -200,10 +200,10 @@ class TestRemoveProjectEntryText:
         raw = (
             "projects:\n"
             "  - name: real-project\n"
-            "    linear_team: SMA\n"
+            "    team: SMA\n"
             "    slots: [1]\n"
             "  - name: placeholder\n"
-            "    linear_team: TEAM\n"
+            "    team: TEAM\n"
             "    slots: [1, 2]\n"
         )
         result = remove_project_entry_text(raw, "placeholder")
@@ -216,7 +216,7 @@ class TestRemoveProjectEntryText:
             "# Header comment\n"
             "projects:\n"
             "  - name: my-project\n"
-            "    linear_team: TEAM  # inline comment\n"
+            "    team: TEAM  # inline comment\n"
             "    slots: [1]\n"
             "\n"
             "# Section comment\n"
@@ -255,26 +255,26 @@ class TestRemoveProjectEntryText:
         raw = (
             "projects:\n"
             "- name: my-project\n"
-            "  linear_team: TEAM\n"
+            "  team: TEAM\n"
             "  base_dir: ~/my-project\n"
             "  slots: [1, 2]\n"
             "\n"
-            "linear:\n"
+            "bugtracker:\n"
             "  api_key: test\n"
         )
         result = remove_project_entry_text(raw, "my-project")
         data = yaml.safe_load(result)
-        assert "linear" in data
+        assert "bugtracker" in data
         assert data.get("projects") is None or data.get("projects") == []
 
     def test_removes_first_of_two_zero_indent(self):
         raw = (
             "projects:\n"
             "- name: placeholder\n"
-            "  linear_team: TEAM\n"
+            "  team: TEAM\n"
             "  slots: [1]\n"
             "- name: real-project\n"
-            "  linear_team: SMA\n"
+            "  team: SMA\n"
             "  slots: [1, 2]\n"
         )
         result = remove_project_entry_text(raw, "placeholder")
@@ -328,11 +328,11 @@ class TestRunReadinessChecks:
         (base / "CLAUDE.md").write_text("# Project")
         project = {
             "name": "proj",
-            "linear_team": "SMA",
+            "team": "SMA",
             "base_dir": str(base),
             "worktree_prefix": "proj-slot-",
             "slots": [1],
-            "linear_project": "",
+            "tracker_project": "",
         }
         results = run_readiness_checks(project)
         ok_results = [r for r in results if r[0] == "ok"]
@@ -343,11 +343,11 @@ class TestRunReadinessChecks:
         base.mkdir()
         project = {
             "name": "proj",
-            "linear_team": "SMA",
+            "team": "SMA",
             "base_dir": str(base),
             "worktree_prefix": "proj-slot-",
             "slots": [1],
-            "linear_project": "",
+            "tracker_project": "",
         }
         results = run_readiness_checks(project)
         warnings = [r for r in results if r[0] == "warning"]
@@ -359,11 +359,11 @@ class TestRunReadinessChecks:
         (base / "requirements.txt").write_text("click\n")
         project = {
             "name": "proj",
-            "linear_team": "SMA",
+            "team": "SMA",
             "base_dir": str(base),
             "worktree_prefix": "proj-slot-",
             "slots": [1],
-            "linear_project": "",
+            "tracker_project": "",
         }
         results = run_readiness_checks(project)
         ok_results = [r for r in results if r[0] == "ok"]
@@ -380,11 +380,11 @@ class TestAppendProjectToConfig:
         _, config_path = config_dir
         project = {
             "name": "new-proj",
-            "linear_team": "TEAM",
+            "team": "TEAM",
             "base_dir": "/tmp/new",
             "worktree_prefix": "new-slot-",
             "slots": [1, 2],
-            "linear_project": "",
+            "tracker_project": "",
         }
         append_project_to_config(config_path, project)
 
@@ -393,35 +393,35 @@ class TestAppendProjectToConfig:
         added = data["projects"][1]
         assert added["name"] == "new-proj"
         assert added["slots"] == [1, 2]
-        # linear_project should be omitted when empty
-        assert "linear_project" not in added
+        # tracker_project should be omitted when empty
+        assert "tracker_project" not in added
 
-    def test_includes_linear_project_when_set(self, config_dir):
+    def test_includes_tracker_project_when_set(self, config_dir):
         _, config_path = config_dir
         project = {
             "name": "new-proj",
-            "linear_team": "TEAM",
+            "team": "TEAM",
             "base_dir": "/tmp/new",
             "worktree_prefix": "new-slot-",
             "slots": [1],
-            "linear_project": "My Project",
+            "tracker_project": "My Project",
         }
         append_project_to_config(config_path, project)
 
         data = yaml.safe_load(config_path.read_text())
         added = data["projects"][1]
-        assert added["linear_project"] == "My Project"
+        assert added["tracker_project"] == "My Project"
 
     def test_creates_projects_list_if_missing(self, tmp_path):
         config_path = tmp_path / "config.yaml"
-        config_path.write_text("linear:\n  api_key: test\n")
+        config_path.write_text("bugtracker:\n  api_key: test\n")
         project = {
             "name": "proj",
-            "linear_team": "SMA",
+            "team": "SMA",
             "base_dir": "/tmp/proj",
             "worktree_prefix": "proj-slot-",
             "slots": [1],
-            "linear_project": "",
+            "tracker_project": "",
         }
         append_project_to_config(config_path, project)
 
@@ -431,14 +431,14 @@ class TestAppendProjectToConfig:
 
     def test_raises_on_non_list_projects(self, tmp_path):
         config_path = tmp_path / "config.yaml"
-        config_path.write_text("projects: not-a-list\nlinear:\n  api_key: test\n")
+        config_path.write_text("projects: not-a-list\nbugtracker:\n  api_key: test\n")
         project = {
             "name": "proj",
-            "linear_team": "SMA",
+            "team": "SMA",
             "base_dir": "/tmp/proj",
             "worktree_prefix": "proj-slot-",
             "slots": [1],
-            "linear_project": "",
+            "tracker_project": "",
         }
         with pytest.raises(Exception, match="not a list"):
             append_project_to_config(config_path, project)
@@ -450,7 +450,7 @@ class TestAppendProjectToConfig:
             "# Botfarm configuration\n"
             "projects:\n"
             "  - name: existing-proj\n"
-            "    linear_team: SMA  # Smart AI Coach\n"
+            "    team: SMA  # Smart AI Coach\n"
             "    base_dir: /tmp/existing\n"
             "    worktree_prefix: existing-slot-\n"
             "    slots: [1]\n"
@@ -468,11 +468,11 @@ class TestAppendProjectToConfig:
         config_path.write_text(config_text)
         project = {
             "name": "new-proj",
-            "linear_team": "TEAM",
+            "team": "TEAM",
             "base_dir": "/tmp/new",
             "worktree_prefix": "new-slot-",
             "slots": [1, 2],
-            "linear_project": "",
+            "tracker_project": "",
         }
         append_project_to_config(config_path, project)
 
@@ -500,7 +500,7 @@ class TestAppendProjectToConfig:
             "\n"
             "projects:\n"
             "  - name: my-project\n"
-            "    linear_team: SMA  # Smart AI Coach\n"
+            "    team: SMA  # Smart AI Coach\n"
             "    base_dir: ~/my-project\n"
             "    worktree_prefix: my-project-slot-\n"
             "    slots: [1, 2]\n"
@@ -528,11 +528,11 @@ class TestAppendProjectToConfig:
         config_path.write_text(config_text)
         project = {
             "name": "another-project",
-            "linear_team": "ENG",
+            "team": "ENG",
             "base_dir": "~/another-project",
             "worktree_prefix": "another-project-slot-",
             "slots": [1],
-            "linear_project": "Engineering",
+            "tracker_project": "Engineering",
         }
         append_project_to_config(config_path, project)
 
@@ -549,8 +549,8 @@ class TestAppendProjectToConfig:
         assert len(data["projects"]) == 2
         added = data["projects"][1]
         assert added["name"] == "another-project"
-        assert added["linear_team"] == "ENG"
-        assert added["linear_project"] == "Engineering"
+        assert added["team"] == "ENG"
+        assert added["tracker_project"] == "Engineering"
 
     def test_replaces_placeholder_entry(self, tmp_path):
         """Verify that replace_names removes placeholder and adds new entry."""
@@ -559,7 +559,7 @@ class TestAppendProjectToConfig:
             "# Botfarm configuration\n"
             "projects:\n"
             "  - name: my-project\n"
-            "    linear_team: TEAM\n"
+            "    team: TEAM\n"
             "    base_dir: ~/my-project\n"
             "    worktree_prefix: my-project-slot-\n"
             "    slots: [1, 2]\n"
@@ -569,11 +569,11 @@ class TestAppendProjectToConfig:
         )
         project = {
             "name": "real-project",
-            "linear_team": "SMA",
+            "team": "SMA",
             "base_dir": "/tmp/real",
             "worktree_prefix": "real-slot-",
             "slots": [1],
-            "linear_project": "Bot farm",
+            "tracker_project": "Bot farm",
         }
         append_project_to_config(
             config_path, project, replace_names=frozenset({"my-project"}),
@@ -584,7 +584,7 @@ class TestAppendProjectToConfig:
         data = yaml.safe_load(result)
         assert len(data["projects"]) == 1
         assert data["projects"][0]["name"] == "real-project"
-        assert data["projects"][0]["linear_project"] == "Bot farm"
+        assert data["projects"][0]["tracker_project"] == "Bot farm"
         # Placeholder must be gone
         names = [p["name"] for p in data["projects"]]
         assert "my-project" not in names
@@ -595,12 +595,12 @@ class TestAppendProjectToConfig:
         config_path.write_text(
             "projects:\n"
             "  - name: my-project\n"
-            "    linear_team: TEAM\n"
+            "    team: TEAM\n"
             "    base_dir: ~/my-project\n"
             "    worktree_prefix: my-project-slot-\n"
             "    slots: [1]\n"
             "  - name: existing\n"
-            "    linear_team: SMA\n"
+            "    team: SMA\n"
             "    base_dir: /tmp/existing\n"
             "    worktree_prefix: existing-slot-\n"
             "    slots: [1]\n"
@@ -610,11 +610,11 @@ class TestAppendProjectToConfig:
         )
         project = {
             "name": "new-proj",
-            "linear_team": "ENG",
+            "team": "ENG",
             "base_dir": "/tmp/new",
             "worktree_prefix": "new-slot-",
             "slots": [1, 2],
-            "linear_project": "",
+            "tracker_project": "",
         }
         append_project_to_config(
             config_path, project, replace_names=frozenset({"my-project"}),
@@ -633,7 +633,7 @@ class TestAppendProjectToConfig:
         config_path.write_text(
             "projects:\n"
             "- name: existing-proj\n"
-            "  linear_team: SMA\n"
+            "  team: SMA\n"
             "  base_dir: /tmp/existing\n"
             "  worktree_prefix: existing-slot-\n"
             "  slots: [1]\n"
@@ -643,11 +643,11 @@ class TestAppendProjectToConfig:
         )
         project = {
             "name": "new-proj",
-            "linear_team": "TEAM",
+            "team": "TEAM",
             "base_dir": "/tmp/new",
             "worktree_prefix": "new-slot-",
             "slots": [1, 2],
-            "linear_project": "",
+            "tracker_project": "",
         }
         append_project_to_config(config_path, project)
 
@@ -664,7 +664,7 @@ class TestAppendProjectToConfig:
         config_path.write_text(
             "projects:\n"
             "- name: my-project\n"
-            "  linear_team: TEAM\n"
+            "  team: TEAM\n"
             "  base_dir: ~/my-project\n"
             "  worktree_prefix: my-project-slot-\n"
             "  slots: [1, 2]\n"
@@ -674,11 +674,11 @@ class TestAppendProjectToConfig:
         )
         project = {
             "name": "real-project",
-            "linear_team": "SMA",
+            "team": "SMA",
             "base_dir": "/tmp/real",
             "worktree_prefix": "real-slot-",
             "slots": [1],
-            "linear_project": "Bot farm",
+            "tracker_project": "Bot farm",
         }
         append_project_to_config(
             config_path, project, replace_names=frozenset({"my-project"}),
@@ -705,11 +705,11 @@ class TestAppendProjectToConfig:
         )
         project = {
             "name": "proj",
-            "linear_team": "SMA",
+            "team": "SMA",
             "base_dir": "/tmp/proj",
             "worktree_prefix": "proj-slot-",
             "slots": [1],
-            "linear_project": "",
+            "tracker_project": "",
         }
         append_project_to_config(config_path, project)
 
@@ -764,40 +764,40 @@ class TestFormatProjectEntry:
     def test_basic_entry(self):
         project = {
             "name": "my-app",
-            "linear_team": "SMA",
+            "team": "SMA",
             "base_dir": "~/my-app",
             "worktree_prefix": "my-app-slot-",
             "slots": [1, 2],
-            "linear_project": "",
+            "tracker_project": "",
         }
         result = format_project_entry(project)
         # Should be valid YAML when combined with "projects:\n"
         data = yaml.safe_load("projects:\n" + result)
         assert data["projects"][0]["name"] == "my-app"
         assert data["projects"][0]["slots"] == [1, 2]
-        assert "linear_project" not in data["projects"][0]
+        assert "tracker_project" not in data["projects"][0]
 
-    def test_entry_with_linear_project(self):
+    def test_entry_with_tracker_project(self):
         project = {
             "name": "my-app",
-            "linear_team": "SMA",
+            "team": "SMA",
             "base_dir": "~/my-app",
             "worktree_prefix": "my-app-slot-",
             "slots": [1],
-            "linear_project": "Bot farm",
+            "tracker_project": "Bot farm",
         }
         result = format_project_entry(project)
         data = yaml.safe_load("projects:\n" + result)
-        assert data["projects"][0]["linear_project"] == "Bot farm"
+        assert data["projects"][0]["tracker_project"] == "Bot farm"
 
     def test_zero_indent(self):
         project = {
             "name": "my-app",
-            "linear_team": "SMA",
+            "team": "SMA",
             "base_dir": "~/my-app",
             "worktree_prefix": "my-app-slot-",
             "slots": [1, 2],
-            "linear_project": "",
+            "tracker_project": "",
         }
         result = format_project_entry(project, indent=0)
         assert result.startswith("- name:")
@@ -945,8 +945,8 @@ class TestAddProjectCommand:
 
         config = yaml.safe_load(config_path.read_text())
         added = next(p for p in config["projects"] if p["name"] == "my-app")
-        assert added["linear_team"] == "SMA"
-        assert added["linear_project"] == "Bot farm"
+        assert added["team"] == "SMA"
+        assert added["tracker_project"] == "Bot farm"
         assert added["slots"] == [1, 2]
 
     def test_flow_without_linear_key(self, runner, config_dir, tmp_path, monkeypatch):
@@ -968,7 +968,7 @@ class TestAddProjectCommand:
 
         config = yaml.safe_load(config_path.read_text())
         added = next(p for p in config["projects"] if p["name"] == "my-app")
-        assert added["linear_team"] == "SMA"
+        assert added["team"] == "SMA"
         assert added["slots"] == [1]
 
     def test_aborted_by_user(self, runner, config_dir, tmp_path, monkeypatch):
@@ -1083,7 +1083,7 @@ class TestAddProjectCommand:
 
         config = yaml.safe_load(config_path.read_text())
         added = next(p for p in config["projects"] if p["name"] == "my-app")
-        assert added["linear_team"] == "SMA"
+        assert added["team"] == "SMA"
 
     def test_readiness_checks_run_after_clone(
         self, runner, config_dir, tmp_path, monkeypatch
@@ -1170,7 +1170,7 @@ class TestAddProjectCommand:
         config_path.write_text(
             "projects:\n"
             "  - name: my-project\n"
-            "    linear_team: TEAM\n"
+            "    team: TEAM\n"
             "    base_dir: ~/my-project\n"
             "    worktree_prefix: my-project-slot-\n"
             "    slots: [1, 2]\n"
@@ -1202,7 +1202,7 @@ class TestAddProjectCommand:
         config_path.write_text(
             "projects:\n"
             "  - name: my-project\n"
-            "    linear_team: TEAM\n"
+            "    team: TEAM\n"
             "    base_dir: ~/my-project\n"
             "    worktree_prefix: my-project-slot-\n"
             "    slots: [1, 2]\n"
@@ -1226,4 +1226,4 @@ class TestAddProjectCommand:
         # Should have exactly one project — the real one
         assert len(config["projects"]) == 1
         assert config["projects"][0]["name"] == "my-project"
-        assert config["projects"][0]["linear_team"] == "SMA"
+        assert config["projects"][0]["team"] == "SMA"

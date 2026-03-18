@@ -1,4 +1,4 @@
-"""Tests for botfarm.linear_cleanup — CleanupService bulk archive/delete."""
+"""Tests for botfarm.bugtracker.linear.cleanup — CleanupService bulk archive/delete."""
 
 from __future__ import annotations
 
@@ -20,8 +20,8 @@ from botfarm.db import (
     insert_cleanup_batch_item,
     update_cleanup_batch,
 )
-from botfarm.linear import LINEAR_API_URL, LinearAPIError, LinearClient
-from botfarm.linear_cleanup import (
+from botfarm.bugtracker.linear.client import LINEAR_API_URL, LinearAPIError, LinearClient
+from botfarm.bugtracker.linear.cleanup import (
     CleanupCandidate,
     CleanupResult,
     CleanupService,

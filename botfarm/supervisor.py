@@ -316,7 +316,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
             self._dashboard_thread = start_dashboard(
                 self._config.dashboard,
                 db_path=self._db_path,
-                linear_workspace=self._config.linear.workspace,
+                linear_workspace=self._config.bugtracker.workspace,
                 botfarm_config=self._config,
                 logs_dir=self._log_dir,
                 on_pause=self.request_pause,
@@ -385,7 +385,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
                 else:
                     self._tick()
                 if not self._shutdown_requested:
-                    self._sleep(self._config.linear.poll_interval_seconds)
+                    self._sleep(self._config.bugtracker.poll_interval_seconds)
         finally:
             self._shutdown()
 
@@ -618,7 +618,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
 
     def _compute_capacity_level(self, utilization: float) -> str:
         """Map a utilization ratio to a capacity level string."""
-        cap = self._config.linear.capacity_monitoring
+        cap = self._config.bugtracker.capacity_monitoring
         if utilization >= cap.pause_threshold:
             return "blocked"
         if utilization >= cap.critical_threshold:
@@ -629,7 +629,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
 
     def _poll_capacity(self) -> None:
         """Poll Linear issue count and auto-pause/resume dispatch at thresholds."""
-        cap_config = self._config.linear.capacity_monitoring
+        cap_config = self._config.bugtracker.capacity_monitoring
         if not cap_config.enabled:
             return
 
@@ -638,7 +638,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
             logger.warning("Capacity poll failed — skipping this tick")
             return
 
-        limit = self._config.linear.issue_limit
+        limit = self._config.bugtracker.issue_limit
         checked_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
         save_capacity_state(
@@ -839,7 +839,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
 
     def _auto_close_parent_issues(self, poller: BugtrackerPoller, poll_result) -> None:
         """Move parent issues to Done when all children are complete."""
-        done_status = self._config.linear.done_status
+        done_status = self._config.bugtracker.done_status
         for parent in poll_result.auto_close_parents:
             try:
                 poller.move_issue(parent.identifier, done_status)

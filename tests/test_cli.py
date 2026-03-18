@@ -104,13 +104,13 @@ class TestStatusCommand:
                 "projects": [
                     {
                         "name": "test",
-                        "linear_team": "TST",
+                        "team": "TST",
                         "base_dir": "~/test",
                         "worktree_prefix": "test-slot-",
                         "slots": [1],
                     }
                 ],
-                "linear": {"api_key": "test-key"},
+                "bugtracker": {"api_key": "test-key"},
             })
         )
         monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "nonexistent.db"))

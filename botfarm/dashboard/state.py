@@ -223,7 +223,7 @@ def supervisor_status(app: FastAPI, state: dict) -> dict:
         return {"running": False, "heartbeat": None}
     try:
         cfg = app.state.botfarm_config
-        poll_interval = cfg.linear.poll_interval_seconds if cfg else 120
+        poll_interval = cfg.bugtracker.poll_interval_seconds if cfg else 120
         stale_threshold = poll_interval + _HEARTBEAT_GRACE_SECONDS
 
         hb_dt = datetime.fromisoformat(heartbeat.replace("Z", "+00:00"))
@@ -273,7 +273,7 @@ def get_capacity_data(app: FastAPI) -> dict | None:
 
     if capacity is not None:
         cfg = app.state.botfarm_config
-        cap_cfg = cfg.linear.capacity_monitoring if cfg else None
+        cap_cfg = cfg.bugtracker.capacity_monitoring if cfg else None
         limit = capacity["limit"]
         count = capacity["issue_count"]
         ratio = count / limit if limit else 0

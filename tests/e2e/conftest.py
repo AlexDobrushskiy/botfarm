@@ -57,21 +57,21 @@ def _make_test_config(config_path: Path) -> BotfarmConfig:
         projects=[
             ProjectConfig(
                 name="bot-farm",
-                linear_team="Smart AI Coach",
+                team="Smart AI Coach",
                 base_dir="/tmp/bot-farm",
                 worktree_prefix="botfarm-slot-",
                 slots=[1, 2, 3],
-                linear_project="Bot farm",
+                tracker_project="Bot farm",
             ),
             ProjectConfig(
                 name="web-app",
-                linear_team="Smart AI Coach",
+                team="Smart AI Coach",
                 base_dir="/tmp/web-app",
                 worktree_prefix="webapp-slot-",
                 slots=[1, 2],
             ),
         ],
-        linear=LinearConfig(
+        bugtracker=LinearConfig(
             api_key="lin_api_1234567890abcdef1234567890abcdef",
             workspace="test-workspace",
             poll_interval_seconds=30,
@@ -105,22 +105,22 @@ def _make_test_config(config_path: Path) -> BotfarmConfig:
         "projects": [
             {
                 "name": p.name,
-                "linear_team": p.linear_team,
+                "team": p.team,
                 "base_dir": p.base_dir,
                 "worktree_prefix": p.worktree_prefix,
                 "slots": list(p.slots),
-                "linear_project": p.linear_project,
+                "tracker_project": p.tracker_project,
             }
             for p in cfg.projects
         ],
-        "linear": {
-            "api_key": cfg.linear.api_key,
-            "workspace": cfg.linear.workspace,
-            "poll_interval_seconds": cfg.linear.poll_interval_seconds,
-            "exclude_tags": list(cfg.linear.exclude_tags),
-            "comment_on_failure": cfg.linear.comment_on_failure,
-            "comment_on_completion": cfg.linear.comment_on_completion,
-            "comment_on_limit_pause": cfg.linear.comment_on_limit_pause,
+        "bugtracker": {
+            "api_key": cfg.bugtracker.api_key,
+            "workspace": cfg.bugtracker.workspace,
+            "poll_interval_seconds": cfg.bugtracker.poll_interval_seconds,
+            "exclude_tags": list(cfg.bugtracker.exclude_tags),
+            "comment_on_failure": cfg.bugtracker.comment_on_failure,
+            "comment_on_completion": cfg.bugtracker.comment_on_completion,
+            "comment_on_limit_pause": cfg.bugtracker.comment_on_limit_pause,
         },
         "usage_limits": {
             "enabled": cfg.usage_limits.enabled,

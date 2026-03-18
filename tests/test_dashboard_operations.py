@@ -1143,13 +1143,13 @@ def _make_identity_config(tmp_path, *, coder=None, reviewer=None):
         "projects": [
             {
                 "name": "test-project",
-                "linear_team": "TST",
+                "team": "TST",
                 "base_dir": "~/test",
                 "worktree_prefix": "test-slot-",
                 "slots": [1],
             }
         ],
-        "linear": {
+        "bugtracker": {
             "api_key": "${LINEAR_API_KEY}",
             "poll_interval_seconds": 30,
         },
@@ -1173,11 +1173,11 @@ def _make_identity_config(tmp_path, *, coder=None, reviewer=None):
     config = BotfarmConfig(
         projects=[
             ProjectConfig(
-                name="test-project", linear_team="TST",
+                name="test-project", team="TST",
                 base_dir="~/test", worktree_prefix="test-slot-", slots=[1],
             ),
         ],
-        linear=LinearConfig(api_key="test-key", poll_interval_seconds=30),
+        bugtracker=LinearConfig(api_key="test-key", poll_interval_seconds=30),
         identities=IdentitiesConfig(
             coder=coder_identity,
             reviewer=reviewer_identity,
@@ -1429,13 +1429,13 @@ class TestIdentitiesUpdate:
             "projects": [
                 {
                     "name": "test-project",
-                    "linear_team": "TST",
+                    "team": "TST",
                     "base_dir": "~/test",
                     "worktree_prefix": "test-slot-",
                     "slots": [1],
                 }
             ],
-            "linear": {"api_key": "${LINEAR_API_KEY}", "poll_interval_seconds": 30},
+            "bugtracker": {"api_key": "${LINEAR_API_KEY}", "poll_interval_seconds": 30},
         }
         config_path = tmp_path / "config.yaml"
         config_path.write_text(yaml.dump(config_data, sort_keys=False))
@@ -1443,11 +1443,11 @@ class TestIdentitiesUpdate:
         config = BotfarmConfig(
             projects=[
                 ProjectConfig(
-                    name="test-project", linear_team="TST",
+                    name="test-project", team="TST",
                     base_dir="~/test", worktree_prefix="test-slot-", slots=[1],
                 ),
             ],
-            linear=LinearConfig(api_key="test-key", poll_interval_seconds=30),
+            bugtracker=LinearConfig(api_key="test-key", poll_interval_seconds=30),
         )
         config.source_path = str(config_path)
 
@@ -1866,11 +1866,11 @@ class TestCodexConfigToggles:
         conn.close()
         cfg = BotfarmConfig(
             projects=[ProjectConfig(
-                name="proj", linear_team="team",
+                name="proj", team="team",
                 base_dir="/tmp/test", worktree_prefix="/tmp/test-wt",
                 slots=[1],
             )],
-            linear=LinearConfig(api_key="test-key", workspace="test"),
+            bugtracker=LinearConfig(api_key="test-key", workspace="test"),
             source_path=str(tmp_path / "config.yaml"),
         )
         # Write a minimal config.yaml for edit tests
@@ -1957,11 +1957,11 @@ class TestDailySummaryConfig:
         conn.close()
         cfg = BotfarmConfig(
             projects=[ProjectConfig(
-                name="proj", linear_team="team",
+                name="proj", team="team",
                 base_dir="/tmp/test", worktree_prefix="/tmp/test-wt",
                 slots=[1],
             )],
-            linear=LinearConfig(api_key="test-key", workspace="test"),
+            bugtracker=LinearConfig(api_key="test-key", workspace="test"),
             source_path=str(tmp_path / "config.yaml"),
         )
         yaml_data = {"daily_summary": {}}

@@ -45,11 +45,11 @@ class TestDailySummaryConfig:
         config = BotfarmConfig(
             projects=[
                 ProjectConfig(
-                    name="p", linear_team="T", base_dir="/tmp",
+                    name="p", team="T", base_dir="/tmp",
                     worktree_prefix="p-slot-", slots=[1],
                 ),
             ],
-            linear=LinearConfig(api_key="key"),
+            bugtracker=LinearConfig(api_key="key"),
             daily_summary=DailySummaryConfig(enabled=True, send_hour=9),
         )
         assert config.daily_summary.enabled is True
@@ -60,11 +60,11 @@ class TestDailySummaryConfig:
         config_yaml.write_text("""\
 projects:
   - name: test
-    linear_team: TST
+    team: TST
     base_dir: /tmp/test
     worktree_prefix: test-slot-
     slots: [1]
-linear:
+bugtracker:
   api_key: fake-key
 daily_summary:
   enabled: true
@@ -83,11 +83,11 @@ daily_summary:
         config_yaml.write_text("""\
 projects:
   - name: test
-    linear_team: TST
+    team: TST
     base_dir: /tmp/test
     worktree_prefix: test-slot-
     slots: [1]
-linear:
+bugtracker:
   api_key: fake-key
 """)
         config = load_config(config_yaml)
@@ -100,11 +100,11 @@ linear:
         config_yaml.write_text("""\
 projects:
   - name: test
-    linear_team: TST
+    team: TST
     base_dir: /tmp/test
     worktree_prefix: test-slot-
     slots: [1]
-linear:
+bugtracker:
   api_key: fake-key
 daily_summary:
   send_hour: 25
@@ -118,11 +118,11 @@ daily_summary:
         config_yaml.write_text("""\
 projects:
   - name: test
-    linear_team: TST
+    team: TST
     base_dir: /tmp/test
     worktree_prefix: test-slot-
     slots: [1]
-linear:
+bugtracker:
   api_key: fake-key
 daily_summary:
   min_tasks_for_summary: -1
@@ -136,11 +136,11 @@ daily_summary:
         config_yaml.write_text("""\
 projects:
   - name: test
-    linear_team: TST
+    team: TST
     base_dir: /tmp/test
     worktree_prefix: test-slot-
     slots: [1]
-linear:
+bugtracker:
   api_key: fake-key
 daily_summary:
   enabled: false
@@ -371,13 +371,13 @@ def _make_config_with_summary(tmp_path, *, enabled=True, send_hour=12):
         projects=[
             ProjectConfig(
                 name="test-project",
-                linear_team="TST",
+                team="TST",
                 base_dir=str(tmp_path / "repo"),
                 worktree_prefix="test-project-slot-",
                 slots=[1],
             ),
         ],
-        linear=LinearConfig(api_key="test-key", poll_interval_seconds=10),
+        bugtracker=LinearConfig(api_key="test-key", poll_interval_seconds=10),
         daily_summary=DailySummaryConfig(
             enabled=enabled,
             send_hour=send_hour,
@@ -392,7 +392,7 @@ class TestMaybeSendDailySummary:
         monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "test.db"))
         (tmp_path / "repo").mkdir(exist_ok=True)
 
-        from botfarm.linear import PollResult
+        from botfarm.bugtracker.types import PollResult
         mock_poller = MagicMock()
         mock_poller.project_name = "test-project"
         mock_poller.team_key = "TST"

@@ -157,8 +157,8 @@
         <figure>
         <table>
             <tbody>
-                <tr><td>Linear team</td><td>{{ project.linear_team }}</td></tr>
-                <tr><td>Linear project</td><td>{{ project.linear_project or "-" }}</td></tr>
+                <tr><td>Team</td><td>{{ project.team }}</td></tr>
+                <tr><td>Project filter</td><td>{{ project.tracker_project or "-" }}</td></tr>
                 <tr><td>Base directory</td><td><code>{{ project.base_dir }}</code></td></tr>
                 <tr><td>Worktree prefix</td><td><code>{{ project.worktree_prefix }}</code></td></tr>
                 <tr>
@@ -182,39 +182,39 @@
     <figure>
     <table>
         <tbody>
-            <tr><td>API key</td><td><code>{{ full_config_values.linear.api_key }}</code></td></tr>
-            <tr><td>Workspace</td><td>{{ full_config_values.linear.workspace }}</td></tr>
-            <tr><td>Poll interval</td><td>{{ full_config_values.linear.poll_interval_seconds }}s</td></tr>
+            <tr><td>API key</td><td><code>{{ full_config_values.bugtracker.api_key }}</code></td></tr>
+            <tr><td>Workspace</td><td>{{ full_config_values.bugtracker.workspace }}</td></tr>
+            <tr><td>Poll interval</td><td>{{ full_config_values.bugtracker.poll_interval_seconds }}s</td></tr>
             <tr>
                 <td>Exclude tags</td>
                 <td>
-                    {% for tag in full_config_values.linear.exclude_tags %}
+                    {% for tag in full_config_values.bugtracker.exclude_tags %}
                     <span class="tag">{{ tag }}</span>
                     {% endfor %}
-                    {% if not full_config_values.linear.exclude_tags %}-{% endif %}
+                    {% if not full_config_values.bugtracker.exclude_tags %}-{% endif %}
                 </td>
             </tr>
-            <tr><td>Todo status</td><td>{{ full_config_values.linear.todo_status }}</td></tr>
-            <tr><td>In Progress status</td><td>{{ full_config_values.linear.in_progress_status }}</td></tr>
-            <tr><td>Done status</td><td>{{ full_config_values.linear.done_status }}</td></tr>
-            <tr><td>In Review status</td><td>{{ full_config_values.linear.in_review_status }}</td></tr>
+            <tr><td>Todo status</td><td>{{ full_config_values.bugtracker.todo_status }}</td></tr>
+            <tr><td>In Progress status</td><td>{{ full_config_values.bugtracker.in_progress_status }}</td></tr>
+            <tr><td>Done status</td><td>{{ full_config_values.bugtracker.done_status }}</td></tr>
+            <tr><td>In Review status</td><td>{{ full_config_values.bugtracker.in_review_status }}</td></tr>
 
             <tr>
                 <td>Comment on failure</td>
-                <td class="{{ 'bool-yes' if full_config_values.linear.comment_on_failure else 'bool-no' }}">
-                    {{ "Yes" if full_config_values.linear.comment_on_failure else "No" }}
+                <td class="{{ 'bool-yes' if full_config_values.bugtracker.comment_on_failure else 'bool-no' }}">
+                    {{ "Yes" if full_config_values.bugtracker.comment_on_failure else "No" }}
                 </td>
             </tr>
             <tr>
                 <td>Comment on completion</td>
-                <td class="{{ 'bool-yes' if full_config_values.linear.comment_on_completion else 'bool-no' }}">
-                    {{ "Yes" if full_config_values.linear.comment_on_completion else "No" }}
+                <td class="{{ 'bool-yes' if full_config_values.bugtracker.comment_on_completion else 'bool-no' }}">
+                    {{ "Yes" if full_config_values.bugtracker.comment_on_completion else "No" }}
                 </td>
             </tr>
             <tr>
                 <td>Comment on limit pause</td>
-                <td class="{{ 'bool-yes' if full_config_values.linear.comment_on_limit_pause else 'bool-no' }}">
-                    {{ "Yes" if full_config_values.linear.comment_on_limit_pause else "No" }}
+                <td class="{{ 'bool-yes' if full_config_values.bugtracker.comment_on_limit_pause else 'bool-no' }}">
+                    {{ "Yes" if full_config_values.bugtracker.comment_on_limit_pause else "No" }}
                 </td>
             </tr>
         </tbody>
@@ -351,27 +351,27 @@
 {# --- Linear section --- #}
 <section class="config-section">
     <h2>Linear</h2>
-    <div id="feedback-linear"></div>
-    <form onsubmit="return saveSection(event, 'linear')">
-        <label for="linear-poll_interval_seconds">
+    <div id="feedback-bugtracker"></div>
+    <form onsubmit="return saveSection(event, 'bugtracker')">
+        <label for="bugtracker-poll_interval_seconds">
             Poll interval (seconds)
-            <input type="number" id="linear-poll_interval_seconds" name="poll_interval_seconds"
-                   value="{{ config_values.linear.poll_interval_seconds }}" min="1" required>
+            <input type="number" id="bugtracker-poll_interval_seconds" name="poll_interval_seconds"
+                   value="{{ config_values.bugtracker.poll_interval_seconds }}" min="1" required>
         </label>
         <fieldset>
             <label>
-                <input type="checkbox" id="linear-comment_on_failure" name="comment_on_failure" role="switch"
-                       {% if config_values.linear.comment_on_failure %}checked{% endif %}>
+                <input type="checkbox" id="bugtracker-comment_on_failure" name="comment_on_failure" role="switch"
+                       {% if config_values.bugtracker.comment_on_failure %}checked{% endif %}>
                 Comment on failure
             </label>
             <label>
-                <input type="checkbox" id="linear-comment_on_completion" name="comment_on_completion" role="switch"
-                       {% if config_values.linear.comment_on_completion %}checked{% endif %}>
+                <input type="checkbox" id="bugtracker-comment_on_completion" name="comment_on_completion" role="switch"
+                       {% if config_values.bugtracker.comment_on_completion %}checked{% endif %}>
                 Comment on completion
             </label>
             <label>
-                <input type="checkbox" id="linear-comment_on_limit_pause" name="comment_on_limit_pause" role="switch"
-                       {% if config_values.linear.comment_on_limit_pause %}checked{% endif %}>
+                <input type="checkbox" id="bugtracker-comment_on_limit_pause" name="comment_on_limit_pause" role="switch"
+                       {% if config_values.bugtracker.comment_on_limit_pause %}checked{% endif %}>
                 Comment on limit pause
             </label>
         </fieldset>
@@ -519,10 +519,10 @@
     <div class="project-card" data-project-name="{{ project.name }}">
         <h3>{{ project.name }}</h3>
 
-        <label for="project-{{ loop.index0 }}-linear_project">
-            Linear project filter
-            <input type="text" id="project-{{ loop.index0 }}-linear_project"
-                   value="{{ project.linear_project }}" placeholder="(none)">
+        <label for="project-{{ loop.index0 }}-tracker_project">
+            Project filter
+            <input type="text" id="project-{{ loop.index0 }}-tracker_project"
+                   value="{{ project.tracker_project }}" placeholder="(none)">
         </label>
 
         <label>Slots</label>
@@ -715,7 +715,7 @@ function saveProjects() {
         var card = cards[i];
         var name = card.dataset.projectName;
         var lpInput = card.querySelector("input[type=text]");
-        var linearProject = lpInput ? lpInput.value : "";
+        var trackerProject = lpInput ? lpInput.value : "";
 
         var slotsContainer = document.getElementById("slots-" + i);
         var chips = slotsContainer.querySelectorAll(".slot-chip");
@@ -727,7 +727,7 @@ function saveProjects() {
         projects.push({
             name: name,
             slots: slots,
-            linear_project: linearProject
+            tracker_project: trackerProject
         });
     }
 

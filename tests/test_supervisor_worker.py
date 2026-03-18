@@ -465,7 +465,7 @@ class TestSlotWorktreeCwd:
         """Worktree cwd = base_dir's parent / worktree_prefix + slot_id."""
         cfg = ProjectConfig(
             name="proj",
-            linear_team="T",
+            team="T",
             base_dir="/home/user/myproject",
             worktree_prefix="myproject-slot-",
             slots=[1],
@@ -477,7 +477,7 @@ class TestSlotWorktreeCwd:
         """Tilde in base_dir is expanded before computing worktree path."""
         cfg = ProjectConfig(
             name="proj",
-            linear_team="T",
+            team="T",
             base_dir="~/myproject",
             worktree_prefix="myproject-slot-",
             slots=[2],
@@ -2585,7 +2585,7 @@ class TestAddProject:
         projects = [
             ProjectConfig(
                 name="test-project",
-                linear_team="TST",
+                team="TST",
                 base_dir=str(tmp_path / "repo"),
                 worktree_prefix="test-project-slot-",
                 slots=[1, 2],
@@ -2596,7 +2596,7 @@ class TestAddProject:
         from botfarm.config import BotfarmConfig, LinearConfig, DatabaseConfig
         return BotfarmConfig(
             projects=projects,
-            linear=LinearConfig(
+            bugtracker=LinearConfig(
                 api_key="test-key",
                 poll_interval_seconds=10,
                 exclude_tags=["Human"],
@@ -2628,7 +2628,7 @@ class TestAddProject:
         """add_project registers the new project in _projects."""
         new_project = ProjectConfig(
             name="new-project",
-            linear_team="NEW",
+            team="NEW",
             base_dir=str(tmp_path / "new-repo"),
             worktree_prefix="new-project-slot-",
             slots=[1],
@@ -2640,13 +2640,13 @@ class TestAddProject:
             supervisor.add_project("new-project")
 
         assert "new-project" in supervisor._projects
-        assert supervisor._projects["new-project"].linear_team == "NEW"
+        assert supervisor._projects["new-project"].team == "NEW"
 
     def test_add_project_appends_to_config_projects(self, supervisor, tmp_path):
         """add_project appends the new ProjectConfig to config.projects."""
         new_project = ProjectConfig(
             name="new-project",
-            linear_team="NEW",
+            team="NEW",
             base_dir=str(tmp_path / "new-repo"),
             worktree_prefix="new-project-slot-",
             slots=[1],
@@ -2664,7 +2664,7 @@ class TestAddProject:
         """add_project registers slots with SlotManager."""
         new_project = ProjectConfig(
             name="new-project",
-            linear_team="NEW",
+            team="NEW",
             base_dir=str(tmp_path / "new-repo"),
             worktree_prefix="new-project-slot-",
             slots=[1, 2],
@@ -2686,7 +2686,7 @@ class TestAddProject:
         """add_project creates and registers a LinearPoller for the new project."""
         new_project = ProjectConfig(
             name="new-project",
-            linear_team="NEW",
+            team="NEW",
             base_dir=str(tmp_path / "new-repo"),
             worktree_prefix="new-project-slot-",
             slots=[1],
@@ -2706,7 +2706,7 @@ class TestAddProject:
         """add_project inserts a project_added event in the DB."""
         new_project = ProjectConfig(
             name="new-project",
-            linear_team="NEW",
+            team="NEW",
             base_dir=str(tmp_path / "new-repo"),
             worktree_prefix="new-project-slot-",
             slots=[1, 2],
@@ -2723,13 +2723,13 @@ class TestAddProject:
         detail = json.loads(project_added[0]["detail"])
         assert detail["project"] == "new-project"
         assert detail["slots"] == [1, 2]
-        assert detail["linear_team"] == "NEW"
+        assert detail["team"] == "NEW"
 
     def test_add_project_does_not_duplicate_in_config_projects(self, supervisor, tmp_path):
         """add_project does not duplicate if project already in config.projects list."""
         new_project = ProjectConfig(
             name="new-project",
-            linear_team="NEW",
+            team="NEW",
             base_dir=str(tmp_path / "new-repo"),
             worktree_prefix="new-project-slot-",
             slots=[1],
@@ -2749,7 +2749,7 @@ class TestAddProject:
         """add_project rolls back _projects, config.projects, and slots on failure."""
         new_project = ProjectConfig(
             name="new-project",
-            linear_team="NEW",
+            team="NEW",
             base_dir=str(tmp_path / "new-repo"),
             worktree_prefix="new-project-slot-",
             slots=[1, 2],

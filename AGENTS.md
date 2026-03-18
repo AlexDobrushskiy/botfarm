@@ -14,7 +14,7 @@ Modules under `botfarm/`:
 - `worker.py` — Stage pipeline: implement → review → fix → pr_checks → merge (iterates review/CI fix loops)
 - `slots.py` — Slot lifecycle & JSON state persistence (free/busy/paused_limit/failed/completed_pending_cleanup)
 - `db.py` — SQLite (sync, WAL mode) for tasks, stage_runs, usage_snapshots, task_events
-- `linear.py` — Linear GraphQL client with priority-sorted polling and state caching
+- `bugtracker/` — Abstract bugtracker interfaces, Linear adapter (client, poller, cleanup), and factory
 - `usage.py` — Anthropic usage API polling, threshold-based dispatch pausing
 - `credentials.py` — OAuth token retrieval (macOS keychain / Linux ~/.claude/.credentials.json)
 - `notifications.py` — Slack/Discord webhook notifications with rate limiting
@@ -34,6 +34,7 @@ Docs under `docs/`:
 - `dashboard.md` — Dashboard architecture, route reference, templates, data flow, callbacks, form patterns, JS helpers
 - `cli-add-project.md` — CLI add-project command implementation, setup pipeline, helper functions, config writing
 - `usage-api-audit.md` — Usage API audit log, key blocking detection, and analysis queries
+- `bugtracker-abstraction.md` — How to add a new bugtracker adapter
 
 Key patterns:
 - Workers run as subprocesses; communicate results via `multiprocessing.Queue`

@@ -36,13 +36,13 @@ def make_config(tmp_path: Path) -> BotfarmConfig:
         projects=[
             ProjectConfig(
                 name="test-project",
-                linear_team="TST",
+                team="TST",
                 base_dir=str(tmp_path / "repo"),
                 worktree_prefix="test-project-slot-",
                 slots=[1, 2],
             ),
         ],
-        linear=LinearConfig(
+        bugtracker=LinearConfig(
             api_key="test-key",
             poll_interval_seconds=10,
             exclude_tags=["Human"],

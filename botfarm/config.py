@@ -48,8 +48,6 @@ bugtracker:
     critical_threshold: 0.85  # Red in dashboard + webhook
     pause_threshold: 0.95     # Auto-pause dispatch
     resume_threshold: 0.90    # Resume after capacity freed (hysteresis)
-# Legacy: 'linear:' section is also accepted for backward compatibility.
-
 database:
   # path is ignored — set BOTFARM_DB_PATH in your .env file instead
   path: ""
@@ -123,11 +121,9 @@ start_paused: true
 
 
 class ProjectConfig:
-    """Project configuration with both new and legacy field names.
+    """Project configuration.
 
-    Canonical fields: ``team``, ``tracker_project``.
-    Legacy aliases:   ``linear_team``, ``linear_project`` (accepted in init
-    and as attributes for backward compatibility).
+    Fields: ``team``, ``tracker_project``.
     """
 
     __slots__ = ("name", "base_dir", "worktree_prefix", "slots",
@@ -141,34 +137,13 @@ class ProjectConfig:
         slots: list[int] | None = None,
         team: str = "",
         tracker_project: str = "",
-        # Legacy aliases accepted in init:
-        linear_team: str = "",
-        linear_project: str = "",
     ) -> None:
         self.name = name
         self.base_dir = base_dir
         self.worktree_prefix = worktree_prefix
         self.slots = slots if slots is not None else []
-        self.team = team or linear_team
-        self.tracker_project = tracker_project or linear_project
-
-    @property
-    def linear_team(self) -> str:
-        """Alias for backward compatibility."""
-        return self.team
-
-    @linear_team.setter
-    def linear_team(self, value: str) -> None:
-        self.team = value
-
-    @property
-    def linear_project(self) -> str:
-        """Alias for backward compatibility."""
-        return self.tracker_project
-
-    @linear_project.setter
-    def linear_project(self, value: str) -> None:
-        self.tracker_project = value
+        self.team = team
+        self.tracker_project = tracker_project
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, ProjectConfig):
@@ -327,8 +302,7 @@ class DailySummaryConfig:
 class BotfarmConfig:
     """Top-level botfarm configuration.
 
-    The ``bugtracker`` field is canonical; ``linear`` is accepted in the
-    constructor and as a property alias for backward compatibility.
+    The ``bugtracker`` field holds the bugtracker configuration.
     """
 
     def __init__(
@@ -347,11 +321,9 @@ class BotfarmConfig:
         daily_summary: DailySummaryConfig | None = None,
         start_paused: bool = True,
         source_path: str = "",
-        # Legacy alias:
-        linear: LinearBugtrackerConfig | None = None,
     ) -> None:
         self.projects = projects
-        self.bugtracker = bugtracker or linear or LinearBugtrackerConfig()
+        self.bugtracker = bugtracker or LinearBugtrackerConfig()
         self.database = database or DatabaseConfig()
         self.usage_limits = usage_limits or UsageLimitsConfig()
         self.dashboard = dashboard or DashboardConfig()
@@ -364,15 +336,6 @@ class BotfarmConfig:
         self.daily_summary = daily_summary or DailySummaryConfig()
         self.start_paused = start_paused
         self.source_path = source_path
-
-    @property
-    def linear(self) -> LinearBugtrackerConfig:
-        """Alias for backward compatibility — use .bugtracker instead."""
-        return self.bugtracker
-
-    @linear.setter
-    def linear(self, value: LinearBugtrackerConfig) -> None:
-        self.bugtracker = value
 
 
 class ConfigError(Exception):
@@ -641,7 +604,7 @@ def _validate_config(config: BotfarmConfig) -> None:
         raise ConfigError("notifications.rate_limit_seconds must be at least 0")
 
 
-def _parse_bool(data: dict, key: str, default: bool, *, section: str = "linear") -> bool:
+def _parse_bool(data: dict, key: str, default: bool, *, section: str = "bugtracker") -> bool:
     """Parse a boolean config value, rejecting non-boolean types."""
     value = data.get(key, default)
     if not isinstance(value, bool):
@@ -685,7 +648,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
     data = _expand_env_recursive(data)
 
     known_keys = {
-        "projects", "linear", "bugtracker", "database", "usage_limits",
+        "projects", "bugtracker", "linear", "database", "usage_limits",
         "dashboard", "agents", "logging", "notifications",
         "identities", "refactoring_analysis", "codex_usage",
         "daily_summary", "start_paused",
@@ -876,7 +839,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
 
     if "failed_status" in bt_data:
         logger.warning(
-            "The 'linear.failed_status' config key is deprecated and ignored — "
+            "The 'bugtracker.failed_status' config key is deprecated and ignored — "
             "failed tickets now keep their current status and receive "
             "'Failed' + 'Human' labels instead."
         )
@@ -917,16 +880,16 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
 # Fields that can be edited at runtime without a restart.
 # Each key is a tuple path (section, field) with validation metadata.
 EDITABLE_FIELDS: dict[tuple[str, str], dict] = {
-    ("linear", "poll_interval_seconds"): {"type": "int", "min": 1},
-    ("linear", "issue_limit"): {"type": "int", "min": 1},
-    ("linear", "comment_on_failure"): {"type": "bool"},
-    ("linear", "comment_on_completion"): {"type": "bool"},
-    ("linear", "comment_on_limit_pause"): {"type": "bool"},
-    ("linear.capacity_monitoring", "enabled"): {"type": "bool"},
-    ("linear.capacity_monitoring", "warning_threshold"): {"type": "float", "min": 0.0, "max": 1.0},
-    ("linear.capacity_monitoring", "critical_threshold"): {"type": "float", "min": 0.0, "max": 1.0},
-    ("linear.capacity_monitoring", "pause_threshold"): {"type": "float", "min": 0.0, "max": 1.0},
-    ("linear.capacity_monitoring", "resume_threshold"): {"type": "float", "min": 0.0, "max": 1.0},
+    ("bugtracker", "poll_interval_seconds"): {"type": "int", "min": 1},
+    ("bugtracker", "issue_limit"): {"type": "int", "min": 1},
+    ("bugtracker", "comment_on_failure"): {"type": "bool"},
+    ("bugtracker", "comment_on_completion"): {"type": "bool"},
+    ("bugtracker", "comment_on_limit_pause"): {"type": "bool"},
+    ("bugtracker.capacity_monitoring", "enabled"): {"type": "bool"},
+    ("bugtracker.capacity_monitoring", "warning_threshold"): {"type": "float", "min": 0.0, "max": 1.0},
+    ("bugtracker.capacity_monitoring", "critical_threshold"): {"type": "float", "min": 0.0, "max": 1.0},
+    ("bugtracker.capacity_monitoring", "pause_threshold"): {"type": "float", "min": 0.0, "max": 1.0},
+    ("bugtracker.capacity_monitoring", "resume_threshold"): {"type": "float", "min": 0.0, "max": 1.0},
     ("usage_limits", "enabled"): {"type": "bool"},
     ("usage_limits", "poll_interval_seconds"): {"type": "int", "min": 1},
     ("usage_limits", "pause_five_hour_threshold"): {"type": "float", "min": 0.0, "max": 1.0},
@@ -961,7 +924,7 @@ def validate_config_updates(
 ) -> list[str]:
     """Validate a partial config update dict.
 
-    ``updates`` is a nested dict like ``{"linear": {"poll_interval_seconds": 60}}``.
+    ``updates`` is a nested dict like ``{"bugtracker": {"poll_interval_seconds": 60}}``.
     When ``config`` is provided, cross-field invariants are checked against the
     current in-memory values for fields not present in the update.
     Returns a list of error messages (empty means valid).
@@ -980,7 +943,7 @@ def validate_config_updates(
             errors.extend(_validate_field(section, key, value, spec))
 
     # Cross-field invariants for capacity monitoring thresholds
-    cap_fields = updates.get("linear.capacity_monitoring", {})
+    cap_fields = updates.get("bugtracker.capacity_monitoring", {})
     if isinstance(cap_fields, dict):
         # Resolve effective values: use update if present, fall back to config
         cap_cfg = config.bugtracker.capacity_monitoring if config else None
@@ -1001,18 +964,18 @@ def validate_config_updates(
         # resume_threshold must be less than pause_threshold
         if resume is not None and pause is not None and resume >= pause:
             errors.append(
-                "linear.capacity_monitoring.resume_threshold must be less than pause_threshold"
+                "bugtracker.capacity_monitoring.resume_threshold must be less than pause_threshold"
             )
 
         # warning_threshold <= critical_threshold <= pause_threshold
         if warning is not None and critical is not None and warning > critical:
             errors.append(
-                "linear.capacity_monitoring.warning_threshold must be "
+                "bugtracker.capacity_monitoring.warning_threshold must be "
                 "less than or equal to critical_threshold"
             )
         if critical is not None and pause is not None and critical > pause:
             errors.append(
-                "linear.capacity_monitoring.critical_threshold must be "
+                "bugtracker.capacity_monitoring.critical_threshold must be "
                 "less than or equal to pause_threshold"
             )
 
@@ -1090,8 +1053,8 @@ def apply_config_updates(config: BotfarmConfig, updates: dict) -> None:
     Python, a lock should be added here.
     """
     section_map = {
-        "linear": config.bugtracker,
-        "linear.capacity_monitoring": config.bugtracker.capacity_monitoring,
+        "bugtracker": config.bugtracker,
+        "bugtracker.capacity_monitoring": config.bugtracker.capacity_monitoring,
         "usage_limits": config.usage_limits,
         "agents": config.agents,
         "daily_summary": config.daily_summary,
@@ -1126,16 +1089,7 @@ def write_config_updates(config_path: Path, updates: dict) -> None:
     if not isinstance(data, dict):
         raise ConfigError("Config file must contain a YAML mapping")
 
-    # If the YAML uses 'bugtracker:' instead of 'linear:', remap update
-    # section keys so writes land in the correct section.
-    uses_bugtracker = "bugtracker" in data
-    remapped_updates = {}
     for section, fields in updates.items():
-        if uses_bugtracker and (section == "linear" or section.startswith("linear.")):
-            section = "bugtracker" + section[len("linear"):]
-        remapped_updates[section] = fields
-
-    for section, fields in remapped_updates.items():
         # Support dotted section paths like "bugtracker.capacity_monitoring"
         parts = section.split(".")
         target = data
@@ -1215,7 +1169,7 @@ def validate_structural_config_updates(
 def _validate_project_updates(
     project_updates: object, config: BotfarmConfig,
 ) -> list[str]:
-    """Validate project-level structural updates (slots, linear_project)."""
+    """Validate project-level structural updates (slots, tracker_project)."""
     errors: list[str] = []
 
     if not isinstance(project_updates, list):
@@ -1253,15 +1207,14 @@ def _validate_project_updates(
                     f"projects[{i}] '{name}': slots contains duplicate values"
                 )
 
-        lp_key = "tracker_project" if "tracker_project" in proj else "linear_project"
-        if lp_key in proj:
-            lp = proj[lp_key]
+        if "tracker_project" in proj:
+            lp = proj["tracker_project"]
             if not isinstance(lp, str):
                 errors.append(
-                    f"projects[{i}] '{name}': {lp_key} must be a string"
+                    f"projects[{i}] '{name}': tracker_project must be a string"
                 )
 
-        allowed_keys = {"name", "slots", "linear_project", "tracker_project"}
+        allowed_keys = {"name", "slots", "tracker_project"}
         extra = set(proj.keys()) - allowed_keys
         if extra:
             errors.append(
@@ -1269,21 +1222,17 @@ def _validate_project_updates(
                 f"cannot edit fields: {sorted(extra)}"
             )
 
-    # Check for duplicate linear_project values after applying updates
+    # Check for duplicate tracker_project values after applying updates
     if not errors:
-        # Map project name -> updated linear_project (only for projects
-        # whose update explicitly includes the field)
         lp_overrides: dict[str, str] = {}
         for u in project_updates:
             if isinstance(u, dict):
                 if "tracker_project" in u:
                     lp_overrides[u["name"]] = u["tracker_project"]
-                elif "linear_project" in u:
-                    lp_overrides[u["name"]] = u["linear_project"]
 
-        seen_lp: dict[str, str] = {}  # linear_project -> project name
+        seen_lp: dict[str, str] = {}  # tracker_project -> project name
         for p in config.projects:
-            lp = lp_overrides.get(p.name, p.linear_project)
+            lp = lp_overrides.get(p.name, p.tracker_project)
             if lp:
                 if lp in seen_lp:
                     errors.append(
@@ -1322,18 +1271,8 @@ def write_structural_config_updates(config_path: Path, updates: dict) -> None:
                 target = by_name[name]
                 if "slots" in proj_update:
                     target["slots"] = proj_update["slots"]
-                # Remap to whichever key the YAML currently uses for this project
-                new_val = proj_update.get("tracker_project", proj_update.get("linear_project"))
-                if new_val is not None:
-                    if "tracker_project" in target:
-                        target["tracker_project"] = new_val
-                        target.pop("linear_project", None)
-                    elif "linear_project" in target:
-                        target["linear_project"] = new_val
-                        target.pop("tracker_project", None)
-                    else:
-                        # No existing key — use canonical name
-                        target["tracker_project"] = new_val
+                if "tracker_project" in proj_update:
+                    target["tracker_project"] = proj_update["tracker_project"]
 
     write_yaml_atomic(config_path, data)
 

@@ -106,8 +106,8 @@ async def api_project_create(request: Request):
 
     repo_url = (body.get("repo_url") or "").strip()
     name = (body.get("name") or "").strip()
-    linear_team = (body.get("linear_team") or "").strip()
-    linear_project = (body.get("linear_project") or "").strip()
+    team = (body.get("team") or "").strip()
+    tracker_project = (body.get("tracker_project") or "").strip()
     slots_count = body.get("slots", 1)
 
     # Validation
@@ -122,15 +122,15 @@ async def api_project_create(request: Request):
     elif any(p.name == name for p in cfg.projects):
         errors.append(f"Project '{name}' already exists")
 
-    if linear_project and any(
-        p.linear_project == linear_project for p in cfg.projects
+    if tracker_project and any(
+        p.tracker_project == tracker_project for p in cfg.projects
     ):
         errors.append(
-            f"Linear project '{linear_project}' is already used by another project"
+            f"Tracker project '{tracker_project}' is already used by another project"
         )
 
-    if not linear_team:
-        errors.append("Linear team is required")
+    if not team:
+        errors.append("Team is required")
 
     if not isinstance(slots_count, int) or isinstance(slots_count, bool):
         errors.append("Slots must be an integer")
@@ -162,8 +162,8 @@ async def api_project_create(request: Request):
             setup_project(
                 repo_url=repo_url,
                 name=name,
-                linear_team=linear_team,
-                linear_project=linear_project,
+                team=team,
+                tracker_project=tracker_project,
                 slots=slot_ids,
                 config_path=config_path,
                 progress_callback=_on_progress,

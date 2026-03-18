@@ -261,8 +261,8 @@ class TestPartialQueue:
         _seed_queue_entry(conn, "alpha", 0, "A-1", "Alpha task")
         conn.close()
         cfg = BotfarmConfig(projects=[
-            ProjectConfig(name="alpha", linear_team="T", base_dir="/tmp", worktree_prefix="w", slots=[1]),
-            ProjectConfig(name="beta", linear_team="T", base_dir="/tmp", worktree_prefix="w", slots=[2]),
+            ProjectConfig(name="alpha", team="T", base_dir="/tmp", worktree_prefix="w", slots=[1]),
+            ProjectConfig(name="beta", team="T", base_dir="/tmp", worktree_prefix="w", slots=[2]),
         ])
         app = create_app(db_path=db_path, botfarm_config=cfg)
         c = TestClient(app)

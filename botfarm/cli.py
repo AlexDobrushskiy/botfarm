@@ -1066,8 +1066,8 @@ def add_project(config_path):
             f"Project '{name}' already exists in config. Choose a different name."
         )
 
-    # --- 3. Linear team selection ---
-    linear_team = ""
+    # --- 3. Team selection ---
+    team_key = ""
     selected_team = None
     client = None
     if linear_api_key:
@@ -1075,31 +1075,31 @@ def add_project(config_path):
             client = create_client(api_key=linear_api_key)
             teams = client.list_teams()
             if teams:
-                console.print("\n[bold]Available Linear teams:[/bold]")
-                for i, team in enumerate(teams, 1):
-                    console.print(f"  {i}. {team['name']} ({team['key']})")
+                console.print("\n[bold]Available teams:[/bold]")
+                for i, t in enumerate(teams, 1):
+                    console.print(f"  {i}. {t['name']} ({t['key']})")
                 choice = click.prompt(
                     "\nSelect team number",
                     type=click.IntRange(1, len(teams)),
                 )
                 selected_team = teams[choice - 1]
-                linear_team = selected_team["key"]
+                team_key = selected_team["key"]
             else:
-                linear_team = click.prompt("Linear team key (e.g. SMA)")
+                team_key = click.prompt("Team key (e.g. SMA)")
         except BugtrackerError as exc:
-            click.echo(f"Warning: Could not fetch teams from Linear: {exc}")
-            linear_team = click.prompt("Linear team key (e.g. SMA)")
+            click.echo(f"Warning: Could not fetch teams: {exc}")
+            team_key = click.prompt("Team key (e.g. SMA)")
     else:
-        click.echo("Warning: LINEAR_API_KEY not set. Linear selection will be manual.")
-        linear_team = click.prompt("Linear team key (e.g. SMA)")
+        click.echo("Warning: LINEAR_API_KEY not set. Team selection will be manual.")
+        team_key = click.prompt("Team key (e.g. SMA)")
 
-    # --- 4. Linear project selection (optional) ---
-    linear_project = ""
+    # --- 4. Project selection (optional) ---
+    tracker_project = ""
     if client and selected_team:
         try:
             projects = client.list_team_projects(selected_team["id"])
             if projects:
-                console.print("\n[bold]Available Linear projects:[/bold]")
+                console.print("\n[bold]Available projects:[/bold]")
                 console.print("  0. (none — use all projects in team)")
                 for i, proj in enumerate(projects, 1):
                     console.print(f"  {i}. {proj['name']}")
@@ -1109,15 +1109,15 @@ def add_project(config_path):
                     default=0,
                 )
                 if choice > 0:
-                    linear_project = projects[choice - 1]["name"]
+                    tracker_project = projects[choice - 1]["name"]
         except BugtrackerError as exc:
-            click.echo(f"Warning: Could not fetch projects from Linear: {exc}")
-            linear_project = click.prompt(
-                "Linear project filter (optional, press Enter to skip)", default=""
+            click.echo(f"Warning: Could not fetch projects: {exc}")
+            tracker_project = click.prompt(
+                "Project filter (optional, press Enter to skip)", default=""
             )
     else:
-        linear_project = click.prompt(
-            "Linear project filter (optional, press Enter to skip)", default=""
+        tracker_project = click.prompt(
+            "Project filter (optional, press Enter to skip)", default=""
         )
 
     # --- 5. Number of slots ---
@@ -1132,9 +1132,9 @@ def add_project(config_path):
     console.print("\n[bold]Summary:[/bold]")
     console.print(f"  Repo URL:       {repo_url}")
     console.print(f"  Project name:   {name}")
-    console.print(f"  Linear team:    {linear_team}")
-    if linear_project:
-        console.print(f"  Linear project: {linear_project}")
+    console.print(f"  Team:           {team_key}")
+    if tracker_project:
+        console.print(f"  Project filter: {tracker_project}")
     console.print(f"  Slots:          {num_slots}")
     console.print(f"  Clone to:       {repo_dir}")
     console.print(f"  Worktrees:      {projects_dir}/{worktree_prefix}<N>")
@@ -1148,8 +1148,8 @@ def add_project(config_path):
         project_dict = setup_project(
             repo_url=repo_url,
             name=name,
-            linear_team=linear_team,
-            linear_project=linear_project,
+            team=team_key,
+            tracker_project=tracker_project,
             slots=slots,
             config_path=cfg_path,
             projects_dir=projects_dir,
@@ -1845,8 +1845,8 @@ def cleanup(action, count, min_age, status_filter, project, dry_run, yes, config
             "Config file not found. Run 'botfarm init' first."
         )
 
-    if not cfg.linear.api_key:
-        raise click.ClickException("linear.api_key not configured.")
+    if not cfg.bugtracker.api_key:
+        raise click.ClickException("bugtracker.api_key not configured.")
 
     if not cfg.projects:
         raise click.ClickException("No projects configured.")
@@ -1859,18 +1859,18 @@ def cleanup(action, count, min_age, status_filter, project, dry_run, yes, config
     resolved_proj = cfg.projects[0]
     if project is not None:
         for p in cfg.projects:
-            if p.linear_project == project or p.name == project:
+            if p.tracker_project == project or p.name == project:
                 resolved_proj = p
-                project = p.linear_project or p.name
+                project = p.tracker_project or p.name
                 break
         else:
             console.print(
                 f"[yellow]Warning: --project {project!r} does not match any "
-                f"configured project. Using team {resolved_proj.linear_team!r}.[/yellow]"
+                f"configured project. Using team {resolved_proj.team!r}.[/yellow]"
             )
     else:
-        project = resolved_proj.linear_project or ""
-    team_key = resolved_proj.linear_team
+        project = resolved_proj.tracker_project or ""
+    team_key = resolved_proj.team
 
     if not db_path.exists():
         raise click.ClickException(
@@ -2261,7 +2261,7 @@ def _stop_linear_cleanup(
 
     Returns True if the Linear state transition succeeded.
     """
-    if not ticket_id or not config or not config.linear.api_key:
+    if not ticket_id or not config or not config.bugtracker.api_key:
         return False
 
     # Find the project config to get team key
@@ -2275,12 +2275,12 @@ def _stop_linear_cleanup(
 
     try:
         client = create_client(config)
-        states = client.get_team_states(project_cfg.linear_team)
+        states = client.get_team_states(project_cfg.team)
 
         if pr_was_merged:
-            target = config.linear.done_status
+            target = config.bugtracker.done_status
         else:
-            target = config.linear.todo_status
+            target = config.bugtracker.todo_status
 
         state_id = states.get(target)
         if not state_id:

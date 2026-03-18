@@ -411,7 +411,7 @@ class TestCreateClient:
     def test_creates_linear_client(self):
         from botfarm.bugtracker import create_client
         from botfarm.config import BotfarmConfig, LinearBugtrackerConfig
-        from botfarm.linear import LinearClient
+        from botfarm.bugtracker.linear.client import LinearClient
 
         config = BotfarmConfig(
             projects=[],
@@ -438,7 +438,7 @@ class TestCreatePollers:
     def test_creates_linear_pollers(self, monkeypatch):
         from botfarm.bugtracker import create_pollers
         from botfarm.config import BotfarmConfig, LinearBugtrackerConfig, ProjectConfig
-        from botfarm.linear import LinearPoller
+        from botfarm.bugtracker.linear.poller import LinearPoller
 
         config = BotfarmConfig(
             projects=[

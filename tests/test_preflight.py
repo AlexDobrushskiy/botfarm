@@ -22,7 +22,7 @@ from botfarm.config import (
 )
 from botfarm.credentials import CredentialError, OAuthToken
 from botfarm.db import SCHEMA_VERSION
-from botfarm.linear import LinearAPIError
+from botfarm.bugtracker.linear.client import LinearAPIError
 from botfarm.preflight import (
     CheckResult,
     _LANGUAGE_MARKERS,
@@ -55,7 +55,7 @@ def _make_config(
     tmp_path: Path,
     *,
     projects: list[ProjectConfig] | None = None,
-    linear: LinearConfig | None = None,
+    bugtracker: LinearConfig | None = None,
     notifications: NotificationsConfig | None = None,
     identities: IdentitiesConfig | None = None,
     agents: AgentsConfig | None = None,
@@ -67,14 +67,14 @@ def _make_config(
         (base / ".git").mkdir()
         projects = [ProjectConfig(
             name="test-project",
-            linear_team="TST",
+            team="TST",
             base_dir=str(base),
             worktree_prefix="test-slot-",
             slots=[1, 2],
         )]
     return BotfarmConfig(
         projects=projects,
-        linear=linear or LinearConfig(api_key="lin_test_key"),
+        bugtracker=bugtracker or LinearConfig(api_key="lin_test_key"),
         database=DatabaseConfig(),
         notifications=notifications or NotificationsConfig(),
         identities=identities or IdentitiesConfig(),
@@ -165,7 +165,7 @@ class TestCheckGitRepos:
         base.mkdir()
         (base / ".git").mkdir()
         config = _make_config(tmp_path, projects=[ProjectConfig(
-            name="p1", linear_team="T", base_dir=str(base),
+            name="p1", team="T", base_dir=str(base),
             worktree_prefix="p-", slots=[1],
         )])
         with patch("botfarm.preflight.subprocess.run") as mock_run:
@@ -177,7 +177,7 @@ class TestCheckGitRepos:
 
     def test_fail_missing_base_dir(self, tmp_path):
         config = _make_config(tmp_path, projects=[ProjectConfig(
-            name="p1", linear_team="T", base_dir=str(tmp_path / "nonexistent"),
+            name="p1", team="T", base_dir=str(tmp_path / "nonexistent"),
             worktree_prefix="p-", slots=[1],
         )])
         results = check_git_repos(config)
@@ -189,7 +189,7 @@ class TestCheckGitRepos:
         base = tmp_path / "notgit"
         base.mkdir()
         config = _make_config(tmp_path, projects=[ProjectConfig(
-            name="p1", linear_team="T", base_dir=str(base),
+            name="p1", team="T", base_dir=str(base),
             worktree_prefix="p-", slots=[1],
         )])
         results = check_git_repos(config)
@@ -202,7 +202,7 @@ class TestCheckGitRepos:
         base.mkdir()
         (base / ".git").mkdir()
         config = _make_config(tmp_path, projects=[ProjectConfig(
-            name="p1", linear_team="T", base_dir=str(base),
+            name="p1", team="T", base_dir=str(base),
             worktree_prefix="p-", slots=[1],
         )])
         with patch("botfarm.preflight.subprocess.run") as mock_run:
@@ -229,7 +229,7 @@ class TestCheckGitRepos:
         config = _make_config(tmp_path, identities=IdentitiesConfig(
             coder=CoderIdentity(ssh_key_path="~/.botfarm/coder_id_ed25519"),
         ), projects=[ProjectConfig(
-            name="p1", linear_team="T", base_dir=str(base),
+            name="p1", team="T", base_dir=str(base),
             worktree_prefix="p-", slots=[1],
         )])
         with patch("botfarm.preflight.subprocess.run") as mock_run:
@@ -249,7 +249,7 @@ class TestCheckGitRepos:
         base.mkdir()
         (base / ".git").mkdir()
         config = _make_config(tmp_path, projects=[ProjectConfig(
-            name="p1", linear_team="T", base_dir=str(base),
+            name="p1", team="T", base_dir=str(base),
             worktree_prefix="p-", slots=[1],
         )])
         with patch("botfarm.preflight.subprocess.run") as mock_run:
@@ -271,7 +271,7 @@ class TestCheckGitRepos:
         base.mkdir()
         (base / ".git").mkdir()
         config = _make_config(tmp_path, projects=[ProjectConfig(
-            name="p1", linear_team="T", base_dir=str(base),
+            name="p1", team="T", base_dir=str(base),
             worktree_prefix="p-", slots=[1],
         )])
         # First call (get-url) succeeds, second (ls-remote) times out
@@ -294,7 +294,7 @@ class TestCheckGitRepos:
         base.mkdir()
         (base / ".git").mkdir()
         config = _make_config(tmp_path, projects=[ProjectConfig(
-            name="p1", linear_team="T", base_dir=str(base),
+            name="p1", team="T", base_dir=str(base),
             worktree_prefix="p-", slots=[1],
         )])
         custom_env = {"GIT_SSH_COMMAND": "ssh -i /my/key"}
@@ -315,7 +315,7 @@ class TestCheckGitRepos:
         base.mkdir()
         (base / ".git").mkdir()
         config = _make_config(tmp_path, projects=[ProjectConfig(
-            name="p1", linear_team="T", base_dir=str(base),
+            name="p1", team="T", base_dir=str(base),
             worktree_prefix="p-", slots=[1],
         )])
         with patch("botfarm.preflight.subprocess.run") as mock_run:
@@ -335,7 +335,7 @@ class TestCheckWorktreeDirs:
         base = tmp_path / "repo"
         base.mkdir()
         config = _make_config(tmp_path, projects=[ProjectConfig(
-            name="p1", linear_team="T", base_dir=str(base),
+            name="p1", team="T", base_dir=str(base),
             worktree_prefix="p-", slots=[1],
         )])
         results = check_worktree_dirs(config)
@@ -344,7 +344,7 @@ class TestCheckWorktreeDirs:
 
     def test_fail_parent_not_exists(self, tmp_path):
         config = _make_config(tmp_path, projects=[ProjectConfig(
-            name="p1", linear_team="T",
+            name="p1", team="T",
             base_dir=str(tmp_path / "nonexistent" / "deep" / "repo"),
             worktree_prefix="p-", slots=[1],
         )])
@@ -357,7 +357,7 @@ class TestCheckWorktreeDirs:
         base = tmp_path / "repo"
         base.mkdir()
         config = _make_config(tmp_path, projects=[ProjectConfig(
-            name="p1", linear_team="T", base_dir=str(base),
+            name="p1", team="T", base_dir=str(base),
             worktree_prefix="p-", slots=[1],
         )])
         with patch("botfarm.preflight.os.access", return_value=False):
@@ -378,7 +378,7 @@ class TestCheckCoreBare:
         base.mkdir()
         (base / ".git").mkdir()
         config = _make_config(tmp_path, projects=[ProjectConfig(
-            name="p1", linear_team="TST", base_dir=str(base),
+            name="p1", team="TST", base_dir=str(base),
             worktree_prefix="p-", slots=[1],
         )])
         with patch("botfarm.preflight.subprocess.run") as mock_run:
@@ -394,7 +394,7 @@ class TestCheckCoreBare:
         base.mkdir()
         (base / ".git").mkdir()
         config = _make_config(tmp_path, projects=[ProjectConfig(
-            name="p1", linear_team="TST", base_dir=str(base),
+            name="p1", team="TST", base_dir=str(base),
             worktree_prefix="p-", slots=[1],
         )])
         with patch("botfarm.preflight.subprocess.run") as mock_run:
@@ -412,7 +412,7 @@ class TestCheckCoreBare:
         base.mkdir()
         (base / ".git").mkdir()
         config = _make_config(tmp_path, projects=[ProjectConfig(
-            name="p1", linear_team="TST", base_dir=str(base),
+            name="p1", team="TST", base_dir=str(base),
             worktree_prefix="p-", slots=[1],
         )])
         with patch("botfarm.preflight.subprocess.run") as mock_run:
@@ -424,7 +424,7 @@ class TestCheckCoreBare:
 
     def test_skip_missing_repo(self, tmp_path):
         config = _make_config(tmp_path, projects=[ProjectConfig(
-            name="p1", linear_team="TST", base_dir=str(tmp_path / "missing"),
+            name="p1", team="TST", base_dir=str(tmp_path / "missing"),
             worktree_prefix="p-", slots=[1],
         )])
         results = check_core_bare(config)
@@ -435,7 +435,7 @@ class TestCheckCoreBare:
         base.mkdir()
         (base / ".git").mkdir()
         config = _make_config(tmp_path, projects=[ProjectConfig(
-            name="p1", linear_team="TST", base_dir=str(base),
+            name="p1", team="TST", base_dir=str(base),
             worktree_prefix="p-", slots=[1],
         )])
         with patch("botfarm.preflight.subprocess.run", side_effect=subprocess.TimeoutExpired("git", 5)):
@@ -451,7 +451,7 @@ class TestRepairCoreBare:
         base.mkdir()
         (base / ".git").mkdir()
         config = _make_config(tmp_path, projects=[ProjectConfig(
-            name="p1", linear_team="TST", base_dir=str(base),
+            name="p1", team="TST", base_dir=str(base),
             worktree_prefix="p-", slots=[1],
         )])
         with patch("botfarm.preflight.subprocess.run") as mock_run:
@@ -470,7 +470,7 @@ class TestRepairCoreBare:
         base.mkdir()
         (base / ".git").mkdir()
         config = _make_config(tmp_path, projects=[ProjectConfig(
-            name="p1", linear_team="TST", base_dir=str(base),
+            name="p1", team="TST", base_dir=str(base),
             worktree_prefix="p-", slots=[1],
         )])
         with patch("botfarm.preflight.subprocess.run") as mock_run:
@@ -482,7 +482,7 @@ class TestRepairCoreBare:
 
     def test_skip_missing_repo(self, tmp_path):
         config = _make_config(tmp_path, projects=[ProjectConfig(
-            name="p1", linear_team="TST", base_dir=str(tmp_path / "missing"),
+            name="p1", team="TST", base_dir=str(tmp_path / "missing"),
             worktree_prefix="p-", slots=[1],
         )])
         repaired = repair_core_bare(config)
@@ -493,7 +493,7 @@ class TestRepairCoreBare:
         base.mkdir()
         (base / ".git").mkdir()
         config = _make_config(tmp_path, projects=[ProjectConfig(
-            name="p1", linear_team="TST", base_dir=str(base),
+            name="p1", team="TST", base_dir=str(base),
             worktree_prefix="p-", slots=[1],
         )])
         with patch("botfarm.preflight.subprocess.run") as mock_run:
@@ -512,7 +512,7 @@ class TestRepairCoreBare:
 
 class TestCheckLinearApi:
     def test_fail_no_api_key(self, tmp_path):
-        config = _make_config(tmp_path, linear=LinearConfig(api_key=""))
+        config = _make_config(tmp_path, bugtracker=LinearConfig(api_key=""))
         results = check_linear_api(config)
         assert len(results) == 1
         assert not results[0].passed
@@ -525,7 +525,7 @@ class TestCheckLinearApi:
             "Done": "s3", "In Review": "s4",
         }
         with patch.object(
-            __import__("botfarm.linear", fromlist=["LinearClient"]).LinearClient,
+            __import__("botfarm.bugtracker.linear.client", fromlist=["LinearClient"]).LinearClient,
             "get_team_states",
             return_value=team_states,
         ):
@@ -545,7 +545,7 @@ class TestCheckLinearApi:
     def test_fail_team_not_found(self, tmp_path):
         config = _make_config(tmp_path)
         with patch.object(
-            __import__("botfarm.linear", fromlist=["LinearClient"]).LinearClient,
+            __import__("botfarm.bugtracker.linear.client", fromlist=["LinearClient"]).LinearClient,
             "get_team_states",
             side_effect=LinearAPIError("Team not found"),
         ):
@@ -555,14 +555,14 @@ class TestCheckLinearApi:
         assert "Cannot reach team" in results[0].message
 
     def test_fail_missing_status(self, tmp_path):
-        config = _make_config(tmp_path, linear=LinearConfig(
+        config = _make_config(tmp_path, bugtracker=LinearConfig(
             api_key="key", in_review_status="Code Review",
         ))
         team_states = {
             "Todo": "s1", "In Progress": "s2", "Done": "s3",
         }
         with patch.object(
-            __import__("botfarm.linear", fromlist=["LinearClient"]).LinearClient,
+            __import__("botfarm.bugtracker.linear.client", fromlist=["LinearClient"]).LinearClient,
             "get_team_states",
             return_value=team_states,
         ):
@@ -690,9 +690,9 @@ class TestCheckDatabase:
 class TestCheckConfigConsistency:
     def test_pass_unique_slots(self, tmp_path):
         config = _make_config(tmp_path, projects=[
-            ProjectConfig(name="p1", linear_team="T", base_dir="/a",
+            ProjectConfig(name="p1", team="T", base_dir="/a",
                           worktree_prefix="p1-", slots=[1, 2]),
-            ProjectConfig(name="p2", linear_team="T", base_dir="/b",
+            ProjectConfig(name="p2", team="T", base_dir="/b",
                           worktree_prefix="p2-", slots=[1, 2]),
         ])
         results = check_config_consistency(config)
@@ -704,7 +704,7 @@ class TestCheckConfigConsistency:
         # This is already caught by config validation, but let's test the
         # preflight check handles it gracefully if config was built programmatically
         config = _make_config(tmp_path, projects=[
-            ProjectConfig(name="p1", linear_team="T", base_dir="/a",
+            ProjectConfig(name="p1", team="T", base_dir="/a",
                           worktree_prefix="p1-", slots=[1, 1]),
         ])
         results = check_config_consistency(config)
@@ -962,7 +962,7 @@ class TestCheckIdentityLinearApiKey:
             coder=CoderIdentity(linear_api_key="lin_api_abc"),
         ))
         with patch.object(
-            __import__("botfarm.linear", fromlist=["LinearClient"]).LinearClient,
+            __import__("botfarm.bugtracker.linear.client", fromlist=["LinearClient"]).LinearClient,
             "get_viewer_id",
             return_value="user-123",
         ):
@@ -975,7 +975,7 @@ class TestCheckIdentityLinearApiKey:
             coder=CoderIdentity(linear_api_key="lin_api_bad"),
         ))
         with patch.object(
-            __import__("botfarm.linear", fromlist=["LinearClient"]).LinearClient,
+            __import__("botfarm.bugtracker.linear.client", fromlist=["LinearClient"]).LinearClient,
             "get_viewer_id",
             side_effect=LinearAPIError("Unauthorized"),
         ):
@@ -989,7 +989,7 @@ class TestCheckIdentityLinearApiKey:
             reviewer=ReviewerIdentity(linear_api_key="lin_api_rev"),
         ))
         with patch.object(
-            __import__("botfarm.linear", fromlist=["LinearClient"]).LinearClient,
+            __import__("botfarm.bugtracker.linear.client", fromlist=["LinearClient"]).LinearClient,
             "get_viewer_id",
             return_value="user-456",
         ):
@@ -1004,7 +1004,7 @@ class TestCheckIdentityLinearApiKey:
             reviewer=ReviewerIdentity(linear_api_key="lin_api_rev"),
         ))
         with patch.object(
-            __import__("botfarm.linear", fromlist=["LinearClient"]).LinearClient,
+            __import__("botfarm.bugtracker.linear.client", fromlist=["LinearClient"]).LinearClient,
             "get_viewer_id",
             return_value="user-123",
         ):
@@ -1210,7 +1210,7 @@ class TestRunPreflightChecks:
         (base / "CLAUDE.md").write_text("# Instructions")
         monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "test.db"))
         config = _make_config(tmp_path, projects=[ProjectConfig(
-            name="p1", linear_team="TST", base_dir=str(base),
+            name="p1", team="TST", base_dir=str(base),
             worktree_prefix="p-", slots=[1],
         )])
 
@@ -1226,7 +1226,7 @@ class TestRunPreflightChecks:
         )]
         with patch("botfarm.preflight.subprocess.run") as mock_run, \
              patch.object(
-                 __import__("botfarm.linear", fromlist=["LinearClient"]).LinearClient,
+                 __import__("botfarm.bugtracker.linear.client", fromlist=["LinearClient"]).LinearClient,
                  "get_team_states",
                  return_value=team_states,
              ), \
@@ -1364,7 +1364,7 @@ class TestCheckProjectClaudeMd:
         (base / "CLAUDE.md").write_text("# Instructions")
         config = _make_config(tmp_path, projects=[ProjectConfig(
             name="my-project",
-            linear_team="TST",
+            team="TST",
             base_dir=str(base),
             worktree_prefix="my-slot-",
             slots=[1],
@@ -1381,7 +1381,7 @@ class TestCheckProjectClaudeMd:
         (base / ".git").mkdir()
         config = _make_config(tmp_path, projects=[ProjectConfig(
             name="my-project",
-            linear_team="TST",
+            team="TST",
             base_dir=str(base),
             worktree_prefix="my-slot-",
             slots=[1],
@@ -1406,11 +1406,11 @@ class TestCheckProjectClaudeMd:
 
         config = _make_config(tmp_path, projects=[
             ProjectConfig(
-                name="proj1", linear_team="TST",
+                name="proj1", team="TST",
                 base_dir=str(base1), worktree_prefix="p1-slot-", slots=[1],
             ),
             ProjectConfig(
-                name="proj2", linear_team="TST",
+                name="proj2", team="TST",
                 base_dir=str(base2), worktree_prefix="p2-slot-", slots=[1],
             ),
         ])
@@ -1432,7 +1432,7 @@ class TestCheckProjectRuntimes:
         (base / "requirements.txt").write_text("flask\n")
         config = _make_config(tmp_path, projects=[ProjectConfig(
             name="py-project",
-            linear_team="TST",
+            team="TST",
             base_dir=str(base),
             worktree_prefix="py-slot-",
             slots=[1],
@@ -1456,7 +1456,7 @@ class TestCheckProjectRuntimes:
         (base / "pyproject.toml").write_text("[project]\n")
         config = _make_config(tmp_path, projects=[ProjectConfig(
             name="py-project",
-            linear_team="TST",
+            team="TST",
             base_dir=str(base),
             worktree_prefix="py-slot-",
             slots=[1],
@@ -1475,7 +1475,7 @@ class TestCheckProjectRuntimes:
         base.mkdir()
         config = _make_config(tmp_path, projects=[ProjectConfig(
             name="empty-project",
-            linear_team="TST",
+            team="TST",
             base_dir=str(base),
             worktree_prefix="e-slot-",
             slots=[1],
@@ -1491,7 +1491,7 @@ class TestCheckProjectRuntimes:
         (base / "pyproject.toml").write_text("[project]\n")
         config = _make_config(tmp_path, projects=[ProjectConfig(
             name="py-project",
-            linear_team="TST",
+            team="TST",
             base_dir=str(base),
             worktree_prefix="py-slot-",
             slots=[1],
@@ -1512,7 +1512,7 @@ class TestCheckProjectRuntimes:
         (base / "package.json").write_text("{}\n")
         config = _make_config(tmp_path, projects=[ProjectConfig(
             name="js-project",
-            linear_team="TST",
+            team="TST",
             base_dir=str(base),
             worktree_prefix="js-slot-",
             slots=[1],
@@ -1536,7 +1536,7 @@ class TestCheckProjectRuntimes:
         (base / "go.mod").write_text("module example.com/foo\n")
         config = _make_config(tmp_path, projects=[ProjectConfig(
             name="go-project",
-            linear_team="TST",
+            team="TST",
             base_dir=str(base),
             worktree_prefix="go-slot-",
             slots=[1],
@@ -1555,7 +1555,7 @@ class TestCheckProjectRuntimes:
         (base / "Cargo.toml").write_text("[package]\n")
         config = _make_config(tmp_path, projects=[ProjectConfig(
             name="rust-project",
-            linear_team="TST",
+            team="TST",
             base_dir=str(base),
             worktree_prefix="rs-slot-",
             slots=[1],
@@ -1574,7 +1574,7 @@ class TestCheckProjectRuntimes:
         (base / "Gemfile").write_text("source 'https://rubygems.org'\n")
         config = _make_config(tmp_path, projects=[ProjectConfig(
             name="ruby-project",
-            linear_team="TST",
+            team="TST",
             base_dir=str(base),
             worktree_prefix="rb-slot-",
             slots=[1],
@@ -1598,7 +1598,7 @@ class TestCheckProjectRuntimes:
         (base / "package.json").write_text("{}\n")
         config = _make_config(tmp_path, projects=[ProjectConfig(
             name="multi-project",
-            linear_team="TST",
+            team="TST",
             base_dir=str(base),
             worktree_prefix="m-slot-",
             slots=[1],
