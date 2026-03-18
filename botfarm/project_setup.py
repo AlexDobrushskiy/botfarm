@@ -413,11 +413,26 @@ def init_repo(target_dir: Path, name: str) -> None:
     (target_dir / "README.md").write_text(_README_TEMPLATE.format(name=name))
     (target_dir / "CLAUDE.md").write_text(_CLAUDE_MD_TEMPLATE)
 
-    # Initial commit
+    # Set repo-local identity so the initial commit works even without
+    # global user.name/user.email configuration.
     subprocess.run(
+        ["git", "-C", str(target_dir), "config", "user.name", "botfarm"],
+        capture_output=True, text=True, timeout=10, env=env,
+    )
+    subprocess.run(
+        ["git", "-C", str(target_dir), "config", "user.email", "botfarm@localhost"],
+        capture_output=True, text=True, timeout=10, env=env,
+    )
+
+    # Initial commit
+    result = subprocess.run(
         ["git", "-C", str(target_dir), "add", "."],
         capture_output=True, text=True, timeout=10, env=env,
     )
+    if result.returncode != 0:
+        raise ProjectSetupError(
+            f"git add failed:\n{result.stderr.strip()}"
+        )
     result = subprocess.run(
         ["git", "-C", str(target_dir), "commit", "-m", "Initial commit"],
         capture_output=True, text=True, timeout=10, env=env,
@@ -445,6 +460,7 @@ def create_github_repo(repo_dir: Path, name: str, *, private: bool = True) -> st
             capture_output=True,
             text=True,
             timeout=60,
+            env=_clean_git_env(),
         )
         if result.returncode != 0:
             raise ProjectSetupError(
@@ -712,10 +728,8 @@ def setup_project_git(
         if progress_callback is not None:
             progress_callback(msg)
 
-    import yaml as _yaml
-
     raw = config_path.read_text()
-    data = _yaml.safe_load(raw)
+    data = yaml.safe_load(raw)
     projects = data.get("projects") or []
     project_entry = None
     for p in projects:
@@ -734,7 +748,9 @@ def setup_project_git(
     if parent.exists() and not os.access(str(parent), os.W_OK):
         raise ProjectSetupError(f"Parent directory is not writable: {parent}")
 
-    # Repo setup
+    # Repo setup — only repair, never create from scratch.  If the repo
+    # dir is missing the project may have been cloned from a remote and
+    # re-initing would silently replace it with an empty repo.
     if repo_dir.exists() and is_git_repo(repo_dir):
         _progress(f"Git repo already exists at {repo_dir}")
     elif repo_dir.exists():
@@ -742,22 +758,27 @@ def setup_project_git(
             f"Directory exists but is not a git repo: {repo_dir}"
         )
     else:
-        _progress("Initializing new git repository...")
-        init_repo(repo_dir, name)
-        _progress(f"Initialized {repo_dir}")
+        raise ProjectSetupError(
+            f"Repository directory does not exist: {repo_dir}\n"
+            f"Use the full project creation flow to set up a new project."
+        )
 
     if create_github:
         _progress("Creating GitHub repository...")
         gh_url = create_github_repo(repo_dir, name)
         _progress(f"GitHub repo created: {gh_url}")
 
-    # Worktree setup — skip slots that already have worktrees
+    # Worktree setup — skip slots that already have healthy worktrees
     for slot_id in slot_ids:
         branch_name = f"slot-{slot_id}-placeholder"
         worktree_path = Path(f"{wt_prefix}{slot_id}").expanduser()
-        if worktree_path.exists():
+        if worktree_path.exists() and is_git_repo(worktree_path):
             _progress(f"Slot {slot_id}: worktree already exists at {worktree_path}")
             continue
+        if worktree_path.exists():
+            # Plain directory left behind by a partial setup — remove so
+            # git worktree add can succeed.
+            shutil.rmtree(worktree_path, ignore_errors=True)
         _progress(f"Creating worktree for slot {slot_id}...")
         create_worktree(repo_dir, worktree_path, branch_name)
         _progress(f"Slot {slot_id}: {worktree_path} (branch: {branch_name})")

@@ -335,7 +335,7 @@ class TestSetupProjectGit:
         }
         config_path.write_text(yaml.dump(data))
 
-    def test_inits_missing_repo(self, tmp_path):
+    def test_raises_for_missing_repo_dir(self, tmp_path):
         config_path = tmp_path / "config.yaml"
         repo_dir = tmp_path / "projects" / "new" / "repo"
         wt_prefix = tmp_path / "projects" / "new" / "new-slot-"
@@ -343,12 +343,8 @@ class TestSetupProjectGit:
             config_path, "new", repo_dir, [1, 2], wt_prefix,
         )
 
-        setup_project_git(name="new", config_path=config_path)
-
-        assert repo_dir.is_dir()
-        assert is_git_repo(repo_dir)
-        assert (tmp_path / "projects" / "new" / "new-slot-1").is_dir()
-        assert (tmp_path / "projects" / "new" / "new-slot-2").is_dir()
+        with pytest.raises(ProjectSetupError, match="does not exist"):
+            setup_project_git(name="new", config_path=config_path)
 
     def test_skips_existing_worktrees(self, tmp_path):
         config_path = tmp_path / "config.yaml"
@@ -391,6 +387,26 @@ class TestSetupProjectGit:
         )
 
         assert any("already exists" in m for m in messages)
+
+    def test_repairs_plain_dir_worktree(self, tmp_path):
+        """A plain directory (not a worktree) at the slot path is replaced."""
+        config_path = tmp_path / "config.yaml"
+        repo_dir = tmp_path / "projects" / "fix" / "repo"
+        wt_prefix = tmp_path / "projects" / "fix" / "fix-slot-"
+        self._write_config_with_project(
+            config_path, "fix", repo_dir, [1], wt_prefix,
+        )
+
+        init_repo(repo_dir, "fix")
+        # Create a plain (non-worktree) directory at the slot path
+        plain_dir = tmp_path / "projects" / "fix" / "fix-slot-1"
+        plain_dir.mkdir(parents=True)
+        (plain_dir / "stale").write_text("leftover")
+
+        setup_project_git(name="fix", config_path=config_path)
+
+        # Should now be a proper worktree
+        assert is_git_repo(plain_dir)
 
     def test_raises_for_unknown_project(self, tmp_path):
         config_path = tmp_path / "config.yaml"

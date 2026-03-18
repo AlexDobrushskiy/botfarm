@@ -283,9 +283,7 @@ class TestProjectCreateNoRepoUrl:
             assert resp.status_code == 200
             time.sleep(0.1)
             # Verify create_github was passed
-            call_kwargs = mock_setup.call_args
-            assert call_kwargs[1].get("create_github") is True or \
-                   (call_kwargs[0] if len(call_kwargs[0]) > 0 else False)
+            assert mock_setup.call_args.kwargs.get("create_github") is True
 
 
 class TestSetupGitEndpoint:
