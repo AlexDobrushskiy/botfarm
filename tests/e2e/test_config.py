@@ -115,10 +115,10 @@ class TestConfigEditTab:
         page.goto(f"{live_server}/config")
         page.locator(".config-tab").nth(1).click()
         edit = page.locator("#tab-edit")
-        assert edit.locator("#linear-poll_interval_seconds").is_visible()
-        assert edit.locator("#linear-comment_on_failure").is_visible()
-        assert edit.locator("#linear-comment_on_completion").is_visible()
-        assert edit.locator("#linear-comment_on_limit_pause").is_visible()
+        assert edit.locator("#bugtracker-poll_interval_seconds").is_visible()
+        assert edit.locator("#bugtracker-comment_on_failure").is_visible()
+        assert edit.locator("#bugtracker-comment_on_completion").is_visible()
+        assert edit.locator("#bugtracker-comment_on_limit_pause").is_visible()
 
     def test_edit_tab_has_usage_limits_form(self, live_server, page):
         """P0: Edit tab shows Usage Limits section with enable toggle and thresholds."""
@@ -162,7 +162,7 @@ class TestConfigEditTab:
         page.goto(f"{live_server}/config")
         page.locator(".config-tab").nth(1).click()
         # Poll interval should be 30
-        poll = page.locator("#linear-poll_interval_seconds")
+        poll = page.locator("#bugtracker-poll_interval_seconds")
         assert poll.input_value() == "30"
         # Max review iterations should be 3
         max_review = page.locator("#agents-max_review_iterations")
@@ -179,7 +179,7 @@ class TestConfigSave:
         page.locator(".config-tab").nth(1).click()
 
         # Change poll interval
-        poll = page.locator("#linear-poll_interval_seconds")
+        poll = page.locator("#bugtracker-poll_interval_seconds")
         poll.fill("45")
 
         # Submit the Linear section form
@@ -189,7 +189,7 @@ class TestConfigSave:
 
         try:
             # Wait for the AJAX response
-            feedback = page.locator("#feedback-linear .config-feedback.success")
+            feedback = page.locator("#feedback-bugtracker .config-feedback.success")
             feedback.wait_for(state="visible", timeout=5000)
             assert feedback.is_visible()
         finally:
@@ -207,9 +207,9 @@ class TestConfigSave:
 
         # Remove HTML5 min attribute to bypass browser validation,
         # then set an invalid value (0, below server-side min of 1).
-        poll = page.locator("#linear-poll_interval_seconds")
+        poll = page.locator("#bugtracker-poll_interval_seconds")
         page.evaluate(
-            "document.getElementById('linear-poll_interval_seconds')"
+            "document.getElementById('bugtracker-poll_interval_seconds')"
             ".removeAttribute('min')"
         )
         poll.fill("0")
@@ -220,7 +220,7 @@ class TestConfigSave:
         ).click()
 
         # Should show error feedback
-        feedback = page.locator("#feedback-linear .config-feedback.error")
+        feedback = page.locator("#feedback-bugtracker .config-feedback.error")
         feedback.wait_for(state="visible", timeout=5000)
         assert feedback.is_visible()
 
