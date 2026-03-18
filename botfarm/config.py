@@ -478,8 +478,15 @@ def _validate_config(config: BotfarmConfig) -> None:
     """Validate cross-field constraints."""
     bt = config.bugtracker
 
+    supported_types = {"linear"}
+    if bt.type not in supported_types:
+        raise ConfigError(
+            f"Unsupported bugtracker type: {bt.type!r}. "
+            f"Supported: {sorted(supported_types)}"
+        )
+
     if not bt.api_key:
-        raise ConfigError("linear.api_key must be set")
+        raise ConfigError("bugtracker.api_key must be set")
 
     if bt.poll_interval_seconds < 1:
         raise ConfigError("poll_interval_seconds must be at least 1")
@@ -512,28 +519,28 @@ def _validate_config(config: BotfarmConfig) -> None:
             raise ConfigError(f"usage_limits.{attr} must be between 0.0 and 1.0")
 
     if bt.issue_limit < 1:
-        raise ConfigError("linear.issue_limit must be at least 1")
+        raise ConfigError("bugtracker.issue_limit must be at least 1")
 
     cap = bt.capacity_monitoring
     for attr in ("warning_threshold", "critical_threshold", "pause_threshold", "resume_threshold"):
         val = getattr(cap, attr)
         if not (0.0 <= val <= 1.0):
             raise ConfigError(
-                f"linear.capacity_monitoring.{attr} must be between 0.0 and 1.0"
+                f"bugtracker.capacity_monitoring.{attr} must be between 0.0 and 1.0"
             )
     if cap.warning_threshold > cap.critical_threshold:
         raise ConfigError(
-            "linear.capacity_monitoring.warning_threshold must be "
+            "bugtracker.capacity_monitoring.warning_threshold must be "
             "less than or equal to critical_threshold"
         )
     if cap.critical_threshold > cap.pause_threshold:
         raise ConfigError(
-            "linear.capacity_monitoring.critical_threshold must be "
+            "bugtracker.capacity_monitoring.critical_threshold must be "
             "less than or equal to pause_threshold"
         )
     if cap.resume_threshold >= cap.pause_threshold:
         raise ConfigError(
-            "linear.capacity_monitoring.resume_threshold must be less than pause_threshold"
+            "bugtracker.capacity_monitoring.resume_threshold must be less than pause_threshold"
         )
 
     if config.agents.max_review_iterations < 1:
@@ -1315,10 +1322,18 @@ def write_structural_config_updates(config_path: Path, updates: dict) -> None:
                 target = by_name[name]
                 if "slots" in proj_update:
                     target["slots"] = proj_update["slots"]
-                for lp_key in ("tracker_project", "linear_project"):
-                    if lp_key in proj_update:
-                        target[lp_key] = proj_update[lp_key]
-                        break
+                # Remap to whichever key the YAML currently uses for this project
+                new_val = proj_update.get("tracker_project", proj_update.get("linear_project"))
+                if new_val is not None:
+                    if "tracker_project" in target:
+                        target["tracker_project"] = new_val
+                        target.pop("linear_project", None)
+                    elif "linear_project" in target:
+                        target["linear_project"] = new_val
+                        target.pop("tracker_project", None)
+                    else:
+                        # No existing key — use canonical name
+                        target["tracker_project"] = new_val
 
     write_yaml_atomic(config_path, data)
 

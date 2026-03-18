@@ -1606,7 +1606,56 @@ class TestWriteStructuralConfigUpdates:
             ],
         })
         data = yaml.safe_load(config_path.read_text())
-        assert data["projects"][0]["linear_project"] == "My Project"
+        # When no existing key, canonical 'tracker_project' is used
+        assert data["projects"][0]["tracker_project"] == "My Project"
+
+    def test_write_project_remaps_to_existing_tracker_project_key(self, tmp_path):
+        """Dashboard sends linear_project but YAML uses tracker_project — should update in place."""
+        config_path = _write_config(tmp_path, {
+            **MINIMAL_CONFIG,
+            "projects": [
+                {
+                    "name": "test-project",
+                    "team": "TST",
+                    "base_dir": "~/test",
+                    "worktree_prefix": "test-slot-",
+                    "slots": [1],
+                    "tracker_project": "Old",
+                },
+            ],
+        })
+        write_structural_config_updates(config_path, {
+            "projects": [
+                {"name": "test-project", "linear_project": "New"},
+            ],
+        })
+        data = yaml.safe_load(config_path.read_text())
+        assert data["projects"][0]["tracker_project"] == "New"
+        assert "linear_project" not in data["projects"][0]
+
+    def test_write_project_remaps_to_existing_linear_project_key(self, tmp_path):
+        """Dashboard sends tracker_project but YAML uses linear_project — should update in place."""
+        config_path = _write_config(tmp_path, {
+            **MINIMAL_CONFIG,
+            "projects": [
+                {
+                    "name": "test-project",
+                    "linear_team": "TST",
+                    "base_dir": "~/test",
+                    "worktree_prefix": "test-slot-",
+                    "slots": [1],
+                    "linear_project": "Old",
+                },
+            ],
+        })
+        write_structural_config_updates(config_path, {
+            "projects": [
+                {"name": "test-project", "tracker_project": "New"},
+            ],
+        })
+        data = yaml.safe_load(config_path.read_text())
+        assert data["projects"][0]["linear_project"] == "New"
+        assert "tracker_project" not in data["projects"][0]
 
     def test_write_project_unknown_name_ignored(self, tmp_path):
         config_path = _write_config(tmp_path, MINIMAL_CONFIG)
@@ -2339,6 +2388,16 @@ class TestBugtrackerConfigSection:
         assert bt.comment_on_completion is True
         assert bt.capacity_monitoring.enabled is False
         assert bt.capacity_monitoring.pause_threshold == 0.8
+
+
+    def test_unsupported_bugtracker_type_raises(self, tmp_path):
+        data = {
+            **MINIMAL_BUGTRACKER_CONFIG,
+            "bugtracker": {"type": "jira", "api_key": "k"},
+        }
+        config_path = _write_config(tmp_path, data)
+        with pytest.raises(ConfigError, match="Unsupported bugtracker type: 'jira'"):
+            load_config(config_path)
 
 
 class TestBugtrackerConfigDataclasses:
