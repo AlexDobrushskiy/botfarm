@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from botfarm.agent import AgentAdapter, AgentResult
 from botfarm.agent_claude import ClaudeAdapter, _claude_result_to_agent_result
 from botfarm.agent_codex import CodexAdapter, _codex_result_to_agent_result
@@ -325,9 +327,11 @@ class TestCodexResultNormalization:
             num_turns=1,
             duration_seconds=1.0,
             result_text="",
+            input_tokens=1_000_000,
+            output_tokens=0,
+            cached_input_tokens=0,
             model="",
         )
         ar = _codex_result_to_agent_result(cr, None)
-        # With no model, falls through to empty string which isn't in pricing
-        # calculate_codex_cost uses DEFAULT_CODEX_MODEL for empty string
-        assert isinstance(ar.cost_usd, float)
+        # Falls back to DEFAULT_CODEX_MODEL ("o4-mini") → $1.10/M input
+        assert ar.cost_usd == pytest.approx(1.10)
