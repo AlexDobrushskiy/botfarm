@@ -541,6 +541,11 @@
     </div>
     {% endfor %}
     <button type="button" onclick="saveProjects()">Save Project Settings</button>
+
+    <hr>
+    <h3>Add New Project</h3>
+    <p>To add a new project (with repo cloning, worktree setup, and hot-reload), use the dedicated setup page.</p>
+    <a href="/projects/add" role="button" class="outline">Add New Project</a>
 </section>
 
 {# --- Notifications section (structural — restart required) --- #}
@@ -708,7 +713,7 @@ function addSlot(projectIdx) {
 
 function saveProjects() {
     var feedbackEl = document.getElementById("feedback-projects");
-    var cards = document.querySelectorAll("#tab-edit .project-card");
+    var cards = document.querySelectorAll("#tab-edit .project-card[data-project-name]");
     var projects = [];
 
     for (var i = 0; i < cards.length; i++) {

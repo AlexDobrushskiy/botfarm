@@ -1169,7 +1169,12 @@ def validate_structural_config_updates(
 def _validate_project_updates(
     project_updates: object, config: BotfarmConfig,
 ) -> list[str]:
-    """Validate project-level structural updates (slots, tracker_project)."""
+    """Validate project-level structural updates (slots, tracker_project).
+
+    Existing projects: only ``slots`` and ``tracker_project`` may be changed.
+    New projects (name not in config): all required fields must be present
+    (``name``, ``team``, ``base_dir``, ``worktree_prefix``, ``slots``).
+    """
     errors: list[str] = []
 
     if not isinstance(project_updates, list):
@@ -1177,6 +1182,11 @@ def _validate_project_updates(
         return errors
 
     existing_names = {p.name for p in config.projects}
+
+    _NEW_PROJECT_REQUIRED = {"name", "team", "base_dir", "worktree_prefix", "slots"}
+    _NEW_PROJECT_OPTIONAL = {"tracker_project"}
+    _NEW_PROJECT_ALLOWED = _NEW_PROJECT_REQUIRED | _NEW_PROJECT_OPTIONAL
+    seen_names: set[str] = set()
 
     for i, proj in enumerate(project_updates):
         if not isinstance(proj, dict):
@@ -1188,12 +1198,17 @@ def _validate_project_updates(
             errors.append(f"projects[{i}]: 'name' is required")
             continue
 
-        if name not in existing_names:
+        # Reject duplicate names within the same payload
+        if name in seen_names:
             errors.append(
-                f"projects[{i}]: project '{name}' does not exist"
+                f"projects[{i}] '{name}': duplicate project name in request"
             )
             continue
+        seen_names.add(name)
 
+        is_new = name not in existing_names
+
+        # --- Validate slots (shared by new and existing) ---
         if "slots" in proj:
             slots = proj["slots"]
             if not isinstance(slots, list):
@@ -1214,23 +1229,54 @@ def _validate_project_updates(
                     f"projects[{i}] '{name}': tracker_project must be a string"
                 )
 
-        allowed_keys = {"name", "slots", "tracker_project"}
-        extra = set(proj.keys()) - allowed_keys
-        if extra:
-            errors.append(
-                f"projects[{i}] '{name}': "
-                f"cannot edit fields: {sorted(extra)}"
-            )
+        if is_new:
+            # New project: validate required fields and allowed keys
+            missing = _NEW_PROJECT_REQUIRED - set(proj.keys())
+            if missing:
+                errors.append(
+                    f"projects[{i}] '{name}': new project missing required "
+                    f"fields: {sorted(missing)}"
+                )
+            extra = set(proj.keys()) - _NEW_PROJECT_ALLOWED
+            if extra:
+                errors.append(
+                    f"projects[{i}] '{name}': "
+                    f"unknown fields: {sorted(extra)}"
+                )
+            # Validate string fields
+            for field in ("team", "base_dir", "worktree_prefix"):
+                val = proj.get(field)
+                if val is not None and not isinstance(val, str):
+                    errors.append(
+                        f"projects[{i}] '{name}': {field} must be a string"
+                    )
+                elif isinstance(val, str) and not val.strip():
+                    errors.append(
+                        f"projects[{i}] '{name}': {field} must not be empty"
+                    )
+        else:
+            # Existing project: only slots and tracker_project are editable
+            allowed_keys = {"name", "slots", "tracker_project"}
+            extra = set(proj.keys()) - allowed_keys
+            if extra:
+                errors.append(
+                    f"projects[{i}] '{name}': "
+                    f"cannot edit fields: {sorted(extra)}"
+                )
 
     # Check for duplicate tracker_project values after applying updates
     if not errors:
         lp_overrides: dict[str, str] = {}
+        new_projects: list[dict] = []
         for u in project_updates:
             if isinstance(u, dict):
-                if "tracker_project" in u:
+                if u["name"] not in existing_names:
+                    new_projects.append(u)
+                elif "tracker_project" in u:
                     lp_overrides[u["name"]] = u["tracker_project"]
 
         seen_lp: dict[str, str] = {}  # tracker_project -> project name
+        # Check existing projects (with overrides applied)
         for p in config.projects:
             lp = lp_overrides.get(p.name, p.tracker_project)
             if lp:
@@ -1241,6 +1287,17 @@ def _validate_project_updates(
                         f"Each project must have a unique tracker_project filter"
                     )
                 seen_lp[lp] = p.name
+        # Check new projects
+        for np in new_projects:
+            lp = np.get("tracker_project", "")
+            if lp:
+                if lp in seen_lp:
+                    errors.append(
+                        f"Duplicate tracker_project filter {lp!r}: "
+                        f"used by both '{seen_lp[lp]}' and '{np['name']}'. "
+                        f"Each project must have a unique tracker_project filter"
+                    )
+                seen_lp[lp] = np["name"]
 
     return errors
 
@@ -1264,15 +1321,33 @@ def write_structural_config_updates(config_path: Path, updates: dict) -> None:
 
     if "projects" in updates:
         existing_projects = data.get("projects", [])
+        if not isinstance(existing_projects, list):
+            existing_projects = []
+            data["projects"] = existing_projects
         by_name = {p["name"]: p for p in existing_projects if isinstance(p, dict)}
         for proj_update in updates["projects"]:
             name = proj_update["name"]
             if name in by_name:
+                # Existing project: merge editable fields
                 target = by_name[name]
                 if "slots" in proj_update:
                     target["slots"] = proj_update["slots"]
                 if "tracker_project" in proj_update:
                     target["tracker_project"] = proj_update["tracker_project"]
+            else:
+                # New project: append complete dict (only if required keys present)
+                required = {"team", "base_dir", "worktree_prefix", "slots"}
+                if required.issubset(proj_update.keys()):
+                    new_proj = {
+                        "name": name,
+                        "team": proj_update["team"],
+                        "base_dir": proj_update["base_dir"],
+                        "worktree_prefix": proj_update["worktree_prefix"],
+                        "slots": proj_update["slots"],
+                    }
+                    if proj_update.get("tracker_project"):
+                        new_proj["tracker_project"] = proj_update["tracker_project"]
+                    existing_projects.append(new_proj)
 
     write_yaml_atomic(config_path, data)
 
