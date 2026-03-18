@@ -495,7 +495,7 @@ class StageResult:
             is_error=ar.is_error,
             input_tokens=ar.input_tokens,
             output_tokens=ar.output_tokens,
-            cached_input_tokens=ar.extra.get("cached_input_tokens", 0),
+            cached_input_tokens=ar.extra.get("cache_read_input_tokens", 0),
             model=ar.extra.get("model", ""),
         )
 

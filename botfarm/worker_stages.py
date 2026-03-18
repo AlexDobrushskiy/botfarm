@@ -677,7 +677,9 @@ def _run_codex_review(
 ) -> StageResult:
     """CODEX_REVIEW stage — Codex reviews the PR and posts inline comments.
 
-    When *registry* is provided, resolves the Codex adapter from it.
+    When *registry* is provided, resolves the Codex adapter from it;
+    in that case *codex_reasoning_effort* is ignored because reasoning
+    effort is baked into the adapter at construction time.
     Otherwise falls back to direct ``run_codex_streaming()`` invocation.
     """
     owner, repo, number = _parse_pr_url(pr_url)

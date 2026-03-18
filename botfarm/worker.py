@@ -1404,7 +1404,7 @@ class _PipelineContext:
             duration_seconds=codex_ar.duration_seconds,
             input_tokens=codex_ar.input_tokens,
             output_tokens=codex_ar.output_tokens,
-            cache_read_input_tokens=codex_ar.extra.get("cached_input_tokens", 0),
+            cache_read_input_tokens=codex_ar.extra.get("cache_read_input_tokens", 0),
             cache_creation_input_tokens=0,
             total_cost_usd=codex_ar.cost_usd,
             log_file_path=str(codex_log_file) if codex_log_file else None,
