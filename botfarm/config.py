@@ -497,9 +497,9 @@ def _validate_config(config: BotfarmConfig) -> None:
         if p.tracker_project:
             if p.tracker_project in seen_lp:
                 raise ConfigError(
-                    f"Duplicate linear_project filter {p.tracker_project!r}: "
+                    f"Duplicate tracker_project filter {p.tracker_project!r}: "
                     f"used by both '{seen_lp[p.tracker_project]}' and '{p.name}'. "
-                    f"Each project must have a unique linear_project filter"
+                    f"Each project must have a unique tracker_project filter"
                 )
             seen_lp[p.tracker_project] = p.name
 
@@ -1119,8 +1119,17 @@ def write_config_updates(config_path: Path, updates: dict) -> None:
     if not isinstance(data, dict):
         raise ConfigError("Config file must contain a YAML mapping")
 
+    # If the YAML uses 'bugtracker:' instead of 'linear:', remap update
+    # section keys so writes land in the correct section.
+    uses_bugtracker = "bugtracker" in data
+    remapped_updates = {}
     for section, fields in updates.items():
-        # Support dotted section paths like "linear.capacity_monitoring"
+        if uses_bugtracker and (section == "linear" or section.startswith("linear.")):
+            section = "bugtracker" + section[len("linear"):]
+        remapped_updates[section] = fields
+
+    for section, fields in remapped_updates.items():
+        # Support dotted section paths like "bugtracker.capacity_monitoring"
         parts = section.split(".")
         target = data
         for part in parts:
@@ -1260,9 +1269,10 @@ def _validate_project_updates(
         lp_overrides: dict[str, str] = {}
         for u in project_updates:
             if isinstance(u, dict):
-                lp_val = u.get("tracker_project") or u.get("linear_project")
-                if lp_val is not None:
-                    lp_overrides[u["name"]] = lp_val
+                if "tracker_project" in u:
+                    lp_overrides[u["name"]] = u["tracker_project"]
+                elif "linear_project" in u:
+                    lp_overrides[u["name"]] = u["linear_project"]
 
         seen_lp: dict[str, str] = {}  # linear_project -> project name
         for p in config.projects:
@@ -1270,9 +1280,9 @@ def _validate_project_updates(
             if lp:
                 if lp in seen_lp:
                     errors.append(
-                        f"Duplicate linear_project filter {lp!r}: "
+                        f"Duplicate tracker_project filter {lp!r}: "
                         f"used by both '{seen_lp[lp]}' and '{p.name}'. "
-                        f"Each project must have a unique linear_project filter"
+                        f"Each project must have a unique tracker_project filter"
                     )
                 seen_lp[lp] = p.name
 

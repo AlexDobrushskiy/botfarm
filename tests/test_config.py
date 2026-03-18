@@ -247,7 +247,7 @@ def test_load_config_duplicate_linear_project(tmp_path):
         "linear": {"api_key": "test-key"},
     }
     config_path = _write_config(tmp_path, data)
-    with pytest.raises(ConfigError, match="Duplicate linear_project filter"):
+    with pytest.raises(ConfigError, match="Duplicate tracker_project filter"):
         load_config(config_path)
 
 
@@ -1530,7 +1530,7 @@ class TestValidateStructuralConfigUpdates:
             ],
         }
         errors = validate_structural_config_updates(updates, config)
-        assert any("Duplicate linear_project" in e for e in errors)
+        assert any("Duplicate tracker_project" in e for e in errors)
 
 
 # --- write_structural_config_updates ---
