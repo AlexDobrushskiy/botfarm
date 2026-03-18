@@ -21,6 +21,7 @@ from .queries import (
     COMPLETED_ISSUES_WITH_PROJECT_QUERY,
     CREATE_ISSUE_MUTATION,
     CREATE_LABEL_MUTATION,
+    CREATE_PROJECT_MUTATION,
     ISSUE_ARCHIVE_MUTATION,
     ISSUE_DELETE_MUTATION,
     ISSUE_DETAILS_QUERY,
@@ -644,3 +645,34 @@ class LinearClient(BugtrackerClient):
         if not org:
             raise LinearAPIError("Failed to retrieve organization info")
         return org
+
+    def create_project(
+        self,
+        team_id: str,
+        name: str,
+        description: str | None = None,
+    ) -> dict:
+        """Create a new Linear project and return its id and name."""
+        input_data: dict = {"name": name, "teamIds": [team_id]}
+        if description:
+            input_data["description"] = description
+        data = self._execute(CREATE_PROJECT_MUTATION, {"input": input_data})
+        result = data.get("projectCreate", {})
+        if not result.get("success"):
+            raise LinearAPIError(f"Failed to create project '{name}'")
+        return result["project"]
+
+    def get_or_create_project(
+        self,
+        team_key: str,
+        project_name: str,
+    ) -> dict:
+        """Get an existing project by name or create one in the given team.
+
+        Returns a dict with ``id`` and ``name`` keys.
+        """
+        existing_id = self.get_project_id(project_name)
+        if existing_id is not None:
+            return {"id": existing_id, "name": project_name}
+        team_id = self.get_team_id(team_key)
+        return self.create_project(team_id, project_name)

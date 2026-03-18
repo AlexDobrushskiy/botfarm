@@ -1842,3 +1842,84 @@ class TestFetchIssueDetails:
 
         assert result.raw["id"] == "uuid-1"
         assert result.raw["identifier"] == "SMA-10"
+
+
+# ---------------------------------------------------------------------------
+# LinearClient.create_project / get_or_create_project
+# ---------------------------------------------------------------------------
+
+
+class TestLinearClientCreateProject:
+    def test_creates_project_successfully(self):
+        client = LinearClient(api_key="key")
+        resp = _graphql_response({
+            "projectCreate": {
+                "success": True,
+                "project": {"id": "proj-1", "name": "My Project"},
+            }
+        })
+        with patch.object(httpx, "post", return_value=resp) as mock_post:
+            result = client.create_project("team-uuid", "My Project")
+
+        assert result == {"id": "proj-1", "name": "My Project"}
+        body = mock_post.call_args.kwargs["json"]
+        assert body["variables"]["input"]["name"] == "My Project"
+        assert body["variables"]["input"]["teamIds"] == ["team-uuid"]
+
+    def test_creates_project_with_description(self):
+        client = LinearClient(api_key="key")
+        resp = _graphql_response({
+            "projectCreate": {
+                "success": True,
+                "project": {"id": "proj-2", "name": "Described"},
+            }
+        })
+        with patch.object(httpx, "post", return_value=resp) as mock_post:
+            result = client.create_project("team-uuid", "Described", description="A desc")
+
+        body = mock_post.call_args.kwargs["json"]
+        assert body["variables"]["input"]["description"] == "A desc"
+        assert result["id"] == "proj-2"
+
+    def test_failure_raises(self):
+        client = LinearClient(api_key="key")
+        resp = _graphql_response({
+            "projectCreate": {"success": False, "project": None}
+        })
+        with patch.object(httpx, "post", return_value=resp):
+            with pytest.raises(LinearAPIError, match="Failed to create project"):
+                client.create_project("team-uuid", "Bad")
+
+
+class TestLinearClientGetOrCreateProject:
+    def test_returns_existing_project(self):
+        client = LinearClient(api_key="key")
+        resp = _graphql_response({
+            "projects": {"nodes": [{"id": "existing-id", "name": "Existing"}]}
+        })
+        with patch.object(httpx, "post", return_value=resp):
+            result = client.get_or_create_project("SMA", "Existing")
+
+        assert result == {"id": "existing-id", "name": "Existing"}
+
+    def test_creates_when_not_found(self):
+        client = LinearClient(api_key="key")
+        # 1st call: get_project_id -> no nodes
+        lookup_resp = _graphql_response({"projects": {"nodes": []}})
+        # 2nd call: get_team_id -> team states
+        team_resp = _graphql_response({
+            "teams": {"nodes": [{"id": "team-uuid", "key": "SMA", "states": {"nodes": []}}]}
+        })
+        # 3rd call: create_project
+        create_resp = _graphql_response({
+            "projectCreate": {
+                "success": True,
+                "project": {"id": "new-id", "name": "New Project"},
+            }
+        })
+        with patch.object(
+            httpx, "post", side_effect=[lookup_resp, team_resp, create_resp]
+        ):
+            result = client.get_or_create_project("SMA", "New Project")
+
+        assert result == {"id": "new-id", "name": "New Project"}
