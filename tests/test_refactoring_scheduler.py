@@ -26,7 +26,7 @@ from botfarm.db import (
     update_task,
 )
 from botfarm.bugtracker.types import CreatedIssue
-from botfarm.linear import LinearAPIError, PollResult
+from botfarm.bugtracker import BugtrackerError as LinearAPIError, PollResult
 from botfarm.supervisor import Supervisor
 
 

@@ -94,11 +94,15 @@ def _run_claude_stage(
     log_file: Path | None = None,
     env: dict[str, str] | None = None,
     on_context_fill: ContextFillCallback | None = None,
+    bugtracker_type: str = "linear",
 ) -> StageResult:
     """Generic runner for any claude-executor stage using its DB template."""
     # Always inject worktree_path so prompt templates can anchor Claude
     # to the correct working directory (prevents git ops in the base repo).
     prompt_vars.setdefault("worktree_path", str(cwd))
+    # Inject bugtracker_type so prompt templates can reference it
+    # (e.g. "Work on {bugtracker_type} ticket {ticket_id}").
+    prompt_vars.setdefault("bugtracker_type", bugtracker_type)
     prompt = render_prompt(stage_tpl, **prompt_vars)
     result = _invoke_claude(
         prompt, cwd=cwd, max_turns=max_turns, log_file=log_file,

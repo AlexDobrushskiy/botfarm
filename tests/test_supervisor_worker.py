@@ -15,7 +15,7 @@ import pytest
 
 from botfarm.config import ProjectConfig
 from botfarm.db import get_events, get_task, get_ticket_history_entry, init_db, insert_event, insert_task, update_task
-from botfarm.linear import PollResult
+from botfarm.bugtracker import PollResult
 from botfarm.supervisor import (
     StopSlotResult,
     Supervisor,
@@ -2757,7 +2757,7 @@ class TestAddProject:
         fresh = self._make_fresh_config(tmp_path, extra_project=new_project)
 
         with patch("botfarm.config.load_config", return_value=fresh), \
-             patch("botfarm.linear.LinearPoller", side_effect=RuntimeError("boom")):
+             patch("botfarm.bugtracker.create_poller", side_effect=RuntimeError("boom")):
             supervisor._config.source_path = "/fake/config.yaml"
             with pytest.raises(RuntimeError, match="boom"):
                 supervisor.add_project("new-project")

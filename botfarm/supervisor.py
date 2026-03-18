@@ -47,7 +47,7 @@ from botfarm.db import (
     save_capacity_state,
     save_queue_entries,
 )
-from botfarm.linear import LinearClient, LinearPoller, create_pollers
+from botfarm.bugtracker import BugtrackerClient, BugtrackerPoller, create_client, create_pollers
 from botfarm.notifications import Notifier
 from botfarm.preflight import CheckResult, log_preflight_summary, repair_core_bare, run_preflight_checks
 from botfarm.slots import SlotManager, SlotState, _is_pid_alive
@@ -145,7 +145,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
 
         # Linear pollers keyed by project name
         pollers = create_pollers(config)
-        self._pollers: dict[str, LinearPoller] = {
+        self._pollers: dict[str, BugtrackerPoller] = {
             p.project_name: p for p in pollers
         }
 
@@ -176,8 +176,8 @@ class Supervisor(RecoveryMixin, OperationsMixin):
         # Codex (OpenAI) usage poller — optional, no-op if not configured
         self._codex_usage_poller = CodexUsagePoller(config=config.codex_usage)
 
-        # Linear client for capacity monitoring (uses owner API key)
-        self._linear_client = LinearClient(api_key=config.linear.api_key)
+        # Bugtracker client for capacity monitoring (uses owner API key)
+        self._linear_client = create_client(config)
 
         # Capacity monitoring state
         self._capacity_level = "normal"  # normal | warning | critical | blocked
@@ -242,21 +242,21 @@ class Supervisor(RecoveryMixin, OperationsMixin):
         # Environment overrides for supervisor-level git/gh commands
         self._git_env = build_git_env(config.identities)
 
-        # Coder Linear self-assignment
+        # Coder bugtracker self-assignment
         coder_key = config.identities.coder.linear_api_key
         if coder_key:
             try:
-                coder_linear = LinearClient(api_key=coder_key)
+                coder_linear = create_client(config, api_key=coder_key)
                 self._coder_viewer_id: str | None = coder_linear.get_viewer_id()
-                self._coder_linear: LinearClient | None = coder_linear
+                self._coder_linear: BugtrackerClient | None = coder_linear
                 logger.info("Cached coder Linear viewer ID: %s", self._coder_viewer_id)
             except Exception:
                 logger.warning("Failed to resolve coder viewer ID — auto-assignment disabled")
                 self._coder_viewer_id = None
-                self._coder_linear = None
+                self._coder_linear: BugtrackerClient | None = None
         else:
-            self._coder_viewer_id = None
-            self._coder_linear = None
+            self._coder_viewer_id: str | None = None
+            self._coder_linear: BugtrackerClient | None = None
 
         # Sub-managers
         self._worker_mgr = WorkerLifecycleManager(self)
@@ -837,7 +837,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
             self._conn.rollback()
             logger.exception("Failed to persist queue entries for %s", project_name)
 
-    def _auto_close_parent_issues(self, poller: LinearPoller, poll_result) -> None:
+    def _auto_close_parent_issues(self, poller: BugtrackerPoller, poll_result) -> None:
         """Move parent issues to Done when all children are complete."""
         done_status = self._config.linear.done_status
         for parent in poll_result.auto_close_parents:
@@ -903,7 +903,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
         project_name: str,
         slot: SlotState,
         issue,
-        poller: LinearPoller,
+        poller: BugtrackerPoller,
         prior: PriorContext | None = None,
     ) -> None:
         """Assign a ticket to a slot and spawn a worker subprocess."""

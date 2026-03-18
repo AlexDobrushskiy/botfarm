@@ -21,7 +21,7 @@ from botfarm.worker_claude import check_claude_available
 from botfarm.config import BotfarmConfig
 from botfarm.credentials import CredentialError, _load_token
 from botfarm.db import SCHEMA_VERSION, resolve_db_path
-from botfarm.linear import LinearAPIError, LinearClient
+from botfarm.bugtracker import BugtrackerError, create_client
 from botfarm.systemd_service import check_installed_unit_stale
 
 logger = logging.getLogger(__name__)
@@ -178,17 +178,17 @@ def check_worktree_dirs(config: BotfarmConfig) -> list[CheckResult]:
 
 
 def check_linear_api(config: BotfarmConfig) -> list[CheckResult]:
-    """Validate Linear API key, team existence, and configured status names."""
+    """Validate bugtracker API key, team existence, and configured status names."""
     results: list[CheckResult] = []
-    if not config.linear.api_key:
+    if not config.bugtracker.api_key:
         results.append(CheckResult(
             name="linear_api",
             passed=False,
-            message="Linear API key is not set",
+            message="Bugtracker API key is not set",
         ))
         return results
 
-    client = LinearClient(api_key=config.linear.api_key)
+    client = create_client(config)
 
     # Check each project's team and statuses
     checked_teams: dict[str, dict[str, str]] = {}
@@ -199,7 +199,7 @@ def check_linear_api(config: BotfarmConfig) -> list[CheckResult]:
         try:
             team_states = client.get_team_states(team_key)
             checked_teams[team_key] = team_states
-        except LinearAPIError as exc:
+        except BugtrackerError as exc:
             results.append(CheckResult(
                 name=f"linear_team:{team_key}",
                 passed=False,
@@ -215,10 +215,10 @@ def check_linear_api(config: BotfarmConfig) -> list[CheckResult]:
 
         # Verify configured status names exist in the team's workflow
         configured_statuses = {
-            "todo_status": config.linear.todo_status,
-            "in_progress_status": config.linear.in_progress_status,
-            "done_status": config.linear.done_status,
-            "in_review_status": config.linear.in_review_status,
+            "todo_status": config.bugtracker.todo_status,
+            "in_progress_status": config.bugtracker.in_progress_status,
+            "done_status": config.bugtracker.done_status,
+            "in_review_status": config.bugtracker.in_review_status,
         }
         for field, status_name in configured_statuses.items():
             if status_name not in team_states:
@@ -564,7 +564,7 @@ def check_identity_linear_api_key(config: BotfarmConfig) -> list[CheckResult]:
         if not api_key:
             continue  # Not configured — skip
 
-        client = LinearClient(api_key=api_key)
+        client = create_client(config, api_key=api_key)
         try:
             client.get_viewer_id()
             results.append(CheckResult(
@@ -572,7 +572,7 @@ def check_identity_linear_api_key(config: BotfarmConfig) -> list[CheckResult]:
                 passed=True,
                 message=f"OK — {role} Linear API key verified",
             ))
-        except LinearAPIError as exc:
+        except BugtrackerError as exc:
             results.append(CheckResult(
                 name=f"identity_linear_key:{role}",
                 passed=False,
