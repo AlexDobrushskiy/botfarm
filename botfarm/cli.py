@@ -739,11 +739,15 @@ agents:
   #   Investigation:
   #     implement: 30
   timeout_grace_seconds: 10
-  codex_reviewer_enabled: false
-  codex_reviewer_model: ""              # e.g. "o3", "o4-mini", or empty for default
-  codex_reviewer_reasoning_effort: "medium"  # none, low, medium, high, xhigh — or empty for default
-  codex_reviewer_timeout_minutes: 15    # separate from Claude review timeout
-  codex_reviewer_skip_on_reiteration: true  # skip codex on review iterations 2+
+  adapters:
+    claude:
+      enabled: true
+    codex:
+      enabled: false
+      model: ""                    # e.g. "o3", "o4-mini", or empty for default
+      timeout_minutes: 15          # separate from Claude review timeout
+      reasoning_effort: "medium"   # none, low, medium, high, xhigh — or empty for default
+      skip_on_reiteration: true    # skip codex on review iterations 2+
 
 # Separate coder/reviewer GitHub identities.
 # Without this, all PRs and reviews use your personal GitHub account.

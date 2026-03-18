@@ -17,11 +17,12 @@ import signal
 import sqlite3
 import subprocess
 import time
+import dataclasses
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from botfarm.config import IdentitiesConfig, resolve_stage_timeout
+from botfarm.config import AdapterConfig, IdentitiesConfig, resolve_stage_timeout
 from botfarm.db import (
     get_stage_runs,
     get_task_by_ticket,
@@ -317,11 +318,7 @@ def _worker_entry(
     slot_db_path: str | None = None,
     pause_event: multiprocessing.Event | None = None,
     identities: IdentitiesConfig | None = None,
-    codex_reviewer_enabled: bool = False,
-    codex_reviewer_model: str = "",
-    codex_reviewer_reasoning_effort: str = "medium",
-    codex_reviewer_timeout_minutes: int = 15,
-    codex_reviewer_skip_on_reiteration: bool = True,
+    agent_adapters_config: dict[str, dict] | None = None,
     prior_context: str = "",
     merge_main_before_resume: bool = False,
 ) -> None:
@@ -336,6 +333,10 @@ def _worker_entry(
 
     When ``resume_from_stage`` is set, the pipeline skips stages that
     were already completed and resumes from the specified stage.
+
+    ``agent_adapters_config`` is a dict mapping adapter names to their
+    config dicts (serialized AdapterConfig fields).  It replaces the
+    former individual codex_reviewer_* kwargs.
     """
     # Ignore SIGINT so only the supervisor handles Ctrl-C.
     signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -365,6 +366,12 @@ def _worker_entry(
     db_path = resolve_db_path()
     conn = init_db(db_path)
 
+    # Reconstruct AdapterConfig objects from serialized dicts.
+    adapters_cfg: dict[str, AdapterConfig] = {}
+    if agent_adapters_config:
+        for name, cfg_dict in agent_adapters_config.items():
+            adapters_cfg[name] = AdapterConfig(**cfg_dict)
+
     # Read latest runtime config from DB to pick up dashboard changes
     # that occurred between supervisor snapshot and worker spawn.
     try:
@@ -373,18 +380,22 @@ def _worker_entry(
             max_review_iterations = int(rt["max_review_iterations"])
         if "max_ci_retries" in rt:
             max_ci_retries = int(rt["max_ci_retries"])
-        if "codex_reviewer_enabled" in rt:
-            codex_reviewer_enabled = bool(rt["codex_reviewer_enabled"])
-        if "codex_reviewer_model" in rt:
-            codex_reviewer_model = str(rt["codex_reviewer_model"])
-        if "codex_reviewer_reasoning_effort" in rt:
-            codex_reviewer_reasoning_effort = str(rt["codex_reviewer_reasoning_effort"])
-        if "codex_reviewer_timeout_minutes" in rt:
-            codex_reviewer_timeout_minutes = int(rt["codex_reviewer_timeout_minutes"])
-        if "codex_reviewer_skip_on_reiteration" in rt:
-            codex_reviewer_skip_on_reiteration = bool(rt["codex_reviewer_skip_on_reiteration"])
         if "max_merge_conflict_retries" in rt:
             max_merge_conflict_retries = int(rt["max_merge_conflict_retries"])
+
+        # Apply runtime overrides for codex adapter config
+        codex_ac = adapters_cfg.get("codex")
+        if codex_ac:
+            if "codex_reviewer_enabled" in rt:
+                codex_ac.enabled = bool(rt["codex_reviewer_enabled"])
+            if "codex_reviewer_model" in rt:
+                codex_ac.model = str(rt["codex_reviewer_model"])
+            if "codex_reviewer_reasoning_effort" in rt:
+                codex_ac.reasoning_effort = str(rt["codex_reviewer_reasoning_effort"])
+            if "codex_reviewer_timeout_minutes" in rt:
+                codex_ac.timeout_minutes = int(rt["codex_reviewer_timeout_minutes"])
+            if "codex_reviewer_skip_on_reiteration" in rt:
+                codex_ac.skip_on_reiteration = bool(rt["codex_reviewer_skip_on_reiteration"])
     except Exception:
         logger.debug("Could not read runtime config from DB, using defaults")
 
@@ -409,11 +420,7 @@ def _worker_entry(
             slot_db_path=slot_db_path,
             pause_event=pause_event,
             identities=identities,
-            codex_reviewer_enabled=codex_reviewer_enabled,
-            codex_reviewer_model=codex_reviewer_model,
-            codex_reviewer_reasoning_effort=codex_reviewer_reasoning_effort,
-            codex_reviewer_timeout_minutes=codex_reviewer_timeout_minutes,
-            codex_reviewer_skip_on_reiteration=codex_reviewer_skip_on_reiteration,
+            agent_adapters_config=adapters_cfg,
             prior_context=prior_context,
             merge_main_before_resume=merge_main_before_resume,
         )
@@ -705,11 +712,10 @@ class WorkerLifecycleManager:
                 "slot_db_path": slot_db,
                 "pause_event": pause_event,
                 "identities": self._config.identities,
-                "codex_reviewer_enabled": self._config.agents.codex_reviewer_enabled,
-                "codex_reviewer_model": self._config.agents.codex_reviewer_model,
-                "codex_reviewer_reasoning_effort": self._config.agents.codex_reviewer_reasoning_effort,
-                "codex_reviewer_timeout_minutes": self._config.agents.codex_reviewer_timeout_minutes,
-                "codex_reviewer_skip_on_reiteration": self._config.agents.codex_reviewer_skip_on_reiteration,
+                "agent_adapters_config": {
+                    name: dataclasses.asdict(ac)
+                    for name, ac in self._config.agents.adapters.items()
+                },
                 "prior_context": prior_context,
                 "merge_main_before_resume": merge_main_before_resume,
             },

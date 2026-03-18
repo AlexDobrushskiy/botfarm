@@ -135,15 +135,23 @@ agents:
     review: 30                # default: 30
     fix: 60                   # default: 60
   timeout_grace_seconds: 10   # Grace period after timeout before killing (default: 10)
-  codex_reviewer_enabled: false          # Enable Codex as a secondary reviewer (default: false)
-  codex_reviewer_model: ""               # Codex model, e.g. "o3", "o4-mini", or empty for default
-  codex_reviewer_timeout_minutes: 15     # Timeout for Codex review stage (default: 15)
-  codex_reviewer_skip_on_reiteration: true  # Skip codex on review iterations 2+ (default: true)
+  adapters:                   # Per-agent-adapter configuration
+    claude:
+      enabled: true           # Claude is always the primary agent
+    codex:
+      enabled: false          # Enable Codex as a secondary reviewer (default: false)
+      model: ""               # Codex model, e.g. "o3", "o4-mini", or empty for default
+      timeout_minutes: 15     # Timeout for Codex review stage (default: 15)
+      reasoning_effort: "medium"  # none, low, medium, high, xhigh (default: medium)
+      skip_on_reiteration: true   # Skip codex on review iterations 2+ (default: true)
 ```
 
 Valid stage names for `timeout_minutes`: `implement`, `review`, `fix`, `pr_checks`, `merge`.
 
-When `codex_reviewer_enabled` is `true`, the supervisor validates at startup that:
+**Backward compatibility:** Legacy `codex_reviewer_*` flat fields (e.g. `codex_reviewer_enabled: true`)
+are still accepted and automatically migrated to `adapters.codex`. A deprecation warning is logged.
+
+When `adapters.codex.enabled` is `true`, the supervisor validates at startup that:
 - The `codex` binary is on PATH
 - `OPENAI_API_KEY` is set or `~/.codex/auth.json` exists
 
