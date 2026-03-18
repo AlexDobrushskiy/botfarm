@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from botfarm.agent import ContextFillCallback
+from botfarm.agent import AgentResult, ContextFillCallback
 from botfarm.codex import CodexResult
 from botfarm.process import terminate_process_group as _terminate_process_group
 
@@ -440,12 +440,64 @@ class StageResult:
 
     stage: str
     success: bool
-    claude_result: ClaudeResult | None = None
-    codex_result: CodexResult | None = None
+    agent_result: AgentResult | None = None
     pr_url: str | None = None
     error: str | None = None
     review_approved: bool | None = None
     claude_review_approved: bool | None = None
+    # Secondary agent result for dual-reviewer flows (e.g. Codex review
+    # running alongside Claude review).
+    secondary_agent_result: AgentResult | None = None
+
+    # ------------------------------------------------------------------
+    # Backward-compatibility read-only properties
+    # ------------------------------------------------------------------
+
+    @property
+    def claude_result(self) -> ClaudeResult | None:
+        """Reconstruct a :class:`ClaudeResult` from *agent_result*.
+
+        .. deprecated:: Use ``agent_result`` directly.
+        """
+        ar = self.agent_result
+        if ar is None:
+            return None
+        return ClaudeResult(
+            session_id=ar.session_id,
+            num_turns=ar.num_turns,
+            duration_seconds=ar.duration_seconds,
+            exit_subtype=ar.extra.get("exit_subtype", ""),
+            result_text=ar.result_text,
+            is_error=ar.is_error,
+            input_tokens=ar.input_tokens,
+            output_tokens=ar.output_tokens,
+            cache_read_input_tokens=ar.extra.get("cache_read_input_tokens", 0),
+            cache_creation_input_tokens=ar.extra.get("cache_creation_input_tokens", 0),
+            total_cost_usd=ar.cost_usd,
+            context_fill_pct=ar.context_fill_pct,
+            model_usage_json=ar.extra.get("model_usage_json"),
+        )
+
+    @property
+    def codex_result(self) -> CodexResult | None:
+        """Reconstruct a :class:`CodexResult` from *secondary_agent_result*.
+
+        .. deprecated:: Use ``secondary_agent_result`` directly.
+        """
+        ar = self.secondary_agent_result
+        if ar is None:
+            return None
+        return CodexResult(
+            thread_id=ar.session_id,
+            num_turns=ar.num_turns,
+            duration_seconds=ar.duration_seconds,
+            result_text=ar.result_text,
+            is_error=ar.is_error,
+            input_tokens=ar.input_tokens,
+            output_tokens=ar.output_tokens,
+            cached_input_tokens=ar.extra.get("cache_read_input_tokens", 0),
+            model=ar.extra.get("model", ""),
+        )
 
 
 # ---------------------------------------------------------------------------

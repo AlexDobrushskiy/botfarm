@@ -99,6 +99,8 @@ def _codex_result_to_agent_result(
         context_fill_pct=None,
         extra={
             "thread_id": cr.thread_id,
-            "cached_input_tokens": cr.cached_input_tokens,
+            "cache_read_input_tokens": cr.cached_input_tokens,
+            "cache_creation_input_tokens": 0,
+            "model": model or cr.model or "",
         },
     )

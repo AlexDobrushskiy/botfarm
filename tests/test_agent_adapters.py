@@ -192,7 +192,7 @@ class TestCodexAdapter:
         assert result.output_tokens == 400
         assert result.context_fill_pct is None
         assert result.extra["thread_id"] == "thread-xyz"
-        assert result.extra["cached_input_tokens"] == 150
+        assert result.extra["cache_read_input_tokens"] == 150
 
     @patch("botfarm.agent_codex.run_codex_streaming")
     def test_run_model_override(self, mock_run, tmp_path: Path):
@@ -303,7 +303,7 @@ class TestCodexResultNormalization:
         assert ar.session_id == "thread-1"
         assert ar.context_fill_pct is None
         assert ar.extra["thread_id"] == "thread-1"
-        assert ar.extra["cached_input_tokens"] == 200
+        assert ar.extra["cache_read_input_tokens"] == 200
         # Cost should be calculated from pricing table
         assert ar.cost_usd > 0.0
 

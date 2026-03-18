@@ -10,6 +10,9 @@ import json
 import sqlite3
 from pathlib import Path
 
+from botfarm.agent import AgentResult
+from botfarm.agent_claude import _claude_result_to_agent_result
+from botfarm.agent_codex import _codex_result_to_agent_result as _codex_to_ar
 from botfarm.codex import CodexResult
 from botfarm.config import (
     BotfarmConfig,
@@ -130,6 +133,35 @@ def make_codex_result(text: str = "done", is_error: bool = False, thread_id: str
         output_tokens=500,
         cached_input_tokens=200,
     )
+
+
+def make_agent_result(
+    text: str = "done",
+    is_error: bool = False,
+    session_id: str = "s-test",
+    num_turns: int = 5,
+    duration_seconds: float = 15.0,
+    **extra_fields,
+) -> AgentResult:
+    """Build an AgentResult with sensible defaults."""
+    return AgentResult(
+        session_id=session_id,
+        num_turns=num_turns,
+        duration_seconds=duration_seconds,
+        result_text=text,
+        is_error=is_error,
+        extra={"exit_subtype": "tool_use", **extra_fields},
+    )
+
+
+def claude_result_to_agent(cr: "ClaudeResult") -> AgentResult:
+    """Convert a ClaudeResult to AgentResult (convenience for tests)."""
+    return _claude_result_to_agent_result(cr)
+
+
+def codex_result_to_agent(cr: CodexResult, model: str | None = None) -> AgentResult:
+    """Convert a CodexResult to AgentResult (convenience for tests)."""
+    return _codex_to_ar(cr, model)
 
 
 # ---------------------------------------------------------------------------

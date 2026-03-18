@@ -32,7 +32,11 @@ from botfarm.worker import (
     _run_review,
     _submit_aggregate_review,
 )
-from tests.helpers import make_claude_result as _make_claude_result, make_codex_result as _make_codex_result
+from tests.helpers import (
+    codex_result_to_agent,
+    make_claude_result as _make_claude_result,
+    make_codex_result as _make_codex_result,
+)
 
 
 PR_URL = "https://github.com/owner/repo/pull/42"
@@ -41,6 +45,22 @@ PR_URL = "https://github.com/owner/repo/pull/42"
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _make_codex_stage_result(
+    codex_result: CodexResult,
+    success: bool = True,
+    review_approved: bool | None = None,
+    error: str | None = None,
+) -> StageResult:
+    """Build a StageResult for a codex_review stage using agent_result."""
+    return StageResult(
+        stage="codex_review",
+        success=success,
+        agent_result=codex_result_to_agent(codex_result),
+        review_approved=review_approved,
+        error=error,
+    )
 
 
 def _make_review_stage_tpl() -> StageTemplate:
@@ -107,10 +127,9 @@ class TestCodexFailureFallback:
     def test_codex_error_fallback(self, mock_claude, mock_codex, mock_submit, tmp_path):
         """When Codex returns an error, Claude's verdict stands (fail-open)."""
         mock_claude.return_value = _make_claude_result("VERDICT: APPROVED")
-        mock_codex.return_value = StageResult(
-            stage="codex_review",
+        mock_codex.return_value = _make_codex_stage_result(
+            _make_codex_result("error", is_error=True),
             success=False,
-            codex_result=_make_codex_result("error", is_error=True),
             error="Codex reported error",
         )
 
@@ -335,10 +354,8 @@ class TestReviewStageDualReviewer:
     @patch("botfarm.worker_stages._invoke_claude")
     def test_both_approve(self, mock_claude, mock_codex, mock_submit, tmp_path):
         mock_claude.return_value = _make_claude_result("VERDICT: APPROVED")
-        mock_codex.return_value = StageResult(
-            stage="codex_review",
-            success=True,
-            codex_result=_make_codex_result("VERDICT: APPROVED"),
+        mock_codex.return_value = _make_codex_stage_result(
+            _make_codex_result("VERDICT: APPROVED"),
             review_approved=True,
         )
 
@@ -360,10 +377,8 @@ class TestReviewStageDualReviewer:
     def test_codex_blocks(self, mock_claude, mock_codex, mock_submit, tmp_path):
         """Codex requests changes while Claude approves — result is blocked."""
         mock_claude.return_value = _make_claude_result("VERDICT: APPROVED")
-        mock_codex.return_value = StageResult(
-            stage="codex_review",
-            success=True,
-            codex_result=_make_codex_result("VERDICT: CHANGES_REQUESTED"),
+        mock_codex.return_value = _make_codex_stage_result(
+            _make_codex_result("VERDICT: CHANGES_REQUESTED"),
             review_approved=False,
         )
 
@@ -383,10 +398,8 @@ class TestReviewStageDualReviewer:
     def test_claude_error_stops_pipeline(self, mock_claude, mock_codex, mock_submit, tmp_path):
         """Claude error stops pipeline — result is failure, no aggregate review."""
         mock_claude.return_value = _make_claude_result("Error", is_error=True)
-        mock_codex.return_value = StageResult(
-            stage="codex_review",
-            success=True,
-            codex_result=_make_codex_result("VERDICT: APPROVED"),
+        mock_codex.return_value = _make_codex_stage_result(
+            _make_codex_result("VERDICT: APPROVED"),
             review_approved=True,
         )
 
@@ -405,10 +418,8 @@ class TestReviewStageDualReviewer:
     def test_claude_changes_codex_approved(self, mock_claude, mock_codex, mock_submit, tmp_path):
         """Claude requests changes, Codex approves — result is still blocked."""
         mock_claude.return_value = _make_claude_result("VERDICT: CHANGES_REQUESTED")
-        mock_codex.return_value = StageResult(
-            stage="codex_review",
-            success=True,
-            codex_result=_make_codex_result("VERDICT: APPROVED"),
+        mock_codex.return_value = _make_codex_stage_result(
+            _make_codex_result("VERDICT: APPROVED"),
             review_approved=True,
         )
 
@@ -437,10 +448,8 @@ class TestReviewFixLoopCodexRequestsChanges:
     ):
         """When Codex requests changes, review_approved is False, triggering fix."""
         mock_claude.return_value = _make_claude_result("VERDICT: APPROVED")
-        mock_codex.return_value = StageResult(
-            stage="codex_review",
-            success=True,
-            codex_result=_make_codex_result("VERDICT: CHANGES_REQUESTED"),
+        mock_codex.return_value = _make_codex_stage_result(
+            _make_codex_result("VERDICT: CHANGES_REQUESTED"),
             review_approved=False,
         )
 
@@ -462,7 +471,7 @@ class TestReviewFixLoopCodexRequestsChanges:
 class TestRunCodexReview:
     """Test the _run_codex_review function."""
 
-    @patch("botfarm.worker_stages.run_codex_streaming")
+    @patch("botfarm.codex.run_codex_streaming")
     def test_success_approved(self, mock_codex, tmp_path):
         mock_codex.return_value = _make_codex_result("VERDICT: APPROVED")
 
@@ -471,9 +480,9 @@ class TestRunCodexReview:
         assert result.success is True
         assert result.stage == "codex_review"
         assert result.review_approved is True
-        assert result.codex_result is not None
+        assert result.agent_result is not None
 
-    @patch("botfarm.worker_stages.run_codex_streaming")
+    @patch("botfarm.codex.run_codex_streaming")
     def test_success_changes_requested(self, mock_codex, tmp_path):
         mock_codex.return_value = _make_codex_result("VERDICT: CHANGES_REQUESTED")
 
@@ -482,7 +491,7 @@ class TestRunCodexReview:
         assert result.success is True
         assert result.review_approved is False
 
-    @patch("botfarm.worker_stages.run_codex_streaming")
+    @patch("botfarm.codex.run_codex_streaming")
     def test_error_returns_failure(self, mock_codex, tmp_path):
         mock_codex.return_value = _make_codex_result("Error", is_error=True)
 
@@ -491,7 +500,7 @@ class TestRunCodexReview:
         assert result.success is False
         assert "Codex reported error" in result.error
 
-    @patch("botfarm.worker_stages.run_codex_streaming")
+    @patch("botfarm.codex.run_codex_streaming")
     def test_prompt_contains_codex_prefix(self, mock_codex, tmp_path):
         mock_codex.return_value = _make_codex_result("VERDICT: APPROVED")
 
@@ -500,7 +509,7 @@ class TestRunCodexReview:
         prompt = mock_codex.call_args.kwargs.get("prompt") or mock_codex.call_args[0][0]
         assert "CODEX: " in prompt
 
-    @patch("botfarm.worker_stages.run_codex_streaming")
+    @patch("botfarm.codex.run_codex_streaming")
     def test_prompt_no_gh_pr_review(self, mock_codex, tmp_path):
         mock_codex.return_value = _make_codex_result("VERDICT: APPROVED")
 
@@ -509,7 +518,7 @@ class TestRunCodexReview:
         prompt = mock_codex.call_args.kwargs.get("prompt") or mock_codex.call_args[0][0]
         assert "Do NOT submit a final review" in prompt
 
-    @patch("botfarm.worker_stages.run_codex_streaming")
+    @patch("botfarm.codex.run_codex_streaming")
     def test_prompt_fetches_existing_comments(self, mock_codex, tmp_path):
         mock_codex.return_value = _make_codex_result("VERDICT: APPROVED")
 
@@ -518,7 +527,7 @@ class TestRunCodexReview:
         prompt = mock_codex.call_args.kwargs.get("prompt") or mock_codex.call_args[0][0]
         assert "gh api repos/owner/repo/pulls/42/comments" in prompt
 
-    @patch("botfarm.worker_stages.run_codex_streaming")
+    @patch("botfarm.codex.run_codex_streaming")
     def test_model_and_timeout_passed(self, mock_codex, tmp_path):
         mock_codex.return_value = _make_codex_result("VERDICT: APPROVED")
 
@@ -538,16 +547,17 @@ class TestRunCodexReview:
 
 
 class TestStageResultCodexField:
-    """Verify StageResult has the codex_result field."""
+    """Verify StageResult codex_result backward-compat property."""
 
     def test_default_none(self):
         sr = StageResult(stage="review", success=True)
         assert sr.codex_result is None
 
-    def test_with_codex_result(self):
+    def test_with_secondary_agent_result(self):
         cr = _make_codex_result("VERDICT: APPROVED")
-        sr = StageResult(stage="review", success=True, codex_result=cr)
-        assert sr.codex_result is cr
+        ar = codex_result_to_agent(cr)
+        sr = StageResult(stage="review", success=True, secondary_agent_result=ar)
+        assert sr.codex_result is not None
         assert sr.codex_result.thread_id == "t-test"
 
 
@@ -565,10 +575,8 @@ class TestDBTemplateWithCodex:
     def test_both_approve(self, mock_claude, mock_codex, mock_submit, tmp_path):
         """DB template + Codex enabled: both approve → merged approved."""
         mock_claude.return_value = _make_claude_result("VERDICT: APPROVED")
-        mock_codex.return_value = StageResult(
-            stage="codex_review",
-            success=True,
-            codex_result=_make_codex_result("VERDICT: APPROVED"),
+        mock_codex.return_value = _make_codex_stage_result(
+            _make_codex_result("VERDICT: APPROVED"),
             review_approved=True,
         )
 
@@ -591,10 +599,8 @@ class TestDBTemplateWithCodex:
     def test_codex_blocks(self, mock_claude, mock_codex, mock_submit, tmp_path):
         """DB template + Codex requests changes → merged blocked."""
         mock_claude.return_value = _make_claude_result("VERDICT: APPROVED")
-        mock_codex.return_value = StageResult(
-            stage="codex_review",
-            success=True,
-            codex_result=_make_codex_result("VERDICT: CHANGES_REQUESTED"),
+        mock_codex.return_value = _make_codex_stage_result(
+            _make_codex_result("VERDICT: CHANGES_REQUESTED"),
             review_approved=False,
         )
 
@@ -615,10 +621,9 @@ class TestDBTemplateWithCodex:
     def test_codex_error_fallback(self, mock_claude, mock_codex, mock_submit, tmp_path):
         """DB template + Codex error → Claude verdict stands (fail-open)."""
         mock_claude.return_value = _make_claude_result("VERDICT: APPROVED")
-        mock_codex.return_value = StageResult(
-            stage="codex_review",
+        mock_codex.return_value = _make_codex_stage_result(
+            _make_codex_result("error", is_error=True),
             success=False,
-            codex_result=_make_codex_result("error", is_error=True),
             error="Codex reported error",
         )
 
@@ -639,10 +644,8 @@ class TestDBTemplateWithCodex:
     def test_claude_error_stops(self, mock_claude, mock_codex, mock_submit, tmp_path):
         """DB template + Claude error → result is failure, no aggregate review."""
         mock_claude.return_value = _make_claude_result("Error", is_error=True)
-        mock_codex.return_value = StageResult(
-            stage="codex_review",
-            success=True,
-            codex_result=_make_codex_result("VERDICT: APPROVED"),
+        mock_codex.return_value = _make_codex_stage_result(
+            _make_codex_result("VERDICT: APPROVED"),
             review_approved=True,
         )
 
@@ -679,10 +682,8 @@ class TestDBTemplateWithCodex:
     def test_prompt_has_no_submit_instruction(self, mock_claude, mock_codex, mock_submit, tmp_path):
         """DB template + Codex: prompt includes 'Do NOT submit' instruction."""
         mock_claude.return_value = _make_claude_result("VERDICT: APPROVED")
-        mock_codex.return_value = StageResult(
-            stage="codex_review",
-            success=True,
-            codex_result=_make_codex_result("VERDICT: APPROVED"),
+        mock_codex.return_value = _make_codex_stage_result(
+            _make_codex_result("VERDICT: APPROVED"),
             review_approved=True,
         )
 
@@ -737,10 +738,8 @@ class TestParallelReviewExecution:
 
         def slow_codex(*args, **kwargs):
             barrier.wait()  # wait until claude also starts
-            return StageResult(
-                stage="codex_review",
-                success=True,
-                codex_result=_make_codex_result("VERDICT: APPROVED"),
+            return _make_codex_stage_result(
+                _make_codex_result("VERDICT: APPROVED"),
                 review_approved=True,
             )
 
@@ -764,10 +763,9 @@ class TestParallelReviewExecution:
     def test_both_fail_returns_claude_error(self, mock_claude, mock_codex, mock_submit, tmp_path):
         """When both reviewers fail, Claude's error is reported."""
         mock_claude.return_value = _make_claude_result("Error", is_error=True)
-        mock_codex.return_value = StageResult(
-            stage="codex_review",
+        mock_codex.return_value = _make_codex_stage_result(
+            _make_codex_result("Error", is_error=True),
             success=False,
-            codex_result=_make_codex_result("Error", is_error=True),
             error="Codex error",
         )
 
