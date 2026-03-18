@@ -414,7 +414,7 @@ class TestAppendProjectToConfig:
 
     def test_creates_projects_list_if_missing(self, tmp_path):
         config_path = tmp_path / "config.yaml"
-        config_path.write_text("linear:\n  api_key: test\n")
+        config_path.write_text("bugtracker:\n  api_key: test\n")
         project = {
             "name": "proj",
             "team": "SMA",
@@ -431,7 +431,7 @@ class TestAppendProjectToConfig:
 
     def test_raises_on_non_list_projects(self, tmp_path):
         config_path = tmp_path / "config.yaml"
-        config_path.write_text("projects: not-a-list\nlinear:\n  api_key: test\n")
+        config_path.write_text("projects: not-a-list\nbugtracker:\n  api_key: test\n")
         project = {
             "name": "proj",
             "team": "SMA",

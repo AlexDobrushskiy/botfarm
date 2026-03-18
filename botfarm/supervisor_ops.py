@@ -67,7 +67,7 @@ class OperationsMixin:
     def _handle_completed_slot(self, slot: SlotState) -> None:
         """Update Linear for a completed slot and free it."""
         project = slot.project
-        linear_cfg = self._config.bugtracker
+        bt_cfg = self._config.bugtracker
         poller = self._pollers.get(project)
         if poller and slot.ticket_id:
             if poller.is_issue_terminal(slot.ticket_id):
@@ -86,11 +86,11 @@ class OperationsMixin:
                             from botfarm.worker import _detect_no_pr_needed
                             no_pr = _detect_no_pr_needed(task["comments"])
                 if no_pr:
-                    target_status = linear_cfg.done_status
+                    target_status = bt_cfg.done_status
                 elif self._check_pr_status(slot)[0] == "merged":
-                    target_status = linear_cfg.done_status
+                    target_status = bt_cfg.done_status
                 else:
-                    target_status = linear_cfg.in_review_status
+                    target_status = bt_cfg.in_review_status
 
                 try:
                     poller.move_issue(slot.ticket_id, target_status)
@@ -103,7 +103,7 @@ class OperationsMixin:
                         "Failed to move %s to '%s'", slot.ticket_id, target_status,
                     )
 
-            if linear_cfg.comment_on_completion and not slot.no_pr_reason:
+            if bt_cfg.comment_on_completion and not slot.no_pr_reason:
                 self._post_completion_comment(poller, slot)
 
             if slot.no_pr_reason:
@@ -156,7 +156,7 @@ class OperationsMixin:
             return
 
         project = slot.project
-        linear_cfg = self._config.bugtracker
+        bt_cfg = self._config.bugtracker
         poller = self._pollers.get(project)
         if poller and slot.ticket_id:
             if poller.is_issue_terminal(slot.ticket_id):
@@ -177,7 +177,7 @@ class OperationsMixin:
                         slot.ticket_id,
                     )
 
-                if linear_cfg.comment_on_failure:
+                if bt_cfg.comment_on_failure:
                     self._post_failure_comment(poller, slot)
 
         # Webhook notification

@@ -383,8 +383,9 @@ def create_default_config(config_path: Path = DEFAULT_CONFIG_PATH) -> Path:
 
 
 def _parse_project(data: dict) -> ProjectConfig:
-    team = data.get("team", "")
-    tracker_project = data.get("tracker_project", "")
+    # Accept both old (linear_team) and new (team) field names.
+    team = data.get("team") or data.get("linear_team", "")
+    tracker_project = data.get("tracker_project") or data.get("linear_project", "")
 
     required_base = {"name", "base_dir", "worktree_prefix", "slots"}
     missing = required_base - set(data.keys())
@@ -647,7 +648,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
     data = _expand_env_recursive(data)
 
     known_keys = {
-        "projects", "bugtracker", "database", "usage_limits",
+        "projects", "bugtracker", "linear", "database", "usage_limits",
         "dashboard", "agents", "logging", "notifications",
         "identities", "refactoring_analysis", "codex_usage",
         "daily_summary", "start_paused",
@@ -663,11 +664,20 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
 
     projects = [_parse_project(p) for p in data["projects"]]
 
-    bt_data = data.get("bugtracker", {})
-    if not isinstance(bt_data, dict):
-        bt_data = {}
+    # Support both 'bugtracker:' (new) and 'linear:' (legacy) YAML sections.
+    # 'bugtracker:' takes precedence if both are present.
+    if "bugtracker" in data:
+        bt_data = data["bugtracker"]
+        if not isinstance(bt_data, dict):
+            bt_data = {}
+    else:
+        bt_data = data.get("linear", {})
+        if not isinstance(bt_data, dict):
+            bt_data = {}
+        # Legacy linear: section implies type=linear
+        bt_data.setdefault("type", "linear")
 
-    bt_section = "bugtracker"
+    bt_section = "bugtracker" if "bugtracker" in data else "linear"
 
     cap_data = bt_data.get("capacity_monitoring", {})
     if not isinstance(cap_data, dict):
