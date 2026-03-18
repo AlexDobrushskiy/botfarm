@@ -484,7 +484,12 @@ def _run_review(
     # --- Single-reviewer mode (no Codex) ---
     if not codex_enabled:
         if stage_tpl is not None and registry is not None:
-            adapter = registry[stage_tpl.executor_type]
+            adapter = registry.get(stage_tpl.executor_type)
+            if adapter is None:
+                raise ValueError(
+                    f"No adapter registered for executor_type={stage_tpl.executor_type!r} "
+                    f"in review stage. Available: {sorted(registry)}"
+                )
             prompt_vars = {
                 "pr_url": pr_url,
                 "pr_number": number,
