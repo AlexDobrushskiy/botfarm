@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from botfarm.agent import ContextFillCallback
 from botfarm.codex import CodexResult
 from botfarm.process import terminate_process_group as _terminate_process_group
 
@@ -119,8 +120,7 @@ def _compute_context_fill(
     return None
 
 
-# Type alias for the per-turn context fill callback.
-ContextFillCallback = Callable[[int, float], None]
+# ContextFillCallback is now defined in botfarm.agent and imported above.
 
 
 def _compute_turn_context_fill(
