@@ -6,7 +6,7 @@ import logging
 import os
 import re
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import yaml
@@ -264,7 +264,7 @@ CODEX_ADAPTER_DEFAULTS = AdapterConfig(timeout_minutes=15, reasoning_effort="med
 def default_adapters() -> dict[str, AdapterConfig]:
     return {
         "claude": AdapterConfig(enabled=True),
-        "codex": AdapterConfig(timeout_minutes=15, reasoning_effort="medium"),
+        "codex": replace(CODEX_ADAPTER_DEFAULTS),
     }
 
 
@@ -1209,7 +1209,7 @@ def apply_config_updates(config: BotfarmConfig, updates: dict) -> None:
                 obj.timeout_minutes.update(value)
             elif section == "agents" and key.startswith("codex_reviewer_"):
                 # Route legacy codex_reviewer_* keys to adapters["codex"]
-                codex_cfg = obj.adapters.setdefault("codex", AdapterConfig())
+                codex_cfg = obj.adapters.setdefault("codex", replace(CODEX_ADAPTER_DEFAULTS))
                 attr = _CODEX_LEGACY_FIELD_MAP.get(key)
                 if attr:
                     if isinstance(value, (int, float)) and not isinstance(value, bool):
