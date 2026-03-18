@@ -10,7 +10,7 @@ from click.testing import CliRunner
 
 from botfarm.cli import main
 from botfarm.db import init_db
-from botfarm.linear_cleanup import CleanupCandidate, CleanupResult, CleanupService, CooldownError
+from botfarm.bugtracker.linear.cleanup import CleanupCandidate, CleanupResult, CleanupService, CooldownError
 
 
 @pytest.fixture()
@@ -49,13 +49,13 @@ def _make_config(api_key="test-key", team_key="SMA"):
         projects=[
             ProjectConfig(
                 name="test-proj",
-                linear_team=team_key,
+                team=team_key,
                 base_dir="/tmp/test",
                 worktree_prefix="test-slot-",
                 slots=[1],
             )
         ],
-        linear=LinearConfig(api_key=api_key),
+        bugtracker=LinearConfig(api_key=api_key),
         identities=IdentitiesConfig(
             coder=CoderIdentity(),
             reviewer=ReviewerIdentity(),
@@ -241,22 +241,22 @@ class TestCleanupFilterOptions:
             projects=[
                 ProjectConfig(
                     name="proj-a",
-                    linear_team="TEAM-A",
-                    linear_project="Project Alpha",
+                    team="TEAM-A",
+                    tracker_project="Project Alpha",
                     base_dir="/tmp/a",
                     worktree_prefix="a-slot-",
                     slots=[1],
                 ),
                 ProjectConfig(
                     name="proj-b",
-                    linear_team="TEAM-B",
-                    linear_project="Project Beta",
+                    team="TEAM-B",
+                    tracker_project="Project Beta",
                     base_dir="/tmp/b",
                     worktree_prefix="b-slot-",
                     slots=[2],
                 ),
             ],
-            linear=LinearConfig(api_key="test-key"),
+            bugtracker=LinearConfig(api_key="test-key"),
             identities=IdentitiesConfig(
                 coder=CoderIdentity(),
                 reviewer=ReviewerIdentity(),
@@ -286,7 +286,7 @@ class TestCleanupFilterOptions:
     def test_project_name_normalized_to_linear_project(
         self, runner, db_file, monkeypatch
     ):
-        """When --project matches by p.name, project is rewritten to p.linear_project."""
+        """When --project matches by p.name, project is rewritten to p.tracker_project."""
         from botfarm.config import (
             BotfarmConfig,
             IdentitiesConfig,
@@ -300,14 +300,14 @@ class TestCleanupFilterOptions:
             projects=[
                 ProjectConfig(
                     name="proj-b",
-                    linear_team="TEAM-B",
-                    linear_project="Project Beta",
+                    team="TEAM-B",
+                    tracker_project="Project Beta",
                     base_dir="/tmp/b",
                     worktree_prefix="b-slot-",
                     slots=[1],
                 ),
             ],
-            linear=LinearConfig(api_key="test-key"),
+            bugtracker=LinearConfig(api_key="test-key"),
             identities=IdentitiesConfig(
                 coder=CoderIdentity(),
                 reviewer=ReviewerIdentity(),

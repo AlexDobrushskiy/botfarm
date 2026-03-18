@@ -37,13 +37,13 @@ MINIMAL_CONFIG = {
     "projects": [
         {
             "name": "test-project",
-            "linear_team": "TST",
+            "team": "TST",
             "base_dir": "~/test",
             "worktree_prefix": "test-slot-",
             "slots": [1],
         }
     ],
-    "linear": {"api_key": "test-key"},
+    "bugtracker": {"api_key": "test-key"},
 }
 
 
@@ -93,7 +93,7 @@ def test_create_default_config(tmp_path):
     assert config_path.exists()
     content = config_path.read_text()
     assert "add-project" in content
-    assert "linear:" in content
+    assert "bugtracker:" in content
 
 
 def test_create_default_config_no_overwrite(tmp_path):
@@ -143,14 +143,14 @@ def test_load_config_yaml_syntax_error_tab(tmp_path):
 
 
 def test_load_config_missing_projects(tmp_path):
-    config_path = _write_config(tmp_path, {"linear": {"api_key": "k"}})
+    config_path = _write_config(tmp_path, {"bugtracker": {"api_key": "k"}})
     with pytest.raises(ConfigError, match="projects"):
         load_config(config_path)
 
 
 def test_load_config_empty_projects(tmp_path):
     config_path = _write_config(
-        tmp_path, {"projects": [], "linear": {"api_key": "k"}}
+        tmp_path, {"projects": [], "bugtracker": {"api_key": "k"}}
     )
     with pytest.raises(ConfigError, match="At least one project"):
         load_config(config_path)
@@ -170,7 +170,7 @@ def test_load_config_slots_not_integers(tmp_path):
         "projects": [
             {
                 "name": "bad-slots",
-                "linear_team": "TST",
+                "team": "TST",
                 "base_dir": "~/test",
                 "worktree_prefix": "test-slot-",
                 "slots": ["a", "b"],
@@ -187,7 +187,7 @@ def test_load_config_duplicate_slots(tmp_path):
         "projects": [
             {
                 "name": "dup-slots",
-                "linear_team": "TST",
+                "team": "TST",
                 "base_dir": "~/test",
                 "worktree_prefix": "test-slot-",
                 "slots": [1, 1],
@@ -204,117 +204,117 @@ def test_load_config_duplicate_project_names(tmp_path):
         "projects": [
             {
                 "name": "same-name",
-                "linear_team": "TST",
+                "team": "TST",
                 "base_dir": "~/a",
                 "worktree_prefix": "a-slot-",
                 "slots": [1],
             },
             {
                 "name": "same-name",
-                "linear_team": "TST",
+                "team": "TST",
                 "base_dir": "~/b",
                 "worktree_prefix": "b-slot-",
                 "slots": [2],
             },
         ],
-        "linear": {"api_key": "test-key"},
+        "bugtracker": {"api_key": "test-key"},
     }
     config_path = _write_config(tmp_path, data)
     with pytest.raises(ConfigError, match="Duplicate project names"):
         load_config(config_path)
 
 
-def test_load_config_duplicate_linear_project(tmp_path):
+def test_load_config_duplicate_tracker_project(tmp_path):
     data = {
         "projects": [
             {
                 "name": "proj-a",
-                "linear_team": "TST",
+                "team": "TST",
                 "base_dir": "~/a",
                 "worktree_prefix": "a-slot-",
                 "slots": [1],
-                "linear_project": "Shared Project",
+                "tracker_project": "Shared Project",
             },
             {
                 "name": "proj-b",
-                "linear_team": "TST",
+                "team": "TST",
                 "base_dir": "~/b",
                 "worktree_prefix": "b-slot-",
                 "slots": [2],
-                "linear_project": "Shared Project",
+                "tracker_project": "Shared Project",
             },
         ],
-        "linear": {"api_key": "test-key"},
+        "bugtracker": {"api_key": "test-key"},
     }
     config_path = _write_config(tmp_path, data)
     with pytest.raises(ConfigError, match="Duplicate tracker_project filter"):
         load_config(config_path)
 
 
-def test_load_config_duplicate_linear_project_empty_ok(tmp_path):
-    """Empty linear_project on multiple projects should not trigger duplicate error."""
+def test_load_config_duplicate_tracker_project_empty_ok(tmp_path):
+    """Empty tracker_project on multiple projects should not trigger duplicate error."""
     data = {
         "projects": [
             {
                 "name": "proj-a",
-                "linear_team": "TST",
+                "team": "TST",
                 "base_dir": "~/a",
                 "worktree_prefix": "a-slot-",
                 "slots": [1],
             },
             {
                 "name": "proj-b",
-                "linear_team": "TST",
+                "team": "TST",
                 "base_dir": "~/b",
                 "worktree_prefix": "b-slot-",
                 "slots": [2],
             },
         ],
-        "linear": {"api_key": "test-key"},
+        "bugtracker": {"api_key": "test-key"},
     }
     config_path = _write_config(tmp_path, data)
     config = load_config(config_path)
     assert len(config.projects) == 2
 
 
-def test_load_config_different_linear_projects_ok(tmp_path):
-    """Different linear_project values across projects should be fine."""
+def test_load_config_different_tracker_projects_ok(tmp_path):
+    """Different tracker_project values across projects should be fine."""
     data = {
         "projects": [
             {
                 "name": "proj-a",
-                "linear_team": "TST",
+                "team": "TST",
                 "base_dir": "~/a",
                 "worktree_prefix": "a-slot-",
                 "slots": [1],
-                "linear_project": "Project Alpha",
+                "tracker_project": "Project Alpha",
             },
             {
                 "name": "proj-b",
-                "linear_team": "TST",
+                "team": "TST",
                 "base_dir": "~/b",
                 "worktree_prefix": "b-slot-",
                 "slots": [2],
-                "linear_project": "Project Beta",
+                "tracker_project": "Project Beta",
             },
         ],
-        "linear": {"api_key": "test-key"},
+        "bugtracker": {"api_key": "test-key"},
     }
     config_path = _write_config(tmp_path, data)
     config = load_config(config_path)
-    assert config.projects[0].linear_project == "Project Alpha"
-    assert config.projects[1].linear_project == "Project Beta"
+    assert config.projects[0].tracker_project == "Project Alpha"
+    assert config.projects[1].tracker_project == "Project Beta"
 
 
 def test_load_config_env_var_expansion(tmp_path, monkeypatch):
     monkeypatch.setenv("TEST_API_KEY", "sk-test-123")
     data = {
         **MINIMAL_CONFIG,
-        "linear": {"api_key": "${TEST_API_KEY}"},
+        "bugtracker": {"api_key": "${TEST_API_KEY}"},
     }
     config_path = _write_config(tmp_path, data)
     config = load_config(config_path)
-    assert config.linear.api_key == "sk-test-123"
+    assert config.bugtracker.api_key == "sk-test-123"
 
 
 def test_load_config_full(tmp_path, monkeypatch):
@@ -323,13 +323,13 @@ def test_load_config_full(tmp_path, monkeypatch):
         "projects": [
             {
                 "name": "proj-a",
-                "linear_team": "SMA",
+                "team": "SMA",
                 "base_dir": "~/proj-a",
                 "worktree_prefix": "proj-a-slot-",
                 "slots": [1, 2],
             }
         ],
-        "linear": {
+        "bugtracker": {
             "api_key": "${TEST_KEY}",
             "poll_interval_seconds": 60,
             "exclude_tags": ["Human", "Manual"],
@@ -341,9 +341,9 @@ def test_load_config_full(tmp_path, monkeypatch):
     config_path = _write_config(tmp_path, data)
     config = load_config(config_path)
 
-    assert config.linear.api_key == "key123"
-    assert config.linear.poll_interval_seconds == 60
-    assert config.linear.exclude_tags == ["Human", "Manual"]
+    assert config.bugtracker.api_key == "key123"
+    assert config.bugtracker.poll_interval_seconds == 60
+    assert config.bugtracker.exclude_tags == ["Human", "Manual"]
     assert config.database.path == "~/.botfarm/custom.db"
 
 
@@ -351,27 +351,27 @@ def test_load_config_defaults(tmp_path):
     config_path = _write_config(tmp_path, MINIMAL_CONFIG)
     config = load_config(config_path)
 
-    assert config.linear.poll_interval_seconds == 30
-    assert config.linear.exclude_tags == ["Human"]
+    assert config.bugtracker.poll_interval_seconds == 30
+    assert config.bugtracker.exclude_tags == ["Human"]
     assert config.database.path == ""
 
 
 def test_load_config_poll_interval_zero(tmp_path):
-    data = {**MINIMAL_CONFIG, "linear": {"api_key": "k", "poll_interval_seconds": 0}}
+    data = {**MINIMAL_CONFIG, "bugtracker": {"api_key": "k", "poll_interval_seconds": 0}}
     config_path = _write_config(tmp_path, data)
     with pytest.raises(ConfigError, match="at least 1"):
         load_config(config_path)
 
 
 def test_load_config_empty_api_key(tmp_path):
-    data = {**MINIMAL_CONFIG, "linear": {"api_key": ""}}
+    data = {**MINIMAL_CONFIG, "bugtracker": {"api_key": ""}}
     config_path = _write_config(tmp_path, data)
     with pytest.raises(ConfigError, match="api_key must be set"):
         load_config(config_path)
 
 
 def test_load_config_missing_api_key(tmp_path):
-    data = {**MINIMAL_CONFIG, "linear": {}}
+    data = {**MINIMAL_CONFIG, "bugtracker": {}}
     config_path = _write_config(tmp_path, data)
     with pytest.raises(ConfigError, match="api_key must be set"):
         load_config(config_path)
@@ -383,20 +383,20 @@ def test_load_config_cross_project_duplicate_slots_allowed(tmp_path):
         "projects": [
             {
                 "name": "project-a",
-                "linear_team": "TST",
+                "team": "TST",
                 "base_dir": "~/a",
                 "worktree_prefix": "a-slot-",
                 "slots": [1, 2],
             },
             {
                 "name": "project-b",
-                "linear_team": "TST",
+                "team": "TST",
                 "base_dir": "~/b",
                 "worktree_prefix": "b-slot-",
                 "slots": [1, 2],
             },
         ],
-        "linear": {"api_key": "test-key"},
+        "bugtracker": {"api_key": "test-key"},
     }
     config_path = _write_config(tmp_path, data)
     config = load_config(config_path)
@@ -405,23 +405,23 @@ def test_load_config_cross_project_duplicate_slots_allowed(tmp_path):
     assert config.projects[1].slots == [1, 2]
 
 
-# --- linear_project config ---
+# --- tracker_project config ---
 
 
-def test_load_config_linear_project_default(tmp_path):
+def test_load_config_tracker_project_default(tmp_path):
     config_path = _write_config(tmp_path, MINIMAL_CONFIG)
     config = load_config(config_path)
-    assert config.projects[0].linear_project == ""
+    assert config.projects[0].tracker_project == ""
 
 
-def test_load_config_linear_project_set(tmp_path):
+def test_load_config_tracker_project_set(tmp_path):
     data = {
         **MINIMAL_CONFIG,
         "projects": [
             {
                 "name": "test-project",
-                "linear_team": "TST",
-                "linear_project": "My Project",
+                "team": "TST",
+                "tracker_project": "My Project",
                 "base_dir": "~/test",
                 "worktree_prefix": "test-slot-",
                 "slots": [1],
@@ -430,7 +430,7 @@ def test_load_config_linear_project_set(tmp_path):
     }
     config_path = _write_config(tmp_path, data)
     config = load_config(config_path)
-    assert config.projects[0].linear_project == "My Project"
+    assert config.projects[0].tracker_project == "My Project"
 
 
 # --- CLI init command ---
@@ -803,16 +803,16 @@ def test_resolve_stage_timeout_first_match_wins():
 def test_load_config_linear_status_defaults(tmp_path):
     config_path = _write_config(tmp_path, MINIMAL_CONFIG)
     config = load_config(config_path)
-    assert config.linear.todo_status == "Todo"
-    assert config.linear.in_progress_status == "In Progress"
-    assert config.linear.done_status == "Done"
-    assert config.linear.in_review_status == "In Review"
+    assert config.bugtracker.todo_status == "Todo"
+    assert config.bugtracker.in_progress_status == "In Progress"
+    assert config.bugtracker.done_status == "Done"
+    assert config.bugtracker.in_review_status == "In Review"
 
 
 def test_load_config_linear_status_custom(tmp_path):
     data = {
         **MINIMAL_CONFIG,
-        "linear": {
+        "bugtracker": {
             "api_key": "test-key",
             "todo_status": "Backlog",
             "in_progress_status": "Working",
@@ -822,38 +822,38 @@ def test_load_config_linear_status_custom(tmp_path):
     }
     config_path = _write_config(tmp_path, data)
     config = load_config(config_path)
-    assert config.linear.todo_status == "Backlog"
-    assert config.linear.in_progress_status == "Working"
-    assert config.linear.done_status == "Shipped"
-    assert config.linear.in_review_status == "Review"
+    assert config.bugtracker.todo_status == "Backlog"
+    assert config.bugtracker.in_progress_status == "Working"
+    assert config.bugtracker.done_status == "Shipped"
+    assert config.bugtracker.in_review_status == "Review"
 
 
 def test_load_config_failed_status_deprecated(tmp_path):
     """Setting failed_status in config should not error — it's just ignored."""
     data = {
         **MINIMAL_CONFIG,
-        "linear": {
+        "bugtracker": {
             "api_key": "test-key",
             "failed_status": "Needs Attention",
         },
     }
     config_path = _write_config(tmp_path, data)
     config = load_config(config_path)
-    assert not hasattr(config.linear, "failed_status")
+    assert not hasattr(config.bugtracker, "failed_status")
 
 
 def test_load_config_comment_defaults(tmp_path):
     config_path = _write_config(tmp_path, MINIMAL_CONFIG)
     config = load_config(config_path)
-    assert config.linear.comment_on_failure is True
-    assert config.linear.comment_on_completion is False
-    assert config.linear.comment_on_limit_pause is False
+    assert config.bugtracker.comment_on_failure is True
+    assert config.bugtracker.comment_on_completion is False
+    assert config.bugtracker.comment_on_limit_pause is False
 
 
 def test_load_config_comment_custom(tmp_path):
     data = {
         **MINIMAL_CONFIG,
-        "linear": {
+        "bugtracker": {
             "api_key": "test-key",
             "comment_on_failure": False,
             "comment_on_completion": True,
@@ -862,15 +862,15 @@ def test_load_config_comment_custom(tmp_path):
     }
     config_path = _write_config(tmp_path, data)
     config = load_config(config_path)
-    assert config.linear.comment_on_failure is False
-    assert config.linear.comment_on_completion is True
-    assert config.linear.comment_on_limit_pause is True
+    assert config.bugtracker.comment_on_failure is False
+    assert config.bugtracker.comment_on_completion is True
+    assert config.bugtracker.comment_on_limit_pause is True
 
 
 def test_load_config_comment_rejects_string_bool(tmp_path):
     data = {
         **MINIMAL_CONFIG,
-        "linear": {
+        "bugtracker": {
             "api_key": "test-key",
             "comment_on_failure": "false",
         },
@@ -1151,7 +1151,7 @@ def test_load_config_no_warning_for_known_keys(tmp_path, caplog):
 class TestValidateConfigUpdates:
     def test_valid_linear_updates(self):
         updates = {
-            "linear": {
+            "bugtracker": {
                 "poll_interval_seconds": 60,
                 "comment_on_failure": False,
             },
@@ -1179,7 +1179,7 @@ class TestValidateConfigUpdates:
         assert validate_config_updates(updates) == []
 
     def test_non_editable_field_rejected(self):
-        updates = {"linear": {"api_key": "new-key"}}
+        updates = {"bugtracker": {"api_key": "new-key"}}
         errors = validate_config_updates(updates)
         assert any("not an editable field" in e for e in errors)
 
@@ -1189,22 +1189,22 @@ class TestValidateConfigUpdates:
         assert len(errors) > 0
 
     def test_section_not_mapping(self):
-        updates = {"linear": "not a dict"}
+        updates = {"bugtracker": "not a dict"}
         errors = validate_config_updates(updates)
         assert any("must be a mapping" in e for e in errors)
 
     def test_poll_interval_too_low(self):
-        updates = {"linear": {"poll_interval_seconds": 0}}
+        updates = {"bugtracker": {"poll_interval_seconds": 0}}
         errors = validate_config_updates(updates)
         assert any("at least 1" in e for e in errors)
 
     def test_bool_field_rejects_string(self):
-        updates = {"linear": {"comment_on_failure": "true"}}
+        updates = {"bugtracker": {"comment_on_failure": "true"}}
         errors = validate_config_updates(updates)
         assert any("boolean" in e for e in errors)
 
     def test_int_field_rejects_bool(self):
-        updates = {"linear": {"poll_interval_seconds": True}}
+        updates = {"bugtracker": {"poll_interval_seconds": True}}
         errors = validate_config_updates(updates)
         assert any("integer" in e for e in errors)
 
@@ -1260,7 +1260,7 @@ class TestApplyConfigUpdates:
         return BotfarmConfig(
             projects=[
                 ProjectConfig(
-                    name="test", linear_team="T", base_dir="~/t",
+                    name="test", team="T", base_dir="~/t",
                     worktree_prefix="t-", slots=[1],
                 ),
             ],
@@ -1269,10 +1269,10 @@ class TestApplyConfigUpdates:
     def test_apply_linear_updates(self):
         config = self._make_config()
         apply_config_updates(config, {
-            "linear": {"poll_interval_seconds": 60, "comment_on_failure": False},
+            "bugtracker": {"poll_interval_seconds": 60, "comment_on_failure": False},
         })
-        assert config.linear.poll_interval_seconds == 60
-        assert config.linear.comment_on_failure is False
+        assert config.bugtracker.poll_interval_seconds == 60
+        assert config.bugtracker.comment_on_failure is False
 
     def test_apply_usage_limits(self):
         config = self._make_config()
@@ -1311,27 +1311,27 @@ class TestWriteConfigUpdates:
     def test_basic_write(self, tmp_path):
         config_path = _write_config(tmp_path, MINIMAL_CONFIG)
         write_config_updates(config_path, {
-            "linear": {"poll_interval_seconds": 60},
+            "bugtracker": {"poll_interval_seconds": 60},
         })
         data = yaml.safe_load(config_path.read_text())
-        assert data["linear"]["poll_interval_seconds"] == 60
+        assert data["bugtracker"]["poll_interval_seconds"] == 60
 
     def test_preserves_env_var_refs(self, tmp_path):
         """Env var references like ${API_KEY} must survive write-back."""
         raw_config = {
             **MINIMAL_CONFIG,
-            "linear": {"api_key": "${LINEAR_API_KEY}", "poll_interval_seconds": 120},
+            "bugtracker": {"api_key": "${LINEAR_API_KEY}", "poll_interval_seconds": 120},
         }
         config_path = tmp_path / "config.yaml"
         config_path.write_text(yaml.dump(raw_config, sort_keys=False))
 
         write_config_updates(config_path, {
-            "linear": {"poll_interval_seconds": 60},
+            "bugtracker": {"poll_interval_seconds": 60},
         })
 
         data = yaml.safe_load(config_path.read_text())
-        assert data["linear"]["api_key"] == "${LINEAR_API_KEY}"
-        assert data["linear"]["poll_interval_seconds"] == 60
+        assert data["bugtracker"]["api_key"] == "${LINEAR_API_KEY}"
+        assert data["bugtracker"]["poll_interval_seconds"] == 60
 
     def test_timeout_minutes_merges(self, tmp_path):
         data = {
@@ -1358,12 +1358,12 @@ class TestWriteConfigUpdates:
         """File should be fully valid YAML after write."""
         config_path = _write_config(tmp_path, MINIMAL_CONFIG)
         write_config_updates(config_path, {
-            "linear": {"poll_interval_seconds": 60},
+            "bugtracker": {"poll_interval_seconds": 60},
             "agents": {"max_review_iterations": 5},
         })
         # Should parse without error
         data = yaml.safe_load(config_path.read_text())
-        assert data["linear"]["poll_interval_seconds"] == 60
+        assert data["bugtracker"]["poll_interval_seconds"] == 60
         assert data["agents"]["max_review_iterations"] == 5
 
 
@@ -1375,14 +1375,14 @@ def _make_config_for_structural():
     return BotfarmConfig(
         projects=[
             ProjectConfig(
-                name="project-a", linear_team="TST",
+                name="project-a", team="TST",
                 base_dir="~/a", worktree_prefix="a-slot-",
                 slots=[1, 2],
             ),
             ProjectConfig(
-                name="project-b", linear_team="TST",
+                name="project-b", team="TST",
                 base_dir="~/b", worktree_prefix="b-slot-",
-                slots=[3], linear_project="My Filter",
+                slots=[3], tracker_project="My Filter",
             ),
         ],
         notifications=NotificationsConfig(
@@ -1416,11 +1416,11 @@ class TestValidateStructuralConfigUpdates:
         errors = validate_structural_config_updates(updates, config)
         assert errors == []
 
-    def test_valid_project_linear_project(self):
+    def test_valid_project_tracker_project(self):
         config = _make_config_for_structural()
         updates = {
             "projects": [
-                {"name": "project-b", "linear_project": "New Filter"},
+                {"name": "project-b", "tracker_project": "New Filter"},
             ],
         }
         errors = validate_structural_config_updates(updates, config)
@@ -1492,10 +1492,10 @@ class TestValidateStructuralConfigUpdates:
         errors = validate_structural_config_updates(updates, config)
         assert any("must be a list" in e for e in errors)
 
-    def test_projects_linear_project_not_string(self):
+    def test_projects_tracker_project_not_string(self):
         config = _make_config_for_structural()
         updates = {
-            "projects": [{"name": "project-a", "linear_project": 123}],
+            "projects": [{"name": "project-a", "tracker_project": 123}],
         }
         errors = validate_structural_config_updates(updates, config)
         assert any("must be a string" in e for e in errors)
@@ -1520,13 +1520,13 @@ class TestValidateStructuralConfigUpdates:
         errors = validate_structural_config_updates(updates, config)
         assert any("list of integers" in e for e in errors)
 
-    def test_projects_duplicate_linear_project_via_update(self):
+    def test_projects_duplicate_tracker_project_via_update(self):
         config = _make_config_for_structural()
-        # project-b already has linear_project="My Filter"; updating
+        # project-b already has tracker_project="My Filter"; updating
         # project-a to the same value should be rejected
         updates = {
             "projects": [
-                {"name": "project-a", "linear_project": "My Filter"},
+                {"name": "project-a", "tracker_project": "My Filter"},
             ],
         }
         errors = validate_structural_config_updates(updates, config)
@@ -1572,7 +1572,7 @@ class TestWriteStructuralConfigUpdates:
             "projects": [
                 {
                     "name": "test-project",
-                    "linear_team": "TST",
+                    "team": "TST",
                     "base_dir": "~/test",
                     "worktree_prefix": "test-slot-",
                     "slots": [1],
@@ -1587,13 +1587,13 @@ class TestWriteStructuralConfigUpdates:
         # Other fields preserved
         assert data["projects"][0]["base_dir"] == "~/test"
 
-    def test_write_project_linear_project(self, tmp_path):
+    def test_write_project_tracker_project(self, tmp_path):
         config_path = _write_config(tmp_path, {
             **MINIMAL_CONFIG,
             "projects": [
                 {
                     "name": "test-project",
-                    "linear_team": "TST",
+                    "team": "TST",
                     "base_dir": "~/test",
                     "worktree_prefix": "test-slot-",
                     "slots": [1],
@@ -1602,15 +1602,14 @@ class TestWriteStructuralConfigUpdates:
         })
         write_structural_config_updates(config_path, {
             "projects": [
-                {"name": "test-project", "linear_project": "My Project"},
+                {"name": "test-project", "tracker_project": "My Project"},
             ],
         })
         data = yaml.safe_load(config_path.read_text())
-        # When no existing key, canonical 'tracker_project' is used
         assert data["projects"][0]["tracker_project"] == "My Project"
 
-    def test_write_project_remaps_to_existing_tracker_project_key(self, tmp_path):
-        """Dashboard sends linear_project but YAML uses tracker_project — should update in place."""
+    def test_write_project_updates_tracker_project_key(self, tmp_path):
+        """Sending tracker_project when YAML uses tracker_project — should update in place."""
         config_path = _write_config(tmp_path, {
             **MINIMAL_CONFIG,
             "projects": [
@@ -1626,36 +1625,11 @@ class TestWriteStructuralConfigUpdates:
         })
         write_structural_config_updates(config_path, {
             "projects": [
-                {"name": "test-project", "linear_project": "New"},
-            ],
-        })
-        data = yaml.safe_load(config_path.read_text())
-        assert data["projects"][0]["tracker_project"] == "New"
-        assert "linear_project" not in data["projects"][0]
-
-    def test_write_project_remaps_to_existing_linear_project_key(self, tmp_path):
-        """Dashboard sends tracker_project but YAML uses linear_project — should update in place."""
-        config_path = _write_config(tmp_path, {
-            **MINIMAL_CONFIG,
-            "projects": [
-                {
-                    "name": "test-project",
-                    "linear_team": "TST",
-                    "base_dir": "~/test",
-                    "worktree_prefix": "test-slot-",
-                    "slots": [1],
-                    "linear_project": "Old",
-                },
-            ],
-        })
-        write_structural_config_updates(config_path, {
-            "projects": [
                 {"name": "test-project", "tracker_project": "New"},
             ],
         })
         data = yaml.safe_load(config_path.read_text())
-        assert data["projects"][0]["linear_project"] == "New"
-        assert "tracker_project" not in data["projects"][0]
+        assert data["projects"][0]["tracker_project"] == "New"
 
     def test_write_project_unknown_name_ignored(self, tmp_path):
         config_path = _write_config(tmp_path, MINIMAL_CONFIG)
@@ -1669,7 +1643,7 @@ class TestWriteStructuralConfigUpdates:
     def test_write_preserves_env_vars(self, tmp_path):
         raw_config = {
             **MINIMAL_CONFIG,
-            "linear": {"api_key": "${LINEAR_API_KEY}"},
+            "bugtracker": {"api_key": "${LINEAR_API_KEY}"},
             "notifications": {"webhook_url": "https://old.example.com"},
         }
         config_path = tmp_path / "config.yaml"
@@ -1678,7 +1652,7 @@ class TestWriteStructuralConfigUpdates:
             "notifications": {"webhook_url": "https://new.example.com"},
         })
         data = yaml.safe_load(config_path.read_text())
-        assert data["linear"]["api_key"] == "${LINEAR_API_KEY}"
+        assert data["bugtracker"]["api_key"] == "${LINEAR_API_KEY}"
 
 
 # --- Identities config ---
@@ -1884,8 +1858,8 @@ def test_default_config_template_includes_codex_fields():
 def test_load_config_capacity_monitoring_defaults(tmp_path):
     config_path = _write_config(tmp_path, MINIMAL_CONFIG)
     config = load_config(config_path)
-    assert config.linear.issue_limit == 250
-    cap = config.linear.capacity_monitoring
+    assert config.bugtracker.issue_limit == 250
+    cap = config.bugtracker.capacity_monitoring
     assert cap.enabled is True
     assert cap.warning_threshold == 0.70
     assert cap.critical_threshold == 0.85
@@ -1896,8 +1870,8 @@ def test_load_config_capacity_monitoring_defaults(tmp_path):
 def test_load_config_capacity_monitoring_custom(tmp_path):
     data = {
         **MINIMAL_CONFIG,
-        "linear": {
-            **MINIMAL_CONFIG["linear"],
+        "bugtracker": {
+            **MINIMAL_CONFIG["bugtracker"],
             "issue_limit": 500,
             "capacity_monitoring": {
                 "enabled": False,
@@ -1910,8 +1884,8 @@ def test_load_config_capacity_monitoring_custom(tmp_path):
     }
     config_path = _write_config(tmp_path, data)
     config = load_config(config_path)
-    assert config.linear.issue_limit == 500
-    cap = config.linear.capacity_monitoring
+    assert config.bugtracker.issue_limit == 500
+    cap = config.bugtracker.capacity_monitoring
     assert cap.enabled is False
     assert cap.warning_threshold == 0.60
     assert cap.critical_threshold == 0.75
@@ -1922,8 +1896,8 @@ def test_load_config_capacity_monitoring_custom(tmp_path):
 def test_load_config_capacity_threshold_out_of_range(tmp_path):
     data = {
         **MINIMAL_CONFIG,
-        "linear": {
-            **MINIMAL_CONFIG["linear"],
+        "bugtracker": {
+            **MINIMAL_CONFIG["bugtracker"],
             "capacity_monitoring": {
                 "warning_threshold": 1.5,
             },
@@ -1937,8 +1911,8 @@ def test_load_config_capacity_threshold_out_of_range(tmp_path):
 def test_load_config_capacity_threshold_negative(tmp_path):
     data = {
         **MINIMAL_CONFIG,
-        "linear": {
-            **MINIMAL_CONFIG["linear"],
+        "bugtracker": {
+            **MINIMAL_CONFIG["bugtracker"],
             "capacity_monitoring": {
                 "pause_threshold": -0.1,
             },
@@ -1952,8 +1926,8 @@ def test_load_config_capacity_threshold_negative(tmp_path):
 def test_load_config_capacity_resume_must_be_less_than_pause(tmp_path):
     data = {
         **MINIMAL_CONFIG,
-        "linear": {
-            **MINIMAL_CONFIG["linear"],
+        "bugtracker": {
+            **MINIMAL_CONFIG["bugtracker"],
             "capacity_monitoring": {
                 "pause_threshold": 0.90,
                 "resume_threshold": 0.95,
@@ -1968,8 +1942,8 @@ def test_load_config_capacity_resume_must_be_less_than_pause(tmp_path):
 def test_load_config_capacity_resume_equal_pause_rejected(tmp_path):
     data = {
         **MINIMAL_CONFIG,
-        "linear": {
-            **MINIMAL_CONFIG["linear"],
+        "bugtracker": {
+            **MINIMAL_CONFIG["bugtracker"],
             "capacity_monitoring": {
                 "pause_threshold": 0.90,
                 "resume_threshold": 0.90,
@@ -1984,8 +1958,8 @@ def test_load_config_capacity_resume_equal_pause_rejected(tmp_path):
 def test_load_config_issue_limit_zero_rejected(tmp_path):
     data = {
         **MINIMAL_CONFIG,
-        "linear": {
-            **MINIMAL_CONFIG["linear"],
+        "bugtracker": {
+            **MINIMAL_CONFIG["bugtracker"],
             "issue_limit": 0,
         },
     }
@@ -1997,8 +1971,8 @@ def test_load_config_issue_limit_zero_rejected(tmp_path):
 def test_load_config_warning_above_critical_rejected(tmp_path):
     data = {
         **MINIMAL_CONFIG,
-        "linear": {
-            **MINIMAL_CONFIG["linear"],
+        "bugtracker": {
+            **MINIMAL_CONFIG["bugtracker"],
             "capacity_monitoring": {
                 "warning_threshold": 0.90,
                 "critical_threshold": 0.70,
@@ -2015,8 +1989,8 @@ def test_load_config_warning_above_critical_rejected(tmp_path):
 def test_load_config_critical_above_pause_rejected(tmp_path):
     data = {
         **MINIMAL_CONFIG,
-        "linear": {
-            **MINIMAL_CONFIG["linear"],
+        "bugtracker": {
+            **MINIMAL_CONFIG["bugtracker"],
             "capacity_monitoring": {
                 "warning_threshold": 0.70,
                 "critical_threshold": 0.98,
@@ -2033,20 +2007,20 @@ def test_load_config_critical_above_pause_rejected(tmp_path):
 def test_capacity_config_editable_fields():
     from botfarm.config import EDITABLE_FIELDS
 
-    assert ("linear", "issue_limit") in EDITABLE_FIELDS
-    assert EDITABLE_FIELDS[("linear", "issue_limit")]["type"] == "int"
+    assert ("bugtracker", "issue_limit") in EDITABLE_FIELDS
+    assert EDITABLE_FIELDS[("bugtracker", "issue_limit")]["type"] == "int"
 
     for field in ("enabled", "warning_threshold", "critical_threshold",
                   "pause_threshold", "resume_threshold"):
-        key = ("linear.capacity_monitoring", field)
+        key = ("bugtracker.capacity_monitoring", field)
         assert key in EDITABLE_FIELDS, f"{key} not in EDITABLE_FIELDS"
 
 
 def test_capacity_config_editable_validation():
     # Valid updates
     assert validate_config_updates({
-        "linear": {"issue_limit": 500},
-        "linear.capacity_monitoring": {
+        "bugtracker": {"issue_limit": 500},
+        "bugtracker.capacity_monitoring": {
             "enabled": True,
             "warning_threshold": 0.60,
             "critical_threshold": 0.75,
@@ -2057,31 +2031,31 @@ def test_capacity_config_editable_validation():
 
     # Invalid: threshold out of range
     errors = validate_config_updates({
-        "linear.capacity_monitoring": {"warning_threshold": 1.5},
+        "bugtracker.capacity_monitoring": {"warning_threshold": 1.5},
     })
     assert any("at most 1.0" in e for e in errors)
 
     # Invalid: threshold negative
     errors = validate_config_updates({
-        "linear.capacity_monitoring": {"pause_threshold": -0.1},
+        "bugtracker.capacity_monitoring": {"pause_threshold": -0.1},
     })
     assert any("at least 0.0" in e for e in errors)
 
     # Invalid: issue_limit too low
     errors = validate_config_updates({
-        "linear": {"issue_limit": 0},
+        "bugtracker": {"issue_limit": 0},
     })
     assert any("at least 1" in e for e in errors)
 
     # Invalid: enabled not a bool
     errors = validate_config_updates({
-        "linear.capacity_monitoring": {"enabled": "yes"},
+        "bugtracker.capacity_monitoring": {"enabled": "yes"},
     })
     assert any("boolean" in e for e in errors)
 
     # Invalid: resume_threshold >= pause_threshold (cross-field)
     errors = validate_config_updates({
-        "linear.capacity_monitoring": {
+        "bugtracker.capacity_monitoring": {
             "pause_threshold": 0.90,
             "resume_threshold": 0.95,
         },
@@ -2090,7 +2064,7 @@ def test_capacity_config_editable_validation():
 
     # Invalid: resume_threshold == pause_threshold (cross-field)
     errors = validate_config_updates({
-        "linear.capacity_monitoring": {
+        "bugtracker.capacity_monitoring": {
             "pause_threshold": 0.90,
             "resume_threshold": 0.90,
         },
@@ -2099,7 +2073,7 @@ def test_capacity_config_editable_validation():
 
     # Valid: resume_threshold < pause_threshold (cross-field)
     assert validate_config_updates({
-        "linear.capacity_monitoring": {
+        "bugtracker.capacity_monitoring": {
             "pause_threshold": 0.95,
             "resume_threshold": 0.90,
         },
@@ -2107,7 +2081,7 @@ def test_capacity_config_editable_validation():
 
     # Invalid: warning_threshold > critical_threshold (ordering)
     errors = validate_config_updates({
-        "linear.capacity_monitoring": {
+        "bugtracker.capacity_monitoring": {
             "warning_threshold": 0.90,
             "critical_threshold": 0.70,
         },
@@ -2116,7 +2090,7 @@ def test_capacity_config_editable_validation():
 
     # Invalid: critical_threshold > pause_threshold (ordering)
     errors = validate_config_updates({
-        "linear.capacity_monitoring": {
+        "bugtracker.capacity_monitoring": {
             "critical_threshold": 0.98,
             "pause_threshold": 0.95,
         },
@@ -2125,7 +2099,7 @@ def test_capacity_config_editable_validation():
 
     # Valid: warning <= critical <= pause (ordering)
     assert validate_config_updates({
-        "linear.capacity_monitoring": {
+        "bugtracker.capacity_monitoring": {
             "warning_threshold": 0.70,
             "critical_threshold": 0.85,
             "pause_threshold": 0.95,
@@ -2138,11 +2112,11 @@ def test_capacity_cross_field_validation_with_config():
     config = BotfarmConfig(
         projects=[
             ProjectConfig(
-                name="test", linear_team="T", base_dir="~/t",
+                name="test", team="T", base_dir="~/t",
                 worktree_prefix="t-", slots=[1],
             ),
         ],
-        linear=LinearConfig(
+        bugtracker=LinearConfig(
             api_key="test",
             capacity_monitoring=CapacityConfig(
                 resume_threshold=0.90,
@@ -2153,42 +2127,42 @@ def test_capacity_cross_field_validation_with_config():
 
     # Lowering pause_threshold below current resume_threshold (0.90) should fail
     errors = validate_config_updates(
-        {"linear.capacity_monitoring": {"pause_threshold": 0.85}},
+        {"bugtracker.capacity_monitoring": {"pause_threshold": 0.85}},
         config=config,
     )
     assert any("resume_threshold must be less than pause_threshold" in e for e in errors)
 
     # Raising resume_threshold above current pause_threshold (0.95) should fail
     errors = validate_config_updates(
-        {"linear.capacity_monitoring": {"resume_threshold": 0.96}},
+        {"bugtracker.capacity_monitoring": {"resume_threshold": 0.96}},
         config=config,
     )
     assert any("resume_threshold must be less than pause_threshold" in e for e in errors)
 
     # Valid: lowering pause_threshold but still above resume_threshold
     errors = validate_config_updates(
-        {"linear.capacity_monitoring": {"pause_threshold": 0.92}},
+        {"bugtracker.capacity_monitoring": {"pause_threshold": 0.92}},
         config=config,
     )
     assert errors == []
 
     # Without config, single-field update cannot be cross-validated (no error)
     errors = validate_config_updates(
-        {"linear.capacity_monitoring": {"pause_threshold": 0.85}},
+        {"bugtracker.capacity_monitoring": {"pause_threshold": 0.85}},
     )
     assert errors == []
 
     # Ordering: setting warning above current critical (0.85) with config
-    config.linear.capacity_monitoring.critical_threshold = 0.85
+    config.bugtracker.capacity_monitoring.critical_threshold = 0.85
     errors = validate_config_updates(
-        {"linear.capacity_monitoring": {"warning_threshold": 0.90}},
+        {"bugtracker.capacity_monitoring": {"warning_threshold": 0.90}},
         config=config,
     )
     assert any("warning_threshold must be less than or equal to critical_threshold" in e for e in errors)
 
     # Ordering: setting critical above current pause (0.95) with config
     errors = validate_config_updates(
-        {"linear.capacity_monitoring": {"critical_threshold": 0.97}},
+        {"bugtracker.capacity_monitoring": {"critical_threshold": 0.97}},
         config=config,
     )
     assert any("critical_threshold must be less than or equal to pause_threshold" in e for e in errors)
@@ -2198,30 +2172,30 @@ def test_apply_capacity_monitoring_updates():
     config = BotfarmConfig(
         projects=[
             ProjectConfig(
-                name="test", linear_team="T", base_dir="~/t",
+                name="test", team="T", base_dir="~/t",
                 worktree_prefix="t-", slots=[1],
             ),
         ],
     )
     apply_config_updates(config, {
-        "linear": {"issue_limit": 500},
-        "linear.capacity_monitoring": {
+        "bugtracker": {"issue_limit": 500},
+        "bugtracker.capacity_monitoring": {
             "warning_threshold": 0.60,
             "pause_threshold": 0.92,
         },
     })
-    assert config.linear.issue_limit == 500
-    assert config.linear.capacity_monitoring.warning_threshold == 0.60
-    assert config.linear.capacity_monitoring.pause_threshold == 0.92
+    assert config.bugtracker.issue_limit == 500
+    assert config.bugtracker.capacity_monitoring.warning_threshold == 0.60
+    assert config.bugtracker.capacity_monitoring.pause_threshold == 0.92
     # Unchanged fields keep defaults
-    assert config.linear.capacity_monitoring.critical_threshold == 0.85
+    assert config.bugtracker.capacity_monitoring.critical_threshold == 0.85
 
 
 def test_write_config_updates_capacity_monitoring(tmp_path):
     data = {
         **MINIMAL_CONFIG,
-        "linear": {
-            **MINIMAL_CONFIG["linear"],
+        "bugtracker": {
+            **MINIMAL_CONFIG["bugtracker"],
             "capacity_monitoring": {
                 "warning_threshold": 0.70,
                 "critical_threshold": 0.85,
@@ -2230,21 +2204,21 @@ def test_write_config_updates_capacity_monitoring(tmp_path):
     }
     config_path = _write_config(tmp_path, data)
     write_config_updates(config_path, {
-        "linear.capacity_monitoring": {"warning_threshold": 0.60},
+        "bugtracker.capacity_monitoring": {"warning_threshold": 0.60},
     })
     result = yaml.safe_load(config_path.read_text())
-    assert result["linear"]["capacity_monitoring"]["warning_threshold"] == 0.60
+    assert result["bugtracker"]["capacity_monitoring"]["warning_threshold"] == 0.60
     # Other fields preserved
-    assert result["linear"]["capacity_monitoring"]["critical_threshold"] == 0.85
+    assert result["bugtracker"]["capacity_monitoring"]["critical_threshold"] == 0.85
 
 
 def test_write_config_updates_creates_capacity_monitoring_section(tmp_path):
     config_path = _write_config(tmp_path, MINIMAL_CONFIG)
     write_config_updates(config_path, {
-        "linear.capacity_monitoring": {"pause_threshold": 0.92},
+        "bugtracker.capacity_monitoring": {"pause_threshold": 0.92},
     })
     result = yaml.safe_load(config_path.read_text())
-    assert result["linear"]["capacity_monitoring"]["pause_threshold"] == 0.92
+    assert result["bugtracker"]["capacity_monitoring"]["pause_threshold"] == 0.92
 
 
 def test_default_config_template_includes_capacity_fields():
@@ -2323,23 +2297,7 @@ class TestBugtrackerConfigSection:
         config_path = _write_config(tmp_path, MINIMAL_BUGTRACKER_CONFIG)
         config = load_config(config_path)
         assert hasattr(config, "bugtracker")
-        assert config.bugtracker is config.linear  # alias points to same object
-
-    def test_legacy_linear_section_still_works(self, tmp_path):
-        config_path = _write_config(tmp_path, MINIMAL_CONFIG)
-        config = load_config(config_path)
-        assert config.bugtracker.type == "linear"
-        assert config.bugtracker.api_key == "test-key"
-        assert config.linear.api_key == "test-key"
-
-    def test_bugtracker_takes_precedence_over_linear(self, tmp_path):
-        data = {
-            **MINIMAL_BUGTRACKER_CONFIG,
-            "linear": {"api_key": "old-key"},
-        }
-        config_path = _write_config(tmp_path, data)
-        config = load_config(config_path)
-        assert config.bugtracker.api_key == "test-key"
+        assert config.bugtracker is not None
 
     def test_bugtracker_section_with_all_fields(self, tmp_path):
         data = {
@@ -2430,38 +2388,16 @@ class TestBugtrackerConfigDataclasses:
         assert issubclass(LinearBugtrackerConfig, BugtrackerConfig)
 
 
-class TestProjectConfigAliases:
-    """Test ProjectConfig field aliases (team/linear_team, tracker_project/linear_project)."""
+class TestProjectConfigFields:
+    """Test ProjectConfig field names (team, tracker_project)."""
 
     def test_team_field(self):
         p = ProjectConfig(name="p", team="T", base_dir="d", worktree_prefix="s-", slots=[1])
         assert p.team == "T"
-        assert p.linear_team == "T"
-
-    def test_linear_team_init(self):
-        p = ProjectConfig(name="p", linear_team="T", base_dir="d", worktree_prefix="s-", slots=[1])
-        assert p.team == "T"
-        assert p.linear_team == "T"
 
     def test_tracker_project_field(self):
         p = ProjectConfig(name="p", team="T", base_dir="d", worktree_prefix="s-", slots=[1], tracker_project="P")
         assert p.tracker_project == "P"
-        assert p.linear_project == "P"
-
-    def test_linear_project_init(self):
-        p = ProjectConfig(name="p", team="T", base_dir="d", worktree_prefix="s-", slots=[1], linear_project="P")
-        assert p.tracker_project == "P"
-        assert p.linear_project == "P"
-
-    def test_linear_team_setter(self):
-        p = ProjectConfig(name="p", team="T", base_dir="d", worktree_prefix="s-", slots=[1])
-        p.linear_team = "NEW"
-        assert p.team == "NEW"
-
-    def test_linear_project_setter(self):
-        p = ProjectConfig(name="p", team="T", base_dir="d", worktree_prefix="s-", slots=[1])
-        p.linear_project = "NEW"
-        assert p.tracker_project == "NEW"
 
     def test_yaml_team_field(self, tmp_path):
         data = {
@@ -2480,28 +2416,16 @@ class TestProjectConfigAliases:
         config_path = _write_config(tmp_path, data)
         config = load_config(config_path)
         assert config.projects[0].team == "TST"
-        assert config.projects[0].linear_team == "TST"
         assert config.projects[0].tracker_project == "My Project"
-        assert config.projects[0].linear_project == "My Project"
 
-    def test_yaml_legacy_linear_team_field(self, tmp_path):
+    def test_yaml_team_field_loads(self, tmp_path):
         config_path = _write_config(tmp_path, MINIMAL_CONFIG)
         config = load_config(config_path)
         assert config.projects[0].team == "TST"
-        assert config.projects[0].linear_team == "TST"
 
 
-class TestBotfarmConfigLinearAlias:
-    """Test BotfarmConfig.linear alias."""
-
-    def test_linear_init_kwarg(self):
-        cfg = BotfarmConfig(
-            projects=[],
-            linear=LinearConfig(api_key="k"),
-        )
-        assert cfg.bugtracker.api_key == "k"
-        assert cfg.linear.api_key == "k"
-        assert cfg.linear is cfg.bugtracker
+class TestBotfarmConfigBugtracker:
+    """Test BotfarmConfig.bugtracker field."""
 
     def test_bugtracker_init_kwarg(self):
         cfg = BotfarmConfig(
@@ -2509,13 +2433,11 @@ class TestBotfarmConfigLinearAlias:
             bugtracker=LinearConfig(api_key="k"),
         )
         assert cfg.bugtracker.api_key == "k"
-        assert cfg.linear.api_key == "k"
 
-    def test_linear_setter(self):
+    def test_bugtracker_default(self):
         cfg = BotfarmConfig(projects=[])
-        new_bt = LinearConfig(api_key="new")
-        cfg.linear = new_bt
-        assert cfg.bugtracker.api_key == "new"
+        assert cfg.bugtracker is not None
+        assert cfg.bugtracker.api_key == ""
 
 
 class TestDefaultConfigTemplateBugtracker:
@@ -2526,6 +2448,6 @@ class TestDefaultConfigTemplateBugtracker:
         assert "bugtracker:" in DEFAULT_CONFIG_TEMPLATE
         assert "type: linear" in DEFAULT_CONFIG_TEMPLATE
 
-    def test_template_mentions_backward_compat(self):
+    def test_template_has_linear_type(self):
         from botfarm.config import DEFAULT_CONFIG_TEMPLATE
-        assert "linear:" in DEFAULT_CONFIG_TEMPLATE.lower()
+        assert "type: linear" in DEFAULT_CONFIG_TEMPLATE

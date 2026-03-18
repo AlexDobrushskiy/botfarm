@@ -193,7 +193,7 @@ def check_linear_api(config: BotfarmConfig) -> list[CheckResult]:
     # Check each project's team and statuses
     checked_teams: dict[str, dict[str, str]] = {}
     for project in config.projects:
-        team_key = project.linear_team
+        team_key = project.team
         if team_key in checked_teams:
             continue  # Already validated team and statuses
         try:

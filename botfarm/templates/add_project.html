@@ -17,16 +17,16 @@
             <input type="text" id="project_name" name="name" placeholder="my-project" required>
         </label>
 
-        <label for="linear_team">
-            Linear team
-            <select id="linear_team" name="linear_team" required onchange="loadLinearProjects()">
+        <label for="team">
+            Team
+            <select id="team" name="team" required onchange="loadProjects()">
                 <option value="">Loading teams...</option>
             </select>
         </label>
 
-        <label for="linear_project">
-            Linear project <small>(optional)</small>
-            <select id="linear_project" name="linear_project">
+        <label for="tracker_project">
+            Project filter <small>(optional)</small>
+            <select id="tracker_project" name="tracker_project">
                 <option value="">— None —</option>
             </select>
         </label>
@@ -73,8 +73,8 @@ document.getElementById("project_name").addEventListener("input", function() {
     this.dataset.userEdited = "1";
 });
 
-function loadLinearTeams() {
-    var sel = document.getElementById("linear_team");
+function loadTeams() {
+    var sel = document.getElementById("team");
     fetch("/api/linear/teams")
         .then(function(r) {
             if (!r.ok) throw new Error("Failed to load teams");
@@ -94,9 +94,9 @@ function loadLinearTeams() {
         });
 }
 
-function loadLinearProjects() {
-    var teamKey = document.getElementById("linear_team").value;
-    var sel = document.getElementById("linear_project");
+function loadProjects() {
+    var teamKey = document.getElementById("team").value;
+    var sel = document.getElementById("tracker_project");
     sel.innerHTML = '<option value="">— None —</option>';
     if (!teamKey) return;
 
@@ -129,8 +129,8 @@ function submitAddProject(evt) {
     var body = {
         repo_url: document.getElementById("repo_url").value.trim(),
         name: document.getElementById("project_name").value.trim(),
-        linear_team: document.getElementById("linear_team").value,
-        linear_project: document.getElementById("linear_project").value,
+        team: document.getElementById("team").value,
+        tracker_project: document.getElementById("tracker_project").value,
         slots: parseInt(document.getElementById("slots_count").value, 10) || 1
     };
 
@@ -214,6 +214,6 @@ function showFormAgain() {
     btn.textContent = "Add Project";
 }
 
-document.addEventListener("DOMContentLoaded", loadLinearTeams);
+document.addEventListener("DOMContentLoaded", loadTeams);
 </script>
 {% endblock %}

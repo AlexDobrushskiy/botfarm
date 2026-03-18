@@ -71,21 +71,21 @@ The project dict written to config:
 
 ```yaml
 - name: my-project
-  linear_team: TEAM
+  team: TEAM
   base_dir: ~/.botfarm/projects/my-project/repo
   worktree_prefix: ~/.botfarm/projects/my-project/slot-
   slots: [1, 2, 3]
-  linear_project: "Optional Filter"    # only included if non-empty
+  tracker_project: "Optional Filter"    # only included if non-empty
 ```
 
 ## Validation Rules (from config.py)
 
 - `name` — required, must be unique across all projects
-- `linear_team` — required
+- `team` — required
 - `base_dir` — required
 - `worktree_prefix` — required
 - `slots` — required, list of integers, no duplicates
-- `linear_project` — optional, must be unique across projects when set (prevents ticket routing ambiguity)
+- `tracker_project` — optional, must be unique across projects when set (prevents ticket routing ambiguity)
 
 ## Error Handling
 

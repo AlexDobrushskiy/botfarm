@@ -47,26 +47,26 @@ def _full_config_values(app) -> dict:
         "projects": [
             {
                 "name": p.name,
-                "linear_team": p.linear_team,
-                "linear_project": p.linear_project,
+                "team": p.team,
+                "tracker_project": p.tracker_project,
                 "base_dir": p.base_dir,
                 "worktree_prefix": p.worktree_prefix,
                 "slots": list(p.slots),
             }
             for p in cfg.projects
         ],
-        "linear": {
-            "api_key": _mask_secret(cfg.linear.api_key),
-            "workspace": cfg.linear.workspace,
-            "poll_interval_seconds": cfg.linear.poll_interval_seconds,
-            "exclude_tags": list(cfg.linear.exclude_tags),
-            "todo_status": cfg.linear.todo_status,
-            "in_progress_status": cfg.linear.in_progress_status,
-            "done_status": cfg.linear.done_status,
-            "in_review_status": cfg.linear.in_review_status,
-            "comment_on_failure": cfg.linear.comment_on_failure,
-            "comment_on_completion": cfg.linear.comment_on_completion,
-            "comment_on_limit_pause": cfg.linear.comment_on_limit_pause,
+        "bugtracker": {
+            "api_key": _mask_secret(cfg.bugtracker.api_key),
+            "workspace": cfg.bugtracker.workspace,
+            "poll_interval_seconds": cfg.bugtracker.poll_interval_seconds,
+            "exclude_tags": list(cfg.bugtracker.exclude_tags),
+            "todo_status": cfg.bugtracker.todo_status,
+            "in_progress_status": cfg.bugtracker.in_progress_status,
+            "done_status": cfg.bugtracker.done_status,
+            "in_review_status": cfg.bugtracker.in_review_status,
+            "comment_on_failure": cfg.bugtracker.comment_on_failure,
+            "comment_on_completion": cfg.bugtracker.comment_on_completion,
+            "comment_on_limit_pause": cfg.bugtracker.comment_on_limit_pause,
         },
         "agents": {
             "max_review_iterations": cfg.agents.max_review_iterations,
@@ -116,11 +116,11 @@ def _config_values(app) -> dict:
     if cfg is None:
         return {}
     return {
-        "linear": {
-            "poll_interval_seconds": cfg.linear.poll_interval_seconds,
-            "comment_on_failure": cfg.linear.comment_on_failure,
-            "comment_on_completion": cfg.linear.comment_on_completion,
-            "comment_on_limit_pause": cfg.linear.comment_on_limit_pause,
+        "bugtracker": {
+            "poll_interval_seconds": cfg.bugtracker.poll_interval_seconds,
+            "comment_on_failure": cfg.bugtracker.comment_on_failure,
+            "comment_on_completion": cfg.bugtracker.comment_on_completion,
+            "comment_on_limit_pause": cfg.bugtracker.comment_on_limit_pause,
         },
         "usage_limits": {
             "enabled": cfg.usage_limits.enabled,
@@ -157,7 +157,7 @@ def _config_values(app) -> dict:
             {
                 "name": p.name,
                 "slots": list(p.slots),
-                "linear_project": p.linear_project,
+                "tracker_project": p.tracker_project,
             }
             for p in cfg.projects
         ],

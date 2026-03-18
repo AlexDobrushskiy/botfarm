@@ -67,7 +67,7 @@ class OperationsMixin:
     def _handle_completed_slot(self, slot: SlotState) -> None:
         """Update Linear for a completed slot and free it."""
         project = slot.project
-        linear_cfg = self._config.linear
+        linear_cfg = self._config.bugtracker
         poller = self._pollers.get(project)
         if poller and slot.ticket_id:
             if poller.is_issue_terminal(slot.ticket_id):
@@ -156,7 +156,7 @@ class OperationsMixin:
             return
 
         project = slot.project
-        linear_cfg = self._config.linear
+        linear_cfg = self._config.bugtracker
         poller = self._pollers.get(project)
         if poller and slot.ticket_id:
             if poller.is_issue_terminal(slot.ticket_id):
@@ -501,7 +501,7 @@ class OperationsMixin:
             return
 
         ticket_id = slot.ticket_id or "unknown"
-        workspace = self._config.linear.workspace
+        workspace = self._config.bugtracker.workspace
         if workspace:
             linear_url = f"https://linear.app/{workspace}/issue/{ticket_id}"
         else:
@@ -704,7 +704,7 @@ Note: The supervisor handles status transitions automatically — do not move th
         title = f"Refactoring Analysis — {month} {year}"
 
         first_project = self._config.projects[0]
-        team_key = first_project.linear_team
+        team_key = first_project.team
 
         try:
             team_id = self._linear_client.get_team_id(team_key)
@@ -736,15 +736,15 @@ Note: The supervisor handles status transitions automatically — do not move th
                 )
 
             project_id: str | None = None
-            if first_project.linear_project:
+            if first_project.tracker_project:
                 try:
                     project_id = self._linear_client.get_project_id(
-                        first_project.linear_project
+                        first_project.tracker_project
                     )
                 except Exception as exc:
                     logger.warning(
                         "Failed to resolve project '%s': %s",
-                        first_project.linear_project,
+                        first_project.tracker_project,
                         exc,
                     )
                     return
@@ -752,11 +752,11 @@ Note: The supervisor handles status transitions automatically — do not move th
                     logger.warning(
                         "Project '%s' not found in Linear — skipping "
                         "refactoring analysis ticket creation",
-                        first_project.linear_project,
+                        first_project.tracker_project,
                     )
                     return
 
-            target_status = "Backlog" if use_backlog else self._config.linear.todo_status
+            target_status = "Backlog" if use_backlog else self._config.bugtracker.todo_status
             state_id: str | None = None
             try:
                 states = self._linear_client.get_team_states(team_key)
@@ -855,7 +855,7 @@ Note: The supervisor handles status transitions automatically — do not move th
         )
         self._conn.commit()
 
-        if self._config.linear.comment_on_limit_pause and slot and slot.ticket_id:
+        if self._config.bugtracker.comment_on_limit_pause and slot and slot.ticket_id:
             poller = self._pollers.get(wr.project)
             if poller:
                 try:
@@ -1202,7 +1202,7 @@ Note: The supervisor handles status transitions automatically — do not move th
         if not poller:
             return
 
-        target_status = self._config.linear.todo_status
+        target_status = self._config.bugtracker.todo_status
         try:
             poller.move_issue(slot.ticket_id, target_status)
             logger.info(
@@ -1234,7 +1234,7 @@ Note: The supervisor handles status transitions automatically — do not move th
         if not poller:
             return
 
-        target_status = self._config.linear.done_status
+        target_status = self._config.bugtracker.done_status
         try:
             poller.move_issue(slot.ticket_id, target_status)
             logger.info(
@@ -1491,7 +1491,7 @@ Note: The supervisor handles status transitions automatically — do not move th
                 detail=json.dumps({
                     "project": project_name,
                     "slots": new_project_cfg.slots,
-                    "linear_team": new_project_cfg.linear_team,
+                    "team": new_project_cfg.team,
                 }),
             )
             self._conn.commit()
@@ -1518,7 +1518,7 @@ Note: The supervisor handles status transitions automatically — do not move th
             "Added project '%s' with %d slot(s), polling team '%s'",
             project_name,
             len(new_project_cfg.slots),
-            new_project_cfg.linear_team,
+            new_project_cfg.team,
         )
 
     # ------------------------------------------------------------------

@@ -743,13 +743,13 @@ def _make_config_with_coder(tmp_path: Path) -> BotfarmConfig:
         projects=[
             ProjectConfig(
                 name="test-project",
-                linear_team="TST",
+                team="TST",
                 base_dir=str(tmp_path / "repo"),
                 worktree_prefix="test-project-slot-",
                 slots=[1, 2],
             ),
         ],
-        linear=LinearConfig(
+        bugtracker=LinearConfig(
             api_key="owner-key",
             poll_interval_seconds=10,
             exclude_tags=["Human"],
@@ -1077,20 +1077,20 @@ class TestMultiProject:
             projects=[
                 ProjectConfig(
                     name="alpha",
-                    linear_team="ALPHA",
+                    team="ALPHA",
                     base_dir=str(tmp_path / "alpha"),
                     worktree_prefix="alpha-slot-",
                     slots=[1],
                 ),
                 ProjectConfig(
                     name="beta",
-                    linear_team="BETA",
+                    team="BETA",
                     base_dir=str(tmp_path / "beta"),
                     worktree_prefix="beta-slot-",
                     slots=[2],
                 ),
             ],
-            linear=LinearConfig(
+            bugtracker=LinearConfig(
                 api_key="test-key",
                 poll_interval_seconds=10,
             ),
@@ -1250,13 +1250,13 @@ def _make_config_custom_statuses(tmp_path: Path) -> BotfarmConfig:
         projects=[
             ProjectConfig(
                 name="test-project",
-                linear_team="TST",
+                team="TST",
                 base_dir=str(tmp_path / "repo"),
                 worktree_prefix="test-project-slot-",
                 slots=[1, 2],
             ),
         ],
-        linear=LinearConfig(
+        bugtracker=LinearConfig(
             api_key="test-key",
             poll_interval_seconds=10,
             exclude_tags=["Human"],
@@ -1424,13 +1424,13 @@ class TestCommentPosting:
             projects=[
                 ProjectConfig(
                     name="test-project",
-                    linear_team="TST",
+                    team="TST",
                     base_dir=str(tmp_path / "repo"),
                     worktree_prefix="test-project-slot-",
                     slots=[1],
                 ),
             ],
-            linear=LinearConfig(
+            bugtracker=LinearConfig(
                 api_key="test-key",
                 poll_interval_seconds=10,
                 comment_on_failure=False,

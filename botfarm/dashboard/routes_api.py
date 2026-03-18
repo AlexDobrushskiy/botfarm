@@ -56,8 +56,8 @@ router = APIRouter()
 # Actionable guidance for common preflight check failures
 _PREFLIGHT_GUIDANCE: dict[str, str] = {
     "git_repo": "Verify base_dir path in config and that git remote 'origin' is accessible",
-    "linear_api": "Check linear.api_key in config and verify team/status names match your Linear workspace",
-    "linear_status": "Check linear.api_key in config and verify team/status names match your Linear workspace",
+    "linear_api": "Check bugtracker.api_key in config and verify team/status names match your Linear workspace",
+    "linear_status": "Check bugtracker.api_key in config and verify team/status names match your Linear workspace",
     "identity_github_token": "Verify GitHub token is valid and the associated user has collaborator access to the repository",
     "identity_ssh_key": "Check SSH key path in config, verify file exists and has correct permissions (0600)",
     "identity_linear_key": "Verify the identity's Linear API key is valid",
@@ -889,8 +889,8 @@ def _get_cleanup_service(
     if not cfg.projects:
         return None
     client = create_client(cfg)
-    team_key = cfg.projects[0].linear_team
-    project_name = cfg.projects[0].linear_project
+    team_key = cfg.projects[0].team
+    project_name = cfg.projects[0].tracker_project
     return CleanupService(
         client, conn, team_key=team_key, project_name=project_name,
         min_age_days=min_age_days,

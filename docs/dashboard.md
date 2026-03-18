@@ -257,7 +257,7 @@ All JS is vanilla (no framework) and lives inline in templates — primarily `ba
 ```python
 cfg = app.state.botfarm_config  # BotfarmConfig instance
 projects = [p.name for p in cfg.projects]
-poll_interval = cfg.linear.poll_interval_seconds
+poll_interval = cfg.bugtracker.poll_interval_seconds
 ```
 
 ### SQLite (read-only)

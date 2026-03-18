@@ -72,14 +72,14 @@ def format_project_entry(project_dict: dict, indent: int = 2) -> str:
     cont = " " * (indent + 2)
     lines = [
         f"{prefix}- name: {yaml_scalar(project_dict['name'])}",
-        f"{cont}linear_team: {yaml_scalar(project_dict['linear_team'])}",
+        f"{cont}team: {yaml_scalar(project_dict['team'])}",
         f"{cont}base_dir: {yaml_scalar(project_dict['base_dir'])}",
         f"{cont}worktree_prefix: {yaml_scalar(project_dict['worktree_prefix'])}",
         f"{cont}slots: {yaml_scalar(project_dict['slots'])}",
     ]
-    if project_dict.get("linear_project"):
+    if project_dict.get("tracker_project"):
         lines.append(
-            f"{cont}linear_project: {yaml_scalar(project_dict['linear_project'])}"
+            f"{cont}tracker_project: {yaml_scalar(project_dict['tracker_project'])}"
         )
     return "\n".join(lines)
 
@@ -372,8 +372,8 @@ def create_worktree(repo_dir: Path, worktree_path: Path, branch_name: str) -> No
 def setup_project(
     repo_url: str,
     name: str,
-    linear_team: str,
-    linear_project: str,
+    team: str,
+    tracker_project: str,
     slots: list[int],
     config_path: Path,
     projects_dir: Path | None = None,
@@ -389,8 +389,8 @@ def setup_project(
     Args:
         repo_url: Git repository URL (SSH or HTTPS).
         name: Project name.
-        linear_team: Linear team key (e.g. "SMA").
-        linear_project: Linear project filter (empty string for none).
+        team: Bugtracker team key (e.g. "SMA").
+        tracker_project: Bugtracker project filter (empty string for none).
         slots: List of slot IDs (e.g. [1, 2, 3]).
         config_path: Path to config.yaml.
         projects_dir: Directory for repo clone and worktrees.
@@ -443,11 +443,11 @@ def setup_project(
         _progress("Updating config...")
         project_dict = {
             "name": name,
-            "linear_team": linear_team,
+            "team": team,
             "base_dir": str(repo_dir),
             "worktree_prefix": str(projects_dir / worktree_prefix),
             "slots": slots,
-            "linear_project": linear_project,
+            "tracker_project": tracker_project,
         }
 
         append_project_to_config(

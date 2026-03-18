@@ -1464,7 +1464,7 @@ class TestPollCapacity:
 
     def test_disabled_config_skips_polling(self, supervisor):
         """When capacity_monitoring.enabled is False, nothing happens."""
-        supervisor._config.linear.capacity_monitoring = CapacityConfig(enabled=False)
+        supervisor._config.bugtracker.capacity_monitoring = CapacityConfig(enabled=False)
         supervisor._linear_client = MagicMock()
 
         supervisor._poll_capacity()

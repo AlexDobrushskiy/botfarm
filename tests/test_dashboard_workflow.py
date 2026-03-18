@@ -102,8 +102,8 @@ class TestWorkflowPage:
     def test_workflow_config_overrides_loop_iterations(self, db_file):
         """When botfarm_config is provided, loop max iterations should reflect config values."""
         cfg = BotfarmConfig(
-            projects=[ProjectConfig(name="test", linear_team="T", base_dir="/tmp", worktree_prefix="w", slots=[1])],
-            linear=LinearConfig(api_key="test"),
+            projects=[ProjectConfig(name="test", team="T", base_dir="/tmp", worktree_prefix="w", slots=[1])],
+            bugtracker=LinearConfig(api_key="test"),
         )
         cfg.agents.max_review_iterations = 5
         cfg.agents.max_ci_retries = 4
@@ -1016,7 +1016,7 @@ class TestLinearCapacityPartial:
         """Respects custom threshold config for color classes."""
         cfg = BotfarmConfig(
             projects=[],
-            linear=LinearConfig(
+            bugtracker=LinearConfig(
                 capacity_monitoring=CapacityConfig(
                     warning_threshold=0.50,
                     critical_threshold=0.60,
@@ -1055,13 +1055,13 @@ class TestCleanupPage:
                 projects=[
                     ProjectConfig(
                         name="proj",
-                        linear_team="SMA",
+                        team="SMA",
                         base_dir="/tmp",
                         worktree_prefix="w",
                         slots=[1],
                     ),
                 ],
-                linear=LinearConfig(api_key="test-key"),
+                bugtracker=LinearConfig(api_key="test-key"),
             )
             kwargs["botfarm_config"] = cfg
         app = create_app(**kwargs)
@@ -1114,11 +1114,11 @@ class TestCleanupPage:
         cfg = BotfarmConfig(
             projects=[
                 ProjectConfig(
-                    name="proj", linear_team="SMA",
+                    name="proj", team="SMA",
                     base_dir="/tmp", worktree_prefix="w", slots=[1],
                 ),
             ],
-            linear=LinearConfig(api_key="test-key"),
+            bugtracker=LinearConfig(api_key="test-key"),
         )
         app = create_app(db_path=db_path, botfarm_config=cfg)
         client = TestClient(app)
@@ -1141,11 +1141,11 @@ class TestCleanupPreviewAPI:
         cfg = BotfarmConfig(
             projects=[
                 ProjectConfig(
-                    name="proj", linear_team="SMA",
+                    name="proj", team="SMA",
                     base_dir="/tmp", worktree_prefix="w", slots=[1],
                 ),
             ],
-            linear=LinearConfig(api_key="test-key"),
+            bugtracker=LinearConfig(api_key="test-key"),
         )
         app = create_app(db_path=db_path, botfarm_config=cfg)
         return TestClient(app)
@@ -1175,7 +1175,7 @@ class TestCleanupPreviewAPI:
             "children": {"nodes": []},
         }]
         import httpx
-        from botfarm.linear import LINEAR_API_URL
+        from botfarm.bugtracker.linear.client import LINEAR_API_URL
         resp_data = httpx.Response(
             status_code=200,
             json={"data": {"issues": {"nodes": mock_nodes}}},
@@ -1191,7 +1191,7 @@ class TestCleanupPreviewAPI:
     def test_preview_empty_result(self, tmp_path):
         client = self._make_client(tmp_path)
         import httpx
-        from botfarm.linear import LINEAR_API_URL
+        from botfarm.bugtracker.linear.client import LINEAR_API_URL
         resp_data = httpx.Response(
             status_code=200,
             json={"data": {"issues": {"nodes": []}}},
@@ -1211,11 +1211,11 @@ class TestCleanupExecuteAPI:
         cfg = BotfarmConfig(
             projects=[
                 ProjectConfig(
-                    name="proj", linear_team="SMA",
+                    name="proj", team="SMA",
                     base_dir="/tmp", worktree_prefix="w", slots=[1],
                 ),
             ],
-            linear=LinearConfig(api_key="test-key"),
+            bugtracker=LinearConfig(api_key="test-key"),
         )
         app = create_app(db_path=db_path, botfarm_config=cfg)
         return TestClient(app)
@@ -1257,7 +1257,7 @@ class TestCleanupExecuteAPI:
             "children": {"nodes": []},
         }]
         import httpx
-        from botfarm.linear import LINEAR_API_URL
+        from botfarm.bugtracker.linear.client import LINEAR_API_URL
 
         fetch_resp = httpx.Response(
             status_code=200,
@@ -1313,11 +1313,11 @@ class TestCleanupExecuteAPI:
         cfg = BotfarmConfig(
             projects=[
                 ProjectConfig(
-                    name="proj", linear_team="SMA",
+                    name="proj", team="SMA",
                     base_dir="/tmp", worktree_prefix="w", slots=[1],
                 ),
             ],
-            linear=LinearConfig(api_key="test-key"),
+            bugtracker=LinearConfig(api_key="test-key"),
         )
         app = create_app(db_path=db_path, botfarm_config=cfg)
         client = TestClient(app)
@@ -1337,11 +1337,11 @@ class TestCleanupUndoAPI:
         cfg = BotfarmConfig(
             projects=[
                 ProjectConfig(
-                    name="proj", linear_team="SMA",
+                    name="proj", team="SMA",
                     base_dir="/tmp", worktree_prefix="w", slots=[1],
                 ),
             ],
-            linear=LinearConfig(api_key="test-key"),
+            bugtracker=LinearConfig(api_key="test-key"),
         )
         app = create_app(db_path=db_path, botfarm_config=cfg)
         client = TestClient(app)

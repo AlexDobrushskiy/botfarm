@@ -48,13 +48,13 @@ def _make_config(
         projects=[
             ProjectConfig(
                 name="test-project",
-                linear_team="TST",
+                team="TST",
                 base_dir=str(tmp_path / "repo"),
                 worktree_prefix="test-project-slot-",
                 slots=[1],
             ),
         ],
-        linear=LinearConfig(
+        bugtracker=LinearConfig(
             api_key="test-key",
             poll_interval_seconds=10,
         ),
@@ -230,13 +230,13 @@ class TestRefactoringAnalysisConfig:
             "projects": [
                 {
                     "name": "p",
-                    "linear_team": "T",
+                    "team": "T",
                     "base_dir": "~/d",
                     "worktree_prefix": "p-",
                     "slots": [1],
                 }
             ],
-            "linear": {"api_key": "key"},
+            "bugtracker": {"api_key": "key"},
             "refactoring_analysis": {
                 "enabled": True,
                 "cadence_days": 7,
@@ -264,13 +264,13 @@ class TestRefactoringAnalysisConfig:
             "projects": [
                 {
                     "name": "p",
-                    "linear_team": "T",
+                    "team": "T",
                     "base_dir": "~/d",
                     "worktree_prefix": "p-",
                     "slots": [1],
                 }
             ],
-            "linear": {"api_key": "key"},
+            "bugtracker": {"api_key": "key"},
         }
         path = tmp_path / "config.yaml"
         path.write_text(yaml.dump(data))
@@ -290,13 +290,13 @@ class TestRefactoringAnalysisConfig:
             "projects": [
                 {
                     "name": "p",
-                    "linear_team": "T",
+                    "team": "T",
                     "base_dir": "~/d",
                     "worktree_prefix": "p-",
                     "slots": [1],
                 }
             ],
-            "linear": {"api_key": "key"},
+            "bugtracker": {"api_key": "key"},
             "refactoring_analysis": {"cadence_tickets": -1},
         }
         path = tmp_path / "config.yaml"
@@ -313,13 +313,13 @@ class TestRefactoringAnalysisConfig:
             "projects": [
                 {
                     "name": "p",
-                    "linear_team": "T",
+                    "team": "T",
                     "base_dir": "~/d",
                     "worktree_prefix": "p-",
                     "slots": [1],
                 }
             ],
-            "linear": {"api_key": "key"},
+            "bugtracker": {"api_key": "key"},
             "refactoring_analysis": {"cadence_tickets": 0},
         }
         path = tmp_path / "config.yaml"
@@ -336,13 +336,13 @@ class TestRefactoringAnalysisConfig:
             "projects": [
                 {
                     "name": "p",
-                    "linear_team": "T",
+                    "team": "T",
                     "base_dir": "~/d",
                     "worktree_prefix": "p-",
                     "slots": [1],
                 }
             ],
-            "linear": {"api_key": "key"},
+            "bugtracker": {"api_key": "key"},
             "refactoring_analysis": {"cadence_days": 0},
         }
         path = tmp_path / "config.yaml"
@@ -359,13 +359,13 @@ class TestRefactoringAnalysisConfig:
             "projects": [
                 {
                     "name": "p",
-                    "linear_team": "T",
+                    "team": "T",
                     "base_dir": "~/d",
                     "worktree_prefix": "p-",
                     "slots": [1],
                 }
             ],
-            "linear": {"api_key": "key"},
+            "bugtracker": {"api_key": "key"},
             "refactoring_analysis": {"linear_label": "  "},
         }
         path = tmp_path / "config.yaml"
@@ -382,13 +382,13 @@ class TestRefactoringAnalysisConfig:
             "projects": [
                 {
                     "name": "p",
-                    "linear_team": "T",
+                    "team": "T",
                     "base_dir": "~/d",
                     "worktree_prefix": "p-",
                     "slots": [1],
                 }
             ],
-            "linear": {"api_key": "key"},
+            "bugtracker": {"api_key": "key"},
             "refactoring_analysis": {"priority": 5},
         }
         path = tmp_path / "config.yaml"
@@ -649,7 +649,7 @@ class TestRefactoringScheduler:
     def test_passes_project_id_when_configured(self, tmp_path, monkeypatch):
         """Passes projectId to create_issue when linear_project is set."""
         config = _make_config(tmp_path)
-        config.projects[0].linear_project = "My Project"
+        config.projects[0].tracker_project = "My Project"
         sup, _ = _make_supervisor(tmp_path, monkeypatch, config)
 
         sup._linear_client.get_team_id = MagicMock(return_value="team-uuid")
@@ -682,7 +682,7 @@ class TestRefactoringScheduler:
     def test_skips_when_project_not_found(self, tmp_path, monkeypatch):
         """Skips ticket creation when configured project is not found in Linear."""
         config = _make_config(tmp_path)
-        config.projects[0].linear_project = "Nonexistent Project"
+        config.projects[0].tracker_project = "Nonexistent Project"
         sup, _ = _make_supervisor(tmp_path, monkeypatch, config)
 
         sup._linear_client.get_team_id = MagicMock(return_value="team-uuid")
@@ -802,7 +802,7 @@ class TestRefactoringScheduler:
     def test_skips_when_project_api_fails(self, tmp_path, monkeypatch):
         """Skips ticket creation when project lookup raises an exception."""
         config = _make_config(tmp_path)
-        config.projects[0].linear_project = "My Project"
+        config.projects[0].tracker_project = "My Project"
         sup, _ = _make_supervisor(tmp_path, monkeypatch, config)
 
         sup._linear_client.get_team_id = MagicMock(return_value="team-uuid")
@@ -828,7 +828,7 @@ class TestRefactoringScheduler:
 
 class TestLinearClientMethods:
     def test_create_issue_builds_correct_input(self):
-        from botfarm.linear import LinearClient
+        from botfarm.bugtracker.linear.client import LinearClient
 
         client = LinearClient(api_key="test")
         mock_response = {
@@ -853,7 +853,7 @@ class TestLinearClientMethods:
         assert result.identifier == "TST-1"
 
     def test_create_issue_passes_project_and_state(self):
-        from botfarm.linear import LinearClient
+        from botfarm.bugtracker.linear.client import LinearClient
 
         client = LinearClient(api_key="test")
         mock_response = {
@@ -879,7 +879,7 @@ class TestLinearClientMethods:
         assert input_data["stateId"] == "state-uuid"
 
     def test_create_issue_includes_priority_zero(self):
-        from botfarm.linear import LinearClient
+        from botfarm.bugtracker.linear.client import LinearClient
 
         client = LinearClient(api_key="test")
         mock_response = {
@@ -904,7 +904,7 @@ class TestLinearClientMethods:
         assert input_data["priority"] == 0
 
     def test_create_issue_raises_on_failure(self):
-        from botfarm.linear import LinearClient
+        from botfarm.bugtracker.linear.client import LinearClient
 
         client = LinearClient(api_key="test")
         mock_response = {"issueCreate": {"success": False}}
@@ -916,7 +916,7 @@ class TestLinearClientMethods:
                 )
 
     def test_fetch_open_issues_with_label(self):
-        from botfarm.linear import LinearClient
+        from botfarm.bugtracker.linear.client import LinearClient
 
         client = LinearClient(api_key="test")
         mock_response = {
@@ -938,7 +938,7 @@ class TestLinearClientMethods:
         assert result[0].identifier == "TST-5"
 
     def test_get_or_create_label_returns_existing(self):
-        from botfarm.linear import LinearClient
+        from botfarm.bugtracker.linear.client import LinearClient
 
         client = LinearClient(api_key="test")
         mock_labels_response = {
@@ -956,7 +956,7 @@ class TestLinearClientMethods:
         assert result == "existing-id"
 
     def test_get_or_create_label_creates_new(self):
-        from botfarm.linear import LinearClient
+        from botfarm.bugtracker.linear.client import LinearClient
 
         client = LinearClient(api_key="test")
 

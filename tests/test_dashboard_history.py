@@ -775,13 +775,13 @@ def _make_botfarm_config(tmp_path):
         "projects": [
             {
                 "name": "test-project",
-                "linear_team": "TST",
+                "team": "TST",
                 "base_dir": "~/test",
                 "worktree_prefix": "test-slot-",
                 "slots": [1],
             }
         ],
-        "linear": {
+        "bugtracker": {
             "api_key": "${LINEAR_API_KEY}",
             "poll_interval_seconds": 120,
             "comment_on_failure": True,
@@ -805,11 +805,11 @@ def _make_botfarm_config(tmp_path):
     config = BotfarmConfig(
         projects=[
             ProjectConfig(
-                name="test-project", linear_team="TST",
+                name="test-project", team="TST",
                 base_dir="~/test", worktree_prefix="test-slot-", slots=[1],
             ),
         ],
-        linear=LinearConfig(
+        bugtracker=LinearConfig(
             api_key="test-key",
             poll_interval_seconds=120,
             comment_on_failure=True,
@@ -875,19 +875,19 @@ class TestConfigUpdate:
     def test_update_linear_setting(self, setup):
         client, config, _ = setup
         resp = client.post("/config", json={
-            "linear": {"poll_interval_seconds": 60},
+            "bugtracker": {"poll_interval_seconds": 60},
         })
         assert resp.status_code == 200
         assert "successfully" in resp.text
-        assert config.linear.poll_interval_seconds == 60
+        assert config.bugtracker.poll_interval_seconds == 60
 
     def test_update_bool_setting(self, setup):
         client, config, _ = setup
         resp = client.post("/config", json={
-            "linear": {"comment_on_completion": True},
+            "bugtracker": {"comment_on_completion": True},
         })
         assert resp.status_code == 200
-        assert config.linear.comment_on_completion is True
+        assert config.bugtracker.comment_on_completion is True
 
     def test_update_usage_limits(self, setup):
         client, config, _ = setup
@@ -918,33 +918,33 @@ class TestConfigUpdate:
     def test_update_writes_to_file(self, setup):
         client, _, config_path = setup
         client.post("/config", json={
-            "linear": {"poll_interval_seconds": 60},
+            "bugtracker": {"poll_interval_seconds": 60},
         })
         data = yaml.safe_load(config_path.read_text())
-        assert data["linear"]["poll_interval_seconds"] == 60
+        assert data["bugtracker"]["poll_interval_seconds"] == 60
 
     def test_update_preserves_env_vars_in_file(self, setup):
         client, _, config_path = setup
         client.post("/config", json={
-            "linear": {"poll_interval_seconds": 60},
+            "bugtracker": {"poll_interval_seconds": 60},
         })
         data = yaml.safe_load(config_path.read_text())
-        assert data["linear"]["api_key"] == "${LINEAR_API_KEY}"
+        assert data["bugtracker"]["api_key"] == "${LINEAR_API_KEY}"
 
     def test_validation_error_returns_422(self, setup):
         client, config, _ = setup
         resp = client.post("/config", json={
-            "linear": {"poll_interval_seconds": 0},
+            "bugtracker": {"poll_interval_seconds": 0},
         })
         assert resp.status_code == 422
         assert "at least 1" in resp.text
         # Config unchanged
-        assert config.linear.poll_interval_seconds == 120
+        assert config.bugtracker.poll_interval_seconds == 120
 
     def test_non_editable_field_rejected(self, setup):
         client, _, _ = setup
         resp = client.post("/config", json={
-            "linear": {"api_key": "hacked"},
+            "bugtracker": {"api_key": "hacked"},
         })
         assert resp.status_code == 422
         assert "not an editable field" in resp.text
@@ -967,18 +967,18 @@ class TestConfigUpdate:
     def test_update_without_config_returns_400(self, db_file):
         app = create_app(db_path=db_file)
         client = TestClient(app)
-        resp = client.post("/config", json={"linear": {"poll_interval_seconds": 60}})
+        resp = client.post("/config", json={"bugtracker": {"poll_interval_seconds": 60}})
         assert resp.status_code == 400
         assert "not available" in resp.text
 
     def test_multiple_sections_in_one_update(self, setup):
         client, config, _ = setup
         resp = client.post("/config", json={
-            "linear": {"poll_interval_seconds": 60},
+            "bugtracker": {"poll_interval_seconds": 60},
             "agents": {"max_ci_retries": 5},
         })
         assert resp.status_code == 200
-        assert config.linear.poll_interval_seconds == 60
+        assert config.bugtracker.poll_interval_seconds == 60
         assert config.agents.max_ci_retries == 5
 
 
@@ -991,14 +991,14 @@ def _make_structural_botfarm_config(tmp_path):
         "projects": [
             {
                 "name": "test-project",
-                "linear_team": "TST",
+                "team": "TST",
                 "base_dir": "~/test",
                 "worktree_prefix": "test-slot-",
                 "slots": [1, 2],
-                "linear_project": "My Filter",
+                "tracker_project": "My Filter",
             },
         ],
-        "linear": {
+        "bugtracker": {
             "api_key": "${LINEAR_API_KEY}",
             "poll_interval_seconds": 120,
         },
@@ -1014,12 +1014,12 @@ def _make_structural_botfarm_config(tmp_path):
     config = BotfarmConfig(
         projects=[
             ProjectConfig(
-                name="test-project", linear_team="TST",
+                name="test-project", team="TST",
                 base_dir="~/test", worktree_prefix="test-slot-",
-                slots=[1, 2], linear_project="My Filter",
+                slots=[1, 2], tracker_project="My Filter",
             ),
         ],
-        linear=LinearConfig(api_key="test-key", poll_interval_seconds=120),
+        bugtracker=LinearConfig(api_key="test-key", poll_interval_seconds=120),
         notifications=NotificationsConfig(
             webhook_url="https://hooks.example.com/old",
             webhook_format="slack",
@@ -1126,17 +1126,17 @@ class TestStructuralConfigUpdate:
         # In-memory config NOT updated
         assert config.projects[0].slots == [1, 2]
 
-    def test_update_project_linear_project_writes_yaml_only(self, setup):
+    def test_update_project_tracker_project_writes_yaml_only(self, setup):
         client, config, config_path, _ = setup
         resp = client.post("/config", json={
             "projects": [
-                {"name": "test-project", "linear_project": "New Filter"},
+                {"name": "test-project", "tracker_project": "New Filter"},
             ],
         })
         assert resp.status_code == 200
         data = yaml.safe_load(config_path.read_text())
-        assert data["projects"][0]["linear_project"] == "New Filter"
-        assert config.projects[0].linear_project == "My Filter"
+        assert data["projects"][0]["tracker_project"] == "New Filter"
+        assert config.projects[0].tracker_project == "My Filter"
 
     def test_structural_validation_error_returns_422(self, setup):
         client, _, _, _ = setup
@@ -1179,12 +1179,12 @@ class TestStructuralConfigUpdate:
     def test_mixed_runtime_and_structural_update(self, setup):
         client, config, config_path, app = setup
         resp = client.post("/config", json={
-            "linear": {"poll_interval_seconds": 60},
+            "bugtracker": {"poll_interval_seconds": 60},
             "notifications": {"webhook_url": "https://new.example.com"},
         })
         assert resp.status_code == 200
         # Runtime applied in-memory
-        assert config.linear.poll_interval_seconds == 60
+        assert config.bugtracker.poll_interval_seconds == 60
         # Structural written to file only
         data = yaml.safe_load(config_path.read_text())
         assert data["notifications"]["webhook_url"] == "https://new.example.com"
@@ -1196,7 +1196,7 @@ class TestStructuralConfigUpdate:
         config = BotfarmConfig(
             projects=[
                 ProjectConfig(
-                    name="test", linear_team="T", base_dir="~/t",
+                    name="test", team="T", base_dir="~/t",
                     worktree_prefix="t-", slots=[1],
                 ),
             ],
@@ -1220,12 +1220,12 @@ class TestConfigViewPage:
         config = BotfarmConfig(
             projects=[
                 ProjectConfig(
-                    name="test-project", linear_team="TST",
+                    name="test-project", team="TST",
                     base_dir="~/test", worktree_prefix="test-slot-",
-                    slots=[1, 2], linear_project="My Project",
+                    slots=[1, 2], tracker_project="My Project",
                 ),
             ],
-            linear=LinearConfig(
+            bugtracker=LinearConfig(
                 api_key="lin_api_1234567890abcdef",
                 workspace="my-workspace",
                 poll_interval_seconds=60,
@@ -1325,11 +1325,11 @@ class TestConfigViewPage:
             config = BotfarmConfig(
                 projects=[
                     ProjectConfig(
-                        name="p", linear_team="T",
+                        name="p", team="T",
                         base_dir="~/p", worktree_prefix="p-", slots=[1],
                     ),
                 ],
-                linear=LinearConfig(api_key="short"),
+                bugtracker=LinearConfig(api_key="short"),
             )
             config.source_path = str(tmp_path / "config.yaml")
             app = create_app(
@@ -1346,7 +1346,7 @@ class TestConfigViewPage:
         config = BotfarmConfig(
             projects=[
                 ProjectConfig(
-                    name="p", linear_team="T",
+                    name="p", team="T",
                     base_dir="~/p", worktree_prefix="p-", slots=[1],
                 ),
             ],

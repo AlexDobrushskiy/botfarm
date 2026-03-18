@@ -41,7 +41,7 @@ class LinearPoller(BugtrackerPoller):
 
     @property
     def team_key(self) -> str:
-        return self._project.linear_team
+        return self._project.team
 
     def poll(self, active_ticket_ids: set[str] | None = None) -> PollResult:
         """Fetch Todo issues, filter, and return sorted by manual sort order."""
@@ -49,9 +49,9 @@ class LinearPoller(BugtrackerPoller):
             active_ticket_ids = set()
 
         issues = self._client.fetch_team_issues(
-            team_key=self._project.linear_team,
+            team_key=self._project.team,
             status_name=self._todo_status,
-            project_name=self._project.linear_project,
+            project_name=self._project.tracker_project,
         )
 
         pre_parent_candidates = []
@@ -126,7 +126,7 @@ class LinearPoller(BugtrackerPoller):
 
         logger.debug(
             "Polled %s: %d Todo issues, %d candidates, %d blocked, %d auto-close parents",
-            self._project.linear_team,
+            self._project.team,
             len(issues),
             len(candidates),
             len(blocked_issues),
@@ -138,13 +138,13 @@ class LinearPoller(BugtrackerPoller):
         """Look up a workflow state ID by name, caching the result."""
         if self._state_cache is None:
             self._state_cache = self._client.get_team_states(
-                self._project.linear_team
+                self._project.team
             )
         state_id = self._state_cache.get(state_name)
         if state_id is None:
             raise LinearAPIError(
                 f"State '{state_name}' not found for team "
-                f"'{self._project.linear_team}'"
+                f"'{self._project.team}'"
             )
         return state_id
 
@@ -173,7 +173,7 @@ class LinearPoller(BugtrackerPoller):
     def add_labels(self, issue_id: str, label_names: list[str]) -> None:
         """Add labels by name to an issue (uses coder client). Creates labels if needed."""
         label_ids = [
-            self._coder_client.get_or_create_label(self._project.linear_team, name)
+            self._coder_client.get_or_create_label(self._project.team, name)
             for name in label_names
         ]
         self._coder_client.add_labels(issue_id, label_ids)
@@ -192,15 +192,15 @@ def create_pollers(config: BotfarmConfig) -> list[LinearPoller]:
     tickets, posting comments) so they appear under the coder bot's identity.
     Polling always uses the owner's client.
     """
-    client = LinearClient(api_key=config.linear.api_key)
+    client = LinearClient(api_key=config.bugtracker.api_key)
     coder_key = config.identities.coder.linear_api_key
     coder_client = LinearClient(api_key=coder_key) if coder_key else None
     return [
         LinearPoller(
             client=client,
             project=project,
-            exclude_tags=config.linear.exclude_tags,
-            todo_status=config.linear.todo_status,
+            exclude_tags=config.bugtracker.exclude_tags,
+            todo_status=config.bugtracker.todo_status,
             coder_client=coder_client,
         )
         for project in config.projects

@@ -46,7 +46,7 @@ def _seed_tasks(db_path, tasks):
 def _make_config():
     """Create a minimal mock config with a Linear API key."""
     config = MagicMock()
-    config.linear.api_key = "test-api-key"
+    config.bugtracker.api_key = "test-api-key"
     return config
 
 
@@ -209,7 +209,7 @@ class TestBackfillHistory:
     @patch("botfarm.bugtracker.create_client")
     def test_handles_deleted_tickets(self, mock_client_cls, runner, db_file, monkeypatch):
         """Gracefully handles tickets that no longer exist in Linear."""
-        from botfarm.linear import LinearAPIError
+        from botfarm.bugtracker.linear.client import LinearAPIError
 
         config = _make_config()
         monkeypatch.setattr(
