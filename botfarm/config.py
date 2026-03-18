@@ -282,24 +282,25 @@ class AgentsConfig:
     # Legacy accessor properties for backward compatibility.
     @property
     def codex_reviewer_enabled(self) -> bool:
-        return self.adapters.get("codex", AdapterConfig()).enabled
+        return self.adapters.get("codex", _default_adapters()["codex"]).enabled
 
     @property
     def codex_reviewer_model(self) -> str:
-        return self.adapters.get("codex", AdapterConfig()).model
+        return self.adapters.get("codex", _default_adapters()["codex"]).model
 
     @property
     def codex_reviewer_reasoning_effort(self) -> str:
-        return self.adapters.get("codex", AdapterConfig()).reasoning_effort
+        return self.adapters.get("codex", _default_adapters()["codex"]).reasoning_effort
 
     @property
     def codex_reviewer_timeout_minutes(self) -> int:
-        ac = self.adapters.get("codex", AdapterConfig(timeout_minutes=15))
-        return ac.timeout_minutes if ac.timeout_minutes is not None else 15
+        ac = self.adapters.get("codex", _default_adapters()["codex"])
+        default_timeout = _default_adapters()["codex"].timeout_minutes
+        return ac.timeout_minutes if ac.timeout_minutes is not None else default_timeout
 
     @property
     def codex_reviewer_skip_on_reiteration(self) -> bool:
-        return self.adapters.get("codex", AdapterConfig()).skip_on_reiteration
+        return self.adapters.get("codex", _default_adapters()["codex"]).skip_on_reiteration
 
 
 @dataclass
@@ -875,11 +876,12 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
                 "Deprecated: codex_reviewer_* fields in agents config; "
                 "migrate to agents.adapters.codex (see docs/configuration.md)"
             )
+            _codex_defaults = _default_adapters()["codex"]
             adapters["codex"] = AdapterConfig(
-                enabled=_parse_bool(agents_data, "codex_reviewer_enabled", False, section="agents"),
-                model=str(agents_data.get("codex_reviewer_model", "")),
-                timeout_minutes=int(agents_data.get("codex_reviewer_timeout_minutes", 15)),
-                reasoning_effort=str(agents_data.get("codex_reviewer_reasoning_effort", "medium") or ""),
+                enabled=_parse_bool(agents_data, "codex_reviewer_enabled", _codex_defaults.enabled, section="agents"),
+                model=str(agents_data.get("codex_reviewer_model", _codex_defaults.model)),
+                timeout_minutes=int(agents_data.get("codex_reviewer_timeout_minutes", _codex_defaults.timeout_minutes)),
+                reasoning_effort=str(agents_data.get("codex_reviewer_reasoning_effort", _codex_defaults.reasoning_effort) or ""),
                 skip_on_reiteration=_parse_bool(
                     agents_data, "codex_reviewer_skip_on_reiteration", True, section="agents",
                 ),
@@ -1259,6 +1261,17 @@ def write_config_updates(config_path: Path, updates: dict) -> None:
         for key, value in fields.items():
             if key == "timeout_minutes" and isinstance(target.get(key), dict):
                 target[key].update(value)
+            elif section == "agents" and key in _CODEX_LEGACY_FIELD_MAP:
+                # Route legacy codex_reviewer_* keys to adapters.codex
+                # so dashboard edits persist correctly when YAML uses the
+                # new adapters format.
+                adapter_attr = _CODEX_LEGACY_FIELD_MAP[key]
+                adapters_block = target.setdefault("adapters", {})
+                codex_block = adapters_block.setdefault("codex", {})
+                codex_block[adapter_attr] = value
+                # Also remove the flat legacy key if present, to avoid
+                # the "both forms present" precedence issue on reload.
+                target.pop(key, None)
             else:
                 target[key] = value
 

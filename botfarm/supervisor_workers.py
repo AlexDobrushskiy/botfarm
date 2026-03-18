@@ -17,6 +17,7 @@ import signal
 import sqlite3
 import subprocess
 import time
+import dataclasses
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -712,13 +713,7 @@ class WorkerLifecycleManager:
                 "pause_event": pause_event,
                 "identities": self._config.identities,
                 "agent_adapters_config": {
-                    name: {
-                        "enabled": ac.enabled,
-                        "model": ac.model,
-                        "timeout_minutes": ac.timeout_minutes,
-                        "reasoning_effort": ac.reasoning_effort,
-                        "skip_on_reiteration": ac.skip_on_reiteration,
-                    }
+                    name: dataclasses.asdict(ac)
                     for name, ac in self._config.agents.adapters.items()
                 },
                 "prior_context": prior_context,

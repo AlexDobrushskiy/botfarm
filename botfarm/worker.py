@@ -21,7 +21,7 @@ from pathlib import Path
 
 from botfarm.agent import AdapterRegistry, build_adapter_registry
 from botfarm.codex import run_codex_streaming as run_codex_streaming
-from botfarm.config import AdapterConfig, IdentitiesConfig
+from botfarm.config import AdapterConfig, IdentitiesConfig, _default_adapters
 from botfarm.db import delete_stage_run, get_task, insert_event, insert_stage_run, is_extra_usage_active, read_runtime_config, update_stage_run_context_fill, update_task
 from botfarm.slots import update_slot_stage
 from botfarm.worker_claude import (
@@ -443,7 +443,7 @@ def run_pipeline(
 
     # Resolve adapter configs — use provided config or defaults.
     adapters = agent_adapters_config or {}
-    codex_ac = adapters.get("codex", AdapterConfig(timeout_minutes=15, reasoning_effort="medium"))
+    codex_ac = adapters.get("codex", _default_adapters()["codex"])
 
     # Build adapter registry for agent-based stage dispatch.
     registry = build_adapter_registry(
@@ -475,7 +475,7 @@ def run_pipeline(
             enabled=codex_ac.enabled,
             model=codex_ac.model,
             reasoning_effort=codex_ac.reasoning_effort,
-            timeout_minutes=codex_ac.timeout_minutes if codex_ac.timeout_minutes is not None else 15,
+            timeout_minutes=codex_ac.timeout_minutes if codex_ac.timeout_minutes is not None else _default_adapters()["codex"].timeout_minutes,
             skip_on_reiteration=codex_ac.skip_on_reiteration,
         ),
         registry=registry,
