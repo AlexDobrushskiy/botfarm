@@ -557,9 +557,12 @@ def _run_review(
                 pr_url, owner, repo, number, codex_enabled=True,
             )
         if registry is not None:
-            adapter = registry.get(
-                stage_tpl.executor_type if stage_tpl else "claude", registry["claude"],
-            )
+            executor = stage_tpl.executor_type if stage_tpl else "claude"
+            if executor not in registry:
+                raise ValueError(
+                    f"No adapter registered for executor_type={executor!r}"
+                )
+            adapter = registry[executor]
             return adapter.run(
                 prompt,
                 cwd=Path(cwd),

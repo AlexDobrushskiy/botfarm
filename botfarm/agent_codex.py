@@ -100,5 +100,6 @@ def _codex_result_to_agent_result(
         extra={
             "thread_id": cr.thread_id,
             "cached_input_tokens": cr.cached_input_tokens,
+            "model": model or cr.model or "",
         },
     )
