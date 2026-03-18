@@ -94,6 +94,7 @@ class _DummyAdapter:
         *,
         cwd: Path,
         max_turns: int | None = None,
+        model: str | None = None,
         log_file: Path | None = None,
         env: dict[str, str] | None = None,
         timeout: float | None = None,
