@@ -154,8 +154,6 @@ async def api_project_create(request: Request):
         _setup_tasks[task_id] = task_state
 
     def _run_setup():
-        nonlocal tracker_project
-
         def _on_progress(msg: str):
             with _setup_tasks_lock:
                 task_state["messages"].append(msg)
@@ -170,14 +168,9 @@ async def api_project_create(request: Request):
                             "Linear API key not configured — cannot create project"
                         )
                     result = client.get_or_create_project(team, tracker_project)
-                    if result["name"] == tracker_project:
-                        _on_progress(
-                            f"Linear project '{tracker_project}' ready (id: {result['id']})"
-                        )
-                    else:
-                        _on_progress(
-                            f"Linear project '{tracker_project}' ready"
-                        )
+                    _on_progress(
+                        f"Linear project '{tracker_project}' ready (id: {result['id']})"
+                    )
                 except ProjectSetupError:
                     raise
                 except Exception as exc:
