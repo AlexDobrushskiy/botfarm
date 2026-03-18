@@ -733,7 +733,8 @@ def check_claude_available() -> tuple[bool, str]:
         )
         if result.returncode == 0:
             version = result.stdout.strip()
-            return True, f"claude {version}"
+            path = shutil.which("claude") or "claude"
+            return True, f"{path} ({version})"
         return False, f"claude --version exited with code {result.returncode}"
     except FileNotFoundError:
         return False, "claude binary not found on PATH"

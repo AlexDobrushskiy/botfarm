@@ -268,6 +268,7 @@ def check_claude_binary() -> list[CheckResult]:
     ok, msg = check_claude_available()
     if not ok:
         # Augment the message with recovery guidance when binary is missing.
+        # Note: string coupling — relies on "not found" wording from check_claude_available().
         if "not found" in msg:
             msg = (
                 "'claude' not found on PATH. "

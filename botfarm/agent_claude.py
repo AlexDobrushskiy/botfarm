@@ -5,8 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from botfarm.agent import AgentResult, ContextFillCallback
-from botfarm.worker import DEFAULT_IMPLEMENT_MAX_TURNS
 from botfarm.worker_claude import ClaudeResult, check_claude_available, run_claude_streaming
+
+_DEFAULT_MAX_TURNS = 200
 
 
 class ClaudeAdapter:
@@ -43,7 +44,7 @@ class ClaudeAdapter:
         claude_result = run_claude_streaming(
             prompt,
             cwd=cwd,
-            max_turns=max_turns if max_turns is not None else DEFAULT_IMPLEMENT_MAX_TURNS,
+            max_turns=max_turns if max_turns is not None else _DEFAULT_MAX_TURNS,
             log_file=log_file,
             env=env,
             on_context_fill=on_context_fill,
