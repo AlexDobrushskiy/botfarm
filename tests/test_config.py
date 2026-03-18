@@ -2241,3 +2241,232 @@ def test_start_paused_non_bool_raises(tmp_path):
 def test_default_config_template_includes_start_paused():
     from botfarm.config import DEFAULT_CONFIG_TEMPLATE
     assert "start_paused:" in DEFAULT_CONFIG_TEMPLATE
+
+
+# ---------------------------------------------------------------------------
+# Bugtracker config abstraction (SMA-464)
+# ---------------------------------------------------------------------------
+
+MINIMAL_BUGTRACKER_CONFIG = {
+    "projects": [
+        {
+            "name": "test-project",
+            "team": "TST",
+            "base_dir": "~/test",
+            "worktree_prefix": "test-slot-",
+            "slots": [1],
+        }
+    ],
+    "bugtracker": {"type": "linear", "api_key": "test-key"},
+}
+
+
+class TestBugtrackerConfigSection:
+    """Test the new bugtracker: config section."""
+
+    def test_bugtracker_section_loads(self, tmp_path):
+        config_path = _write_config(tmp_path, MINIMAL_BUGTRACKER_CONFIG)
+        config = load_config(config_path)
+        assert config.bugtracker.type == "linear"
+        assert config.bugtracker.api_key == "test-key"
+
+    def test_bugtracker_is_canonical(self, tmp_path):
+        config_path = _write_config(tmp_path, MINIMAL_BUGTRACKER_CONFIG)
+        config = load_config(config_path)
+        assert hasattr(config, "bugtracker")
+        assert config.bugtracker is config.linear  # alias points to same object
+
+    def test_legacy_linear_section_still_works(self, tmp_path):
+        config_path = _write_config(tmp_path, MINIMAL_CONFIG)
+        config = load_config(config_path)
+        assert config.bugtracker.type == "linear"
+        assert config.bugtracker.api_key == "test-key"
+        assert config.linear.api_key == "test-key"
+
+    def test_bugtracker_takes_precedence_over_linear(self, tmp_path):
+        data = {
+            **MINIMAL_BUGTRACKER_CONFIG,
+            "linear": {"api_key": "old-key"},
+        }
+        config_path = _write_config(tmp_path, data)
+        config = load_config(config_path)
+        assert config.bugtracker.api_key == "test-key"
+
+    def test_bugtracker_section_with_all_fields(self, tmp_path):
+        data = {
+            "projects": [
+                {
+                    "name": "p",
+                    "team": "T",
+                    "base_dir": "~/d",
+                    "worktree_prefix": "s-",
+                    "slots": [1],
+                }
+            ],
+            "bugtracker": {
+                "type": "linear",
+                "api_key": "k",
+                "workspace": "ws",
+                "poll_interval_seconds": 60,
+                "exclude_tags": ["Bot"],
+                "issue_limit": 500,
+                "todo_status": "Backlog",
+                "in_progress_status": "Doing",
+                "done_status": "Finished",
+                "in_review_status": "Review",
+                "comment_on_failure": False,
+                "comment_on_completion": True,
+                "comment_on_limit_pause": True,
+                "capacity_monitoring": {
+                    "enabled": False,
+                    "warning_threshold": 0.5,
+                    "critical_threshold": 0.6,
+                    "pause_threshold": 0.8,
+                    "resume_threshold": 0.7,
+                },
+            },
+        }
+        config_path = _write_config(tmp_path, data)
+        config = load_config(config_path)
+        bt = config.bugtracker
+        assert bt.type == "linear"
+        assert bt.workspace == "ws"
+        assert bt.poll_interval_seconds == 60
+        assert bt.exclude_tags == ["Bot"]
+        assert bt.issue_limit == 500
+        assert bt.todo_status == "Backlog"
+        assert bt.comment_on_failure is False
+        assert bt.comment_on_completion is True
+        assert bt.capacity_monitoring.enabled is False
+        assert bt.capacity_monitoring.pause_threshold == 0.8
+
+
+class TestBugtrackerConfigDataclasses:
+    """Test the BugtrackerConfig and LinearBugtrackerConfig dataclasses."""
+
+    def test_bugtracker_config_defaults(self):
+        from botfarm.config import BugtrackerConfig
+        cfg = BugtrackerConfig()
+        assert cfg.type == "linear"
+        assert cfg.api_key == ""
+        assert cfg.poll_interval_seconds == 30
+        assert cfg.exclude_tags == ["Human"]
+        assert cfg.todo_status == "Todo"
+        assert cfg.comment_on_failure is True
+
+    def test_linear_bugtracker_config_defaults(self):
+        from botfarm.config import LinearBugtrackerConfig
+        cfg = LinearBugtrackerConfig()
+        assert cfg.type == "linear"
+        assert cfg.workspace == ""
+        assert cfg.issue_limit == 250
+        assert cfg.capacity_monitoring.enabled is True
+
+    def test_linear_config_alias_is_same_class(self):
+        from botfarm.config import LinearBugtrackerConfig, LinearConfig
+        assert LinearConfig is LinearBugtrackerConfig
+
+    def test_linear_bugtracker_inherits_from_bugtracker(self):
+        from botfarm.config import BugtrackerConfig, LinearBugtrackerConfig
+        assert issubclass(LinearBugtrackerConfig, BugtrackerConfig)
+
+
+class TestProjectConfigAliases:
+    """Test ProjectConfig field aliases (team/linear_team, tracker_project/linear_project)."""
+
+    def test_team_field(self):
+        p = ProjectConfig(name="p", team="T", base_dir="d", worktree_prefix="s-", slots=[1])
+        assert p.team == "T"
+        assert p.linear_team == "T"
+
+    def test_linear_team_init(self):
+        p = ProjectConfig(name="p", linear_team="T", base_dir="d", worktree_prefix="s-", slots=[1])
+        assert p.team == "T"
+        assert p.linear_team == "T"
+
+    def test_tracker_project_field(self):
+        p = ProjectConfig(name="p", team="T", base_dir="d", worktree_prefix="s-", slots=[1], tracker_project="P")
+        assert p.tracker_project == "P"
+        assert p.linear_project == "P"
+
+    def test_linear_project_init(self):
+        p = ProjectConfig(name="p", team="T", base_dir="d", worktree_prefix="s-", slots=[1], linear_project="P")
+        assert p.tracker_project == "P"
+        assert p.linear_project == "P"
+
+    def test_linear_team_setter(self):
+        p = ProjectConfig(name="p", team="T", base_dir="d", worktree_prefix="s-", slots=[1])
+        p.linear_team = "NEW"
+        assert p.team == "NEW"
+
+    def test_linear_project_setter(self):
+        p = ProjectConfig(name="p", team="T", base_dir="d", worktree_prefix="s-", slots=[1])
+        p.linear_project = "NEW"
+        assert p.tracker_project == "NEW"
+
+    def test_yaml_team_field(self, tmp_path):
+        data = {
+            "projects": [
+                {
+                    "name": "p",
+                    "team": "TST",
+                    "base_dir": "~/d",
+                    "worktree_prefix": "s-",
+                    "slots": [1],
+                    "tracker_project": "My Project",
+                }
+            ],
+            "bugtracker": {"type": "linear", "api_key": "k"},
+        }
+        config_path = _write_config(tmp_path, data)
+        config = load_config(config_path)
+        assert config.projects[0].team == "TST"
+        assert config.projects[0].linear_team == "TST"
+        assert config.projects[0].tracker_project == "My Project"
+        assert config.projects[0].linear_project == "My Project"
+
+    def test_yaml_legacy_linear_team_field(self, tmp_path):
+        config_path = _write_config(tmp_path, MINIMAL_CONFIG)
+        config = load_config(config_path)
+        assert config.projects[0].team == "TST"
+        assert config.projects[0].linear_team == "TST"
+
+
+class TestBotfarmConfigLinearAlias:
+    """Test BotfarmConfig.linear alias."""
+
+    def test_linear_init_kwarg(self):
+        cfg = BotfarmConfig(
+            projects=[],
+            linear=LinearConfig(api_key="k"),
+        )
+        assert cfg.bugtracker.api_key == "k"
+        assert cfg.linear.api_key == "k"
+        assert cfg.linear is cfg.bugtracker
+
+    def test_bugtracker_init_kwarg(self):
+        cfg = BotfarmConfig(
+            projects=[],
+            bugtracker=LinearConfig(api_key="k"),
+        )
+        assert cfg.bugtracker.api_key == "k"
+        assert cfg.linear.api_key == "k"
+
+    def test_linear_setter(self):
+        cfg = BotfarmConfig(projects=[])
+        new_bt = LinearConfig(api_key="new")
+        cfg.linear = new_bt
+        assert cfg.bugtracker.api_key == "new"
+
+
+class TestDefaultConfigTemplateBugtracker:
+    """Verify the config template uses the new bugtracker section."""
+
+    def test_template_has_bugtracker_section(self):
+        from botfarm.config import DEFAULT_CONFIG_TEMPLATE
+        assert "bugtracker:" in DEFAULT_CONFIG_TEMPLATE
+        assert "type: linear" in DEFAULT_CONFIG_TEMPLATE
+
+    def test_template_mentions_backward_compat(self):
+        from botfarm.config import DEFAULT_CONFIG_TEMPLATE
+        assert "linear:" in DEFAULT_CONFIG_TEMPLATE.lower()

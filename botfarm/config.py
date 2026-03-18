@@ -25,14 +25,15 @@ DEFAULT_CONFIG_TEMPLATE = """\
 # Projects are configured per-repo via 'botfarm add-project'.
 # projects: []
 
-linear:
+bugtracker:
+  type: linear  # "linear" (future: "jira", "github")
   api_key: ${LINEAR_API_KEY}
   workspace: my-workspace
   poll_interval_seconds: 30
   exclude_tags:
     - Human
   issue_limit: 250  # Free plan default, override for paid plans
-  # Workflow status names (must match your Linear team's workflow)
+  # Workflow status names (must match your bugtracker's workflow)
   todo_status: Todo
   in_progress_status: In Progress
   done_status: Done
@@ -47,6 +48,7 @@ linear:
     critical_threshold: 0.85  # Red in dashboard + webhook
     pause_threshold: 0.95     # Auto-pause dispatch
     resume_threshold: 0.90    # Resume after capacity freed (hysteresis)
+# Legacy: 'linear:' section is also accepted for backward compatibility.
 
 database:
   # path is ignored — set BOTFARM_DB_PATH in your .env file instead
@@ -120,14 +122,66 @@ start_paused: true
 """
 
 
-@dataclass
 class ProjectConfig:
-    name: str
-    linear_team: str
-    base_dir: str
-    worktree_prefix: str
-    slots: list[int]
-    linear_project: str = ""
+    """Project configuration with both new and legacy field names.
+
+    Canonical fields: ``team``, ``tracker_project``.
+    Legacy aliases:   ``linear_team``, ``linear_project`` (accepted in init
+    and as attributes for backward compatibility).
+    """
+
+    __slots__ = ("name", "base_dir", "worktree_prefix", "slots",
+                 "team", "tracker_project")
+
+    def __init__(
+        self,
+        name: str,
+        base_dir: str = "",
+        worktree_prefix: str = "",
+        slots: list[int] | None = None,
+        team: str = "",
+        tracker_project: str = "",
+        # Legacy aliases accepted in init:
+        linear_team: str = "",
+        linear_project: str = "",
+    ) -> None:
+        self.name = name
+        self.base_dir = base_dir
+        self.worktree_prefix = worktree_prefix
+        self.slots = slots if slots is not None else []
+        self.team = team or linear_team
+        self.tracker_project = tracker_project or linear_project
+
+    @property
+    def linear_team(self) -> str:
+        """Alias for backward compatibility."""
+        return self.team
+
+    @linear_team.setter
+    def linear_team(self, value: str) -> None:
+        self.team = value
+
+    @property
+    def linear_project(self) -> str:
+        """Alias for backward compatibility."""
+        return self.tracker_project
+
+    @linear_project.setter
+    def linear_project(self, value: str) -> None:
+        self.tracker_project = value
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, ProjectConfig):
+            return NotImplemented
+        return (self.name == other.name and self.base_dir == other.base_dir
+                and self.worktree_prefix == other.worktree_prefix
+                and self.slots == other.slots and self.team == other.team
+                and self.tracker_project == other.tracker_project)
+
+    def __repr__(self) -> str:
+        return (f"ProjectConfig(name={self.name!r}, team={self.team!r}, "
+                f"base_dir={self.base_dir!r}, worktree_prefix={self.worktree_prefix!r}, "
+                f"slots={self.slots!r}, tracker_project={self.tracker_project!r})")
 
 
 @dataclass
@@ -140,22 +194,33 @@ class CapacityConfig:
 
 
 @dataclass
-class LinearConfig:
+class BugtrackerConfig:
+    """Base bugtracker configuration shared across all tracker types."""
+
+    type: str = "linear"  # "linear", future: "jira", "github"
     api_key: str = ""
-    workspace: str = ""
     poll_interval_seconds: int = 30
     exclude_tags: list[str] = field(default_factory=lambda: ["Human"])
-    issue_limit: int = 250
-    # Configurable workflow status names
     todo_status: str = "Todo"
     in_progress_status: str = "In Progress"
     done_status: str = "Done"
     in_review_status: str = "In Review"
-    # Comment posting controls
     comment_on_failure: bool = True
     comment_on_completion: bool = False
     comment_on_limit_pause: bool = False
+
+
+@dataclass
+class LinearBugtrackerConfig(BugtrackerConfig):
+    """Linear-specific bugtracker configuration."""
+
+    workspace: str = ""
+    issue_limit: int = 250
     capacity_monitoring: CapacityConfig = field(default_factory=CapacityConfig)
+
+
+# Keep LinearConfig as an alias for backward compatibility in imports.
+LinearConfig = LinearBugtrackerConfig
 
 
 @dataclass
@@ -259,24 +324,55 @@ class DailySummaryConfig:
     webhook_url: str = ""  # Falls back to main notifications.webhook_url
 
 
-@dataclass
 class BotfarmConfig:
-    projects: list[ProjectConfig]
-    linear: LinearConfig = field(default_factory=LinearConfig)
-    database: DatabaseConfig = field(default_factory=DatabaseConfig)
-    usage_limits: UsageLimitsConfig = field(default_factory=UsageLimitsConfig)
-    dashboard: DashboardConfig = field(default_factory=DashboardConfig)
-    agents: AgentsConfig = field(default_factory=AgentsConfig)
-    logging: LoggingConfig = field(default_factory=LoggingConfig)
-    notifications: NotificationsConfig = field(default_factory=NotificationsConfig)
-    identities: IdentitiesConfig = field(default_factory=IdentitiesConfig)
-    refactoring_analysis: RefactoringAnalysisConfig = field(
-        default_factory=RefactoringAnalysisConfig
-    )
-    codex_usage: CodexUsageConfig = field(default_factory=CodexUsageConfig)
-    daily_summary: DailySummaryConfig = field(default_factory=DailySummaryConfig)
-    start_paused: bool = True
-    source_path: str = ""  # Set by load_config to the source file path
+    """Top-level botfarm configuration.
+
+    The ``bugtracker`` field is canonical; ``linear`` is accepted in the
+    constructor and as a property alias for backward compatibility.
+    """
+
+    def __init__(
+        self,
+        projects: list[ProjectConfig],
+        bugtracker: LinearBugtrackerConfig | None = None,
+        database: DatabaseConfig | None = None,
+        usage_limits: UsageLimitsConfig | None = None,
+        dashboard: DashboardConfig | None = None,
+        agents: AgentsConfig | None = None,
+        logging: LoggingConfig | None = None,
+        notifications: NotificationsConfig | None = None,
+        identities: IdentitiesConfig | None = None,
+        refactoring_analysis: RefactoringAnalysisConfig | None = None,
+        codex_usage: CodexUsageConfig | None = None,
+        daily_summary: DailySummaryConfig | None = None,
+        start_paused: bool = True,
+        source_path: str = "",
+        # Legacy alias:
+        linear: LinearBugtrackerConfig | None = None,
+    ) -> None:
+        self.projects = projects
+        self.bugtracker = bugtracker or linear or LinearBugtrackerConfig()
+        self.database = database or DatabaseConfig()
+        self.usage_limits = usage_limits or UsageLimitsConfig()
+        self.dashboard = dashboard or DashboardConfig()
+        self.agents = agents or AgentsConfig()
+        self.logging = logging or LoggingConfig()
+        self.notifications = notifications or NotificationsConfig()
+        self.identities = identities or IdentitiesConfig()
+        self.refactoring_analysis = refactoring_analysis or RefactoringAnalysisConfig()
+        self.codex_usage = codex_usage or CodexUsageConfig()
+        self.daily_summary = daily_summary or DailySummaryConfig()
+        self.start_paused = start_paused
+        self.source_path = source_path
+
+    @property
+    def linear(self) -> LinearBugtrackerConfig:
+        """Alias for backward compatibility — use .bugtracker instead."""
+        return self.bugtracker
+
+    @linear.setter
+    def linear(self, value: LinearBugtrackerConfig) -> None:
+        self.bugtracker = value
 
 
 class ConfigError(Exception):
@@ -324,8 +420,15 @@ def create_default_config(config_path: Path = DEFAULT_CONFIG_PATH) -> Path:
 
 
 def _parse_project(data: dict) -> ProjectConfig:
-    required = {"name", "linear_team", "base_dir", "worktree_prefix", "slots"}
-    missing = required - set(data.keys())
+    # Accept both old (linear_team) and new (team) field names.
+    team = data.get("team") or data.get("linear_team", "")
+    tracker_project = data.get("tracker_project") or data.get("linear_project", "")
+
+    required_base = {"name", "base_dir", "worktree_prefix", "slots"}
+    missing = required_base - set(data.keys())
+    # team must be present via either name
+    if not team:
+        missing.add("team")
     if missing:
         raise ConfigError(
             f"Project is missing required fields: {sorted(missing)}"
@@ -341,11 +444,11 @@ def _parse_project(data: dict) -> ProjectConfig:
         )
     return ProjectConfig(
         name=data["name"],
-        linear_team=data["linear_team"],
+        team=str(team),
         base_dir=data["base_dir"],
         worktree_prefix=data["worktree_prefix"],
         slots=slots,
-        linear_project=str(data.get("linear_project", "")),
+        tracker_project=str(tracker_project),
     )
 
 
@@ -373,10 +476,12 @@ def resolve_stage_timeout(
 
 def _validate_config(config: BotfarmConfig) -> None:
     """Validate cross-field constraints."""
-    if not config.linear.api_key:
+    bt = config.bugtracker
+
+    if not bt.api_key:
         raise ConfigError("linear.api_key must be set")
 
-    if config.linear.poll_interval_seconds < 1:
+    if bt.poll_interval_seconds < 1:
         raise ConfigError("poll_interval_seconds must be at least 1")
 
     if not config.projects:
@@ -386,17 +491,17 @@ def _validate_config(config: BotfarmConfig) -> None:
     if len(names) != len(set(names)):
         raise ConfigError("Duplicate project names found")
 
-    # Check for duplicate linear_project filters (ignoring empty/unset)
-    seen_lp: dict[str, str] = {}  # linear_project -> project name
+    # Check for duplicate tracker_project filters (ignoring empty/unset)
+    seen_lp: dict[str, str] = {}  # tracker_project -> project name
     for p in config.projects:
-        if p.linear_project:
-            if p.linear_project in seen_lp:
+        if p.tracker_project:
+            if p.tracker_project in seen_lp:
                 raise ConfigError(
-                    f"Duplicate linear_project filter {p.linear_project!r}: "
-                    f"used by both '{seen_lp[p.linear_project]}' and '{p.name}'. "
+                    f"Duplicate linear_project filter {p.tracker_project!r}: "
+                    f"used by both '{seen_lp[p.tracker_project]}' and '{p.name}'. "
                     f"Each project must have a unique linear_project filter"
                 )
-            seen_lp[p.linear_project] = p.name
+            seen_lp[p.tracker_project] = p.name
 
     if config.usage_limits.poll_interval_seconds < 1:
         raise ConfigError("usage_limits.poll_interval_seconds must be at least 1")
@@ -406,10 +511,10 @@ def _validate_config(config: BotfarmConfig) -> None:
         if not (0.0 <= val <= 1.0):
             raise ConfigError(f"usage_limits.{attr} must be between 0.0 and 1.0")
 
-    if config.linear.issue_limit < 1:
+    if bt.issue_limit < 1:
         raise ConfigError("linear.issue_limit must be at least 1")
 
-    cap = config.linear.capacity_monitoring
+    cap = bt.capacity_monitoring
     for attr in ("warning_threshold", "critical_threshold", "pause_threshold", "resume_threshold"):
         val = getattr(cap, attr)
         if not (0.0 <= val <= 1.0):
@@ -573,7 +678,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
     data = _expand_env_recursive(data)
 
     known_keys = {
-        "projects", "linear", "database", "usage_limits",
+        "projects", "linear", "bugtracker", "database", "usage_limits",
         "dashboard", "agents", "logging", "notifications",
         "identities", "refactoring_analysis", "codex_usage",
         "daily_summary", "start_paused",
@@ -589,31 +694,46 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
 
     projects = [_parse_project(p) for p in data["projects"]]
 
-    linear_data = data.get("linear", {})
-    cap_data = linear_data.get("capacity_monitoring", {})
+    # Support both 'bugtracker:' (new) and 'linear:' (legacy) YAML sections.
+    # 'bugtracker:' takes precedence if both are present.
+    if "bugtracker" in data:
+        bt_data = data["bugtracker"]
+        if not isinstance(bt_data, dict):
+            bt_data = {}
+    else:
+        bt_data = data.get("linear", {})
+        if not isinstance(bt_data, dict):
+            bt_data = {}
+        # Legacy linear: section implies type=linear
+        bt_data.setdefault("type", "linear")
+
+    bt_section = "bugtracker" if "bugtracker" in data else "linear"
+
+    cap_data = bt_data.get("capacity_monitoring", {})
     if not isinstance(cap_data, dict):
         cap_data = {}
     capacity_monitoring = CapacityConfig(
-        enabled=_parse_bool(cap_data, "enabled", True, section="linear.capacity_monitoring"),
+        enabled=_parse_bool(cap_data, "enabled", True, section=f"{bt_section}.capacity_monitoring"),
         warning_threshold=float(cap_data.get("warning_threshold", 0.70)),
         critical_threshold=float(cap_data.get("critical_threshold", 0.85)),
         pause_threshold=float(cap_data.get("pause_threshold", 0.95)),
         resume_threshold=float(cap_data.get("resume_threshold", 0.90)),
     )
 
-    linear = LinearConfig(
-        api_key=linear_data.get("api_key", ""),
-        workspace=linear_data.get("workspace", ""),
-        poll_interval_seconds=linear_data.get("poll_interval_seconds", 30),
-        exclude_tags=linear_data.get("exclude_tags", ["Human"]),
-        issue_limit=int(linear_data.get("issue_limit", 250)),
-        todo_status=str(linear_data.get("todo_status", "Todo")),
-        in_progress_status=str(linear_data.get("in_progress_status", "In Progress")),
-        done_status=str(linear_data.get("done_status", "Done")),
-        in_review_status=str(linear_data.get("in_review_status", "In Review")),
-        comment_on_failure=_parse_bool(linear_data, "comment_on_failure", True),
-        comment_on_completion=_parse_bool(linear_data, "comment_on_completion", False),
-        comment_on_limit_pause=_parse_bool(linear_data, "comment_on_limit_pause", False),
+    bugtracker = LinearBugtrackerConfig(
+        type=str(bt_data.get("type", "linear")),
+        api_key=bt_data.get("api_key", ""),
+        workspace=bt_data.get("workspace", ""),
+        poll_interval_seconds=bt_data.get("poll_interval_seconds", 30),
+        exclude_tags=bt_data.get("exclude_tags", ["Human"]),
+        issue_limit=int(bt_data.get("issue_limit", 250)),
+        todo_status=str(bt_data.get("todo_status", "Todo")),
+        in_progress_status=str(bt_data.get("in_progress_status", "In Progress")),
+        done_status=str(bt_data.get("done_status", "Done")),
+        in_review_status=str(bt_data.get("in_review_status", "In Review")),
+        comment_on_failure=_parse_bool(bt_data, "comment_on_failure", True, section=bt_section),
+        comment_on_completion=_parse_bool(bt_data, "comment_on_completion", False, section=bt_section),
+        comment_on_limit_pause=_parse_bool(bt_data, "comment_on_limit_pause", False, section=bt_section),
         capacity_monitoring=capacity_monitoring,
     )
 
@@ -747,7 +867,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         pause_budget_threshold=float(cu_data.get("pause_budget_threshold", 0.90)),
     )
 
-    if "failed_status" in linear_data:
+    if "failed_status" in bt_data:
         logger.warning(
             "The 'linear.failed_status' config key is deprecated and ignored — "
             "failed tickets now keep their current status and receive "
@@ -764,7 +884,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
 
     config = BotfarmConfig(
         projects=projects,
-        linear=linear,
+        bugtracker=bugtracker,
         database=database,
         usage_limits=usage_limits,
         dashboard=dashboard,
@@ -856,7 +976,7 @@ def validate_config_updates(
     cap_fields = updates.get("linear.capacity_monitoring", {})
     if isinstance(cap_fields, dict):
         # Resolve effective values: use update if present, fall back to config
-        cap_cfg = config.linear.capacity_monitoring if config else None
+        cap_cfg = config.bugtracker.capacity_monitoring if config else None
 
         def _resolve(field: str) -> float | None:
             val = cap_fields.get(field)
@@ -963,8 +1083,8 @@ def apply_config_updates(config: BotfarmConfig, updates: dict) -> None:
     Python, a lock should be added here.
     """
     section_map = {
-        "linear": config.linear,
-        "linear.capacity_monitoring": config.linear.capacity_monitoring,
+        "linear": config.bugtracker,
+        "linear.capacity_monitoring": config.bugtracker.capacity_monitoring,
         "usage_limits": config.usage_limits,
         "agents": config.agents,
         "daily_summary": config.daily_summary,
@@ -1117,14 +1237,15 @@ def _validate_project_updates(
                     f"projects[{i}] '{name}': slots contains duplicate values"
                 )
 
-        if "linear_project" in proj:
-            lp = proj["linear_project"]
+        lp_key = "tracker_project" if "tracker_project" in proj else "linear_project"
+        if lp_key in proj:
+            lp = proj[lp_key]
             if not isinstance(lp, str):
                 errors.append(
-                    f"projects[{i}] '{name}': linear_project must be a string"
+                    f"projects[{i}] '{name}': {lp_key} must be a string"
                 )
 
-        allowed_keys = {"name", "slots", "linear_project"}
+        allowed_keys = {"name", "slots", "linear_project", "tracker_project"}
         extra = set(proj.keys()) - allowed_keys
         if extra:
             errors.append(
@@ -1138,8 +1259,10 @@ def _validate_project_updates(
         # whose update explicitly includes the field)
         lp_overrides: dict[str, str] = {}
         for u in project_updates:
-            if isinstance(u, dict) and "linear_project" in u:
-                lp_overrides[u["name"]] = u["linear_project"]
+            if isinstance(u, dict):
+                lp_val = u.get("tracker_project") or u.get("linear_project")
+                if lp_val is not None:
+                    lp_overrides[u["name"]] = lp_val
 
         seen_lp: dict[str, str] = {}  # linear_project -> project name
         for p in config.projects:
@@ -1182,8 +1305,10 @@ def write_structural_config_updates(config_path: Path, updates: dict) -> None:
                 target = by_name[name]
                 if "slots" in proj_update:
                     target["slots"] = proj_update["slots"]
-                if "linear_project" in proj_update:
-                    target["linear_project"] = proj_update["linear_project"]
+                for lp_key in ("tracker_project", "linear_project"):
+                    if lp_key in proj_update:
+                        target[lp_key] = proj_update[lp_key]
+                        break
 
     write_yaml_atomic(config_path, data)
 
