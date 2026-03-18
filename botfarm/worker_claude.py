@@ -13,11 +13,11 @@ import re
 import shutil
 import subprocess
 import threading
-from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from botfarm.agent import ContextFillCallback
 from botfarm.codex import CodexResult
 from botfarm.process import terminate_process_group as _terminate_process_group
 
@@ -117,10 +117,6 @@ def _compute_context_fill(
             unique_tokens = input_tokens + cache_creation_input_tokens + output_tokens
             return round(unique_tokens / context_window * 100, 2)
     return None
-
-
-# Type alias for the per-turn context fill callback.
-ContextFillCallback = Callable[[int, float], None]
 
 
 def _compute_turn_context_fill(
