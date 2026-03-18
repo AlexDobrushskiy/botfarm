@@ -669,10 +669,13 @@ class LinearClient(BugtrackerClient):
     ) -> dict:
         """Get an existing project by name or create one in the given team.
 
+        The lookup is scoped to the requested team so that identically-named
+        projects in other teams are not matched.
+
         Returns a dict with ``id`` and ``name`` keys.
         """
-        existing_id = self.get_project_id(project_name)
-        if existing_id is not None:
-            return {"id": existing_id, "name": project_name}
         team_id = self.get_team_id(team_key)
+        for project in self.list_team_projects(team_id):
+            if project["name"] == project_name:
+                return {"id": project["id"], "name": project["name"]}
         return self.create_project(team_id, project_name)

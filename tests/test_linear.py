@@ -1894,21 +1894,28 @@ class TestLinearClientCreateProject:
 class TestLinearClientGetOrCreateProject:
     def test_returns_existing_project(self):
         client = LinearClient(api_key="key")
-        resp = _graphql_response({
-            "projects": {"nodes": [{"id": "existing-id", "name": "Existing"}]}
+        # 1st call: get_team_id -> team states
+        team_resp = _graphql_response({
+            "teams": {"nodes": [{"id": "team-uuid", "key": "SMA", "states": {"nodes": []}}]}
         })
-        with patch.object(httpx, "post", return_value=resp):
+        # 2nd call: list_team_projects -> project found in this team
+        projects_resp = _graphql_response({
+            "team": {"projects": {"nodes": [{"id": "existing-id", "name": "Existing"}]}}
+        })
+        with patch.object(httpx, "post", side_effect=[team_resp, projects_resp]):
             result = client.get_or_create_project("SMA", "Existing")
 
         assert result == {"id": "existing-id", "name": "Existing"}
 
     def test_creates_when_not_found(self):
         client = LinearClient(api_key="key")
-        # 1st call: get_project_id -> no nodes
-        lookup_resp = _graphql_response({"projects": {"nodes": []}})
-        # 2nd call: get_team_id -> team states
+        # 1st call: get_team_id -> team states
         team_resp = _graphql_response({
             "teams": {"nodes": [{"id": "team-uuid", "key": "SMA", "states": {"nodes": []}}]}
+        })
+        # 2nd call: list_team_projects -> no matching project
+        projects_resp = _graphql_response({
+            "team": {"projects": {"nodes": []}}
         })
         # 3rd call: create_project
         create_resp = _graphql_response({
@@ -1918,7 +1925,7 @@ class TestLinearClientGetOrCreateProject:
             }
         })
         with patch.object(
-            httpx, "post", side_effect=[lookup_resp, team_resp, create_resp]
+            httpx, "post", side_effect=[team_resp, projects_resp, create_resp]
         ):
             result = client.get_or_create_project("SMA", "New Project")
 
