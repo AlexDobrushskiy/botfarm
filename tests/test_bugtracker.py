@@ -9,7 +9,9 @@ from botfarm.bugtracker import (
     BugtrackerClient,
     BugtrackerError,
     BugtrackerPoller,
+    CreatedIssue,
     Issue,
+    IssueDetails,
     PollResult,
 )
 from botfarm.bugtracker.base import BugtrackerClient as BaseClient
@@ -30,7 +32,7 @@ class TestBugtrackerClientABC:
 
     def test_cannot_instantiate_with_partial_implementation(self):
         class PartialClient(BugtrackerClient):
-            def fetch_issues(self, team_key, status="Todo", first=50, project_name=""):
+            def fetch_team_issues(self, team_key, status_name="Todo", first=50, project_name=""):
                 return []
 
         with pytest.raises(TypeError):
@@ -38,7 +40,7 @@ class TestBugtrackerClientABC:
 
     def test_can_instantiate_full_implementation(self):
         class FullClient(BugtrackerClient):
-            def fetch_issues(self, team_key, status="Todo", first=50, project_name=""):
+            def fetch_team_issues(self, team_key, status_name="Todo", first=50, project_name=""):
                 return []
 
             def get_team_states(self, team_key):
@@ -59,14 +61,14 @@ class TestBugtrackerClientABC:
             def add_labels(self, issue_id, label_ids):
                 pass
 
-            def fetch_issue_labels(self, issue_id):
-                return []
+            def fetch_issue_labels(self, identifier):
+                return ("Title", ["bug"])
 
             def fetch_issue_state_type(self, identifier):
                 return None
 
             def fetch_issue_details(self, identifier):
-                return {}
+                return IssueDetails(ticket_id="T-1", title="Test", url="https://example.com")
 
             def get_team_id(self, team_key):
                 return "team-1"
@@ -77,8 +79,8 @@ class TestBugtrackerClientABC:
             def get_or_create_label(self, team_key, label_name):
                 return "label-1"
 
-            def create_issue(self, team_id, title, description="", priority=0, estimate=None, parent_id=None):
-                return {"id": "issue-1"}
+            def create_issue(self, *, team_id, title, description="", priority=None, label_ids=None, project_id=None, state_id=None):
+                return CreatedIssue(id="issue-1", identifier="T-1", url="https://example.com")
 
         client = FullClient()
         assert isinstance(client, BugtrackerClient)
@@ -87,7 +89,7 @@ class TestBugtrackerClientABC:
         """Optional methods should raise NotImplementedError by default."""
 
         class MinimalClient(BugtrackerClient):
-            def fetch_issues(self, team_key, status="Todo", first=50, project_name=""):
+            def fetch_team_issues(self, team_key, status_name="Todo", first=50, project_name=""):
                 return []
 
             def get_team_states(self, team_key):
@@ -108,14 +110,14 @@ class TestBugtrackerClientABC:
             def add_labels(self, issue_id, label_ids):
                 pass
 
-            def fetch_issue_labels(self, issue_id):
-                return []
+            def fetch_issue_labels(self, identifier):
+                return None
 
             def fetch_issue_state_type(self, identifier):
                 return None
 
             def fetch_issue_details(self, identifier):
-                return {}
+                return IssueDetails(ticket_id="T-1", title="Test", url="")
 
             def get_team_id(self, team_key):
                 return "t"
@@ -126,8 +128,8 @@ class TestBugtrackerClientABC:
             def get_or_create_label(self, team_key, label_name):
                 return "l"
 
-            def create_issue(self, team_id, title, description="", priority=0, estimate=None, parent_id=None):
-                return {}
+            def create_issue(self, *, team_id, title, description="", priority=None, label_ids=None, project_id=None, state_id=None):
+                return CreatedIssue(id="i", identifier="T-1", url="")
 
         client = MinimalClient()
 
@@ -291,6 +293,42 @@ class TestPollResult:
         assert result.candidates[0].identifier == "T-1"
 
 
+class TestCreatedIssue:
+    def test_construction(self):
+        ci = CreatedIssue(id="id-1", identifier="T-1", url="https://example.com")
+        assert ci.id == "id-1"
+        assert ci.identifier == "T-1"
+        assert ci.url == "https://example.com"
+
+
+class TestIssueDetails:
+    def test_minimal_construction(self):
+        details = IssueDetails(ticket_id="T-1", title="Test", url="https://example.com")
+        assert details.ticket_id == "T-1"
+        assert details.description is None
+        assert details.children_ids == []
+        assert details.labels == []
+        assert details.comments == []
+        assert details.raw == {}
+
+    def test_full_construction(self):
+        details = IssueDetails(
+            ticket_id="T-2",
+            title="Full",
+            url="https://example.com/2",
+            description="desc",
+            status="Todo",
+            priority=1,
+            assignee_name="Alice",
+            labels=["bug"],
+            blocked_by=["T-1"],
+            raw={"key": "val"},
+        )
+        assert details.labels == ["bug"]
+        assert details.blocked_by == ["T-1"]
+        assert details.raw == {"key": "val"}
+
+
 class TestActiveIssuesCount:
     def test_construction(self):
         count = ActiveIssuesCount(total=10, by_project={"proj": 5, "other": 5})
@@ -329,11 +367,13 @@ class TestPackageImports:
             BugtrackerClient,
             BugtrackerError,
             BugtrackerPoller,
+            CreatedIssue,
             Issue,
+            IssueDetails,
             PollResult,
         )
 
     def test_import_from_submodules(self):
         from botfarm.bugtracker.base import BugtrackerClient, BugtrackerPoller  # noqa: F401
         from botfarm.bugtracker.errors import BugtrackerError  # noqa: F401
-        from botfarm.bugtracker.types import ActiveIssuesCount, Issue, PollResult  # noqa: F401
+        from botfarm.bugtracker.types import ActiveIssuesCount, CreatedIssue, Issue, IssueDetails, PollResult  # noqa: F401

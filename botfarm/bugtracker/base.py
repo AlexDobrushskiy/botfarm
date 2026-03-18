@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from .types import ActiveIssuesCount, Issue, PollResult
+from .types import ActiveIssuesCount, CreatedIssue, Issue, IssueDetails, PollResult
 
 
 class BugtrackerClient(ABC):
@@ -13,10 +13,10 @@ class BugtrackerClient(ABC):
     # --- Required methods (must be implemented) ---
 
     @abstractmethod
-    def fetch_issues(
+    def fetch_team_issues(
         self,
         team_key: str,
-        status: str = "Todo",
+        status_name: str = "Todo",
         first: int = 50,
         project_name: str = "",
     ) -> list[Issue]:
@@ -47,8 +47,11 @@ class BugtrackerClient(ABC):
         """Add labels to an issue by their IDs."""
 
     @abstractmethod
-    def fetch_issue_labels(self, issue_id: str) -> list[dict]:
-        """Fetch the labels currently attached to an issue."""
+    def fetch_issue_labels(self, identifier: str) -> tuple[str, list[str]] | None:
+        """Fetch title and label names for an issue by identifier.
+
+        Returns ``(title, [label_names])`` or ``None`` if not found.
+        """
 
     @abstractmethod
     def fetch_issue_state_type(self, identifier: str) -> str | None:
@@ -59,7 +62,7 @@ class BugtrackerClient(ABC):
         """
 
     @abstractmethod
-    def fetch_issue_details(self, identifier: str) -> dict:
+    def fetch_issue_details(self, identifier: str) -> IssueDetails:
         """Fetch full details for a single issue by identifier."""
 
     @abstractmethod
@@ -80,14 +83,16 @@ class BugtrackerClient(ABC):
     @abstractmethod
     def create_issue(
         self,
+        *,
         team_id: str,
         title: str,
         description: str = "",
-        priority: int = 0,
-        estimate: int | None = None,
-        parent_id: str | None = None,
-    ) -> dict:
-        """Create a new issue and return its data dict."""
+        priority: int | None = None,
+        label_ids: list[str] | None = None,
+        project_id: str | None = None,
+        state_id: str | None = None,
+    ) -> CreatedIssue:
+        """Create a new issue and return its core identifiers."""
 
     # --- Optional methods (raise NotImplementedError by default) ---
 

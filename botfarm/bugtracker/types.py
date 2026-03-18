@@ -35,6 +35,47 @@ class PollResult:
 
 
 @dataclass
+class CreatedIssue:
+    """Result of creating an issue via ``BugtrackerClient.create_issue``."""
+
+    id: str
+    identifier: str
+    url: str
+
+
+@dataclass
+class IssueDetails:
+    """Full details for a single issue.
+
+    Returned by ``BugtrackerClient.fetch_issue_details``.
+    """
+
+    ticket_id: str
+    title: str
+    url: str
+    description: str | None = None
+    status: str | None = None
+    priority: int | None = None
+    assignee_name: str | None = None
+    assignee_email: str | None = None
+    creator_name: str | None = None
+    project_name: str | None = None
+    team_name: str | None = None
+    estimate: int | None = None
+    due_date: str | None = None
+    parent_id: str | None = None
+    children_ids: list[str] = field(default_factory=list)
+    blocked_by: list[str] = field(default_factory=list)
+    blocks: list[str] = field(default_factory=list)
+    labels: list[str] = field(default_factory=list)
+    comments: list[dict] = field(default_factory=list)
+    created_at: str | None = None
+    updated_at: str | None = None
+    completed_at: str | None = None
+    raw: dict = field(default_factory=dict)
+
+
+@dataclass
 class ActiveIssuesCount:
     """Result of counting all non-archived issues."""
 
