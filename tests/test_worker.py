@@ -1323,20 +1323,21 @@ class TestCheckPrMerged:
 
 
 def _mock_stage_result(stage, success=True, pr_url=None, turns=3, review_approved=None):
-    """Build a StageResult with optional ClaudeResult."""
-    cr = None
+    """Build a StageResult with optional AgentResult."""
+    from botfarm.agent import AgentResult
+    ar = None
     if stage in ("implement", "review", "fix", "resolve_conflict"):
-        cr = ClaudeResult(
+        ar = AgentResult(
             session_id=f"sess-{stage}",
             num_turns=turns,
             duration_seconds=10.0,
-            exit_subtype="tool_use",
             result_text="done",
+            extra={"exit_subtype": "tool_use"},
         )
     return StageResult(
         stage=stage,
         success=success,
-        claude_result=cr,
+        agent_result=ar,
         pr_url=pr_url,
         error=None if success else f"{stage} failed",
         review_approved=review_approved,
@@ -3575,22 +3576,25 @@ class TestRunClaudeStage:
 
 
 class TestExecuteStageWithTemplate:
-    @patch("botfarm.worker_stages._invoke_claude")
-    def test_claude_executor_routes_correctly(self, mock_invoke, conn):
-        """executor_type='claude' uses _run_claude_stage."""
+    @patch("botfarm.worker_stages._run_agent_stage")
+    def test_claude_executor_routes_correctly(self, mock_agent_stage, conn):
+        """executor_type='claude' routes through the adapter registry."""
+        from botfarm.agent import build_adapter_registry
+        from botfarm.worker import _execute_stage
         pipeline = load_pipeline(conn, [])
         stage_tpl = get_stage(pipeline, "implement")
-        mock_invoke.return_value = ClaudeResult(
-            session_id="sess-1", num_turns=5, duration_seconds=10.0,
-            exit_subtype="tool_use", result_text="done",
-        )
-        from botfarm.worker import _execute_stage
+        mock_agent_stage.return_value = _mock_stage_result("implement")
+        registry = build_adapter_registry()
         result = _execute_stage(
             "implement", ticket_id="SMA-42", pr_url=None, cwd="/tmp",
             max_turns=100, pr_checks_timeout=600, stage_tpl=stage_tpl,
+            registry=registry,
         )
         assert result.success is True
-        assert mock_invoke.called
+        assert mock_agent_stage.called
+        # Verify the claude adapter was resolved from registry
+        call_args = mock_agent_stage.call_args
+        assert call_args[0][1].name == "claude"
 
     @patch("botfarm.worker_stages.subprocess.run")
     def test_shell_executor_routes_to_pr_checks(self, mock_run, conn, tmp_path):
@@ -3759,15 +3763,16 @@ class TestRunPipelineNoPrNeeded:
     @patch("botfarm.worker._execute_stage")
     def test_no_pr_needed_signal_succeeds(self, mock_exec, conn, task_id, tmp_path):
         """Implement with NO_PR_NEEDED signal → pipeline success, no failure."""
-        cr = ClaudeResult(
+        from botfarm.agent import AgentResult
+        ar = AgentResult(
             session_id="sess-impl",
             num_turns=5,
             duration_seconds=10.0,
-            exit_subtype="tool_use",
             result_text="NO_PR_NEEDED: All criteria met on main via SMA-200.",
+            extra={"exit_subtype": "tool_use"},
         )
         mock_exec.return_value = StageResult(
-            stage="implement", success=True, claude_result=cr, pr_url=None,
+            stage="implement", success=True, agent_result=ar, pr_url=None,
         )
         result = run_pipeline(
             ticket_id="SMA-99",
@@ -3788,15 +3793,16 @@ class TestRunPipelineNoPrNeeded:
     @patch("botfarm.worker._execute_stage")
     def test_no_pr_needed_without_signal_still_fails(self, mock_exec, conn, task_id, tmp_path):
         """Implement with no PR URL and no signal → pipeline failure (legacy behavior)."""
-        cr = ClaudeResult(
+        from botfarm.agent import AgentResult
+        ar = AgentResult(
             session_id="sess-impl",
             num_turns=5,
             duration_seconds=10.0,
-            exit_subtype="tool_use",
             result_text="I verified everything looks good.",
+            extra={"exit_subtype": "tool_use"},
         )
         mock_exec.return_value = StageResult(
-            stage="implement", success=True, claude_result=cr, pr_url=None,
+            stage="implement", success=True, agent_result=ar, pr_url=None,
         )
         result = run_pipeline(
             ticket_id="SMA-99",
@@ -3813,9 +3819,9 @@ class TestRunPipelineNoPrNeeded:
 
     @patch("botfarm.worker._execute_stage")
     def test_no_pr_needed_with_no_claude_result(self, mock_exec, conn, task_id, tmp_path):
-        """Implement with no claude_result and no PR URL → failure (no crash)."""
+        """Implement with no agent_result and no PR URL → failure (no crash)."""
         mock_exec.return_value = StageResult(
-            stage="implement", success=True, claude_result=None, pr_url=None,
+            stage="implement", success=True, agent_result=None, pr_url=None,
         )
         result = run_pipeline(
             ticket_id="SMA-99",
@@ -3902,46 +3908,49 @@ class TestSharedMemory:
         assert paths_seen.get("implement") == expected
         assert paths_seen.get("review") == expected
 
-    @patch("botfarm.worker_stages._invoke_claude")
-    def test_shared_mem_in_implement_prompt_vars(self, mock_invoke, conn):
+    @patch("botfarm.worker_stages._run_agent_stage")
+    def test_shared_mem_in_implement_prompt_vars(self, mock_agent_stage, conn):
         """shared_mem_path is injected into prompt_vars for implement stage."""
+        from botfarm.agent import build_adapter_registry
         from botfarm.worker import _execute_stage
         from botfarm.workflow import get_stage, load_pipeline
 
         pipeline = load_pipeline(conn, [])
         stage_tpl = get_stage(pipeline, "implement")
-        mock_invoke.return_value = ClaudeResult(
-            session_id="sess-1", num_turns=5, duration_seconds=10.0,
-            exit_subtype="tool_use", result_text="done",
-        )
+        mock_agent_stage.return_value = _mock_stage_result("implement")
+        registry = build_adapter_registry()
         mem_path = Path("/tmp/test-shared-mem/SMA-42")
         _execute_stage(
             "implement", ticket_id="SMA-42", pr_url=None, cwd="/tmp",
             max_turns=100, pr_checks_timeout=600, stage_tpl=stage_tpl,
+            registry=registry,
             shared_mem_path=mem_path,
         )
-        # Verify _invoke_claude was called (prompt was rendered successfully)
-        assert mock_invoke.called
+        assert mock_agent_stage.called
+        call_kwargs = mock_agent_stage.call_args[1]
+        assert call_kwargs["prompt_vars"]["shared_mem_path"] == str(mem_path)
 
-    @patch("botfarm.worker_stages._invoke_claude")
-    def test_shared_mem_in_fix_prompt_vars(self, mock_invoke, conn):
+    @patch("botfarm.worker_stages._run_agent_stage")
+    def test_shared_mem_in_fix_prompt_vars(self, mock_agent_stage, conn):
         """shared_mem_path is injected into prompt_vars for fix stage."""
+        from botfarm.agent import build_adapter_registry
         from botfarm.worker import _execute_stage
         from botfarm.workflow import get_stage, load_pipeline
 
         pipeline = load_pipeline(conn, [])
         stage_tpl = get_stage(pipeline, "fix")
-        mock_invoke.return_value = ClaudeResult(
-            session_id="sess-1", num_turns=5, duration_seconds=10.0,
-            exit_subtype="tool_use", result_text="done",
-        )
+        mock_agent_stage.return_value = _mock_stage_result("fix")
+        registry = build_adapter_registry()
         mem_path = Path("/tmp/test-shared-mem/SMA-42")
         _execute_stage(
             "fix", ticket_id="SMA-42", pr_url=PR_URL, cwd="/tmp",
             max_turns=100, pr_checks_timeout=600, stage_tpl=stage_tpl,
+            registry=registry,
             shared_mem_path=mem_path,
         )
-        assert mock_invoke.called
+        assert mock_agent_stage.called
+        call_kwargs = mock_agent_stage.call_args[1]
+        assert call_kwargs["prompt_vars"]["shared_mem_path"] == str(mem_path)
 
 
 class TestCheckPrHasMergeConflict:

@@ -526,6 +526,7 @@ class TestPriorContextPromptRendering:
         assert prompt_arg.startswith("Work on Linear ticket SMA-1")
 
     def test_prior_context_in_prompt_vars_db_driven(self):
+        from botfarm.agent import build_adapter_registry
         from botfarm.worker_stages import _execute_stage
         from botfarm.workflow import StageTemplate
 
@@ -542,7 +543,9 @@ class TestPriorContextPromptRendering:
             result_parser="pr_url",
         )
 
-        with patch("botfarm.worker_stages._run_claude_stage") as mock_stage:
+        registry = build_adapter_registry()
+
+        with patch("botfarm.worker_stages._run_agent_stage") as mock_stage:
             mock_stage.return_value = MagicMock(
                 stage="implement", success=True, pr_url=None,
                 review_approved=None,
@@ -555,6 +558,7 @@ class TestPriorContextPromptRendering:
                 max_turns=10,
                 pr_checks_timeout=600,
                 stage_tpl=tpl,
+                registry=registry,
                 prior_context="## Prior Attempt\nContext here.\n\n",
             )
 
@@ -563,6 +567,7 @@ class TestPriorContextPromptRendering:
         assert call_kwargs["prompt_vars"]["ticket_id"] == "SMA-1"
 
     def test_empty_prior_context_renders_as_empty_db_driven(self):
+        from botfarm.agent import build_adapter_registry
         from botfarm.worker_stages import _execute_stage
         from botfarm.workflow import StageTemplate
 
@@ -579,7 +584,9 @@ class TestPriorContextPromptRendering:
             result_parser="pr_url",
         )
 
-        with patch("botfarm.worker_stages._run_claude_stage") as mock_stage:
+        registry = build_adapter_registry()
+
+        with patch("botfarm.worker_stages._run_agent_stage") as mock_stage:
             mock_stage.return_value = MagicMock(
                 stage="implement", success=True, pr_url=None,
                 review_approved=None,
@@ -592,6 +599,7 @@ class TestPriorContextPromptRendering:
                 max_turns=10,
                 pr_checks_timeout=600,
                 stage_tpl=tpl,
+                registry=registry,
                 prior_context="",
             )
 

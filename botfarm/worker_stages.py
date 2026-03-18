@@ -18,12 +18,12 @@ import subprocess
 import time
 from pathlib import Path
 
-from botfarm.codex import CodexResult, run_codex_streaming
+from botfarm.agent import AdapterRegistry, AgentAdapter, AgentResult
+from botfarm.agent_claude import _claude_result_to_agent_result
 from botfarm.worker_claude import (
     CI_OUTPUT_TRUNCATE_CHARS,
     DETAIL_TRUNCATE_CHARS,
     RESULT_TRUNCATE_CHARS,
-    ClaudeResult,
     ContextFillCallback,
     StageResult,
     _check_pr_merged,
@@ -85,32 +85,42 @@ def _build_implement_prompt(ticket_id: str, labels: list[str] | None) -> str:
     )
 
 
-def _run_claude_stage(
+def _run_agent_stage(
     stage_tpl: StageTemplate,
+    adapter: AgentAdapter,
     *,
     cwd: str | Path,
     max_turns: int,
     prompt_vars: dict[str, str],
     log_file: Path | None = None,
     env: dict[str, str] | None = None,
+    timeout: float | None = None,
     on_context_fill: ContextFillCallback | None = None,
 ) -> StageResult:
-    """Generic runner for any claude-executor stage using its DB template."""
-    # Always inject worktree_path so prompt templates can anchor Claude
+    """Generic runner for any agent-executor stage using its DB template.
+
+    Dispatches to the given *adapter* (resolved from the adapter registry).
+    """
+    # Always inject worktree_path so prompt templates can anchor the agent
     # to the correct working directory (prevents git ops in the base repo).
     prompt_vars.setdefault("worktree_path", str(cwd))
     prompt = render_prompt(stage_tpl, **prompt_vars)
-    result = _invoke_claude(
-        prompt, cwd=cwd, max_turns=max_turns, log_file=log_file,
-        env=env, on_context_fill=on_context_fill,
+    result = adapter.run(
+        prompt,
+        cwd=Path(cwd),
+        max_turns=max_turns if adapter.supports_max_turns else None,
+        log_file=log_file,
+        env=env,
+        timeout=timeout,
+        on_context_fill=on_context_fill if adapter.supports_context_fill else None,
     )
 
     if result.is_error:
         return StageResult(
             stage=stage_tpl.name,
             success=False,
-            claude_result=result,
-            error=f"Claude reported error: {result.result_text[:RESULT_TRUNCATE_CHARS]}",
+            agent_result=result,
+            error=f"{adapter.name} reported error: {result.result_text[:RESULT_TRUNCATE_CHARS]}",
         )
 
     # Apply result_parser
@@ -132,7 +142,61 @@ def _run_claude_stage(
     return StageResult(
         stage=stage_tpl.name,
         success=True,
-        claude_result=result,
+        agent_result=result,
+        pr_url=pr_url,
+        review_approved=review_approved,
+    )
+
+
+def _run_claude_stage(
+    stage_tpl: StageTemplate,
+    *,
+    cwd: str | Path,
+    max_turns: int,
+    prompt_vars: dict[str, str],
+    log_file: Path | None = None,
+    env: dict[str, str] | None = None,
+    on_context_fill: ContextFillCallback | None = None,
+) -> StageResult:
+    """Backward-compat wrapper — runs a Claude stage via :func:`_invoke_claude`.
+
+    Used when no adapter registry is available (legacy code paths, tests).
+    """
+    prompt_vars.setdefault("worktree_path", str(cwd))
+    prompt = render_prompt(stage_tpl, **prompt_vars)
+    result = _invoke_claude(
+        prompt, cwd=cwd, max_turns=max_turns, log_file=log_file,
+        env=env, on_context_fill=on_context_fill,
+    )
+    ar = _claude_result_to_agent_result(result)
+
+    if ar.is_error:
+        return StageResult(
+            stage=stage_tpl.name,
+            success=False,
+            agent_result=ar,
+            error=f"Claude reported error: {ar.result_text[:RESULT_TRUNCATE_CHARS]}",
+        )
+
+    pr_url: str | None = None
+    review_approved: bool | None = None
+    if stage_tpl.result_parser == "pr_url":
+        pr_url = _extract_pr_url(ar.result_text)
+        if pr_url is None:
+            logger.info("PR URL not found in result_text, trying gh pr view")
+            pr_url = _gh_pr_view_url(cwd, env=env)
+            if pr_url is None:
+                logger.info("PR URL not found via gh pr view, scanning log file")
+                pr_url = _extract_pr_url_from_log(log_file)
+            if pr_url:
+                logger.info("Recovered PR URL via fallback: %s", pr_url)
+    elif stage_tpl.result_parser == "review_verdict":
+        review_approved = _parse_review_approved(ar.result_text)
+
+    return StageResult(
+        stage=stage_tpl.name,
+        success=True,
+        agent_result=ar,
         pr_url=pr_url,
         review_approved=review_approved,
     )
@@ -175,20 +239,21 @@ def _run_implement(
             "- Areas of the codebase that are relevant to the change\n"
             "- Any gotchas or non-obvious implementation details"
         )
-    result = _invoke_claude(
+    claude_result = _invoke_claude(
         prompt, cwd=cwd, max_turns=max_turns, log_file=log_file,
         env=env, on_context_fill=on_context_fill,
     )
+    ar = _claude_result_to_agent_result(claude_result)
 
-    if result.is_error:
+    if ar.is_error:
         return StageResult(
             stage="implement",
             success=False,
-            claude_result=result,
-            error=f"Claude reported error: {result.result_text[:RESULT_TRUNCATE_CHARS]}",
+            agent_result=ar,
+            error=f"Claude reported error: {ar.result_text[:RESULT_TRUNCATE_CHARS]}",
         )
 
-    pr_url = _extract_pr_url(result.result_text)
+    pr_url = _extract_pr_url(ar.result_text)
     if pr_url is None:
         logger.info("PR URL not found in result_text, trying gh pr view")
         pr_url = _gh_pr_view_url(cwd, env=env)
@@ -201,7 +266,7 @@ def _run_implement(
     return StageResult(
         stage="implement",
         success=True,
-        claude_result=result,
+        agent_result=ar,
         pr_url=pr_url,
     )
 
@@ -397,6 +462,7 @@ def _run_review(
     env: dict[str, str] | None = None,
     on_context_fill: ContextFillCallback | None = None,
     stage_tpl: StageTemplate | None = None,
+    registry: AdapterRegistry | None = None,
     codex_enabled: bool = False,
     codex_log_file: Path | None = None,
     codex_timeout: float | None = None,
@@ -404,7 +470,10 @@ def _run_review(
     codex_reasoning_effort: str | None = None,
     review_iteration: int = 1,
 ) -> StageResult:
-    """REVIEW stage — Claude Code reviews the PR and posts comments.
+    """REVIEW stage — reviews the PR and posts comments.
+
+    When *registry* is provided, adapters are resolved from it. Otherwise
+    falls back to direct invocation for backward compatibility.
 
     When *codex_enabled* is ``True``, runs both reviewers in parallel
     using a thread pool.  Neither reviewer submits ``gh pr review`` —
@@ -414,6 +483,20 @@ def _run_review(
 
     # --- Single-reviewer mode (no Codex) ---
     if not codex_enabled:
+        if stage_tpl is not None and registry is not None:
+            adapter = registry[stage_tpl.executor_type]
+            prompt_vars = {
+                "pr_url": pr_url,
+                "pr_number": number,
+                "owner": owner,
+                "repo": repo,
+                "worktree_path": str(cwd),
+            }
+            return _run_agent_stage(
+                stage_tpl, adapter, cwd=cwd, max_turns=max_turns,
+                prompt_vars=prompt_vars,
+                log_file=log_file, env=env, on_context_fill=on_context_fill,
+            )
         if stage_tpl is not None:
             prompt_vars = {
                 "pr_url": pr_url,
@@ -435,18 +518,19 @@ def _run_review(
             prompt, cwd=cwd, max_turns=max_turns, log_file=log_file,
             env=env, on_context_fill=on_context_fill,
         )
-        if claude_result.is_error:
+        ar = _claude_result_to_agent_result(claude_result)
+        if ar.is_error:
             return StageResult(
                 stage="review",
                 success=False,
-                claude_result=claude_result,
-                error=f"Claude reported error: {claude_result.result_text[:RESULT_TRUNCATE_CHARS]}",
+                agent_result=ar,
+                error=f"Claude reported error: {ar.result_text[:RESULT_TRUNCATE_CHARS]}",
             )
-        claude_approved = _parse_review_approved(claude_result.result_text)
+        claude_approved = _parse_review_approved(ar.result_text)
         return StageResult(
             stage="review",
             success=True,
-            claude_result=claude_result,
+            agent_result=ar,
             review_approved=claude_approved,
             claude_review_approved=claude_approved,
         )
@@ -454,7 +538,7 @@ def _run_review(
     # --- Multi-review mode: run Claude and Codex in parallel ---
 
     # Build the Claude review callable
-    def _claude_review() -> ClaudeResult:
+    def _claude_review() -> AgentResult:
         if stage_tpl is not None:
             prompt_vars = {
                 "pr_url": pr_url,
@@ -472,10 +556,23 @@ def _run_review(
             prompt = _build_claude_review_prompt(
                 pr_url, owner, repo, number, codex_enabled=True,
             )
-        return _invoke_claude(
+        if registry is not None:
+            adapter = registry.get(
+                stage_tpl.executor_type if stage_tpl else "claude", registry["claude"],
+            )
+            return adapter.run(
+                prompt,
+                cwd=Path(cwd),
+                max_turns=max_turns if adapter.supports_max_turns else None,
+                log_file=log_file,
+                env=env,
+                on_context_fill=on_context_fill if adapter.supports_context_fill else None,
+            )
+        cr = _invoke_claude(
             prompt, cwd=cwd, max_turns=max_turns, log_file=log_file,
             env=env, on_context_fill=on_context_fill,
         )
+        return _claude_result_to_agent_result(cr)
 
     def _codex_review() -> StageResult:
         return _run_codex_review(
@@ -484,6 +581,7 @@ def _run_review(
             log_file=codex_log_file,
             env=env,
             timeout=codex_timeout,
+            registry=registry,
             codex_model=codex_model,
             codex_reasoning_effort=codex_reasoning_effort,
         )
@@ -496,28 +594,28 @@ def _run_review(
         codex_future = executor.submit(_codex_review)
 
         # Wait for Claude (required)
-        claude_result = claude_future.result()
+        claude_ar = claude_future.result()
 
         # Short-circuit on Claude error — don't block on Codex
         stage_name = stage_tpl.name if stage_tpl is not None else "review"
-        if claude_result.is_error:
+        if claude_ar.is_error:
             # Best-effort cancel — won't interrupt an already-running future
             codex_future.cancel()
             return StageResult(
                 stage=stage_name,
                 success=False,
-                claude_result=claude_result,
-                error=f"Claude reported error: {claude_result.result_text[:RESULT_TRUNCATE_CHARS]}",
+                agent_result=claude_ar,
+                error=f"Claude reported error: {claude_ar.result_text[:RESULT_TRUNCATE_CHARS]}",
             )
 
         # Process Codex result (fail-open)
-        codex_result_obj: CodexResult | None = None
+        codex_ar: AgentResult | None = None
         codex_approved: bool | None = None
         codex_verdict_str = "skipped"
 
         try:
             codex_stage_result = codex_future.result()
-            codex_result_obj = codex_stage_result.codex_result
+            codex_ar = codex_stage_result.agent_result
 
             if codex_stage_result.success:
                 codex_approved = codex_stage_result.review_approved
@@ -534,7 +632,7 @@ def _run_review(
     finally:
         executor.shutdown(wait=False)
 
-    claude_approved = _parse_review_approved(claude_result.result_text)
+    claude_approved = _parse_review_approved(claude_ar.result_text)
 
     # Merge verdicts
     claude_verdict_str = "approved" if claude_approved else "changes_requested"
@@ -554,10 +652,10 @@ def _run_review(
     )
 
     return StageResult(
-        stage="review",
+        stage=stage_name,
         success=True,
-        claude_result=claude_result,
-        codex_result=codex_result_obj,
+        agent_result=claude_ar,
+        secondary_agent_result=codex_ar,
         review_approved=merged_approved,
         claude_review_approved=claude_approved,
     )
@@ -570,42 +668,56 @@ def _run_codex_review(
     log_file: Path | None = None,
     env: dict[str, str] | None = None,
     timeout: float | None = None,
+    registry: AdapterRegistry | None = None,
     codex_model: str | None = None,
     codex_reasoning_effort: str | None = None,
 ) -> StageResult:
     """CODEX_REVIEW stage — Codex reviews the PR and posts inline comments.
 
-    Uses ``run_codex_streaming()`` from ``botfarm/codex.py`` for subprocess
-    management.  Codex does NOT submit ``gh pr review`` — Botfarm handles
-    the final review submission in multi-review mode.
+    When *registry* is provided, resolves the Codex adapter from it.
+    Otherwise falls back to direct ``run_codex_streaming()`` invocation.
     """
     owner, repo, number = _parse_pr_url(pr_url)
-
     prompt = _build_codex_review_prompt(pr_url, owner, repo, number)
 
-    result = run_codex_streaming(
-        prompt,
-        cwd=cwd,
-        model=codex_model,
-        reasoning_effort=codex_reasoning_effort,
-        log_file=log_file,
-        env=env,
-        timeout=timeout,
-    )
-    if result.is_error:
+    if registry is not None and "codex" in registry:
+        adapter = registry["codex"]
+        ar = adapter.run(
+            prompt,
+            cwd=Path(cwd),
+            model=codex_model,
+            log_file=log_file,
+            env=env,
+            timeout=timeout,
+        )
+    else:
+        from botfarm.codex import run_codex_streaming
+        from botfarm.agent_codex import _codex_result_to_agent_result
+        codex_result = run_codex_streaming(
+            prompt,
+            cwd=cwd,
+            model=codex_model,
+            reasoning_effort=codex_reasoning_effort,
+            log_file=log_file,
+            env=env,
+            timeout=timeout,
+        )
+        ar = _codex_result_to_agent_result(codex_result, codex_model)
+
+    if ar.is_error:
         return StageResult(
             stage="codex_review",
             success=False,
-            codex_result=result,
-            error=f"Codex reported error: {result.result_text[:RESULT_TRUNCATE_CHARS]}",
+            agent_result=ar,
+            error=f"Codex reported error: {ar.result_text[:RESULT_TRUNCATE_CHARS]}",
         )
 
-    approved = _parse_review_approved(result.result_text)
+    approved = _parse_review_approved(ar.result_text)
 
     return StageResult(
         stage="codex_review",
         success=True,
-        codex_result=result,
+        agent_result=ar,
         review_approved=approved,
     )
 
@@ -668,23 +780,24 @@ def _run_fix(
             "(if it exists) for context from the implementer about what was "
             "changed and why."
         )
-    result = _invoke_claude(
+    claude_result = _invoke_claude(
         prompt, cwd=cwd, max_turns=max_turns, log_file=log_file,
         env=env, on_context_fill=on_context_fill,
     )
+    ar = _claude_result_to_agent_result(claude_result)
 
-    if result.is_error:
+    if ar.is_error:
         return StageResult(
             stage="fix",
             success=False,
-            claude_result=result,
-            error=f"Claude reported error: {result.result_text[:RESULT_TRUNCATE_CHARS]}",
+            agent_result=ar,
+            error=f"Claude reported error: {ar.result_text[:RESULT_TRUNCATE_CHARS]}",
         )
 
     return StageResult(
         stage="fix",
         success=True,
-        claude_result=result,
+        agent_result=ar,
     )
 
 
@@ -778,23 +891,24 @@ def _run_ci_fix(
             "(if it exists) for context from the implementer about what was "
             "changed and why."
         )
-    result = _invoke_claude(
+    claude_result = _invoke_claude(
         prompt, cwd=cwd, max_turns=max_turns, log_file=log_file,
         env=env, on_context_fill=on_context_fill,
     )
+    ar = _claude_result_to_agent_result(claude_result)
 
-    if result.is_error:
+    if ar.is_error:
         return StageResult(
             stage="fix",
             success=False,
-            claude_result=result,
-            error=f"Claude reported error: {result.result_text[:RESULT_TRUNCATE_CHARS]}",
+            agent_result=ar,
+            error=f"Claude reported error: {ar.result_text[:RESULT_TRUNCATE_CHARS]}",
         )
 
     return StageResult(
         stage="fix",
         success=True,
-        claude_result=result,
+        agent_result=ar,
     )
 
 
@@ -902,23 +1016,24 @@ def _run_resolve_conflict(
         "6. git push\n\n"
         "Do NOT force push. Do NOT rebase. Use a merge commit."
     )
-    result = _invoke_claude(
+    claude_result = _invoke_claude(
         prompt, cwd=cwd, max_turns=max_turns, log_file=log_file,
         env=env, on_context_fill=on_context_fill,
     )
+    ar = _claude_result_to_agent_result(claude_result)
 
-    if result.is_error:
+    if ar.is_error:
         return StageResult(
             stage="resolve_conflict",
             success=False,
-            claude_result=result,
-            error=f"Claude reported error: {result.result_text[:RESULT_TRUNCATE_CHARS]}",
+            agent_result=ar,
+            error=f"Claude reported error: {ar.result_text[:RESULT_TRUNCATE_CHARS]}",
         )
 
     return StageResult(
         stage="resolve_conflict",
         success=True,
-        claude_result=result,
+        agent_result=ar,
     )
 
 
@@ -1042,6 +1157,7 @@ def _execute_stage(
     env: dict[str, str] | None = None,
     on_context_fill: ContextFillCallback | None = None,
     stage_tpl: StageTemplate | None = None,
+    registry: AdapterRegistry | None = None,
     shared_mem_path: Path | None = None,
     prior_context: str = "",
     codex_enabled: bool = False,
@@ -1054,65 +1170,80 @@ def _execute_stage(
     """Dispatch to the appropriate stage runner.
 
     When *stage_tpl* is provided, routing uses ``executor_type`` from the
-    DB template.  Otherwise falls back to name-based dispatch for backward
-    compatibility.
+    DB template.  ``"shell"`` and ``"internal"`` executor types are handled
+    directly; all other types are resolved through *registry*.
+
+    When *stage_tpl* is ``None``, falls back to legacy name-based dispatch.
     """
     # --- DB-driven routing via executor_type ---
     if stage_tpl is not None:
-        if stage_tpl.executor_type == "claude":
-            # Review stage routes through _run_review() so it can
-            # integrate the Codex dual-reviewer flow when enabled.
-            if stage == "review":
+        if stage_tpl.executor_type in ("shell", "internal"):
+            # Non-agent executors — keep existing logic unchanged.
+            if stage_tpl.executor_type == "shell":
                 if not pr_url:
                     raise ValueError(f"{stage} stage requires pr_url")
-                return _run_review(
-                    pr_url, cwd=cwd, max_turns=max_turns, log_file=log_file,
-                    env=env, on_context_fill=on_context_fill,
-                    stage_tpl=stage_tpl,
-                    codex_enabled=codex_enabled,
-                    codex_log_file=codex_log_file,
-                    codex_timeout=codex_timeout,
-                    codex_model=codex_model,
-                    codex_reasoning_effort=codex_reasoning_effort,
-                    review_iteration=review_iteration,
+                return _run_pr_checks(pr_url, cwd=cwd, timeout=pr_checks_timeout, log_file=log_file, env=env)
+            else:  # internal
+                if not pr_url:
+                    raise ValueError(f"{stage} stage requires pr_url")
+                return _run_merge(
+                    pr_url, cwd=cwd, log_file=log_file,
+                    placeholder_branch=placeholder_branch, env=env,
                 )
-            # Other claude stages use the generic runner
-            prompt_vars: dict[str, str] = {}
-            if stage == "implement":
-                prompt_vars["ticket_id"] = ticket_id
-                prompt_vars["prior_context"] = prior_context
-            elif pr_url:
-                owner, repo, number = _parse_pr_url(pr_url)
-                prompt_vars.update(
-                    pr_url=pr_url,
-                    pr_number=number,
-                    owner=owner,
-                    repo=repo,
-                )
-            # Pass shared-mem path so stages can share context
-            # (implementer writes summary, fixer/ci_fix reads it).
-            if shared_mem_path and stage in ("implement", "fix", "ci_fix"):
-                prompt_vars["shared_mem_path"] = str(shared_mem_path)
-            return _run_claude_stage(
-                stage_tpl, cwd=cwd, max_turns=max_turns,
-                prompt_vars=prompt_vars,
-                log_file=log_file, env=env, on_context_fill=on_context_fill,
-            )
-        elif stage_tpl.executor_type == "shell":
-            if not pr_url:
-                raise ValueError(f"{stage} stage requires pr_url")
-            return _run_pr_checks(pr_url, cwd=cwd, timeout=pr_checks_timeout, log_file=log_file, env=env)
-        elif stage_tpl.executor_type == "internal":
-            if not pr_url:
-                raise ValueError(f"{stage} stage requires pr_url")
-            return _run_merge(
-                pr_url, cwd=cwd, log_file=log_file,
-                placeholder_branch=placeholder_branch, env=env,
-            )
-        else:
-            raise ValueError(f"Unknown executor_type: {stage_tpl.executor_type!r} for stage {stage!r}")
 
-    # --- Legacy name-based routing ---
+        # --- Agent executor: resolve adapter from registry ---
+        if registry is None:
+            raise ValueError(
+                f"Adapter registry required for executor_type={stage_tpl.executor_type!r} "
+                f"on stage {stage!r}"
+            )
+        adapter = registry.get(stage_tpl.executor_type)
+        if adapter is None:
+            raise ValueError(
+                f"No adapter registered for executor_type={stage_tpl.executor_type!r} "
+                f"(stage {stage!r}). Available: {sorted(registry)}"
+            )
+
+        # Review stage routes through _run_review() for dual-reviewer flow.
+        if stage == "review":
+            if not pr_url:
+                raise ValueError(f"{stage} stage requires pr_url")
+            return _run_review(
+                pr_url, cwd=cwd, max_turns=max_turns, log_file=log_file,
+                env=env, on_context_fill=on_context_fill,
+                stage_tpl=stage_tpl,
+                registry=registry,
+                codex_enabled=codex_enabled,
+                codex_log_file=codex_log_file,
+                codex_timeout=codex_timeout,
+                codex_model=codex_model,
+                codex_reasoning_effort=codex_reasoning_effort,
+                review_iteration=review_iteration,
+            )
+
+        # All other agent stages use the generic runner.
+        prompt_vars: dict[str, str] = {}
+        if stage == "implement":
+            prompt_vars["ticket_id"] = ticket_id
+            prompt_vars["prior_context"] = prior_context
+        elif pr_url:
+            owner, repo, number = _parse_pr_url(pr_url)
+            prompt_vars.update(
+                pr_url=pr_url,
+                pr_number=number,
+                owner=owner,
+                repo=repo,
+            )
+        # Pass shared-mem path so stages can share context.
+        if shared_mem_path and stage in ("implement", "fix", "ci_fix"):
+            prompt_vars["shared_mem_path"] = str(shared_mem_path)
+        return _run_agent_stage(
+            stage_tpl, adapter, cwd=cwd, max_turns=max_turns,
+            prompt_vars=prompt_vars,
+            log_file=log_file, env=env, on_context_fill=on_context_fill,
+        )
+
+    # --- Legacy name-based routing (no DB template) ---
     if stage == "implement":
         return _run_implement(
             ticket_id, ticket_labels=ticket_labels,

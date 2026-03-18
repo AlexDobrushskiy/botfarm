@@ -1,7 +1,8 @@
 """Foundation types for the agent abstraction layer.
 
 Defines :class:`AgentResult` (unified result type), :class:`AgentAdapter`
-(protocol for agent backends), and the :data:`ContextFillCallback` type alias.
+(protocol for agent backends), :data:`AdapterRegistry` (mapping of executor
+type names to adapter instances), and the :data:`ContextFillCallback` type alias.
 """
 
 from __future__ import annotations
@@ -78,3 +79,30 @@ class AgentAdapter(Protocol):
         adapter is unavailable when available is False.
         """
         ...
+
+
+# Type alias: maps executor_type names (e.g. "claude", "codex") to adapter instances.
+AdapterRegistry = dict[str, AgentAdapter]
+
+
+def build_adapter_registry(
+    *,
+    codex_model: str | None = None,
+    codex_reasoning_effort: str | None = None,
+) -> AdapterRegistry:
+    """Build the default adapter registry.
+
+    Returns a dict with ``"claude"`` and ``"codex"`` entries.
+    Adapter modules are imported lazily so this function is safe to call
+    even when one CLI is not installed.
+    """
+    from botfarm.agent_claude import ClaudeAdapter
+    from botfarm.agent_codex import CodexAdapter
+
+    return {
+        "claude": ClaudeAdapter(),
+        "codex": CodexAdapter(
+            model=codex_model,
+            reasoning_effort=codex_reasoning_effort,
+        ),
+    }

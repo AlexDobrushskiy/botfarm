@@ -26,7 +26,13 @@ from botfarm.worker import (
     _parse_review_approved,
     run_pipeline,
 )
-from tests.helpers import make_claude_result, make_codex_result
+from tests.helpers import (
+    claude_result_to_agent,
+    codex_result_to_agent,
+    make_agent_result,
+    make_claude_result,
+    make_codex_result,
+)
 
 
 PR_URL = "https://github.com/owner/repo/pull/42"
@@ -62,14 +68,17 @@ def _mock_stage_result(
     review_approved=None,
     codex_result=None,
 ):
-    cr = None
+    ar = None
+    secondary = None
     if stage in ("implement", "review", "fix"):
-        cr = make_claude_result()
+        ar = claude_result_to_agent(make_claude_result())
+    if codex_result is not None:
+        secondary = codex_result_to_agent(codex_result)
     return StageResult(
         stage=stage,
         success=success,
-        claude_result=cr,
-        codex_result=codex_result,
+        agent_result=ar,
+        secondary_agent_result=secondary,
         pr_url=pr_url,
         error=None if success else f"{stage} failed",
         review_approved=review_approved,

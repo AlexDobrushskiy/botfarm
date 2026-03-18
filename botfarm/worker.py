@@ -19,7 +19,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from botfarm.codex import CodexResult, calculate_codex_cost, run_codex_streaming as run_codex_streaming
+from botfarm.agent import AdapterRegistry, build_adapter_registry
+from botfarm.codex import run_codex_streaming as run_codex_streaming
 from botfarm.config import IdentitiesConfig
 from botfarm.db import delete_stage_run, get_task, insert_event, insert_stage_run, is_extra_usage_active, read_runtime_config, update_stage_run_context_fill, update_task
 from botfarm.slots import update_slot_stage
@@ -444,6 +445,12 @@ def run_pipeline(
     shared_mem_dir.mkdir(parents=True, exist_ok=True)
     logger.info("Created shared-mem directory: %s", shared_mem_dir)
 
+    # Build adapter registry for agent-based stage dispatch.
+    registry = build_adapter_registry(
+        codex_model=codex_reviewer_model or None,
+        codex_reasoning_effort=codex_reviewer_reasoning_effort or None,
+    )
+
     # Shared context for _run_and_record helper
     ctx = _PipelineContext(
         ticket_id=ticket_id,
@@ -471,6 +478,7 @@ def run_pipeline(
             timeout_minutes=codex_reviewer_timeout_minutes,
             skip_on_reiteration=codex_reviewer_skip_on_reiteration,
         ),
+        registry=registry,
         max_review_iterations=eff_max_review_iterations,
         max_ci_retries=eff_max_ci_retries,
         max_merge_conflict_retries=eff_max_merge_conflict_retries,
@@ -1139,7 +1147,7 @@ def _handle_implement_result(
     # No PR URL: check for explicit no-PR signal
     if not pr_url:
         no_pr_reason = _detect_no_pr_needed(
-            result.claude_result.result_text if result.claude_result else ""
+            result.agent_result.result_text if result.agent_result else ""
         )
         if no_pr_reason:
             logger.info(
@@ -1230,6 +1238,7 @@ class _PipelineContext:
     reviewer_env: dict[str, str] | None = None
     shared_mem_path: Path | None = None
     codex_config: _CodexReviewerConfig = field(default_factory=_CodexReviewerConfig)
+    registry: AdapterRegistry | None = None
     max_review_iterations: int = 3
     max_ci_retries: int = 2
     max_merge_conflict_retries: int = 2
@@ -1344,8 +1353,8 @@ class _PipelineContext:
             )
             self.conn.commit()
 
-        codex = result.codex_result
-        if codex is None:
+        codex_ar = result.secondary_agent_result
+        if codex_ar is None:
             # Codex was enabled but never ran (e.g. exception before
             # invocation or template path that didn't invoke Codex).
             # Record as skipped rather than misleading failed.
@@ -1366,15 +1375,15 @@ class _PipelineContext:
         )
         self.conn.commit()
 
-        if codex.is_error:
+        if codex_ar.is_error:
             insert_event(
                 self.conn,
                 task_id=self.task_id,
                 event_type="codex_review_failed",
-                detail=codex.result_text[:RESULT_TRUNCATE_CHARS] if codex.result_text else "unknown error",
+                detail=codex_ar.result_text[:RESULT_TRUNCATE_CHARS] if codex_ar.result_text else "unknown error",
             )
         else:
-            codex_approved = _parse_review_approved(codex.result_text)
+            codex_approved = _parse_review_approved(codex_ar.result_text)
             verdict_str = "approved" if codex_approved else "changes_requested"
             insert_event(
                 self.conn,
@@ -1385,25 +1394,19 @@ class _PipelineContext:
         self.conn.commit()
 
         # Record separate codex_review stage_runs row
-        cost = calculate_codex_cost(
-            model=codex.model,
-            input_tokens=codex.input_tokens,
-            output_tokens=codex.output_tokens,
-            cached_input_tokens=codex.cached_input_tokens,
-        )
         insert_stage_run(
             self.conn,
             task_id=self.task_id,
             stage="codex_review",
             iteration=iteration,
-            session_id=codex.thread_id,
-            turns=codex.num_turns,
-            duration_seconds=codex.duration_seconds,
-            input_tokens=codex.input_tokens,
-            output_tokens=codex.output_tokens,
-            cache_read_input_tokens=codex.cached_input_tokens,
+            session_id=codex_ar.session_id,
+            turns=codex_ar.num_turns,
+            duration_seconds=codex_ar.duration_seconds,
+            input_tokens=codex_ar.input_tokens,
+            output_tokens=codex_ar.output_tokens,
+            cache_read_input_tokens=codex_ar.extra.get("cached_input_tokens", 0),
             cache_creation_input_tokens=0,
-            total_cost_usd=cost if cost is not None else 0.0,
+            total_cost_usd=codex_ar.cost_usd,
             log_file_path=str(codex_log_file) if codex_log_file else None,
             on_extra_usage=on_extra_usage,
         )
@@ -1445,20 +1448,20 @@ class _PipelineContext:
         log_file = _make_stage_log_path(self.log_dir, stage, iteration)
         wall_start = time.monotonic()
 
-        # For Claude-based stages, insert a placeholder stage_run row
+        # For agent-based stages, insert a placeholder stage_run row
         # so per-turn context fill updates have a target row to update.
         on_context_fill: ContextFillCallback | None = None
         stage_run_id: int | None = None
         stage_tpl = self._get_stage_tpl(stage)
-        uses_claude = (
-            stage_tpl.executor_type == "claude"
+        uses_agent = (
+            stage_tpl.executor_type not in ("shell", "internal")
             if stage_tpl is not None
             else stage in ("implement", "review", "fix")
         )
 
         extra_usage = is_extra_usage_active(self.conn)
 
-        if uses_claude:
+        if uses_agent:
             stage_run_id = insert_stage_run(
                 self.conn,
                 task_id=self.task_id,
@@ -1521,6 +1524,7 @@ class _PipelineContext:
                 env=self._env_for_stage(stage),
                 on_context_fill=on_context_fill,
                 stage_tpl=stage_tpl,
+                registry=self.registry,
                 shared_mem_path=self.shared_mem_path,
                 prior_context=self.prior_context,
                 **codex_kwargs,
@@ -1626,12 +1630,12 @@ class _PipelineContext:
             on_extra_usage=on_extra_usage,
         )
 
-        if result.claude_result:
-            self.pipeline.total_turns += result.claude_result.num_turns
-            self.pipeline.total_duration_seconds += result.claude_result.duration_seconds
+        if result.agent_result:
+            self.pipeline.total_turns += result.agent_result.num_turns
+            self.pipeline.total_duration_seconds += result.agent_result.duration_seconds
             # Track the last stage's result text for terminal comment posting.
-            if result.claude_result.result_text:
-                self.pipeline.result_text = result.claude_result.result_text
+            if result.agent_result.result_text:
+                self.pipeline.result_text = result.agent_result.result_text
 
         if not result.success:
             logger.warning("Stage '%s' failed for %s", stage, self.ticket_id)
@@ -1888,11 +1892,12 @@ def _record_stage_run(
 ) -> None:
     """Insert or update a stage_run row from the result.
 
+    Extracts metrics from ``result.agent_result`` (an :class:`AgentResult`).
     When *stage_run_id* is provided (streaming path), the existing
     placeholder row is updated with final metrics.  Otherwise a new
     row is inserted (non-streaming path).
     """
-    cr = result.claude_result
+    ar = result.agent_result
     if stage_run_id is not None:
         # Update the placeholder row created before streaming execution
         conn.execute(
@@ -1907,17 +1912,17 @@ def _record_stage_run(
             WHERE id = ?
             """,
             (
-                cr.session_id if cr else None,
-                cr.num_turns if cr else 0,
-                cr.duration_seconds if cr else wall_elapsed,
-                cr.exit_subtype if cr else None,
-                cr.input_tokens if cr else 0,
-                cr.output_tokens if cr else 0,
-                cr.cache_read_input_tokens if cr else 0,
-                cr.cache_creation_input_tokens if cr else 0,
-                cr.total_cost_usd if cr else 0.0,
-                cr.context_fill_pct if cr else None,
-                cr.model_usage_json if cr else None,
+                ar.session_id if ar else None,
+                ar.num_turns if ar else 0,
+                ar.duration_seconds if ar else wall_elapsed,
+                ar.extra.get("exit_subtype") if ar else None,
+                ar.input_tokens if ar else 0,
+                ar.output_tokens if ar else 0,
+                ar.extra.get("cache_read_input_tokens", 0) if ar else 0,
+                ar.extra.get("cache_creation_input_tokens", 0) if ar else 0,
+                ar.cost_usd if ar else 0.0,
+                ar.context_fill_pct if ar else None,
+                ar.extra.get("model_usage_json") if ar else None,
                 stage_run_id,
             ),
         )
@@ -1927,17 +1932,17 @@ def _record_stage_run(
             task_id=task_id,
             stage=stage,
             iteration=iteration,
-            session_id=cr.session_id if cr else None,
-            turns=cr.num_turns if cr else 0,
-            duration_seconds=cr.duration_seconds if cr else wall_elapsed,
-            exit_subtype=cr.exit_subtype if cr else None,
-            input_tokens=cr.input_tokens if cr else 0,
-            output_tokens=cr.output_tokens if cr else 0,
-            cache_read_input_tokens=cr.cache_read_input_tokens if cr else 0,
-            cache_creation_input_tokens=cr.cache_creation_input_tokens if cr else 0,
-            total_cost_usd=cr.total_cost_usd if cr else 0.0,
-            context_fill_pct=cr.context_fill_pct if cr else None,
-            model_usage_json=cr.model_usage_json if cr else None,
+            session_id=ar.session_id if ar else None,
+            turns=ar.num_turns if ar else 0,
+            duration_seconds=ar.duration_seconds if ar else wall_elapsed,
+            exit_subtype=ar.extra.get("exit_subtype") if ar else None,
+            input_tokens=ar.input_tokens if ar else 0,
+            output_tokens=ar.output_tokens if ar else 0,
+            cache_read_input_tokens=ar.extra.get("cache_read_input_tokens", 0) if ar else 0,
+            cache_creation_input_tokens=ar.extra.get("cache_creation_input_tokens", 0) if ar else 0,
+            total_cost_usd=ar.cost_usd if ar else 0.0,
+            context_fill_pct=ar.context_fill_pct if ar else None,
+            model_usage_json=ar.extra.get("model_usage_json") if ar else None,
             log_file_path=log_file_path,
             on_extra_usage=on_extra_usage,
         )
