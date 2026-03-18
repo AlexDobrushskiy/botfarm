@@ -50,6 +50,7 @@ class IssueDetails:
     Returned by ``BugtrackerClient.fetch_issue_details``.
     """
 
+    id: str
     ticket_id: str
     title: str
     url: str

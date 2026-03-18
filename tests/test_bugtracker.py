@@ -68,7 +68,7 @@ class TestBugtrackerClientABC:
                 return None
 
             def fetch_issue_details(self, identifier):
-                return IssueDetails(ticket_id="T-1", title="Test", url="https://example.com")
+                return IssueDetails(id="uuid-1", ticket_id="T-1", title="Test", url="https://example.com")
 
             def get_team_id(self, team_key):
                 return "team-1"
@@ -117,7 +117,7 @@ class TestBugtrackerClientABC:
                 return None
 
             def fetch_issue_details(self, identifier):
-                return IssueDetails(ticket_id="T-1", title="Test", url="")
+                return IssueDetails(id="uuid-1", ticket_id="T-1", title="Test", url="")
 
             def get_team_id(self, team_key):
                 return "t"
@@ -303,7 +303,8 @@ class TestCreatedIssue:
 
 class TestIssueDetails:
     def test_minimal_construction(self):
-        details = IssueDetails(ticket_id="T-1", title="Test", url="https://example.com")
+        details = IssueDetails(id="uuid-1", ticket_id="T-1", title="Test", url="https://example.com")
+        assert details.id == "uuid-1"
         assert details.ticket_id == "T-1"
         assert details.description is None
         assert details.children_ids == []
@@ -313,6 +314,7 @@ class TestIssueDetails:
 
     def test_full_construction(self):
         details = IssueDetails(
+            id="uuid-2",
             ticket_id="T-2",
             title="Full",
             url="https://example.com/2",

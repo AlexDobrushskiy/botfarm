@@ -121,7 +121,7 @@ class BugtrackerClient(ABC):
         team_key: str,
         first: int = 50,
         project_name: str = "",
-    ) -> list[dict]:
+    ) -> list[Issue]:
         """Fetch completed/canceled issues."""
         raise NotImplementedError
 
@@ -130,7 +130,7 @@ class BugtrackerClient(ABC):
         team_key: str,
         label_name: str,
         first: int = 50,
-    ) -> list[dict]:
+    ) -> list[Issue]:
         """Fetch open issues that have a specific label."""
         raise NotImplementedError
 
