@@ -258,7 +258,10 @@ class AdapterConfig:
     skip_on_reiteration: bool = True
 
 
-def _default_adapters() -> dict[str, AdapterConfig]:
+CODEX_ADAPTER_DEFAULTS = AdapterConfig(timeout_minutes=15, reasoning_effort="medium")
+
+
+def default_adapters() -> dict[str, AdapterConfig]:
     return {
         "claude": AdapterConfig(enabled=True),
         "codex": AdapterConfig(timeout_minutes=15, reasoning_effort="medium"),
@@ -277,30 +280,29 @@ class AgentsConfig:
     })
     timeout_overrides: dict[str, dict[str, int]] = field(default_factory=dict)
     timeout_grace_seconds: int = 10
-    adapters: dict[str, AdapterConfig] = field(default_factory=_default_adapters)
+    adapters: dict[str, AdapterConfig] = field(default_factory=default_adapters)
 
     # Legacy accessor properties for backward compatibility.
     @property
     def codex_reviewer_enabled(self) -> bool:
-        return self.adapters.get("codex", _default_adapters()["codex"]).enabled
+        return self.adapters.get("codex", CODEX_ADAPTER_DEFAULTS).enabled
 
     @property
     def codex_reviewer_model(self) -> str:
-        return self.adapters.get("codex", _default_adapters()["codex"]).model
+        return self.adapters.get("codex", CODEX_ADAPTER_DEFAULTS).model
 
     @property
     def codex_reviewer_reasoning_effort(self) -> str:
-        return self.adapters.get("codex", _default_adapters()["codex"]).reasoning_effort
+        return self.adapters.get("codex", CODEX_ADAPTER_DEFAULTS).reasoning_effort
 
     @property
     def codex_reviewer_timeout_minutes(self) -> int:
-        ac = self.adapters.get("codex", _default_adapters()["codex"])
-        default_timeout = _default_adapters()["codex"].timeout_minutes
-        return ac.timeout_minutes if ac.timeout_minutes is not None else default_timeout
+        ac = self.adapters.get("codex", CODEX_ADAPTER_DEFAULTS)
+        return ac.timeout_minutes if ac.timeout_minutes is not None else CODEX_ADAPTER_DEFAULTS.timeout_minutes
 
     @property
     def codex_reviewer_skip_on_reiteration(self) -> bool:
-        return self.adapters.get("codex", _default_adapters()["codex"]).skip_on_reiteration
+        return self.adapters.get("codex", CODEX_ADAPTER_DEFAULTS).skip_on_reiteration
 
 
 @dataclass
@@ -834,7 +836,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
 
     # Parse adapter configs: support both new "adapters:" format and
     # legacy "codex_reviewer_*" flat fields (with deprecation warning).
-    adapters = _default_adapters()
+    adapters = default_adapters()
     raw_adapters = agents_data.get("adapters")
     if isinstance(raw_adapters, dict):
         for name, adapter_data in raw_adapters.items():
@@ -876,7 +878,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
                 "Deprecated: codex_reviewer_* fields in agents config; "
                 "migrate to agents.adapters.codex (see docs/configuration.md)"
             )
-            _codex_defaults = _default_adapters()["codex"]
+            _codex_defaults = default_adapters()["codex"]
             adapters["codex"] = AdapterConfig(
                 enabled=_parse_bool(agents_data, "codex_reviewer_enabled", _codex_defaults.enabled, section="agents"),
                 model=str(agents_data.get("codex_reviewer_model", _codex_defaults.model)),
