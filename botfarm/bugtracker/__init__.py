@@ -7,13 +7,14 @@ Re-exports all public types for clean imports::
 
 from .base import BugtrackerClient, BugtrackerPoller
 from .errors import BugtrackerError
-from .types import ActiveIssuesCount, CreatedIssue, Issue, IssueDetails, PollResult
+from .types import ActiveIssuesCount, Comment, CreatedIssue, Issue, IssueDetails, PollResult
 
 __all__ = [
     "ActiveIssuesCount",
     "BugtrackerClient",
     "BugtrackerError",
     "BugtrackerPoller",
+    "Comment",
     "CreatedIssue",
     "Issue",
     "IssueDetails",

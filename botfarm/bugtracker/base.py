@@ -121,6 +121,7 @@ class BugtrackerClient(ABC):
         team_key: str,
         first: int = 50,
         project_name: str = "",
+        state_types: list[str] | None = None,
     ) -> list[Issue]:
         """Fetch completed/canceled issues."""
         raise NotImplementedError

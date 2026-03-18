@@ -9,6 +9,7 @@ from botfarm.bugtracker import (
     BugtrackerClient,
     BugtrackerError,
     BugtrackerPoller,
+    Comment,
     CreatedIssue,
     Issue,
     IssueDetails,
@@ -301,6 +302,18 @@ class TestCreatedIssue:
         assert ci.url == "https://example.com"
 
 
+class TestComment:
+    def test_construction(self):
+        c = Comment(body="hello", author="Alice")
+        assert c.body == "hello"
+        assert c.author == "Alice"
+        assert c.created_at is None
+
+    def test_with_created_at(self):
+        c = Comment(body="hi", author="Bob", created_at="2026-01-01T00:00:00Z")
+        assert c.created_at == "2026-01-01T00:00:00Z"
+
+
 class TestIssueDetails:
     def test_minimal_construction(self):
         details = IssueDetails(id="uuid-1", ticket_id="T-1", title="Test", url="https://example.com")
@@ -324,10 +337,12 @@ class TestIssueDetails:
             assignee_name="Alice",
             labels=["bug"],
             blocked_by=["T-1"],
+            comments=[Comment(body="note", author="Alice")],
             raw={"key": "val"},
         )
         assert details.labels == ["bug"]
         assert details.blocked_by == ["T-1"]
+        assert details.comments[0].body == "note"
         assert details.raw == {"key": "val"}
 
 
@@ -369,6 +384,7 @@ class TestPackageImports:
             BugtrackerClient,
             BugtrackerError,
             BugtrackerPoller,
+            Comment,
             CreatedIssue,
             Issue,
             IssueDetails,
@@ -378,4 +394,4 @@ class TestPackageImports:
     def test_import_from_submodules(self):
         from botfarm.bugtracker.base import BugtrackerClient, BugtrackerPoller  # noqa: F401
         from botfarm.bugtracker.errors import BugtrackerError  # noqa: F401
-        from botfarm.bugtracker.types import ActiveIssuesCount, CreatedIssue, Issue, IssueDetails, PollResult  # noqa: F401
+        from botfarm.bugtracker.types import ActiveIssuesCount, Comment, CreatedIssue, Issue, IssueDetails, PollResult  # noqa: F401

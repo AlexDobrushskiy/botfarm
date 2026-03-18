@@ -44,6 +44,15 @@ class CreatedIssue:
 
 
 @dataclass
+class Comment:
+    """A single comment on an issue."""
+
+    body: str
+    author: str
+    created_at: str | None = None
+
+
+@dataclass
 class IssueDetails:
     """Full details for a single issue.
 
@@ -69,7 +78,7 @@ class IssueDetails:
     blocked_by: list[str] = field(default_factory=list)
     blocks: list[str] = field(default_factory=list)
     labels: list[str] = field(default_factory=list)
-    comments: list[dict] = field(default_factory=list)
+    comments: list[Comment] = field(default_factory=list)
     created_at: str | None = None
     updated_at: str | None = None
     completed_at: str | None = None
