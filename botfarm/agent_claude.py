@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 
 from botfarm.agent import AgentResult, ContextFillCallback
-from botfarm.worker_claude import ClaudeResult, run_claude_streaming
+from botfarm.worker import DEFAULT_IMPLEMENT_MAX_TURNS
+from botfarm.worker_claude import ClaudeResult, check_claude_available, run_claude_streaming
 
 
 class ClaudeAdapter:
@@ -43,7 +43,7 @@ class ClaudeAdapter:
         claude_result = run_claude_streaming(
             prompt,
             cwd=cwd,
-            max_turns=max_turns or 200,
+            max_turns=max_turns if max_turns is not None else DEFAULT_IMPLEMENT_MAX_TURNS,
             log_file=log_file,
             env=env,
             on_context_fill=on_context_fill,
@@ -52,23 +52,7 @@ class ClaudeAdapter:
         return _claude_result_to_agent_result(claude_result)
 
     def check_available(self) -> tuple[bool, str]:
-        try:
-            result = subprocess.run(
-                ["claude", "--version"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if result.returncode == 0:
-                version = result.stdout.strip()
-                return True, f"claude {version}"
-            return False, f"claude --version exited with code {result.returncode}"
-        except FileNotFoundError:
-            return False, "claude binary not found on PATH"
-        except subprocess.TimeoutExpired:
-            return False, "claude --version timed out"
-        except OSError as exc:
-            return False, f"claude check failed: {exc}"
+        return check_claude_available()
 
 
 def _claude_result_to_agent_result(cr: ClaudeResult) -> AgentResult:

@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shutil
 import sqlite3
 import stat
 import subprocess
@@ -18,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from botfarm.codex import check_codex_available
+from botfarm.worker_claude import check_claude_available
 from botfarm.config import BotfarmConfig
 from botfarm.credentials import CredentialError, _load_token
 from botfarm.db import SCHEMA_VERSION, resolve_db_path
@@ -265,49 +265,18 @@ def check_credentials() -> list[CheckResult]:
 
 def check_claude_binary() -> list[CheckResult]:
     """Check that the ``claude`` binary is available on PATH."""
-    claude_path = shutil.which("claude")
-    if not claude_path:
-        return [CheckResult(
-            name="claude_binary",
-            passed=False,
-            message=(
+    ok, msg = check_claude_available()
+    if not ok:
+        # Augment the message with recovery guidance when binary is missing.
+        if "not found" in msg:
+            msg = (
                 "'claude' not found on PATH. "
                 "Workers will fail to invoke Claude Code. "
                 "Ensure Claude Code is installed and ~/.local/bin is in PATH. "
                 "For nohup: PATH=$HOME/.local/bin:$PATH nohup botfarm run &"
-            ),
-        )]
-    try:
-        proc = subprocess.run(
-            [claude_path, "--version"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if proc.returncode == 0:
-            version = proc.stdout.strip()
-            return [CheckResult(
-                name="claude_binary",
-                passed=True,
-                message=f"OK — {claude_path} ({version})",
-            )]
-        return [CheckResult(
-            name="claude_binary",
-            passed=False,
-            message=f"claude --version exited with code {proc.returncode}",
-        )]
-    except subprocess.TimeoutExpired:
-        return [CheckResult(
-            name="claude_binary",
-            passed=False,
-            message="claude --version timed out",
-        )]
-    except OSError as exc:
-        return [CheckResult(
-            name="claude_binary",
-            passed=False,
-            message=f"claude check failed: {exc}",
-        )]
+            )
+        return [CheckResult(name="claude_binary", passed=False, message=msg)]
+    return [CheckResult(name="claude_binary", passed=True, message=f"OK — {msg}")]
 
 
 def check_database(config: BotfarmConfig) -> list[CheckResult]:

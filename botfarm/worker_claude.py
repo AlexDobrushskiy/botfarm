@@ -715,3 +715,29 @@ def _recover_pr_url(
         pass
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# Preflight check
+# ---------------------------------------------------------------------------
+
+
+def check_claude_available() -> tuple[bool, str]:
+    """Check if claude binary exists and is runnable. Returns (ok, message)."""
+    try:
+        result = subprocess.run(
+            ["claude", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            version = result.stdout.strip()
+            return True, f"claude {version}"
+        return False, f"claude --version exited with code {result.returncode}"
+    except FileNotFoundError:
+        return False, "claude binary not found on PATH"
+    except subprocess.TimeoutExpired:
+        return False, "claude --version timed out"
+    except OSError as exc:
+        return False, f"claude check failed: {exc}"

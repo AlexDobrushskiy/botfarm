@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from botfarm.agent import AgentAdapter, AgentResult
 from botfarm.agent_claude import ClaudeAdapter, _claude_result_to_agent_result
@@ -119,15 +119,17 @@ class TestClaudeAdapter:
         _, kwargs = mock_run.call_args
         assert kwargs["on_context_fill"] is my_cb
 
-    @patch("subprocess.run")
-    def test_check_available_success(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stdout="1.0.30\n")
+    @patch("botfarm.agent_claude.check_claude_available")
+    def test_check_available_delegates(self, mock_check):
+        mock_check.return_value = (True, "claude 1.0.30")
         ok, msg = ClaudeAdapter().check_available()
         assert ok is True
         assert "1.0.30" in msg
+        mock_check.assert_called_once()
 
-    @patch("subprocess.run", side_effect=FileNotFoundError)
-    def test_check_available_not_found(self, _mock):
+    @patch("botfarm.agent_claude.check_claude_available")
+    def test_check_available_not_found(self, mock_check):
+        mock_check.return_value = (False, "claude binary not found on PATH")
         ok, msg = ClaudeAdapter().check_available()
         assert ok is False
         assert "not found" in msg
