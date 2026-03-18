@@ -15,7 +15,15 @@ from typing import TYPE_CHECKING
 
 from .base import BugtrackerClient, BugtrackerPoller
 from .errors import BugtrackerError
-from .types import ActiveIssuesCount, Comment, CreatedIssue, Issue, IssueDetails, PollResult
+from .types import (
+    ActiveIssuesCount,
+    Comment,
+    CreatedIssue,
+    Issue,
+    IssueDetails,
+    PollResult,
+    issue_details_to_history_kwargs,
+)
 
 if TYPE_CHECKING:
     from botfarm.config import BotfarmConfig
@@ -32,6 +40,7 @@ __all__ = [
     "PollResult",
     "create_client",
     "create_pollers",
+    "issue_details_to_history_kwargs",
 ]
 
 

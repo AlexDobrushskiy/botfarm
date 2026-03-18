@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 
 
@@ -91,3 +92,36 @@ class ActiveIssuesCount:
 
     total: int
     by_project: dict[str, int] = field(default_factory=dict)
+
+
+def issue_details_to_history_kwargs(details: IssueDetails) -> dict:
+    """Convert ``IssueDetails`` to kwargs for ``db.upsert_ticket_history``."""
+    return {
+        "ticket_id": details.ticket_id,
+        "linear_uuid": details.id,
+        "title": details.title,
+        "description": details.description,
+        "status": details.status,
+        "priority": details.priority,
+        "url": details.url,
+        "assignee_name": details.assignee_name,
+        "assignee_email": details.assignee_email,
+        "creator_name": details.creator_name,
+        "project_name": details.project_name,
+        "team_name": details.team_name,
+        "estimate": details.estimate,
+        "due_date": details.due_date,
+        "parent_id": details.parent_id,
+        "children_ids": json.dumps(details.children_ids),
+        "blocked_by": json.dumps(details.blocked_by),
+        "blocks": json.dumps(details.blocks),
+        "labels": json.dumps(details.labels),
+        "comments_json": json.dumps([
+            {"body": c.body, "author": c.author, "created_at": c.created_at}
+            for c in details.comments
+        ]),
+        "linear_created_at": details.created_at,
+        "linear_updated_at": details.updated_at,
+        "linear_completed_at": details.completed_at,
+        "raw_json": json.dumps(details.raw),
+    }
