@@ -116,7 +116,10 @@ async def api_project_create(request: Request):
     create_linear_project = bool(body.get("create_linear_project", False))
     slots_count = body.get("slots", 1)
     create_github = bool(body.get("create_github", False))
-    project_type = (body.get("project_type") or "").strip()
+    project_type_raw = body.get("project_type")
+    if not isinstance(project_type_raw, str):
+        project_type_raw = ""
+    project_type = project_type_raw.strip()
     setup_commands_raw = body.get("setup_commands")
 
     # Validation

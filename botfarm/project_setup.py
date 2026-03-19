@@ -593,7 +593,7 @@ def _run_setup_commands(
                     capture_output=True,
                     text=True,
                     timeout=300,
-                    env={**os.environ, **_clean_git_env()},
+                    env=_clean_git_env(),
                 )
                 if result.returncode != 0:
                     stderr = result.stderr.strip()
@@ -866,12 +866,13 @@ def setup_project_git(
     )
 
     # Worktree setup — skip slots that already have healthy worktrees
-    created_worktrees: list[Path] = []
+    all_worktree_paths: list[Path] = []
     for slot_id in slot_ids:
         branch_name = f"slot-{slot_id}-placeholder"
         worktree_path = Path(f"{wt_prefix}{slot_id}").expanduser()
         if worktree_path.exists() and is_git_repo(worktree_path):
             _progress(f"Slot {slot_id}: worktree already exists at {worktree_path}")
+            all_worktree_paths.append(worktree_path)
             continue
         if worktree_path.exists():
             # Plain directory left behind by a partial setup — remove so
@@ -885,13 +886,14 @@ def setup_project_git(
             repo_dir, worktree_path, branch_name,
             create_branch=not branch_already_exists,
         )
-        created_worktrees.append(worktree_path)
+        all_worktree_paths.append(worktree_path)
         _progress(f"Slot {slot_id}: {worktree_path} (branch: {branch_name})")
 
-    # Run setup commands in newly-created worktrees
+    # Run setup commands in all worktrees (including existing ones, so
+    # that retrying via "Setup Git" can recover from earlier failures).
     setup_commands = project_entry.get("setup_commands") or []
-    if setup_commands and created_worktrees:
-        _progress(f"Running setup commands in {len(created_worktrees)} new worktree(s)...")
-        _run_setup_commands(setup_commands, created_worktrees, _progress)
+    if setup_commands and all_worktree_paths:
+        _progress(f"Running setup commands in {len(all_worktree_paths)} worktree(s)...")
+        _run_setup_commands(setup_commands, all_worktree_paths, _progress)
 
     _progress(f"Git setup for '{name}' complete!")

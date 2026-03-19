@@ -527,35 +527,36 @@ class TestSetupProjectGit:
         assert (wt1 / "setup-marker.txt").exists()
         assert any("OK" in m for m in messages)
 
-    def test_skips_setup_commands_for_existing_worktrees(self, tmp_path):
+    def test_runs_setup_commands_in_existing_worktrees(self, tmp_path):
+        """Setup commands run in all worktrees so retry via 'Setup Git' works."""
         config_path = tmp_path / "config.yaml"
-        repo_dir = tmp_path / "projects" / "skip" / "repo"
-        wt_prefix = tmp_path / "projects" / "skip" / "skip-slot-"
+        repo_dir = tmp_path / "projects" / "retry" / "repo"
+        wt_prefix = tmp_path / "projects" / "retry" / "retry-slot-"
         data = {
             "projects": [{
-                "name": "skip",
+                "name": "retry",
                 "team": "ENG",
                 "base_dir": str(repo_dir),
                 "worktree_prefix": str(wt_prefix),
                 "slots": [1],
-                "setup_commands": ["touch should-not-exist.txt"],
+                "setup_commands": ["touch setup-marker.txt"],
             }]
         }
         config_path.write_text(yaml.dump(data))
 
         # Pre-create repo and worktree
-        init_repo(repo_dir, "skip")
+        init_repo(repo_dir, "retry")
         from botfarm.project_setup import create_worktree
-        wt1 = tmp_path / "projects" / "skip" / "skip-slot-1"
+        wt1 = tmp_path / "projects" / "retry" / "retry-slot-1"
         create_worktree(repo_dir, wt1, "slot-1-placeholder")
 
         messages = []
         setup_project_git(
-            name="skip", config_path=config_path,
+            name="retry", config_path=config_path,
             progress_callback=messages.append,
         )
-        # Setup commands should NOT have run (worktree already existed)
-        assert not (wt1 / "should-not-exist.txt").exists()
+        # Setup commands should run even in existing worktrees
+        assert (wt1 / "setup-marker.txt").exists()
 
 
 class TestSetupProjectSetupCommands:
