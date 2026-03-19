@@ -1701,6 +1701,84 @@ class TestValidateStructuralConfigUpdates:
         errors = validate_structural_config_updates(updates, config)
         assert errors == []
 
+    # --- run_command / run_env / run_port validation ---
+
+    def test_existing_project_run_command_editable(self):
+        config = _make_config_for_structural()
+        updates = {
+            "projects": [
+                {"name": "project-a", "run_command": "npm run dev"},
+            ],
+        }
+        errors = validate_structural_config_updates(updates, config)
+        assert errors == []
+
+    def test_existing_project_run_env_editable(self):
+        config = _make_config_for_structural()
+        updates = {
+            "projects": [
+                {"name": "project-a", "run_env": {"NODE_ENV": "development"}},
+            ],
+        }
+        errors = validate_structural_config_updates(updates, config)
+        assert errors == []
+
+    def test_existing_project_run_port_editable(self):
+        config = _make_config_for_structural()
+        updates = {
+            "projects": [{"name": "project-a", "run_port": 3000}],
+        }
+        errors = validate_structural_config_updates(updates, config)
+        assert errors == []
+
+    def test_run_command_not_string_rejected(self):
+        config = _make_config_for_structural()
+        updates = {
+            "projects": [{"name": "project-a", "run_command": 123}],
+        }
+        errors = validate_structural_config_updates(updates, config)
+        assert any("run_command must be a string" in e for e in errors)
+
+    def test_run_env_not_dict_rejected(self):
+        config = _make_config_for_structural()
+        updates = {
+            "projects": [{"name": "project-a", "run_env": "bad"}],
+        }
+        errors = validate_structural_config_updates(updates, config)
+        assert any("run_env must be a mapping" in e for e in errors)
+
+    def test_run_env_non_string_values_rejected(self):
+        config = _make_config_for_structural()
+        updates = {
+            "projects": [{"name": "project-a", "run_env": {"K": 1}}],
+        }
+        errors = validate_structural_config_updates(updates, config)
+        assert any("run_env must be a mapping" in e for e in errors)
+
+    def test_run_port_not_int_rejected(self):
+        config = _make_config_for_structural()
+        updates = {
+            "projects": [{"name": "project-a", "run_port": "abc"}],
+        }
+        errors = validate_structural_config_updates(updates, config)
+        assert any("run_port must be an integer" in e for e in errors)
+
+    def test_run_port_negative_rejected(self):
+        config = _make_config_for_structural()
+        updates = {
+            "projects": [{"name": "project-a", "run_port": -1}],
+        }
+        errors = validate_structural_config_updates(updates, config)
+        assert any("run_port must be a non-negative" in e for e in errors)
+
+    def test_run_port_bool_rejected(self):
+        config = _make_config_for_structural()
+        updates = {
+            "projects": [{"name": "project-a", "run_port": True}],
+        }
+        errors = validate_structural_config_updates(updates, config)
+        assert any("run_port must be an integer" in e for e in errors)
+
 
 # --- write_structural_config_updates ---
 
@@ -1901,6 +1979,58 @@ class TestWriteStructuralConfigUpdates:
         assert len(data["projects"]) == 2
         assert data["projects"][0]["slots"] == [1, 2, 3]
         assert data["projects"][1]["name"] == "new-project"
+
+    def test_write_project_run_command(self, tmp_path):
+        config_path = _write_config(tmp_path, MINIMAL_CONFIG)
+        write_structural_config_updates(config_path, {
+            "projects": [
+                {"name": "test-project", "run_command": "npm run dev"},
+            ],
+        })
+        data = yaml.safe_load(config_path.read_text())
+        assert data["projects"][0]["run_command"] == "npm run dev"
+
+    def test_write_project_run_env(self, tmp_path):
+        config_path = _write_config(tmp_path, MINIMAL_CONFIG)
+        write_structural_config_updates(config_path, {
+            "projects": [
+                {"name": "test-project", "run_env": {"NODE_ENV": "development"}},
+            ],
+        })
+        data = yaml.safe_load(config_path.read_text())
+        assert data["projects"][0]["run_env"] == {"NODE_ENV": "development"}
+
+    def test_write_project_run_port(self, tmp_path):
+        config_path = _write_config(tmp_path, MINIMAL_CONFIG)
+        write_structural_config_updates(config_path, {
+            "projects": [
+                {"name": "test-project", "run_port": 3000},
+            ],
+        })
+        data = yaml.safe_load(config_path.read_text())
+        assert data["projects"][0]["run_port"] == 3000
+
+    def test_write_new_project_with_run_fields(self, tmp_path):
+        config_path = _write_config(tmp_path, MINIMAL_CONFIG)
+        write_structural_config_updates(config_path, {
+            "projects": [
+                {
+                    "name": "new-project",
+                    "team": "NEW",
+                    "base_dir": "~/new",
+                    "worktree_prefix": "new-slot-",
+                    "slots": [1],
+                    "run_command": "npm run dev",
+                    "run_port": 3000,
+                    "run_env": {"NODE_ENV": "development"},
+                },
+            ],
+        })
+        data = yaml.safe_load(config_path.read_text())
+        new = data["projects"][1]
+        assert new["run_command"] == "npm run dev"
+        assert new["run_port"] == 3000
+        assert new["run_env"] == {"NODE_ENV": "development"}
 
 
 # --- Identities config ---
@@ -2837,6 +2967,220 @@ class TestProjectConfigFields:
         config_path = _write_config(tmp_path, data)
         with pytest.raises(ConfigError, match="setup_commands must be a list of strings"):
             load_config(config_path)
+
+
+class TestProjectRunCommandFields:
+    """Test run_command, run_env, run_port on ProjectConfig."""
+
+    def test_run_command_field(self):
+        p = ProjectConfig(name="p", team="T", base_dir="d", worktree_prefix="s-",
+                          slots=[1], run_command="npm run dev")
+        assert p.run_command == "npm run dev"
+
+    def test_run_command_default(self):
+        p = ProjectConfig(name="p", team="T", base_dir="d", worktree_prefix="s-", slots=[1])
+        assert p.run_command == ""
+
+    def test_run_env_field(self):
+        env = {"NODE_ENV": "development"}
+        p = ProjectConfig(name="p", team="T", base_dir="d", worktree_prefix="s-",
+                          slots=[1], run_env=env)
+        assert p.run_env == env
+
+    def test_run_env_default(self):
+        p = ProjectConfig(name="p", team="T", base_dir="d", worktree_prefix="s-", slots=[1])
+        assert p.run_env == {}
+
+    def test_run_port_field(self):
+        p = ProjectConfig(name="p", team="T", base_dir="d", worktree_prefix="s-",
+                          slots=[1], run_port=3000)
+        assert p.run_port == 3000
+
+    def test_run_port_default(self):
+        p = ProjectConfig(name="p", team="T", base_dir="d", worktree_prefix="s-", slots=[1])
+        assert p.run_port == 0
+
+    def test_yaml_run_command_loads(self, tmp_path):
+        data = {
+            "projects": [{
+                "name": "p", "team": "TST", "base_dir": "~/d",
+                "worktree_prefix": "s-", "slots": [1],
+                "run_command": "npm run dev",
+            }],
+            "bugtracker": {"type": "linear", "api_key": "k"},
+        }
+        config_path = _write_config(tmp_path, data)
+        config = load_config(config_path)
+        assert config.projects[0].run_command == "npm run dev"
+
+    def test_yaml_run_env_loads(self, tmp_path):
+        data = {
+            "projects": [{
+                "name": "p", "team": "TST", "base_dir": "~/d",
+                "worktree_prefix": "s-", "slots": [1],
+                "run_env": {"NODE_ENV": "development", "PORT": "3000"},
+            }],
+            "bugtracker": {"type": "linear", "api_key": "k"},
+        }
+        config_path = _write_config(tmp_path, data)
+        config = load_config(config_path)
+        assert config.projects[0].run_env == {"NODE_ENV": "development", "PORT": "3000"}
+
+    def test_yaml_run_port_loads(self, tmp_path):
+        data = {
+            "projects": [{
+                "name": "p", "team": "TST", "base_dir": "~/d",
+                "worktree_prefix": "s-", "slots": [1],
+                "run_port": 3000,
+            }],
+            "bugtracker": {"type": "linear", "api_key": "k"},
+        }
+        config_path = _write_config(tmp_path, data)
+        config = load_config(config_path)
+        assert config.projects[0].run_port == 3000
+
+    def test_yaml_missing_run_fields_default(self, tmp_path):
+        config_path = _write_config(tmp_path, MINIMAL_CONFIG)
+        config = load_config(config_path)
+        assert config.projects[0].run_command == ""
+        assert config.projects[0].run_env == {}
+        assert config.projects[0].run_port == 0
+
+    def test_invalid_run_command_type(self, tmp_path):
+        data = {
+            "projects": [{
+                "name": "p", "team": "TST", "base_dir": "~/d",
+                "worktree_prefix": "s-", "slots": [1],
+                "run_command": 123,
+            }],
+            "bugtracker": {"type": "linear", "api_key": "k"},
+        }
+        config_path = _write_config(tmp_path, data)
+        with pytest.raises(ConfigError, match="run_command must be a string"):
+            load_config(config_path)
+
+    def test_invalid_run_env_not_dict(self, tmp_path):
+        data = {
+            "projects": [{
+                "name": "p", "team": "TST", "base_dir": "~/d",
+                "worktree_prefix": "s-", "slots": [1],
+                "run_env": "not a dict",
+            }],
+            "bugtracker": {"type": "linear", "api_key": "k"},
+        }
+        config_path = _write_config(tmp_path, data)
+        with pytest.raises(ConfigError, match="run_env must be a mapping"):
+            load_config(config_path)
+
+    def test_invalid_run_env_non_string_values(self, tmp_path):
+        data = {
+            "projects": [{
+                "name": "p", "team": "TST", "base_dir": "~/d",
+                "worktree_prefix": "s-", "slots": [1],
+                "run_env": {"KEY": 123},
+            }],
+            "bugtracker": {"type": "linear", "api_key": "k"},
+        }
+        config_path = _write_config(tmp_path, data)
+        with pytest.raises(ConfigError, match="run_env must be a mapping"):
+            load_config(config_path)
+
+    def test_invalid_run_port_not_int(self, tmp_path):
+        data = {
+            "projects": [{
+                "name": "p", "team": "TST", "base_dir": "~/d",
+                "worktree_prefix": "s-", "slots": [1],
+                "run_port": "abc",
+            }],
+            "bugtracker": {"type": "linear", "api_key": "k"},
+        }
+        config_path = _write_config(tmp_path, data)
+        with pytest.raises(ConfigError, match="run_port must be an integer"):
+            load_config(config_path)
+
+    def test_invalid_run_port_negative(self, tmp_path):
+        data = {
+            "projects": [{
+                "name": "p", "team": "TST", "base_dir": "~/d",
+                "worktree_prefix": "s-", "slots": [1],
+                "run_port": -1,
+            }],
+            "bugtracker": {"type": "linear", "api_key": "k"},
+        }
+        config_path = _write_config(tmp_path, data)
+        with pytest.raises(ConfigError, match="run_port must be a non-negative integer"):
+            load_config(config_path)
+
+    def test_invalid_run_port_bool(self, tmp_path):
+        data = {
+            "projects": [{
+                "name": "p", "team": "TST", "base_dir": "~/d",
+                "worktree_prefix": "s-", "slots": [1],
+                "run_port": True,
+            }],
+            "bugtracker": {"type": "linear", "api_key": "k"},
+        }
+        config_path = _write_config(tmp_path, data)
+        with pytest.raises(ConfigError, match="run_port must be an integer"):
+            load_config(config_path)
+
+    def test_default_run_command_from_project_type(self, tmp_path):
+        data = {
+            "projects": [{
+                "name": "p", "team": "TST", "base_dir": "~/d",
+                "worktree_prefix": "s-", "slots": [1],
+                "project_type": "nextjs",
+            }],
+            "bugtracker": {"type": "linear", "api_key": "k"},
+        }
+        config_path = _write_config(tmp_path, data)
+        config = load_config(config_path)
+        assert config.projects[0].run_command == "npm run dev"
+        assert config.projects[0].run_port == 3000
+
+    def test_default_run_command_from_django_type(self, tmp_path):
+        data = {
+            "projects": [{
+                "name": "p", "team": "TST", "base_dir": "~/d",
+                "worktree_prefix": "s-", "slots": [1],
+                "project_type": "django",
+            }],
+            "bugtracker": {"type": "linear", "api_key": "k"},
+        }
+        config_path = _write_config(tmp_path, data)
+        config = load_config(config_path)
+        assert config.projects[0].run_command == "python manage.py runserver 0.0.0.0:8000"
+        assert config.projects[0].run_port == 8000
+
+    def test_explicit_run_command_overrides_project_type_default(self, tmp_path):
+        data = {
+            "projects": [{
+                "name": "p", "team": "TST", "base_dir": "~/d",
+                "worktree_prefix": "s-", "slots": [1],
+                "project_type": "nextjs",
+                "run_command": "npx next dev --turbo",
+                "run_port": 4000,
+            }],
+            "bugtracker": {"type": "linear", "api_key": "k"},
+        }
+        config_path = _write_config(tmp_path, data)
+        config = load_config(config_path)
+        assert config.projects[0].run_command == "npx next dev --turbo"
+        assert config.projects[0].run_port == 4000
+
+    def test_unknown_project_type_no_default(self, tmp_path):
+        data = {
+            "projects": [{
+                "name": "p", "team": "TST", "base_dir": "~/d",
+                "worktree_prefix": "s-", "slots": [1],
+                "project_type": "custom",
+            }],
+            "bugtracker": {"type": "linear", "api_key": "k"},
+        }
+        config_path = _write_config(tmp_path, data)
+        config = load_config(config_path)
+        assert config.projects[0].run_command == ""
+        assert config.projects[0].run_port == 0
 
 
 class TestBotfarmConfigBugtracker:

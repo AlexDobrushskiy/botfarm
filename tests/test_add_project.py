@@ -834,6 +834,34 @@ class TestFormatProjectEntry:
             "pip install -e .",
         ]
 
+    def test_entry_with_run_command(self):
+        project = {
+            "name": "my-app",
+            "team": "SMA",
+            "base_dir": "~/my-app",
+            "worktree_prefix": "my-app-slot-",
+            "slots": [1],
+            "run_command": "npm run dev",
+            "run_port": 3000,
+        }
+        result = format_project_entry(project)
+        data = yaml.safe_load("projects:\n" + result)
+        assert data["projects"][0]["run_command"] == "npm run dev"
+        assert data["projects"][0]["run_port"] == 3000
+
+    def test_entry_with_run_env(self):
+        project = {
+            "name": "my-app",
+            "team": "SMA",
+            "base_dir": "~/my-app",
+            "worktree_prefix": "my-app-slot-",
+            "slots": [1],
+            "run_env": {"NODE_ENV": "development"},
+        }
+        result = format_project_entry(project)
+        data = yaml.safe_load("projects:\n" + result)
+        assert data["projects"][0]["run_env"] == {"NODE_ENV": "development"}
+
     def test_entry_without_optional_fields(self):
         project = {
             "name": "my-app",
@@ -846,6 +874,9 @@ class TestFormatProjectEntry:
         data = yaml.safe_load("projects:\n" + result)
         assert "project_type" not in data["projects"][0]
         assert "setup_commands" not in data["projects"][0]
+        assert "run_command" not in data["projects"][0]
+        assert "run_port" not in data["projects"][0]
+        assert "run_env" not in data["projects"][0]
 
 
 # ---------------------------------------------------------------------------

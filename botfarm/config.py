@@ -128,12 +128,12 @@ class ProjectConfig:
     """Project configuration.
 
     Fields: ``team``, ``tracker_project``, ``project_type``,
-    ``setup_commands``.
+    ``setup_commands``, ``run_command``, ``run_env``, ``run_port``.
     """
 
     __slots__ = ("name", "base_dir", "worktree_prefix", "slots",
                  "team", "tracker_project", "project_type",
-                 "setup_commands")
+                 "setup_commands", "run_command", "run_env", "run_port")
 
     def __init__(
         self,
@@ -145,6 +145,9 @@ class ProjectConfig:
         tracker_project: str = "",
         project_type: str = "",
         setup_commands: list[str] | None = None,
+        run_command: str = "",
+        run_env: dict[str, str] | None = None,
+        run_port: int = 0,
     ) -> None:
         self.name = name
         self.base_dir = base_dir
@@ -154,6 +157,9 @@ class ProjectConfig:
         self.tracker_project = tracker_project
         self.project_type = project_type
         self.setup_commands = setup_commands if setup_commands is not None else []
+        self.run_command = run_command
+        self.run_env = run_env if run_env is not None else {}
+        self.run_port = run_port
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, ProjectConfig):
@@ -163,14 +169,19 @@ class ProjectConfig:
                 and self.slots == other.slots and self.team == other.team
                 and self.tracker_project == other.tracker_project
                 and self.project_type == other.project_type
-                and self.setup_commands == other.setup_commands)
+                and self.setup_commands == other.setup_commands
+                and self.run_command == other.run_command
+                and self.run_env == other.run_env
+                and self.run_port == other.run_port)
 
     def __repr__(self) -> str:
         return (f"ProjectConfig(name={self.name!r}, team={self.team!r}, "
                 f"base_dir={self.base_dir!r}, worktree_prefix={self.worktree_prefix!r}, "
                 f"slots={self.slots!r}, tracker_project={self.tracker_project!r}, "
                 f"project_type={self.project_type!r}, "
-                f"setup_commands={self.setup_commands!r})")
+                f"setup_commands={self.setup_commands!r}, "
+                f"run_command={self.run_command!r}, "
+                f"run_env={self.run_env!r}, run_port={self.run_port!r})")
 
 
 @dataclass
@@ -434,6 +445,19 @@ def create_default_config(config_path: Path = DEFAULT_CONFIG_PATH) -> Path:
     return config_path
 
 
+# Default run_command / run_port derived from project_type when not explicitly set.
+_PROJECT_TYPE_RUN_DEFAULTS: dict[str, dict[str, object]] = {
+    "nextjs": {"run_command": "npm run dev", "run_port": 3000},
+    "react": {"run_command": "npm start", "run_port": 3000},
+    "vue": {"run_command": "npm run dev", "run_port": 5173},
+    "nuxt": {"run_command": "npm run dev", "run_port": 3000},
+    "django": {"run_command": "python manage.py runserver 0.0.0.0:8000", "run_port": 8000},
+    "flask": {"run_command": "flask run --host=0.0.0.0", "run_port": 5000},
+    "fastapi": {"run_command": "uvicorn main:app --host 0.0.0.0 --port 8000", "run_port": 8000},
+    "rails": {"run_command": "bin/rails server -b 0.0.0.0", "run_port": 3000},
+}
+
+
 def _parse_project(data: dict) -> ProjectConfig:
     # Accept both old (linear_team) and new (team) field names.
     team = data.get("team") or data.get("linear_team", "")
@@ -470,6 +494,44 @@ def _parse_project(data: dict) -> ProjectConfig:
                 f"Project '{data['name']}': setup_commands must be a list of strings"
             )
 
+    # run_command
+    run_command = data.get("run_command", "")
+    if not isinstance(run_command, str):
+        raise ConfigError(
+            f"Project '{data['name']}': run_command must be a string"
+        )
+
+    # run_env
+    run_env = data.get("run_env")
+    if run_env is not None:
+        if not isinstance(run_env, dict) or not all(
+            isinstance(k, str) and isinstance(v, str)
+            for k, v in run_env.items()
+        ):
+            raise ConfigError(
+                f"Project '{data['name']}': run_env must be a mapping of strings to strings"
+            )
+
+    # run_port
+    run_port_raw = data.get("run_port", 0)
+    if isinstance(run_port_raw, bool) or not isinstance(run_port_raw, int):
+        raise ConfigError(
+            f"Project '{data['name']}': run_port must be an integer"
+        )
+    run_port = run_port_raw
+    if run_port < 0:
+        raise ConfigError(
+            f"Project '{data['name']}': run_port must be a non-negative integer"
+        )
+
+    # Derive defaults from project_type when not explicitly set.
+    if project_type and project_type in _PROJECT_TYPE_RUN_DEFAULTS:
+        defaults = _PROJECT_TYPE_RUN_DEFAULTS[project_type]
+        if "run_command" not in data:
+            run_command = str(defaults.get("run_command", ""))
+        if "run_port" not in data and defaults.get("run_port"):
+            run_port = int(defaults["run_port"])
+
     return ProjectConfig(
         name=data["name"],
         team=str(team),
@@ -479,6 +541,9 @@ def _parse_project(data: dict) -> ProjectConfig:
         tracker_project=str(tracker_project),
         project_type=project_type,
         setup_commands=setup_commands,
+        run_command=run_command,
+        run_env=run_env,
+        run_port=run_port,
     )
 
 
@@ -1322,7 +1387,8 @@ def _validate_project_updates(
     existing_names = {p.name for p in config.projects}
 
     _NEW_PROJECT_REQUIRED = {"name", "team", "base_dir", "worktree_prefix", "slots"}
-    _NEW_PROJECT_OPTIONAL = {"tracker_project", "project_type", "setup_commands"}
+    _NEW_PROJECT_OPTIONAL = {"tracker_project", "project_type", "setup_commands",
+                              "run_command", "run_env", "run_port"}
     _NEW_PROJECT_ALLOWED = _NEW_PROJECT_REQUIRED | _NEW_PROJECT_OPTIONAL
     seen_names: set[str] = set()
 
@@ -1367,6 +1433,33 @@ def _validate_project_updates(
                     f"projects[{i}] '{name}': tracker_project must be a string"
                 )
 
+        if "run_command" in proj:
+            if not isinstance(proj["run_command"], str):
+                errors.append(
+                    f"projects[{i}] '{name}': run_command must be a string"
+                )
+
+        if "run_env" in proj:
+            re_val = proj["run_env"]
+            if not isinstance(re_val, dict) or not all(
+                isinstance(k, str) and isinstance(v, str)
+                for k, v in re_val.items()
+            ):
+                errors.append(
+                    f"projects[{i}] '{name}': run_env must be a mapping of strings to strings"
+                )
+
+        if "run_port" in proj:
+            rp = proj["run_port"]
+            if isinstance(rp, bool) or not isinstance(rp, int):
+                errors.append(
+                    f"projects[{i}] '{name}': run_port must be an integer"
+                )
+            elif rp < 0:
+                errors.append(
+                    f"projects[{i}] '{name}': run_port must be a non-negative integer"
+                )
+
         if is_new:
             # New project: validate required fields and allowed keys
             missing = _NEW_PROJECT_REQUIRED - set(proj.keys())
@@ -1393,8 +1486,9 @@ def _validate_project_updates(
                         f"projects[{i}] '{name}': {field} must not be empty"
                     )
         else:
-            # Existing project: only slots and tracker_project are editable
-            allowed_keys = {"name", "slots", "tracker_project"}
+            # Existing project: editable fields
+            allowed_keys = {"name", "slots", "tracker_project",
+                            "run_command", "run_env", "run_port"}
             extra = set(proj.keys()) - allowed_keys
             if extra:
                 errors.append(
@@ -1468,10 +1562,10 @@ def write_structural_config_updates(config_path: Path, updates: dict) -> None:
             if name in by_name:
                 # Existing project: merge editable fields
                 target = by_name[name]
-                if "slots" in proj_update:
-                    target["slots"] = proj_update["slots"]
-                if "tracker_project" in proj_update:
-                    target["tracker_project"] = proj_update["tracker_project"]
+                for fld in ("slots", "tracker_project",
+                            "run_command", "run_env", "run_port"):
+                    if fld in proj_update:
+                        target[fld] = proj_update[fld]
             else:
                 # New project: append complete dict (only if required keys present)
                 required = {"team", "base_dir", "worktree_prefix", "slots"}
@@ -1489,6 +1583,12 @@ def write_structural_config_updates(config_path: Path, updates: dict) -> None:
                         new_proj["project_type"] = proj_update["project_type"]
                     if proj_update.get("setup_commands"):
                         new_proj["setup_commands"] = proj_update["setup_commands"]
+                    if "run_command" in proj_update:
+                        new_proj["run_command"] = proj_update["run_command"]
+                    if "run_env" in proj_update:
+                        new_proj["run_env"] = proj_update["run_env"]
+                    if "run_port" in proj_update:
+                        new_proj["run_port"] = proj_update["run_port"]
                     existing_projects.append(new_proj)
 
     write_yaml_atomic(config_path, data)
