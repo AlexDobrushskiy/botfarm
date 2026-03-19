@@ -336,6 +336,7 @@ class TestUsagePollerPoll:
     def test_poll_no_token_skips(self, conn):
         cred_mgr = MagicMock(spec=CredentialManager)
         cred_mgr.get_token.return_value = None
+        cred_mgr.is_token_expired.return_value = False
         p = UsagePoller(credential_manager=cred_mgr)
 
         state = p.force_poll(conn)

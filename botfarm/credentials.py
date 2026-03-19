@@ -266,6 +266,9 @@ def _refresh_oauth_token(refresh_token_value: str) -> OAuthToken:
         "scope": OAUTH_SCOPES,
     }
     try:
+        # Note: Anthropic's token endpoint accepts JSON bodies (not the
+        # form-encoded format from RFC 6749 §6). Verified against the
+        # Claude Code binary's actual OAuth flow.
         resp = httpx.post(
             OAUTH_TOKEN_URL,
             json=payload,
