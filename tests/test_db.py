@@ -1543,49 +1543,44 @@ class TestDownsampledCodexUsageSnapshots:
     def _insert_at(self, conn, ts, **kwargs):
         conn.execute(
             "INSERT INTO codex_usage_snapshots "
-            "(daily_spend, monthly_spend, monthly_budget, budget_utilization, created_at) "
-            "VALUES (?, ?, ?, ?, ?)",
+            "(primary_used_pct, secondary_used_pct, created_at) "
+            "VALUES (?, ?, ?)",
             (
-                kwargs.get("daily_spend"),
-                kwargs.get("monthly_spend"),
-                kwargs.get("monthly_budget"),
-                kwargs.get("budget_utilization"),
+                kwargs.get("primary_used_pct"),
+                kwargs.get("secondary_used_pct"),
                 ts,
             ),
         )
         conn.commit()
 
     def test_raw_no_bucketing(self, conn):
-        insert_codex_usage_snapshot(conn, daily_spend=10.0, monthly_spend=100.0)
-        insert_codex_usage_snapshot(conn, daily_spend=20.0, monthly_spend=200.0)
+        insert_codex_usage_snapshot(conn, primary_used_pct=0.10, secondary_used_pct=0.05)
+        insert_codex_usage_snapshot(conn, primary_used_pct=0.20, secondary_used_pct=0.10)
         result = get_downsampled_codex_usage_snapshots(conn, hours=24, bucket_minutes=None)
         assert len(result) == 2
 
     def test_bucketing_averages(self, conn):
-        self._insert_at(conn, "2099-01-01T12:01:00Z", daily_spend=10.0, monthly_spend=100.0, monthly_budget=500.0)
-        self._insert_at(conn, "2099-01-01T12:05:00Z", daily_spend=20.0, monthly_spend=200.0, monthly_budget=500.0)
-        self._insert_at(conn, "2099-01-01T12:31:00Z", daily_spend=30.0, monthly_spend=300.0, monthly_budget=500.0)
+        self._insert_at(conn, "2099-01-01T12:01:00Z", primary_used_pct=0.10, secondary_used_pct=0.05)
+        self._insert_at(conn, "2099-01-01T12:05:00Z", primary_used_pct=0.20, secondary_used_pct=0.10)
+        self._insert_at(conn, "2099-01-01T12:31:00Z", primary_used_pct=0.30, secondary_used_pct=0.15)
         result = get_downsampled_codex_usage_snapshots(conn, hours=999999, bucket_minutes=30)
         assert len(result) == 2
-        # First bucket: avg of 10 and 20
-        assert result[0]["daily_spend"] == pytest.approx(15.0)
-        assert result[0]["monthly_spend"] == pytest.approx(150.0)
-        # monthly_budget should use MAX
-        assert result[0]["monthly_budget"] == pytest.approx(500.0)
+        # First bucket: avg of 0.10 and 0.20
+        assert result[0]["primary_used_pct"] == pytest.approx(0.15)
+        assert result[0]["secondary_used_pct"] == pytest.approx(0.075)
 
     def test_bucketing_3_hour_buckets(self, conn):
         """Four rows spanning 4 hours group into two 3-hour buckets (bucket_minutes=180)."""
-        self._insert_at(conn, "2099-01-01T12:01:00Z", daily_spend=10.0, monthly_spend=100.0)
-        self._insert_at(conn, "2099-01-01T13:01:00Z", daily_spend=20.0, monthly_spend=200.0)
-        self._insert_at(conn, "2099-01-01T14:01:00Z", daily_spend=30.0, monthly_spend=300.0)
-        self._insert_at(conn, "2099-01-01T15:01:00Z", daily_spend=90.0, monthly_spend=900.0)
+        self._insert_at(conn, "2099-01-01T12:01:00Z", primary_used_pct=0.10, secondary_used_pct=0.05)
+        self._insert_at(conn, "2099-01-01T13:01:00Z", primary_used_pct=0.20, secondary_used_pct=0.10)
+        self._insert_at(conn, "2099-01-01T14:01:00Z", primary_used_pct=0.30, secondary_used_pct=0.15)
+        self._insert_at(conn, "2099-01-01T15:01:00Z", primary_used_pct=0.90, secondary_used_pct=0.50)
         result = get_downsampled_codex_usage_snapshots(conn, hours=999999, bucket_minutes=180)
         assert len(result) == 2
-        # First bucket (12:00-14:59): avg of 10, 20, 30
-        assert result[0]["daily_spend"] == pytest.approx(20.0)
-        assert result[0]["monthly_spend"] == pytest.approx(200.0)
-        # Second bucket (15:00-17:59): just 90
-        assert result[1]["daily_spend"] == pytest.approx(90.0)
+        # First bucket (12:00-14:59): avg of 0.10, 0.20, 0.30
+        assert result[0]["primary_used_pct"] == pytest.approx(0.20)
+        # Second bucket (15:00-17:59): just 0.90
+        assert result[1]["primary_used_pct"] == pytest.approx(0.90)
 
     def test_empty_table(self, conn):
         result = get_downsampled_codex_usage_snapshots(conn, hours=24, bucket_minutes=30)

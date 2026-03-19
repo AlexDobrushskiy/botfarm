@@ -1,8 +1,7 @@
-"""Retrieve Claude Code OAuth tokens for the usage API.
+"""Retrieve OAuth tokens for the usage API.
 
-Supports macOS (system keychain) and Linux (~/.claude/.credentials.json).
-Tokens are cached in memory; callers are responsible for detecting 401
-responses and calling ``CredentialManager.refresh_token()`` to reload.
+Claude Code: macOS (system keychain) / Linux (~/.claude/.credentials.json).
+Codex CLI: ~/.codex/auth.json (file-based, all platforms).
 """
 
 from __future__ import annotations
@@ -151,6 +150,53 @@ def _extract_token(data: dict) -> OAuthToken:
         expires_at=oauth.get("expiresAt"),
     )
 
+
+# ---------------------------------------------------------------------------
+# Codex CLI credentials (ChatGPT OAuth via ~/.codex/auth.json)
+# ---------------------------------------------------------------------------
+
+CODEX_AUTH_PATH = Path.home() / ".codex" / "auth.json"
+
+
+@dataclass
+class CodexCredentials:
+    """ChatGPT OAuth credentials used by the Codex CLI."""
+
+    access_token: str
+    account_id: str
+
+
+def load_codex_credentials(
+    *, auth_path: Path | None = None,
+) -> CodexCredentials:
+    """Load Codex credentials from ``~/.codex/auth.json``.
+
+    Always re-reads from disk (the Codex CLI refreshes tokens).
+    Raises ``CredentialError`` if the file is missing or malformed.
+    """
+    path = auth_path or CODEX_AUTH_PATH
+    try:
+        data = json.loads(path.read_text())
+    except FileNotFoundError:
+        raise CredentialError(f"Codex auth file not found: {path}")
+    except (json.JSONDecodeError, OSError) as exc:
+        raise CredentialError(f"Failed to read Codex auth file: {exc}") from exc
+
+    tokens = data.get("tokens")
+    if not isinstance(tokens, dict):
+        raise CredentialError("Codex auth.json missing 'tokens' section")
+    access_token = tokens.get("access_token")
+    if not access_token or not isinstance(access_token, str):
+        raise CredentialError("No access_token in Codex auth.json tokens")
+    account_id = tokens.get("account_id")
+    if not account_id or not isinstance(account_id, str):
+        raise CredentialError("No account_id in Codex auth.json tokens")
+    return CodexCredentials(access_token=access_token, account_id=account_id)
+
+
+# ---------------------------------------------------------------------------
+# Anthropic usage API helper
+# ---------------------------------------------------------------------------
 
 async def fetch_usage(
     token: str, *, client: httpx.AsyncClient | None = None

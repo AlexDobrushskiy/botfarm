@@ -626,10 +626,8 @@ def get_downsampled_codex_usage_snapshots(
     rows = conn.execute(
         "SELECT"
         "  CAST(strftime('%s', created_at) AS INTEGER) / ? AS bucket,"
-        "  AVG(daily_spend) AS daily_spend,"
-        "  AVG(monthly_spend) AS monthly_spend,"
-        "  MAX(monthly_budget) AS monthly_budget,"
-        "  AVG(budget_utilization) AS budget_utilization,"
+        "  AVG(primary_used_pct) AS primary_used_pct,"
+        "  AVG(secondary_used_pct) AS secondary_used_pct,"
         "  MAX(created_at) AS created_at"
         " FROM codex_usage_snapshots"
         " WHERE created_at >= datetime('now', ?)"
@@ -666,23 +664,30 @@ def is_extra_usage_active(conn: sqlite3.Connection) -> bool:
 def insert_codex_usage_snapshot(
     conn: sqlite3.Connection,
     *,
-    daily_spend: float | None = None,
-    monthly_spend: float | None = None,
-    monthly_budget: float | None = None,
-    budget_utilization: float | None = None,
+    plan_type: str | None = None,
+    primary_used_pct: float | None = None,
+    primary_reset_at: str | None = None,
+    primary_window_seconds: int | None = None,
+    secondary_used_pct: float | None = None,
+    secondary_reset_at: str | None = None,
+    secondary_window_seconds: int | None = None,
+    rate_limit_allowed: bool = True,
     raw_json: str | None = None,
 ) -> int:
     """Insert a codex usage snapshot and return its id."""
     cur = conn.execute(
         """
         INSERT INTO codex_usage_snapshots
-            (daily_spend, monthly_spend, monthly_budget,
-             budget_utilization, raw_json, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+            (plan_type, primary_used_pct, primary_reset_at,
+             primary_window_seconds, secondary_used_pct, secondary_reset_at,
+             secondary_window_seconds, rate_limit_allowed, raw_json, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
-            daily_spend, monthly_spend, monthly_budget,
-            budget_utilization, raw_json, _now_iso(),
+            plan_type, primary_used_pct, primary_reset_at,
+            primary_window_seconds, secondary_used_pct, secondary_reset_at,
+            secondary_window_seconds, int(rate_limit_allowed), raw_json,
+            _now_iso(),
         ),
     )
     return cur.lastrowid

@@ -62,22 +62,20 @@
 </div>
 <div id="usage-refresh-error" style="display: none; margin-top: 0.5rem;"></div>
 {% endif %}
-{% if codex_usage and codex_usage.monthly_spend is defined and codex_usage.monthly_spend is not none %}
+{% if codex_usage and codex_usage.primary_used_pct is defined and codex_usage.primary_used_pct is not none %}
 <div style="margin-top: 0.75rem; padding: 0.75rem; border: 1px solid var(--pico-muted-border-color); border-radius: var(--pico-border-radius);">
-    <strong>Codex Spending:</strong>
-    {% if codex_usage.monthly_budget is defined and codex_usage.monthly_budget and codex_usage.monthly_budget > 0 %}
-        <span class="{% if codex_usage.budget_utilization is not none and codex_usage.budget_utilization >= 0.9 %}status-failed{% elif codex_usage.budget_utilization is not none and codex_usage.budget_utilization >= 0.7 %}status-busy{% else %}status-free{% endif %}">
-            ${{ "%.2f"|format(codex_usage.monthly_spend) }} / ${{ "%.2f"|format(codex_usage.monthly_budget) }}
-        </span>
-        {% if codex_usage.budget_utilization is not none %}
-            ({{ "%.1f"|format(codex_usage.budget_utilization * 100) }}%)
-        {% endif %}
-        <progress value="{{ (codex_usage.budget_utilization * 100)|round|int if codex_usage.budget_utilization is not none else 0 }}" max="100" style="margin-bottom: 0; margin-top: 0.25rem;"></progress>
-    {% else %}
-        Monthly: ${{ "%.2f"|format(codex_usage.monthly_spend) }}
-        {% if codex_usage.daily_spend is not none %}
-            | Today: ${{ "%.2f"|format(codex_usage.daily_spend) }}
-        {% endif %}
+    <strong>Codex Usage{% if codex_usage.plan_type %} ({{ codex_usage.plan_type }}){% endif %}:</strong>
+    <span class="{% if codex_usage.primary_used_pct >= 0.9 %}status-failed{% elif codex_usage.primary_used_pct >= 0.7 %}status-busy{% else %}status-free{% endif %}">
+        Primary: {{ "%.0f"|format(codex_usage.primary_used_pct * 100) }}%
+    </span>
+    {% if codex_usage.secondary_used_pct is not none %}
+    | <span class="{% if codex_usage.secondary_used_pct >= 0.9 %}status-failed{% elif codex_usage.secondary_used_pct >= 0.7 %}status-busy{% else %}status-free{% endif %}">
+        Secondary: {{ "%.0f"|format(codex_usage.secondary_used_pct * 100) }}%
+    </span>
+    {% endif %}
+    <progress value="{{ (codex_usage.primary_used_pct * 100)|round|int }}" max="100" style="margin-bottom: 0; margin-top: 0.25rem;"></progress>
+    {% if codex_usage.primary_reset_at %}
+    <small>Resets: <time data-timestamp="{{ codex_usage.primary_reset_at }}" title="{{ codex_usage.primary_reset_at }}">{{ codex_usage.primary_reset_at[:19] }}</time></small>
     {% endif %}
 </div>
 {% endif %}
