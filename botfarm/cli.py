@@ -512,21 +512,23 @@ def limits(config_path):
         codex_table.add_column("Value")
 
         if codex_row:
-            monthly = codex_row["monthly_spend"]
-            daily = codex_row["daily_spend"]
-            budget = codex_row["monthly_budget"]
-            utilization = codex_row["budget_utilization"]
+            primary_pct = codex_row["primary_used_pct"]
+            secondary_pct = codex_row["secondary_used_pct"]
 
-            if monthly is not None:
-                codex_table.add_row("Monthly spend", f"${monthly:.2f}")
-            if daily is not None:
-                codex_table.add_row("Daily spend", f"${daily:.2f}")
-            if budget and budget > 0:
-                codex_table.add_row("Monthly budget", f"${budget:.2f}")
-                if utilization is not None:
-                    pct = f"{utilization * 100:.1f}%"
-                    color = "green" if utilization < 0.7 else ("yellow" if utilization < 0.9 else "red")
-                    codex_table.add_row("Budget utilization", f"[{color}]{pct}[/{color}]")
+            if primary_pct is not None:
+                pct = f"{primary_pct * 100:.1f}%"
+                color = "green" if primary_pct < 0.7 else ("yellow" if primary_pct < 0.85 else "red")
+                codex_table.add_row("Primary utilization", f"[{color}]{pct}[/{color}]")
+            if secondary_pct is not None:
+                pct = f"{secondary_pct * 100:.1f}%"
+                color = "green" if secondary_pct < 0.7 else ("yellow" if secondary_pct < 0.9 else "red")
+                codex_table.add_row("Secondary utilization", f"[{color}]{pct}[/{color}]")
+            if codex_row["primary_reset_at"]:
+                codex_table.add_row("Primary resets at", codex_row["primary_reset_at"][:19])
+            if codex_row["secondary_reset_at"]:
+                codex_table.add_row("Secondary resets at", codex_row["secondary_reset_at"][:19])
+            if codex_row["plan_type"]:
+                codex_table.add_row("Plan", codex_row["plan_type"])
             if codex_row["created_at"]:
                 codex_table.add_row("Last polled", codex_row["created_at"][:19])
 

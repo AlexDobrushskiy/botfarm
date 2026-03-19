@@ -1,4 +1,4 @@
-"""Tests for botfarm.codex_usage — OpenAI Costs API polling and snapshot storage."""
+"""Tests for botfarm.codex_usage — ChatGPT backend API polling for Codex rate limits."""
 
 from __future__ import annotations
 
@@ -9,36 +9,63 @@ import httpx
 import pytest
 
 from botfarm.codex_usage import (
+    CODEX_USAGE_URL,
     CodexUsagePoller,
     CodexUsageState,
-    OPENAI_COSTS_URL,
+    _unix_to_iso,
 )
 from botfarm.config import CodexUsageConfig
+from botfarm.credentials import CodexCredentials
 from botfarm.db import get_codex_usage_snapshots
 
 # --- Sample API responses ---
 
-SAMPLE_COSTS_RESPONSE = {
-    "data": [
-        {
-            "start_time": 1709251200,
-            "end_time": 1709337600,
-            "results": [
-                {"amount": {"value": 12.50, "currency": "usd"}},
-                {"amount": {"value": 3.25, "currency": "usd"}},
-            ],
+SAMPLE_USAGE_RESPONSE = {
+    "plan_type": "pro",
+    "rate_limit": {
+        "allowed": True,
+        "limit_reached": False,
+        "primary_window": {
+            "used_percent": 42,
+            "limit_window_seconds": 18000,
+            "reset_after_seconds": 120,
+            "reset_at": 1735689720,
         },
-        {
-            "start_time": 1709337600,
-            "end_time": 1709424000,
-            "results": [
-                {"amount": {"value": 8.75, "currency": "usd"}},
-            ],
+        "secondary_window": {
+            "used_percent": 5,
+            "limit_window_seconds": 604800,
+            "reset_after_seconds": 43200,
+            "reset_at": 1735693200,
         },
-    ],
+    },
 }
 
-EMPTY_COSTS_RESPONSE = {"data": []}
+EMPTY_USAGE_RESPONSE = {
+    "plan_type": "pro",
+    "rate_limit": {
+        "allowed": True,
+        "limit_reached": False,
+    },
+}
+
+LIMIT_REACHED_RESPONSE = {
+    "plan_type": "pro",
+    "rate_limit": {
+        "allowed": False,
+        "limit_reached": True,
+        "primary_window": {
+            "used_percent": 100,
+            "limit_window_seconds": 18000,
+            "reset_after_seconds": 3600,
+            "reset_at": 1735700000,
+        },
+    },
+}
+
+
+# --- Helper ---
+
+FAKE_CREDS = CodexCredentials(access_token="test-token", account_id="acct-123")
 
 
 # --- CodexUsageState tests ---
@@ -46,87 +73,75 @@ EMPTY_COSTS_RESPONSE = {"data": []}
 
 class TestCodexUsageState:
     def test_should_pause_disabled(self):
-        state = CodexUsageState(monthly_spend=900, budget_utilization=0.90)
-        pause, reason = state.should_pause(
-            monthly_budget=1000, pause_threshold=0.90, enabled=False,
-        )
-        assert not pause
-        assert reason is None
-
-    def test_should_pause_no_budget(self):
-        state = CodexUsageState(monthly_spend=900, budget_utilization=0.90)
-        pause, reason = state.should_pause(
-            monthly_budget=0, pause_threshold=0.90, enabled=True,
-        )
+        state = CodexUsageState(primary_used_pct=0.90)
+        pause, reason = state.should_pause(enabled=False)
         assert not pause
         assert reason is None
 
     def test_should_pause_below_threshold(self):
-        state = CodexUsageState(
-            monthly_spend=80, budget_utilization=0.80,
-        )
+        state = CodexUsageState(primary_used_pct=0.50, secondary_used_pct=0.30)
         pause, reason = state.should_pause(
-            monthly_budget=100, pause_threshold=0.90, enabled=True,
+            primary_threshold=0.85, secondary_threshold=0.90, enabled=True,
         )
         assert not pause
-        assert reason is None
 
-    def test_should_pause_at_threshold(self):
-        state = CodexUsageState(
-            monthly_spend=90, budget_utilization=0.90,
-        )
+    def test_should_pause_primary_at_threshold(self):
+        state = CodexUsageState(primary_used_pct=0.85, secondary_used_pct=0.30)
         pause, reason = state.should_pause(
-            monthly_budget=100, pause_threshold=0.90, enabled=True,
+            primary_threshold=0.85, secondary_threshold=0.90, enabled=True,
         )
         assert pause
-        assert "90" in reason
-        assert "threshold" in reason
+        assert "primary" in reason.lower()
+        assert "85" in reason
 
-    def test_should_pause_above_threshold(self):
-        state = CodexUsageState(
-            monthly_spend=95, budget_utilization=0.95,
-        )
+    def test_should_pause_secondary_at_threshold(self):
+        state = CodexUsageState(primary_used_pct=0.50, secondary_used_pct=0.90)
         pause, reason = state.should_pause(
-            monthly_budget=100, pause_threshold=0.90, enabled=True,
+            primary_threshold=0.85, secondary_threshold=0.90, enabled=True,
         )
         assert pause
+        assert "secondary" in reason.lower()
+
+    def test_should_pause_rate_limit_not_allowed(self):
+        state = CodexUsageState(
+            primary_used_pct=0.10, rate_limit_allowed=False,
+        )
+        pause, reason = state.should_pause(enabled=True)
+        assert pause
+        assert "allowed=false" in reason.lower()
 
     def test_should_pause_none_utilization(self):
         state = CodexUsageState()
-        pause, reason = state.should_pause(
-            monthly_budget=100, pause_threshold=0.90, enabled=True,
-        )
+        pause, reason = state.should_pause(enabled=True)
         assert not pause
 
     def test_to_dict(self):
         state = CodexUsageState(
-            daily_spend=8.75,
-            monthly_spend=24.50,
-            monthly_budget=100,
-            budget_utilization=0.245,
+            plan_type="pro",
+            primary_used_pct=0.42,
+            primary_reset_at="2025-01-01T00:02:00Z",
+            primary_window_seconds=18000,
+            secondary_used_pct=0.05,
+            secondary_reset_at="2025-01-01T01:00:00Z",
+            secondary_window_seconds=604800,
+            rate_limit_allowed=True,
             last_polled_at="2026-03-07T00:00:00Z",
         )
         d = state.to_dict()
-        assert d["daily_spend"] == 8.75
-        assert d["monthly_spend"] == 24.50
-        assert d["monthly_budget"] == 100
-        assert d["budget_utilization"] == 0.245
-        assert d["last_polled_at"] == "2026-03-07T00:00:00Z"
+        assert d["plan_type"] == "pro"
+        assert d["primary_used_pct"] == 0.42
+        assert d["secondary_used_pct"] == 0.05
+        assert d["rate_limit_allowed"] is True
 
 
 # --- CodexUsagePoller tests ---
 
-# conn fixture provided by tests/conftest.py
-
 
 class TestCodexUsagePoller:
-    def _make_poller(self, *, enabled=True, admin_key="sk-admin-test", budget=100.0, threshold=0.90, interval=300):
+    def _make_poller(self, *, enabled=True, interval=300):
         config = CodexUsageConfig(
             enabled=enabled,
-            admin_api_key=admin_key,
             poll_interval_seconds=interval,
-            monthly_budget=budget,
-            pause_budget_threshold=threshold,
         )
         return CodexUsagePoller(config=config)
 
@@ -134,141 +149,159 @@ class TestCodexUsagePoller:
         poller = self._make_poller(enabled=False)
         state = poller.poll(conn)
         assert not poller.last_polled_fresh
-        assert state.monthly_spend is None
+        assert state.primary_used_pct is None
 
-    def test_no_admin_key_noop(self, conn):
-        poller = self._make_poller(admin_key="")
-        assert not poller.enabled
-        state = poller.poll(conn)
-        assert not poller.last_polled_fresh
+    def test_enabled_property(self):
+        poller = self._make_poller(enabled=True)
+        assert poller.enabled
+        poller2 = self._make_poller(enabled=False)
+        assert not poller2.enabled
 
     def test_poll_respects_interval(self, conn):
         poller = self._make_poller(interval=300)
 
-        with patch.object(poller, "_fetch", return_value=SAMPLE_COSTS_RESPONSE):
+        with patch.object(poller, "_do_poll"):
             poller.poll(conn)
             assert poller.last_polled_fresh
 
-            # Second call within interval — should not poll
             poller.poll(conn)
             assert not poller.last_polled_fresh
 
     def test_poll_parses_response(self, conn):
-        poller = self._make_poller(budget=100.0)
+        poller = self._make_poller()
 
-        with patch.object(poller, "_fetch", return_value=SAMPLE_COSTS_RESPONSE):
+        with patch(
+            "botfarm.codex_usage.load_codex_credentials", return_value=FAKE_CREDS,
+        ), patch.object(poller, "_fetch", return_value=SAMPLE_USAGE_RESPONSE):
             poller.poll(conn)
 
         state = poller.state
-        # daily_spend = last bucket = 8.75
-        assert state.daily_spend == 8.75
-        # monthly_spend = 12.50 + 3.25 + 8.75 = 24.50
-        assert state.monthly_spend == 24.50
-        assert state.monthly_budget == 100.0
-        assert state.budget_utilization == pytest.approx(0.245)
+        assert state.plan_type == "pro"
+        assert state.primary_used_pct == pytest.approx(0.42)
+        assert state.secondary_used_pct == pytest.approx(0.05)
+        assert state.primary_window_seconds == 18000
+        assert state.secondary_window_seconds == 604800
+        assert state.rate_limit_allowed is True
         assert state.last_polled_at is not None
 
     def test_poll_stores_snapshot(self, conn):
         poller = self._make_poller()
 
-        with patch.object(poller, "_fetch", return_value=SAMPLE_COSTS_RESPONSE):
+        with patch(
+            "botfarm.codex_usage.load_codex_credentials", return_value=FAKE_CREDS,
+        ), patch.object(poller, "_fetch", return_value=SAMPLE_USAGE_RESPONSE):
             poller.poll(conn)
 
         snapshots = get_codex_usage_snapshots(conn, limit=1)
         assert len(snapshots) == 1
         snap = snapshots[0]
-        assert snap["daily_spend"] == 8.75
-        assert snap["monthly_spend"] == 24.50
-        assert snap["raw_json"] is not None
+        assert snap["primary_used_pct"] == pytest.approx(0.42)
+        assert snap["secondary_used_pct"] == pytest.approx(0.05)
+        assert snap["plan_type"] == "pro"
         raw = json.loads(snap["raw_json"])
-        assert "data" in raw
+        assert "rate_limit" in raw
 
-    def test_poll_empty_response(self, conn):
+    def test_poll_empty_windows(self, conn):
         poller = self._make_poller()
 
-        with patch.object(poller, "_fetch", return_value=EMPTY_COSTS_RESPONSE):
+        with patch(
+            "botfarm.codex_usage.load_codex_credentials", return_value=FAKE_CREDS,
+        ), patch.object(poller, "_fetch", return_value=EMPTY_USAGE_RESPONSE):
             poller.poll(conn)
 
         state = poller.state
-        assert state.daily_spend == 0.0
-        assert state.monthly_spend == 0.0
+        assert state.primary_used_pct is None
+        assert state.secondary_used_pct is None
+
+    def test_poll_limit_reached(self, conn):
+        poller = self._make_poller()
+
+        with patch(
+            "botfarm.codex_usage.load_codex_credentials", return_value=FAKE_CREDS,
+        ), patch.object(poller, "_fetch", return_value=LIMIT_REACHED_RESPONSE):
+            poller.poll(conn)
+
+        state = poller.state
+        assert state.rate_limit_allowed is False
+        assert state.primary_used_pct == pytest.approx(1.0)
 
     def test_poll_api_failure_uses_last_known(self, conn):
         poller = self._make_poller()
 
-        # First successful poll
-        with patch.object(poller, "_fetch", return_value=SAMPLE_COSTS_RESPONSE):
+        with patch(
+            "botfarm.codex_usage.load_codex_credentials", return_value=FAKE_CREDS,
+        ), patch.object(poller, "_fetch", return_value=SAMPLE_USAGE_RESPONSE):
             poller.poll(conn)
 
-        assert poller.state.monthly_spend == 24.50
+        assert poller.state.primary_used_pct == pytest.approx(0.42)
 
-        # Advance past interval
         poller._last_poll = 0.0
 
-        # Second poll fails
-        with patch.object(poller, "_fetch", side_effect=httpx.ConnectError("fail")):
+        with patch(
+            "botfarm.codex_usage.load_codex_credentials", return_value=FAKE_CREDS,
+        ), patch.object(poller, "_fetch", side_effect=httpx.ConnectError("fail")):
             poller.poll(conn)
 
-        # Should retain last known values
-        assert poller.state.monthly_spend == 24.50
+        assert poller.state.primary_used_pct == pytest.approx(0.42)
+
+    def test_poll_missing_credentials(self, conn):
+        poller = self._make_poller()
+
+        from botfarm.credentials import CredentialError
+        with patch(
+            "botfarm.codex_usage.load_codex_credentials",
+            side_effect=CredentialError("no file"),
+        ):
+            poller.poll(conn)
+
+        assert poller.state.primary_used_pct is None
 
     def test_force_poll_ignores_interval(self, conn):
         poller = self._make_poller(interval=9999)
 
-        with patch.object(poller, "_fetch", return_value=SAMPLE_COSTS_RESPONSE):
+        with patch(
+            "botfarm.codex_usage.load_codex_credentials", return_value=FAKE_CREDS,
+        ), patch.object(poller, "_fetch", return_value=SAMPLE_USAGE_RESPONSE):
             poller.poll(conn)
             assert poller.last_polled_fresh
 
-        # Force poll should work even within interval
-        with patch.object(poller, "_fetch", return_value=EMPTY_COSTS_RESPONSE):
+        with patch(
+            "botfarm.codex_usage.load_codex_credentials", return_value=FAKE_CREDS,
+        ), patch.object(poller, "_fetch", return_value=EMPTY_USAGE_RESPONSE):
             poller.force_poll(conn)
             assert poller.last_polled_fresh
-            assert poller.state.monthly_spend == 0.0
 
     def test_force_poll_disabled_noop(self, conn):
         poller = self._make_poller(enabled=False)
         state = poller.force_poll(conn)
         assert not poller.last_polled_fresh
-        assert state.monthly_spend is None
-
-    def test_budget_utilization_no_budget(self, conn):
-        poller = self._make_poller(budget=0)
-
-        with patch.object(poller, "_fetch", return_value=SAMPLE_COSTS_RESPONSE):
-            poller.poll(conn)
-
-        assert poller.state.budget_utilization is None
+        assert state.primary_used_pct is None
 
     def test_purge_old_snapshots(self, conn):
         poller = self._make_poller()
-        poller.retention_days = 0  # purge everything
+        poller.retention_days = 0
 
-        with patch.object(poller, "_fetch", return_value=SAMPLE_COSTS_RESPONSE):
+        with patch(
+            "botfarm.codex_usage.load_codex_credentials", return_value=FAKE_CREDS,
+        ), patch.object(poller, "_fetch", return_value=SAMPLE_USAGE_RESPONSE):
             poller.poll(conn)
 
-        # After purge with 0 retention, the snapshot we just inserted should be gone
-        # (it was committed, then purged in the same cycle)
-        # Actually the snapshot is inserted then purged — the created_at is 'now' so
-        # with retention_days=0 it won't match "datetime('now', '-0 days')" which is now.
-        # Let's just verify the poller doesn't crash.
         snapshots = get_codex_usage_snapshots(conn)
         assert isinstance(snapshots, list)
 
     def test_close(self):
         poller = self._make_poller()
-        # Create a client
         client = poller._get_client()
         assert not client.is_closed
         poller.close()
         assert client.is_closed
-        # Double close should not raise
-        poller.close()
+        poller.close()  # double close should not raise
 
-    def test_fetch_calls_openai_api(self):
+    def test_fetch_calls_chatgpt_api(self):
         poller = self._make_poller()
 
         mock_resp = MagicMock()
-        mock_resp.json.return_value = SAMPLE_COSTS_RESPONSE
+        mock_resp.json.return_value = SAMPLE_USAGE_RESPONSE
         mock_resp.raise_for_status = MagicMock()
 
         mock_client = MagicMock()
@@ -276,33 +309,41 @@ class TestCodexUsagePoller:
         mock_client.is_closed = False
         poller._client = mock_client
 
-        result = poller._fetch()
-        assert result == SAMPLE_COSTS_RESPONSE
+        result = poller._fetch("test-token", "acct-123")
+        assert result == SAMPLE_USAGE_RESPONSE
 
-        # Verify the call was made with correct auth header
         call_kwargs = mock_client.get.call_args
-        assert call_kwargs[0][0] == OPENAI_COSTS_URL
+        assert call_kwargs[0][0] == CODEX_USAGE_URL
         headers = call_kwargs[1]["headers"]
-        assert headers["Authorization"] == "Bearer sk-admin-test"
-        params = call_kwargs[1]["params"]
-        assert "start_time" in params
-        assert params["bucket_width"] == "1d"
+        assert headers["Authorization"] == "Bearer test-token"
+        assert headers["ChatGPT-Account-Id"] == "acct-123"
+        assert headers["User-Agent"] == "codex-cli"
 
 
 class TestCodexUsageConfigValidation:
     def test_valid_config(self):
         config = CodexUsageConfig(
             enabled=True,
-            admin_api_key="sk-admin-test",
             poll_interval_seconds=300,
-            monthly_budget=500.0,
-            pause_budget_threshold=0.90,
+            pause_primary_threshold=0.85,
+            pause_secondary_threshold=0.90,
         )
         assert config.enabled
-        assert config.admin_api_key == "sk-admin-test"
 
     def test_default_config_disabled(self):
         config = CodexUsageConfig()
         assert not config.enabled
-        assert config.admin_api_key == ""
-        assert config.monthly_budget == 0.0
+        assert config.poll_interval_seconds == 300
+
+
+class TestUnixToIso:
+    def test_none(self):
+        assert _unix_to_iso(None) is None
+
+    def test_valid(self):
+        result = _unix_to_iso(1735689720)
+        assert result == "2025-01-01T00:02:00Z"
+
+    def test_zero(self):
+        result = _unix_to_iso(0)
+        assert result == "1970-01-01T00:00:00Z"

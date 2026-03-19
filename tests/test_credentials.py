@@ -12,12 +12,14 @@ import pytest
 from botfarm.credentials import (
     USAGE_API_TIMEOUT,
     USAGE_API_URL,
+    CodexCredentials,
     CredentialError,
     CredentialManager,
     OAuthToken,
     _extract_token,
     _load_token,
     _load_token_linux,
+    load_codex_credentials,
     _load_token_macos,
     fetch_usage,
 )
@@ -369,3 +371,76 @@ async def test_fetch_usage_with_external_client():
 def test_usage_api_timeout_has_separate_connect_and_read():
     assert USAGE_API_TIMEOUT.connect == 10
     assert USAGE_API_TIMEOUT.read == 30
+
+
+# --- Codex credentials ---
+
+VALID_CODEX_AUTH = {
+    "auth_mode": "chatgpt",
+    "tokens": {
+        "access_token": "eyJ-test-codex-token",
+        "refresh_token": "rt_test",
+        "account_id": "acct-12345",
+    },
+}
+
+
+def test_load_codex_credentials_success(tmp_path):
+    auth_file = tmp_path / "auth.json"
+    auth_file.write_text(json.dumps(VALID_CODEX_AUTH))
+
+    creds = load_codex_credentials(auth_path=auth_file)
+    assert creds.access_token == "eyJ-test-codex-token"
+    assert creds.account_id == "acct-12345"
+
+
+def test_load_codex_credentials_file_not_found(tmp_path):
+    with pytest.raises(CredentialError, match="not found"):
+        load_codex_credentials(auth_path=tmp_path / "missing.json")
+
+
+def test_load_codex_credentials_missing_tokens(tmp_path):
+    auth_file = tmp_path / "auth.json"
+    auth_file.write_text(json.dumps({"auth_mode": "chatgpt"}))
+
+    with pytest.raises(CredentialError, match="tokens"):
+        load_codex_credentials(auth_path=auth_file)
+
+
+def test_load_codex_credentials_missing_access_token(tmp_path):
+    auth_file = tmp_path / "auth.json"
+    auth_file.write_text(json.dumps({
+        "tokens": {"account_id": "acct-123"},
+    }))
+
+    with pytest.raises(CredentialError, match="access_token"):
+        load_codex_credentials(auth_path=auth_file)
+
+
+def test_load_codex_credentials_missing_account_id(tmp_path):
+    auth_file = tmp_path / "auth.json"
+    auth_file.write_text(json.dumps({
+        "tokens": {"access_token": "eyJ-token"},
+    }))
+
+    with pytest.raises(CredentialError, match="account_id"):
+        load_codex_credentials(auth_path=auth_file)
+
+
+def test_load_codex_credentials_reads_fresh(tmp_path):
+    auth_file = tmp_path / "auth.json"
+    auth_file.write_text(json.dumps(VALID_CODEX_AUTH))
+
+    creds1 = load_codex_credentials(auth_path=auth_file)
+    assert creds1.access_token == "eyJ-test-codex-token"
+
+    # Update file — next read should pick up new token
+    updated = {
+        "tokens": {
+            "access_token": "eyJ-rotated",
+            "account_id": "acct-12345",
+        },
+    }
+    auth_file.write_text(json.dumps(updated))
+    creds2 = load_codex_credentials(auth_path=auth_file)
+    assert creds2.access_token == "eyJ-rotated"

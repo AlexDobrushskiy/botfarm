@@ -1,11 +1,12 @@
-"""OpenAI Costs API polling for Codex spending visibility.
+"""Codex usage polling via the ChatGPT backend API.
 
-Periodically polls the OpenAI ``/v1/organization/costs`` endpoint using an
-Admin API Key and stores snapshots in the database.  Exposes current spend
-so the supervisor can pause dispatch when a budget threshold is reached.
+Periodically polls ``chatgpt.com/backend-api/api/codex/usage`` using
+credentials from ``~/.codex/auth.json`` and stores rate-limit snapshots
+in the database.  Exposes current utilization so the supervisor can
+pause dispatch when limits are close.
 
-The feature is fully optional — if no admin key is configured the poller
-is a no-op.
+The feature is fully optional — if ``enabled`` is False or credentials
+are missing the poller is a no-op.
 """
 
 from __future__ import annotations
@@ -20,67 +21,82 @@ from datetime import datetime, timezone
 import httpx
 
 from botfarm.config import CodexUsageConfig
+from botfarm.credentials import CredentialError, load_codex_credentials
 from botfarm.db import insert_codex_usage_snapshot
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_POLL_INTERVAL = 300  # seconds
 DEFAULT_RETENTION_DAYS = 30
-OPENAI_COSTS_URL = "https://api.openai.com/v1/organization/costs"
+CODEX_USAGE_URL = "https://chatgpt.com/backend-api/api/codex/usage"
 API_TIMEOUT = 30.0
 
 
 @dataclass
 class CodexUsageState:
-    """In-memory snapshot of the most recent OpenAI spending data."""
+    """In-memory snapshot of the most recent Codex rate-limit data."""
 
-    daily_spend: float | None = None
-    monthly_spend: float | None = None
-    monthly_budget: float = 0.0
-    budget_utilization: float | None = None
+    plan_type: str | None = None
+    primary_used_pct: float | None = None       # 0.0–1.0
+    primary_reset_at: str | None = None         # ISO timestamp
+    primary_window_seconds: int | None = None
+    secondary_used_pct: float | None = None     # 0.0–1.0
+    secondary_reset_at: str | None = None
+    secondary_window_seconds: int | None = None
+    rate_limit_allowed: bool = True
     last_polled_at: str | None = None
 
     def should_pause(
         self,
-        monthly_budget: float = 0.0,
-        pause_threshold: float = 0.90,
+        primary_threshold: float = 0.85,
+        secondary_threshold: float = 0.90,
         enabled: bool = True,
     ) -> tuple[bool, str | None]:
-        """Check whether dispatch should be paused based on budget threshold.
+        """Check whether dispatch should be paused based on utilization thresholds.
 
         Returns (should_pause, reason_string_or_None).
-        When ``enabled`` is False or budget is 0, always returns (False, None).
         """
-        if not enabled or monthly_budget <= 0:
+        if not enabled:
             return False, None
+        if not self.rate_limit_allowed:
+            return True, "Codex rate limit reached (allowed=false)"
         if (
-            self.budget_utilization is not None
-            and self.budget_utilization >= pause_threshold
+            self.primary_used_pct is not None
+            and self.primary_used_pct >= primary_threshold
         ):
             return True, (
-                f"Codex monthly spend ${self.monthly_spend or 0:.2f}"
-                f"/${monthly_budget:.2f} "
-                f"({self.budget_utilization * 100:.1f}%) "
-                f">= {pause_threshold * 100:.0f}% threshold"
+                f"Codex primary utilization {self.primary_used_pct * 100:.1f}% "
+                f">= {primary_threshold * 100:.0f}% threshold"
+            )
+        if (
+            self.secondary_used_pct is not None
+            and self.secondary_used_pct >= secondary_threshold
+        ):
+            return True, (
+                f"Codex secondary utilization {self.secondary_used_pct * 100:.1f}% "
+                f">= {secondary_threshold * 100:.0f}% threshold"
             )
         return False, None
 
     def to_dict(self) -> dict:
         return {
-            "daily_spend": self.daily_spend,
-            "monthly_spend": self.monthly_spend,
-            "monthly_budget": self.monthly_budget,
-            "budget_utilization": self.budget_utilization,
+            "plan_type": self.plan_type,
+            "primary_used_pct": self.primary_used_pct,
+            "primary_reset_at": self.primary_reset_at,
+            "primary_window_seconds": self.primary_window_seconds,
+            "secondary_used_pct": self.secondary_used_pct,
+            "secondary_reset_at": self.secondary_reset_at,
+            "secondary_window_seconds": self.secondary_window_seconds,
+            "rate_limit_allowed": self.rate_limit_allowed,
             "last_polled_at": self.last_polled_at,
         }
 
 
 @dataclass
 class CodexUsagePoller:
-    """Polls the OpenAI Costs API and stores spending snapshots.
+    """Polls the ChatGPT backend API for Codex rate-limit status.
 
     Designed to be called from the synchronous supervisor loop.
-    If ``admin_api_key`` is empty the poller silently does nothing.
     """
 
     config: CodexUsageConfig = field(default_factory=CodexUsageConfig)
@@ -101,14 +117,10 @@ class CodexUsagePoller:
 
     @property
     def enabled(self) -> bool:
-        """Return True only if the feature is configured and has a key."""
-        return bool(self.config.enabled and self.config.admin_api_key)
+        return bool(self.config.enabled)
 
     def poll(self, conn: sqlite3.Connection) -> CodexUsageState:
-        """Poll the Costs API if the interval has elapsed.
-
-        Returns the current (possibly unchanged) state.
-        """
+        """Poll if the interval has elapsed.  Returns current state."""
         if not self.enabled:
             self._last_polled_fresh = False
             return self._state
@@ -149,30 +161,30 @@ class CodexUsagePoller:
     def _do_poll(self, conn: sqlite3.Connection) -> None:
         """Execute one poll cycle: fetch → parse → store → purge."""
         try:
-            data = self._fetch()
+            creds = load_codex_credentials()
+        except CredentialError as exc:
+            logger.warning("Codex credentials unavailable — skipping poll: %s", exc)
+            return
+
+        try:
+            data = self._fetch(creds.access_token, creds.account_id)
         except Exception:
-            logger.exception("OpenAI Costs API call failed — using last known values")
+            logger.exception("Codex usage API call failed — using last known values")
             return
 
         self._parse_and_store(data, conn)
         self._purge_old_snapshots(conn)
         conn.commit()
 
-    def _fetch(self) -> dict:
-        """Call the OpenAI Costs API."""
+    def _fetch(self, access_token: str, account_id: str) -> dict:
+        """Call the ChatGPT backend usage API."""
         client = self._get_client()
-        now = datetime.now(timezone.utc)
-        start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        start_ts = int(start_of_month.timestamp())
-
         resp = client.get(
-            OPENAI_COSTS_URL,
+            CODEX_USAGE_URL,
             headers={
-                "Authorization": f"Bearer {self.config.admin_api_key}",
-            },
-            params={
-                "start_time": start_ts,
-                "bucket_width": "1d",
+                "Authorization": f"Bearer {access_token}",
+                "ChatGPT-Account-Id": account_id,
+                "User-Agent": "codex-cli",
             },
         )
         resp.raise_for_status()
@@ -180,46 +192,48 @@ class CodexUsagePoller:
 
     def _parse_and_store(self, data: dict, conn: sqlite3.Connection) -> None:
         """Parse the API response and update in-memory state + database."""
-        buckets = data.get("data", [])
+        plan_type = data.get("plan_type")
+        rate_limit = data.get("rate_limit") or {}
+        primary = rate_limit.get("primary_window") or {}
+        secondary = rate_limit.get("secondary_window") or {}
 
-        monthly_spend = 0.0
-        daily_spend = 0.0
-        for bucket in buckets:
-            results = bucket.get("results", [])
-            bucket_total = sum(
-                r.get("amount", {}).get("value", 0.0) for r in results
-            )
-            monthly_spend += bucket_total
-            # Last bucket is the most recent day
-            daily_spend = bucket_total
+        raw_primary_pct = primary.get("used_percent")
+        raw_secondary_pct = secondary.get("used_percent")
 
-        budget = self.config.monthly_budget
-        utilization = (monthly_spend / budget) if budget > 0 else None
-
-        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-        self._state.daily_spend = daily_spend
-        self._state.monthly_spend = monthly_spend
-        self._state.monthly_budget = budget
-        self._state.budget_utilization = utilization
-        self._state.last_polled_at = now_iso
+        self._state.plan_type = plan_type
+        self._state.primary_used_pct = (
+            raw_primary_pct / 100 if raw_primary_pct is not None else None
+        )
+        self._state.primary_window_seconds = primary.get("limit_window_seconds")
+        self._state.primary_reset_at = _unix_to_iso(primary.get("reset_at"))
+        self._state.secondary_used_pct = (
+            raw_secondary_pct / 100 if raw_secondary_pct is not None else None
+        )
+        self._state.secondary_window_seconds = secondary.get("limit_window_seconds")
+        self._state.secondary_reset_at = _unix_to_iso(secondary.get("reset_at"))
+        self._state.rate_limit_allowed = rate_limit.get("allowed", True)
+        self._state.last_polled_at = datetime.now(timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%S.%fZ"
+        )
 
         insert_codex_usage_snapshot(
             conn,
-            daily_spend=daily_spend,
-            monthly_spend=monthly_spend,
-            monthly_budget=budget,
-            budget_utilization=utilization,
+            plan_type=plan_type,
+            primary_used_pct=self._state.primary_used_pct,
+            primary_reset_at=self._state.primary_reset_at,
+            primary_window_seconds=self._state.primary_window_seconds,
+            secondary_used_pct=self._state.secondary_used_pct,
+            secondary_reset_at=self._state.secondary_reset_at,
+            secondary_window_seconds=self._state.secondary_window_seconds,
+            rate_limit_allowed=self._state.rate_limit_allowed,
             raw_json=json.dumps(data),
         )
 
-        budget_str = ""
-        if budget > 0 and utilization is not None:
-            budget_str = f", budget={utilization * 100:.1f}%"
         logger.info(
-            "Codex usage snapshot: daily=$%.2f, monthly=$%.2f%s",
-            daily_spend,
-            monthly_spend,
-            budget_str,
+            "Codex usage snapshot: primary=%.0f%%, secondary=%.0f%%, plan=%s",
+            (self._state.primary_used_pct or 0) * 100,
+            (self._state.secondary_used_pct or 0) * 100,
+            plan_type or "unknown",
         )
 
     def _purge_old_snapshots(self, conn: sqlite3.Connection) -> None:
@@ -229,3 +243,12 @@ class CodexUsagePoller:
             "WHERE created_at < datetime('now', ?)",
             (f"-{self.retention_days} days",),
         )
+
+
+def _unix_to_iso(ts: int | None) -> str | None:
+    """Convert a unix timestamp to an ISO 8601 string, or None."""
+    if ts is None:
+        return None
+    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )

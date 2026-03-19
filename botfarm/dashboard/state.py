@@ -92,10 +92,12 @@ def read_state(app: FastAPI) -> dict:
             ).fetchone()
             if codex_row:
                 codex_usage = {
-                    "daily_spend": codex_row["daily_spend"],
-                    "monthly_spend": codex_row["monthly_spend"],
-                    "monthly_budget": codex_row["monthly_budget"],
-                    "budget_utilization": codex_row["budget_utilization"],
+                    "plan_type": codex_row["plan_type"],
+                    "primary_used_pct": codex_row["primary_used_pct"],
+                    "primary_reset_at": codex_row["primary_reset_at"],
+                    "secondary_used_pct": codex_row["secondary_used_pct"],
+                    "secondary_reset_at": codex_row["secondary_reset_at"],
+                    "rate_limit_allowed": bool(codex_row["rate_limit_allowed"]),
                     "last_polled_at": codex_row["created_at"],
                 }
         except sqlite3.OperationalError:

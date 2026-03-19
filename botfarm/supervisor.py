@@ -738,8 +738,8 @@ class Supervisor(RecoveryMixin, OperationsMixin):
         if not should_pause:
             cu = self._config.codex_usage
             should_pause, reason = self._codex_usage_poller.state.should_pause(
-                monthly_budget=cu.monthly_budget,
-                pause_threshold=cu.pause_budget_threshold,
+                primary_threshold=cu.pause_primary_threshold,
+                secondary_threshold=cu.pause_secondary_threshold,
                 enabled=cu.enabled,
             )
 
@@ -1071,8 +1071,13 @@ class Supervisor(RecoveryMixin, OperationsMixin):
 
         codex_str = ""
         cu_state = self._codex_usage_poller.state
-        if cu_state.monthly_spend is not None:
-            codex_str = f" | codex=${cu_state.monthly_spend:.2f}"
+        if cu_state.primary_used_pct is not None:
+            codex_str = (
+                f" | codex={cu_state.primary_used_pct * 100:.0f}%"
+                f"/{cu_state.secondary_used_pct * 100:.0f}%"
+                if cu_state.secondary_used_pct is not None
+                else f" | codex={cu_state.primary_used_pct * 100:.0f}%"
+            )
 
         capacity_str = ""
         if self._capacity_level != "normal":

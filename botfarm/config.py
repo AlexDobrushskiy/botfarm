@@ -328,10 +328,9 @@ class IdentitiesConfig:
 @dataclass
 class CodexUsageConfig:
     enabled: bool = False
-    admin_api_key: str = ""
     poll_interval_seconds: int = 300
-    monthly_budget: float = 0.0  # 0 = no budget limit
-    pause_budget_threshold: float = 0.90
+    pause_primary_threshold: float = 0.85
+    pause_secondary_threshold: float = 0.90
 
 
 @dataclass
@@ -633,11 +632,13 @@ def _validate_config(config: BotfarmConfig) -> None:
     cu = config.codex_usage
     if cu.poll_interval_seconds < 1:
         raise ConfigError("codex_usage.poll_interval_seconds must be at least 1")
-    if cu.monthly_budget < 0:
-        raise ConfigError("codex_usage.monthly_budget must be at least 0")
-    if not (0.0 <= cu.pause_budget_threshold <= 1.0):
+    if not (0.0 <= cu.pause_primary_threshold <= 1.0):
         raise ConfigError(
-            "codex_usage.pause_budget_threshold must be between 0.0 and 1.0"
+            "codex_usage.pause_primary_threshold must be between 0.0 and 1.0"
+        )
+    if not (0.0 <= cu.pause_secondary_threshold <= 1.0):
+        raise ConfigError(
+            "codex_usage.pause_secondary_threshold must be between 0.0 and 1.0"
         )
 
     if config.notifications.webhook_format not in ("slack", "discord"):
@@ -679,17 +680,6 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
 
     if not isinstance(data, dict):
         raise ConfigError("Config file must contain a YAML mapping")
-
-    # Extract codex admin key before global env expansion so a missing
-    # OPENAI_ADMIN_API_KEY env var doesn't crash the entire config load.
-    cu_raw = data.get("codex_usage", {})
-    if isinstance(cu_raw, dict):
-        cu_admin_raw = cu_raw.get("admin_api_key", "")
-        if isinstance(cu_admin_raw, str) and "${" in cu_admin_raw:
-            try:
-                cu_raw["admin_api_key"] = expand_env_vars(cu_admin_raw)
-            except ConfigError:
-                cu_raw["admin_api_key"] = ""
 
     data = _expand_env_recursive(data)
 
@@ -924,10 +914,9 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         cu_data = {}
     codex_usage = CodexUsageConfig(
         enabled=_parse_bool(cu_data, "enabled", False, section="codex_usage"),
-        admin_api_key=str(cu_data.get("admin_api_key", "")),
         poll_interval_seconds=int(cu_data.get("poll_interval_seconds", 300)),
-        monthly_budget=float(cu_data.get("monthly_budget", 0.0)),
-        pause_budget_threshold=float(cu_data.get("pause_budget_threshold", 0.90)),
+        pause_primary_threshold=float(cu_data.get("pause_primary_threshold", 0.85)),
+        pause_secondary_threshold=float(cu_data.get("pause_secondary_threshold", 0.90)),
     )
 
     if "failed_status" in bt_data:
