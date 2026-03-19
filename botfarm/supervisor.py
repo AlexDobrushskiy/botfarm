@@ -37,7 +37,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import FrameType
 
-from botfarm.config import BotfarmConfig, LinearBugtrackerConfig, ProjectConfig, resolve_stage_timeout, sync_agent_config_to_db
+from botfarm.config import BotfarmConfig, JiraBugtrackerConfig, LinearBugtrackerConfig, ProjectConfig, resolve_stage_timeout, sync_agent_config_to_db
 from botfarm.db import (
     get_task,
     init_db,
@@ -245,10 +245,15 @@ class Supervisor(RecoveryMixin, OperationsMixin):
         self._git_env = build_git_env(config.identities)
 
         # Coder bugtracker self-assignment
-        coder_key = config.identities.coder.tracker_api_key
+        if isinstance(config.bugtracker, JiraBugtrackerConfig):
+            coder_key = config.identities.coder.jira_api_token
+            coder_email: str | None = config.identities.coder.jira_email or config.bugtracker.email
+        else:
+            coder_key = config.identities.coder.tracker_api_key
+            coder_email = None
         if coder_key:
             try:
-                coder_client = create_client(config, api_key=coder_key)
+                coder_client = create_client(config, api_key=coder_key, email=coder_email)
                 self._coder_viewer_id: str | None = coder_client.get_viewer_id()
                 self._coder_tracker: BugtrackerClient | None = coder_client
                 logger.info("Cached coder bugtracker viewer ID: %s", self._coder_viewer_id)

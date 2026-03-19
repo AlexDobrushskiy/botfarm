@@ -60,7 +60,7 @@ _PREFLIGHT_GUIDANCE: dict[str, str] = {
     "linear_status": "Check bugtracker.api_key in config and verify team/status names match your Linear workspace",
     "identity_github_token": "Verify GitHub token is valid and the associated user has collaborator access to the repository",
     "identity_ssh_key": "Check SSH key path in config, verify file exists and has correct permissions (0600)",
-    "identity_linear_key": "Verify the identity's Linear API key is valid",
+    "identity_tracker_key": "Verify the identity's bugtracker API key is valid",
     "database": "Check DB path permissions or schema version",
     "config_consistency": "Review config for duplicate slot IDs or invalid project settings",
     "credentials": "Verify Claude OAuth credentials are loaded correctly",
