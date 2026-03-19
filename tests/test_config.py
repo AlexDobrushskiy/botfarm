@@ -3223,7 +3223,7 @@ class TestJiraBugtrackerConfig:
     def test_jira_config_defaults(self):
         from botfarm.config import JiraBugtrackerConfig
         cfg = JiraBugtrackerConfig()
-        assert cfg.type == "linear"  # inherited default
+        assert cfg.type == "jira"
         assert cfg.url == ""
         assert cfg.email == ""
 

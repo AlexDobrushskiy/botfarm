@@ -197,7 +197,7 @@ class CapacityConfig:
 class BugtrackerConfig:
     """Base bugtracker configuration shared across all tracker types."""
 
-    type: str = "linear"  # "linear", future: "jira", "github"
+    type: str = "linear"  # "linear", "jira", future: "github"
     api_key: str = ""
     workspace: str = ""
     poll_interval_seconds: int = 30
@@ -227,6 +227,7 @@ LinearConfig = LinearBugtrackerConfig
 class JiraBugtrackerConfig(BugtrackerConfig):
     """Jira-specific bugtracker configuration."""
 
+    type: str = "jira"
     url: str = ""  # Jira instance URL, e.g. https://mycompany.atlassian.net
     email: str = ""  # Email for Jira API authentication
 

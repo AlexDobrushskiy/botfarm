@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from botfarm.bugtracker.base import BugtrackerPoller
 from botfarm.bugtracker.errors import BugtrackerError
 from botfarm.config import BotfarmConfig, JiraBugtrackerConfig
+
+if TYPE_CHECKING:
+    from botfarm.bugtracker.jira.client import JiraClient
 
 
 class JiraPoller(BugtrackerPoller):
@@ -42,7 +47,7 @@ class JiraPoller(BugtrackerPoller):
         return state_id
 
 
-def _create_jira_clients(config: BotfarmConfig) -> tuple:
+def _create_jira_clients(config: BotfarmConfig) -> tuple[JiraClient, JiraClient | None]:
     """Create owner and optional coder Jira clients from config.
 
     Returns ``(client, coder_client)`` where *coder_client* is ``None``
