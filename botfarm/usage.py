@@ -395,6 +395,16 @@ class UsagePoller:
 
     def _do_poll(self, conn: sqlite3.Connection) -> None:
         """Execute one poll cycle: fetch → parse → store → purge."""
+        # Proactive token refresh: if the token is expired or about to expire,
+        # attempt refresh before making the API call to avoid a 401 round-trip
+        if self.credential_manager.is_token_expired():
+            logger.info("Token expired or expiring soon — attempting proactive refresh")
+            refreshed = self.credential_manager.refresh_token()
+            if refreshed:
+                logger.info("Proactive token refresh succeeded")
+            else:
+                logger.warning("Proactive token refresh failed — proceeding with current token")
+
         token = self.credential_manager.get_token()
         if token is None:
             logger.warning("No OAuth token available — skipping usage poll")
