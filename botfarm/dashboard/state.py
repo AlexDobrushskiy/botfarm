@@ -175,6 +175,19 @@ def format_duration(total_seconds: int) -> str:
     return f"{seconds}s"
 
 
+def collect_devserver_statuses(mgr) -> list[dict]:
+    """Build status list with uptime_display for all registered projects."""
+    statuses = []
+    for project_name in sorted(mgr.project_names):
+        s = mgr.status(project_name)
+        if s.get("uptime") is not None:
+            s["uptime_display"] = format_duration(int(s["uptime"]))
+        else:
+            s["uptime_display"] = None
+        statuses.append(s)
+    return statuses
+
+
 def elapsed(started_at: str | None) -> str:
     if not started_at:
         return "-"

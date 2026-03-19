@@ -12,9 +12,11 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from botfarm.config import BotfarmConfig, DashboardConfig
+from botfarm.devserver import DevServerManager
 
 from .routes_api import router as api_router
 from .routes_config import router as config_router
+from .routes_devserver import router as devserver_router
 from .routes_logs import router as logs_router
 from .routes_main import router as main_router
 from .routes_partials import router as partials_router
@@ -43,6 +45,7 @@ def create_app(
     update_failed_event: threading.Event | None = None,
     git_env: dict[str, str] | None = None,
     auto_restart: bool = True,
+    devserver_manager: DevServerManager | None = None,
 ) -> FastAPI:
     """Create the FastAPI dashboard application.
 
@@ -91,6 +94,8 @@ def create_app(
     update_failed_event:
         Threading event set by the supervisor when an update fails.
         The banner endpoint checks this to reset the "Updating..." state.
+    devserver_manager:
+        DevServerManager instance for controlling dev server processes.
     """
     app = FastAPI(title="Botfarm Dashboard", docs_url=None, redoc_url=None)
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -115,6 +120,7 @@ def create_app(
     app.state.auto_restart = auto_restart
     app.state.logs_dir = Path(logs_dir).expanduser() if logs_dir else None
     app.state.git_env = git_env
+    app.state.devserver_manager = devserver_manager
     app.state.templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
     # Initialise per-app rate-limit caches (isolated per app instance)
@@ -127,6 +133,7 @@ def create_app(
     app.include_router(config_router)
     app.include_router(projects_router)
     app.include_router(logs_router)
+    app.include_router(devserver_router)
 
     return app
 
@@ -151,6 +158,7 @@ def start_dashboard(
     update_failed_event: threading.Event | None = None,
     git_env: dict[str, str] | None = None,
     auto_restart: bool = True,
+    devserver_manager: DevServerManager | None = None,
 ) -> threading.Thread | None:
     """Start the dashboard server in a background daemon thread.
 
@@ -176,6 +184,7 @@ def start_dashboard(
         update_failed_event=update_failed_event,
         git_env=git_env,
         auto_restart=auto_restart,
+        devserver_manager=devserver_manager,
     )
 
     def _run():

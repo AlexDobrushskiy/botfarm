@@ -123,6 +123,142 @@ document.body.addEventListener("htmx:beforeRequest", function(evt) {
 });
 </script>
 
+<h2>Dev Servers</h2>
+<div id="devserver-panel" hx-get="/partials/devserver-status" hx-trigger="every 5s" hx-swap="innerHTML">
+    {% include "partials/devserver_status.html" %}
+</div>
+
+<!-- Dev server terminal panels (created dynamically by JS) -->
+<div id="devserver-terminals"></div>
+
+<script>
+var _devserverStreams = {};
+
+function devserverAction(project, action) {
+    var btns = document.querySelectorAll('.devserver-btn');
+    btns.forEach(function(b) { b.disabled = true; });
+    fetch("/api/devserver/" + encodeURIComponent(project) + "/" + action, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"}
+    }).then(function(resp) {
+        if (!resp.ok) return resp.json().then(function(d) { throw new Error(d.error || "Request failed"); });
+        return resp.json();
+    }).then(function(data) {
+        btns.forEach(function(b) { b.disabled = false; });
+        showToast(data.message || (action + " succeeded"), "success");
+        if (action === "start" || action === "restart") {
+            /* Auto-open terminal on start */
+            setTimeout(function() { showDevserverTerminal(project); }, 500);
+        }
+    }).catch(function(err) {
+        btns.forEach(function(b) { b.disabled = false; });
+        showToast("Failed: " + err.message, "error");
+    });
+}
+
+function toggleDevserverTerminal(project) {
+    var panel = document.getElementById("devserver-term-" + project);
+    if (panel) {
+        if (panel.style.display === "none") {
+            panel.style.display = "";
+            connectDevserverStream(project);
+        } else {
+            panel.style.display = "none";
+            disconnectDevserverStream(project);
+        }
+    } else {
+        showDevserverTerminal(project);
+    }
+}
+
+function showDevserverTerminal(project) {
+    var existing = document.getElementById("devserver-term-" + project);
+    if (existing) {
+        existing.style.display = "";
+        connectDevserverStream(project);
+        return;
+    }
+    var container = document.getElementById("devserver-terminals");
+    var panel = document.createElement("div");
+    panel.id = "devserver-term-" + project;
+    panel.className = "log-stream-panel";
+    panel.innerHTML =
+        '<div class="log-stream-header">' +
+            '<span class="log-stream-stage">' + project + ' dev server</span>' +
+            '<span class="log-stream-badge log-stream-live" id="devserver-badge-' + project + '">LIVE</span>' +
+            '<button class="devserver-btn devserver-btn-close" onclick="hideDevserverTerminal(\'' + project + '\')" title="Close terminal" style="margin-left:auto;padding:0.2rem 0.5rem;">Close</button>' +
+        '</div>' +
+        '<div class="log-stream-terminal" style="max-height: 30vh;" id="devserver-scroll-' + project + '">' +
+            '<pre class="log-stream-output" id="devserver-output-' + project + '"></pre>' +
+        '</div>';
+    container.appendChild(panel);
+    connectDevserverStream(project);
+}
+
+function hideDevserverTerminal(project) {
+    var panel = document.getElementById("devserver-term-" + project);
+    if (panel) panel.style.display = "none";
+    disconnectDevserverStream(project);
+}
+
+function connectDevserverStream(project) {
+    disconnectDevserverStream(project);
+    var output = document.getElementById("devserver-output-" + project);
+    var terminal = document.getElementById("devserver-scroll-" + project);
+    var badge = document.getElementById("devserver-badge-" + project);
+    if (!output || !terminal) return;
+
+    var autoScroll = true;
+    terminal.addEventListener("scroll", function() {
+        var atBottom = terminal.scrollHeight - terminal.scrollTop - terminal.clientHeight < 50;
+        autoScroll = atBottom;
+    });
+
+    output.innerHTML = "";
+    var evtSource = new EventSource("/api/devserver/" + encodeURIComponent(project) + "/stream");
+
+    evtSource.addEventListener("stdout", function(e) {
+        appendDevLine(output, terminal, e.data, "log", autoScroll);
+        if (badge) { badge.textContent = "LIVE"; badge.className = "log-stream-badge log-stream-live"; }
+    });
+    evtSource.addEventListener("stderr", function(e) {
+        appendDevLine(output, terminal, e.data, "system", autoScroll);
+    });
+    evtSource.addEventListener("system", function(e) {
+        appendDevLine(output, terminal, e.data, "system", autoScroll);
+    });
+    evtSource.addEventListener("heartbeat", function() {
+        if (badge) { badge.textContent = "LIVE"; badge.className = "log-stream-badge log-stream-live"; }
+    });
+    evtSource.addEventListener("done", function() {
+        evtSource.close();
+        if (badge) { badge.textContent = "STOPPED"; badge.className = "log-stream-badge log-stream-done"; }
+    });
+    evtSource.addEventListener("error", function() {
+        evtSource.close();
+        if (badge) { badge.textContent = "DISCONNECTED"; badge.className = "log-stream-badge log-stream-done"; }
+    });
+
+    _devserverStreams[project] = evtSource;
+}
+
+function appendDevLine(output, terminal, text, cls, autoScroll) {
+    var span = document.createElement("span");
+    span.className = "log-line log-line-" + cls;
+    span.textContent = text + "\n";
+    output.appendChild(span);
+    if (autoScroll) terminal.scrollTop = terminal.scrollHeight;
+}
+
+function disconnectDevserverStream(project) {
+    var src = _devserverStreams[project];
+    if (src) {
+        src.close();
+        delete _devserverStreams[project];
+    }
+}
+</script>
+
 <h2>Usage</h2>
 <div id="usage-panel" hx-get="/partials/usage" hx-trigger="every 5s" hx-swap="innerHTML">
     {% include "partials/usage.html" %}

@@ -171,6 +171,15 @@ class DevServerManager:
                     self._close_log_file(info)
                     self._servers.pop(name, None)
 
+    @property
+    def project_names(self) -> list[str]:
+        """Return names of all registered projects."""
+        return list(self._projects)
+
+    def log_path(self, project_name: str) -> Path:
+        """Return the log file path for a project's dev server."""
+        return self._log_dir / f"{project_name}.log"
+
     def running_projects(self) -> list[str]:
         """Return names of projects with running dev servers."""
         return [

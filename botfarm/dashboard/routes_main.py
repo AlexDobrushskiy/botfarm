@@ -33,6 +33,7 @@ from botfarm.workflow import load_all_pipelines, resolve_max_iterations
 
 from .formatters import build_pipeline_state, review_display_status
 from .state import (
+    collect_devserver_statuses,
     context_fill_class,
     elapsed,
     format_duration,
@@ -664,6 +665,9 @@ def index(request: Request):
     _linear_url = lambda tid: linear_url(app, tid)
     cfg = app.state.botfarm_config
     projects = [p.name for p in cfg.projects] if cfg else []
+    # Build dev server status for initial render
+    mgr = getattr(app.state, "devserver_manager", None)
+    devservers = collect_devserver_statuses(mgr) if mgr is not None else []
     return templates.TemplateResponse("index.html", {
         "request": request,
         "slots": slots,
@@ -682,6 +686,7 @@ def index(request: Request):
         "pause_state": manual_pause_state(state),
         "has_callbacks": app.state.on_pause is not None,
         "capacity": get_capacity_data(app),
+        "devservers": devservers,
     })
 
 

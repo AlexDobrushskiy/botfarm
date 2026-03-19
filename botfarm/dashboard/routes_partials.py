@@ -10,6 +10,7 @@ from fastapi.responses import HTMLResponse
 
 from .state import (
     check_commits_behind,
+    collect_devserver_statuses,
     context_fill_class,
     elapsed,
     get_capacity_data,
@@ -229,6 +230,18 @@ def partial_health_checks(request: Request):
     return templates.TemplateResponse("partials/health_checks.html", {
         "request": request,
         **data,
+    })
+
+
+@router.get("/partials/devserver-status", response_class=HTMLResponse)
+def partial_devserver_status(request: Request):
+    app = request.app
+    templates = request.app.state.templates
+    mgr = getattr(app.state, "devserver_manager", None)
+    devservers = collect_devserver_statuses(mgr) if mgr is not None else []
+    return templates.TemplateResponse("partials/devserver_status.html", {
+        "request": request,
+        "devservers": devservers,
     })
 
 
