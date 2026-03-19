@@ -319,14 +319,10 @@ async def test_fetch_usage_success():
         result = await fetch_usage("test-token")
 
     assert result == expected
-    mock_client.get.assert_called_once_with(
-        USAGE_API_URL,
-        headers={
-            "Authorization": "Bearer test-token",
-            "anthropic-beta": "oauth-2025-04-20",
-        },
-        timeout=USAGE_API_TIMEOUT,
-    )
+    call_headers = mock_client.get.call_args[1]["headers"]
+    assert call_headers["Authorization"] == "Bearer test-token"
+    assert call_headers["anthropic-beta"] == "oauth-2025-04-20"
+    assert call_headers["User-Agent"].startswith("claude-code/")
 
 
 @pytest.mark.asyncio

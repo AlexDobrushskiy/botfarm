@@ -13,6 +13,8 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import shutil
+
 import httpx
 
 logger = logging.getLogger(__name__)
@@ -20,6 +22,34 @@ logger = logging.getLogger(__name__)
 USAGE_API_URL = "https://api.anthropic.com/api/oauth/usage"
 USAGE_API_BETA_HEADER = "oauth-2025-04-20"
 USAGE_API_TIMEOUT = httpx.Timeout(30, connect=10)
+
+# Fallback version if `claude --version` is unavailable
+_FALLBACK_CLAUDE_VERSION = "2.1.79"
+_cached_claude_version: str | None = None
+
+
+def _get_claude_version() -> str:
+    """Detect the installed Claude Code version, cached after first call."""
+    global _cached_claude_version
+    if _cached_claude_version is not None:
+        return _cached_claude_version
+
+    if not shutil.which("claude"):
+        _cached_claude_version = _FALLBACK_CLAUDE_VERSION
+        return _cached_claude_version
+
+    try:
+        result = subprocess.run(
+            ["claude", "--version"],
+            capture_output=True, text=True, timeout=5,
+        )
+        # Output format: "2.1.79 (Claude Code)"
+        version = result.stdout.strip().split()[0] if result.returncode == 0 else None
+    except Exception:
+        version = None
+
+    _cached_claude_version = version or _FALLBACK_CLAUDE_VERSION
+    return _cached_claude_version
 
 # Linux credential file location
 LINUX_CREDENTIALS_PATH = Path.home() / ".claude" / ".credentials.json"
@@ -215,6 +245,7 @@ async def fetch_usage(
             headers={
                 "Authorization": f"Bearer {token}",
                 "anthropic-beta": USAGE_API_BETA_HEADER,
+                "User-Agent": f"claude-code/{_get_claude_version()}",
             },
             timeout=USAGE_API_TIMEOUT,
         )
