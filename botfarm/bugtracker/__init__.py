@@ -123,27 +123,9 @@ def create_poller(
             coder_client=coder_client,
         )
     if bt_type == "jira":
-        from botfarm.bugtracker.jira.client import JiraClient
-        from botfarm.bugtracker.jira.poller import JiraPoller
-        from botfarm.config import JiraBugtrackerConfig
+        from botfarm.bugtracker.jira import create_poller as jira_create_poller
 
-        bt = config.bugtracker
-        if not isinstance(bt, JiraBugtrackerConfig):
-            raise ValueError("Jira bugtracker requires JiraBugtrackerConfig")
-        client = JiraClient(url=bt.url, email=bt.email, api_token=bt.api_key)
-        coder_token = config.identities.coder.jira_api_token
-        coder_email = config.identities.coder.jira_email or bt.email
-        coder_client = (
-            JiraClient(url=bt.url, email=coder_email, api_token=coder_token)
-            if coder_token else None
-        )
-        return JiraPoller(
-            client=client,
-            project=project,
-            exclude_tags=bt.exclude_tags,
-            todo_status=bt.todo_status,
-            coder_client=coder_client,
-        )
+        return jira_create_poller(config, project)
     raise ValueError(f"Unknown bugtracker type: {bt_type!r}")
 
 

@@ -330,7 +330,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
             self._dashboard_thread = start_dashboard(
                 self._config.dashboard,
                 db_path=self._db_path,
-                linear_workspace=getattr(self._config.bugtracker, "workspace", ""),
+                linear_workspace=self._config.bugtracker.workspace,
                 botfarm_config=self._config,
                 logs_dir=self._log_dir,
                 on_pause=self.request_pause,

@@ -199,6 +199,7 @@ class BugtrackerConfig:
 
     type: str = "linear"  # "linear", future: "jira", "github"
     api_key: str = ""
+    workspace: str = ""
     poll_interval_seconds: int = 30
     exclude_tags: list[str] = field(default_factory=lambda: ["Human"])
     todo_status: str = "Todo"
@@ -214,7 +215,6 @@ class BugtrackerConfig:
 class LinearBugtrackerConfig(BugtrackerConfig):
     """Linear-specific bugtracker configuration."""
 
-    workspace: str = ""
     issue_limit: int = 250
     capacity_monitoring: CapacityConfig = field(default_factory=CapacityConfig)
 
@@ -826,6 +826,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
     bt_common = dict(
         type=str(bt_data.get("type", "linear")),
         api_key=bt_data.get("api_key", ""),
+        workspace=bt_data.get("workspace", ""),
         poll_interval_seconds=bt_data.get("poll_interval_seconds", 30),
         exclude_tags=bt_data.get("exclude_tags", ["Human"]),
         todo_status=str(bt_data.get("todo_status", "Todo")),
@@ -858,7 +859,6 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         )
         bugtracker = LinearBugtrackerConfig(
             **bt_common,
-            workspace=bt_data.get("workspace", ""),
             issue_limit=int(bt_data.get("issue_limit", 250)),
             capacity_monitoring=capacity_monitoring,
         )
