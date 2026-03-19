@@ -226,7 +226,7 @@ def test_credential_manager_get_token(monkeypatch, tmp_path):
     assert mgr.get_token() == "test-access-token-123"
 
 
-def test_credential_manager_caches_token(monkeypatch, tmp_path):
+def test_credential_manager_reads_fresh_on_every_call(monkeypatch, tmp_path):
     cred_file = tmp_path / ".credentials.json"
     cred_file.write_text(json.dumps(VALID_CREDENTIALS))
     monkeypatch.setattr(
@@ -235,26 +235,14 @@ def test_credential_manager_caches_token(monkeypatch, tmp_path):
     monkeypatch.setattr("botfarm.credentials.platform.system", lambda: "Linux")
 
     mgr = CredentialManager()
-    token1 = mgr.get_token()
+    assert mgr.get_token() == "test-access-token-123"
 
-    # Remove the file — cached token should still work
-    cred_file.unlink()
-    token2 = mgr.get_token()
-    assert token1 == token2 == "test-access-token-123"
-
-
-def test_credential_manager_clear_cache(monkeypatch, tmp_path):
-    cred_file = tmp_path / ".credentials.json"
-    cred_file.write_text(json.dumps(VALID_CREDENTIALS))
-    monkeypatch.setattr(
-        "botfarm.credentials.LINUX_CREDENTIALS_PATH", cred_file
-    )
-    monkeypatch.setattr("botfarm.credentials.platform.system", lambda: "Linux")
-
-    mgr = CredentialManager()
-    mgr.get_token()
-    mgr.clear_cache()
-    assert mgr._cached_token is None
+    # Update the file — next call should pick up the new token
+    new_creds = {
+        "claudeAiOauth": {"accessToken": "rotated-token-789"},
+    }
+    cred_file.write_text(json.dumps(new_creds))
+    assert mgr.get_token() == "rotated-token-789"
 
 
 def test_credential_manager_refresh_token(monkeypatch, tmp_path):
