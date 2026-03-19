@@ -1,9 +1,12 @@
 """Codex usage polling via the ChatGPT backend API.
 
-Periodically polls ``chatgpt.com/backend-api/api/codex/usage`` using
+Periodically polls ``chatgpt.com/backend-api/wham/usage`` using
 credentials from ``~/.codex/auth.json`` and stores rate-limit snapshots
 in the database.  Exposes current utilization so the supervisor can
 pause dispatch when limits are close.
+
+Uses ``curl_cffi`` with browser TLS impersonation to bypass Cloudflare
+bot detection on chatgpt.com.
 
 The feature is fully optional — if ``enabled`` is False or credentials
 are missing the poller is a no-op.
@@ -18,7 +21,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-import httpx
+from curl_cffi import requests as cffi_requests
 
 from botfarm.config import CodexUsageConfig
 from botfarm.credentials import CredentialError, load_codex_credentials
@@ -28,8 +31,8 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_POLL_INTERVAL = 300  # seconds
 DEFAULT_RETENTION_DAYS = 30
-CODEX_USAGE_URL = "https://chatgpt.com/backend-api/api/codex/usage"
-API_TIMEOUT = 30.0
+CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
+API_TIMEOUT = 30
 
 
 @dataclass
@@ -105,7 +108,6 @@ class CodexUsagePoller:
     _state: CodexUsageState = field(default_factory=CodexUsageState)
     _last_poll: float = 0.0
     _last_polled_fresh: bool = field(default=False, repr=False)
-    _client: httpx.Client | None = field(default=None, repr=False)
 
     @property
     def state(self) -> CodexUsageState:
@@ -148,15 +150,7 @@ class CodexUsagePoller:
         return self._state
 
     def close(self) -> None:
-        """Clean up the HTTP client."""
-        if self._client is not None and not self._client.is_closed:
-            self._client.close()
-            self._client = None
-
-    def _get_client(self) -> httpx.Client:
-        if self._client is None or self._client.is_closed:
-            self._client = httpx.Client(timeout=API_TIMEOUT)
-        return self._client
+        """No-op — curl_cffi sessions are not persistent."""
 
     def _do_poll(self, conn: sqlite3.Connection) -> None:
         """Execute one poll cycle: fetch → parse → store → purge."""
@@ -177,15 +171,19 @@ class CodexUsagePoller:
         conn.commit()
 
     def _fetch(self, access_token: str, account_id: str) -> dict:
-        """Call the ChatGPT backend usage API."""
-        client = self._get_client()
-        resp = client.get(
+        """Call the ChatGPT backend usage API.
+
+        Uses curl_cffi with Chrome TLS impersonation to bypass
+        Cloudflare bot detection on chatgpt.com.
+        """
+        resp = cffi_requests.get(
             CODEX_USAGE_URL,
             headers={
                 "Authorization": f"Bearer {access_token}",
                 "ChatGPT-Account-Id": account_id,
-                "User-Agent": "codex-cli",
             },
+            impersonate="chrome",
+            timeout=API_TIMEOUT,
         )
         resp.raise_for_status()
         return resp.json()

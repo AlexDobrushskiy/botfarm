@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock, patch
 
-import httpx
 import pytest
 
 from botfarm.codex_usage import (
@@ -239,7 +238,7 @@ class TestCodexUsagePoller:
 
         with patch(
             "botfarm.codex_usage.load_codex_credentials", return_value=FAKE_CREDS,
-        ), patch.object(poller, "_fetch", side_effect=httpx.ConnectError("fail")):
+        ), patch.object(poller, "_fetch", side_effect=ConnectionError("fail")):
             poller.poll(conn)
 
         assert poller.state.primary_used_pct == pytest.approx(0.42)
@@ -289,13 +288,9 @@ class TestCodexUsagePoller:
         snapshots = get_codex_usage_snapshots(conn)
         assert isinstance(snapshots, list)
 
-    def test_close(self):
+    def test_close_is_noop(self):
         poller = self._make_poller()
-        client = poller._get_client()
-        assert not client.is_closed
-        poller.close()
-        assert client.is_closed
-        poller.close()  # double close should not raise
+        poller.close()  # should not raise
 
     def test_fetch_calls_chatgpt_api(self):
         poller = self._make_poller()
@@ -304,20 +299,17 @@ class TestCodexUsagePoller:
         mock_resp.json.return_value = SAMPLE_USAGE_RESPONSE
         mock_resp.raise_for_status = MagicMock()
 
-        mock_client = MagicMock()
-        mock_client.get.return_value = mock_resp
-        mock_client.is_closed = False
-        poller._client = mock_client
+        with patch("botfarm.codex_usage.cffi_requests") as mock_cffi:
+            mock_cffi.get.return_value = mock_resp
+            result = poller._fetch("test-token", "acct-123")
 
-        result = poller._fetch("test-token", "acct-123")
         assert result == SAMPLE_USAGE_RESPONSE
-
-        call_kwargs = mock_client.get.call_args
+        call_kwargs = mock_cffi.get.call_args
         assert call_kwargs[0][0] == CODEX_USAGE_URL
         headers = call_kwargs[1]["headers"]
         assert headers["Authorization"] == "Bearer test-token"
         assert headers["ChatGPT-Account-Id"] == "acct-123"
-        assert headers["User-Agent"] == "codex-cli"
+        assert call_kwargs[1]["impersonate"] == "chrome"
 
 
 class TestCodexUsageConfigValidation:
