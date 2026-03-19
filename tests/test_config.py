@@ -2799,6 +2799,19 @@ class TestProjectConfigFields:
         with pytest.raises(ConfigError, match="project_type must be a string"):
             load_config(config_path)
 
+    def test_invalid_project_type_falsy_non_string(self, tmp_path):
+        data = {
+            "projects": [{
+                "name": "p", "team": "TST", "base_dir": "~/d",
+                "worktree_prefix": "s-", "slots": [1],
+                "project_type": 0,
+            }],
+            "bugtracker": {"type": "linear", "api_key": "k"},
+        }
+        config_path = _write_config(tmp_path, data)
+        with pytest.raises(ConfigError, match="project_type must be a string"):
+            load_config(config_path)
+
     def test_invalid_setup_commands_not_list(self, tmp_path):
         data = {
             "projects": [{

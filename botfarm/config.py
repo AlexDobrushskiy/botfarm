@@ -458,7 +458,7 @@ def _parse_project(data: dict) -> ProjectConfig:
             f"Project '{data['name']}': slots contains duplicate values"
         )
     project_type = data.get("project_type", "")
-    if project_type and not isinstance(project_type, str):
+    if not isinstance(project_type, str):
         raise ConfigError(
             f"Project '{data['name']}': project_type must be a string"
         )
@@ -477,7 +477,7 @@ def _parse_project(data: dict) -> ProjectConfig:
         worktree_prefix=data["worktree_prefix"],
         slots=slots,
         tracker_project=str(tracker_project),
-        project_type=str(project_type) if project_type else "",
+        project_type=project_type,
         setup_commands=setup_commands,
     )
 
