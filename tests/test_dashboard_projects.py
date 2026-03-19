@@ -173,6 +173,70 @@ class TestProjectCreateEndpoint:
             # Wait for the background thread to call the mocked function
             time.sleep(0.1)
 
+    def test_passes_project_type_and_setup_commands(self, tmp_path):
+        app = _make_app(tmp_path)
+        client = TestClient(app)
+        with patch("botfarm.dashboard.routes_projects.setup_project") as mock_setup:
+            mock_setup.return_value = {"name": "typed"}
+            resp = client.post(
+                "/api/project/create",
+                json={
+                    "repo_url": "git@github.com:user/repo.git",
+                    "name": "typed",
+                    "team": "ENG",
+                    "slots": 1,
+                    "project_type": "python",
+                    "setup_commands": "pip install -r requirements.txt\npip install -e .",
+                },
+            )
+            assert resp.status_code == 200
+            time.sleep(0.1)
+            call_kwargs = mock_setup.call_args
+            assert call_kwargs[1]["project_type"] == "python"
+            assert call_kwargs[1]["setup_commands"] == [
+                "pip install -r requirements.txt",
+                "pip install -e .",
+            ]
+
+    def test_setup_commands_as_list(self, tmp_path):
+        app = _make_app(tmp_path)
+        client = TestClient(app)
+        with patch("botfarm.dashboard.routes_projects.setup_project") as mock_setup:
+            mock_setup.return_value = {"name": "listed"}
+            resp = client.post(
+                "/api/project/create",
+                json={
+                    "repo_url": "git@github.com:user/repo.git",
+                    "name": "listed",
+                    "team": "ENG",
+                    "slots": 1,
+                    "setup_commands": ["npm install"],
+                },
+            )
+            assert resp.status_code == 200
+            time.sleep(0.1)
+            call_kwargs = mock_setup.call_args
+            assert call_kwargs[1]["setup_commands"] == ["npm install"]
+
+    def test_empty_setup_commands(self, tmp_path):
+        app = _make_app(tmp_path)
+        client = TestClient(app)
+        with patch("botfarm.dashboard.routes_projects.setup_project") as mock_setup:
+            mock_setup.return_value = {"name": "empty"}
+            resp = client.post(
+                "/api/project/create",
+                json={
+                    "repo_url": "git@github.com:user/repo.git",
+                    "name": "empty",
+                    "team": "ENG",
+                    "slots": 1,
+                },
+            )
+            assert resp.status_code == 200
+            time.sleep(0.1)
+            call_kwargs = mock_setup.call_args
+            assert call_kwargs[1]["setup_commands"] is None
+
     def test_no_config(self, tmp_path):
         db_path = tmp_path / "test.db"
         conn = init_db(db_path)

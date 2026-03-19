@@ -81,6 +81,14 @@ def format_project_entry(project_dict: dict, indent: int = 2) -> str:
         lines.append(
             f"{cont}tracker_project: {yaml_scalar(project_dict['tracker_project'])}"
         )
+    if project_dict.get("project_type"):
+        lines.append(
+            f"{cont}project_type: {yaml_scalar(project_dict['project_type'])}"
+        )
+    if project_dict.get("setup_commands"):
+        lines.append(f"{cont}setup_commands:")
+        for cmd in project_dict["setup_commands"]:
+            lines.append(f"{cont}  - {yaml_scalar(cmd)}")
     return "\n".join(lines)
 
 
@@ -562,6 +570,45 @@ def create_worktree(
         )
 
 
+def _run_setup_commands(
+    commands: list[str],
+    worktree_paths: list[Path],
+    progress: Callable[[str], None],
+) -> None:
+    """Run setup commands in each worktree directory.
+
+    Failures are reported via the *progress* callback but do not abort
+    the setup — the project is still usable and commands can be retried
+    via the dashboard's "Setup Git" button.
+    """
+    for wt_path in worktree_paths:
+        slot_name = wt_path.name
+        for cmd in commands:
+            progress(f"  [{slot_name}] $ {cmd}")
+            try:
+                result = subprocess.run(
+                    cmd,
+                    shell=True,
+                    cwd=str(wt_path),
+                    capture_output=True,
+                    text=True,
+                    timeout=300,
+                    env={**os.environ, **_clean_git_env()},
+                )
+                if result.returncode != 0:
+                    stderr = result.stderr.strip()
+                    progress(
+                        f"  [{slot_name}] WARN: command exited {result.returncode}"
+                        + (f": {stderr}" if stderr else "")
+                    )
+                else:
+                    progress(f"  [{slot_name}] OK")
+            except subprocess.TimeoutExpired:
+                progress(f"  [{slot_name}] WARN: command timed out after 5m")
+            except OSError as exc:
+                progress(f"  [{slot_name}] WARN: {exc}")
+
+
 # ---------------------------------------------------------------------------
 # High-level orchestrator
 # ---------------------------------------------------------------------------
@@ -579,6 +626,8 @@ def setup_project(
     create_github: bool = False,
     replace_names: frozenset[str] = frozenset(),
     progress_callback: Callable[[str], None] | None = None,
+    project_type: str = "",
+    setup_commands: list[str] | None = None,
 ) -> dict:
     """Set up a new project end-to-end: clone or init, worktrees, config update.
 
@@ -610,6 +659,9 @@ def setup_project(
             before adding the new entry (used for placeholder replacement).
         progress_callback: Optional callback invoked with status messages
             so callers (e.g. dashboard SSE) can stream progress.
+        project_type: Optional project type (e.g. "python", "node").
+        setup_commands: Optional list of shell commands to run in each
+            worktree after creation.
 
     Returns:
         The project dict that was written to config.
@@ -686,8 +738,15 @@ def setup_project(
             created_worktrees.append(worktree_path)
             _progress(f"Slot {slot_id}: {worktree_path} (branch: {branch_name})")
 
+        # Run setup commands in each worktree
+        if setup_commands:
+            _progress(f"Running setup commands in {len(created_worktrees)} worktree(s)...")
+            _run_setup_commands(
+                setup_commands, created_worktrees, _progress,
+            )
+
         _progress("Updating config...")
-        project_dict = {
+        project_dict: dict = {
             "name": name,
             "team": team,
             "base_dir": str(repo_dir),
@@ -695,6 +754,10 @@ def setup_project(
             "slots": slots,
             "tracker_project": tracker_project,
         }
+        if project_type:
+            project_dict["project_type"] = project_type
+        if setup_commands:
+            project_dict["setup_commands"] = setup_commands
 
         append_project_to_config(
             config_path, project_dict, replace_names=replace_names,
@@ -803,6 +866,7 @@ def setup_project_git(
     )
 
     # Worktree setup — skip slots that already have healthy worktrees
+    created_worktrees: list[Path] = []
     for slot_id in slot_ids:
         branch_name = f"slot-{slot_id}-placeholder"
         worktree_path = Path(f"{wt_prefix}{slot_id}").expanduser()
@@ -821,6 +885,13 @@ def setup_project_git(
             repo_dir, worktree_path, branch_name,
             create_branch=not branch_already_exists,
         )
+        created_worktrees.append(worktree_path)
         _progress(f"Slot {slot_id}: {worktree_path} (branch: {branch_name})")
+
+    # Run setup commands in newly-created worktrees
+    setup_commands = project_entry.get("setup_commands") or []
+    if setup_commands and created_worktrees:
+        _progress(f"Running setup commands in {len(created_worktrees)} new worktree(s)...")
+        _run_setup_commands(setup_commands, created_worktrees, _progress)
 
     _progress(f"Git setup for '{name}' complete!")

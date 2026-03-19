@@ -805,6 +805,48 @@ class TestFormatProjectEntry:
         assert data["projects"][0]["name"] == "my-app"
         assert data["projects"][0]["slots"] == [1, 2]
 
+    def test_entry_with_project_type(self):
+        project = {
+            "name": "my-app",
+            "team": "SMA",
+            "base_dir": "~/my-app",
+            "worktree_prefix": "my-app-slot-",
+            "slots": [1],
+            "project_type": "python",
+        }
+        result = format_project_entry(project)
+        data = yaml.safe_load("projects:\n" + result)
+        assert data["projects"][0]["project_type"] == "python"
+
+    def test_entry_with_setup_commands(self):
+        project = {
+            "name": "my-app",
+            "team": "SMA",
+            "base_dir": "~/my-app",
+            "worktree_prefix": "my-app-slot-",
+            "slots": [1],
+            "setup_commands": ["pip install -r requirements.txt", "pip install -e ."],
+        }
+        result = format_project_entry(project)
+        data = yaml.safe_load("projects:\n" + result)
+        assert data["projects"][0]["setup_commands"] == [
+            "pip install -r requirements.txt",
+            "pip install -e .",
+        ]
+
+    def test_entry_without_optional_fields(self):
+        project = {
+            "name": "my-app",
+            "team": "SMA",
+            "base_dir": "~/my-app",
+            "worktree_prefix": "my-app-slot-",
+            "slots": [1],
+        }
+        result = format_project_entry(project)
+        data = yaml.safe_load("projects:\n" + result)
+        assert "project_type" not in data["projects"][0]
+        assert "setup_commands" not in data["projects"][0]
+
 
 # ---------------------------------------------------------------------------
 # _find_projects_insert_point
