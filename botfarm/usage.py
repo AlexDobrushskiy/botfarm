@@ -8,6 +8,7 @@ can pause dispatch when limits are close.
 from __future__ import annotations
 
 import asyncio
+from typing import TYPE_CHECKING
 import hashlib
 import logging
 import math
@@ -32,6 +33,9 @@ from botfarm.db import (
     upsert_usage_api_key_session,
 )
 
+if TYPE_CHECKING:
+    from botfarm.notifications import Notifier
+
 _async_sleep = asyncio.sleep  # local alias for testability
 
 logger = logging.getLogger(__name__)
@@ -54,6 +58,9 @@ TRANSIENT_EXCEPTIONS = (
 MAX_ADAPTIVE_POLL_INTERVAL = 1800  # 30 minutes cap for adaptive interval
 BACKOFF_JITTER_FRACTION = 0.5  # add up to 50% random jitter to backoff intervals
 FORCE_POLL_COOLDOWN = 30  # minimum seconds between force_poll API calls
+
+# Auth failure alerting thresholds
+AUTH_FAILURE_NOTIFY_THRESHOLD = 3  # consecutive 401s before first notification
 
 
 def token_fingerprint(token: str) -> str:
@@ -188,6 +195,7 @@ class UsagePoller:
     credential_manager: CredentialManager = field(default_factory=CredentialManager)
     poll_interval: int = DEFAULT_POLL_INTERVAL
     retention_days: int = DEFAULT_RETENTION_DAYS
+    notifier: Notifier | None = None
 
     _state: UsageState = field(default_factory=UsageState)
     _last_poll: float = 0.0
@@ -198,6 +206,10 @@ class UsagePoller:
     _last_force_poll: float = field(default=0.0, repr=False)
     _current_caller: str | None = field(default=None, repr=False)
     _attempt_records: list[dict] = field(default_factory=list, repr=False)
+
+    # Auth failure (401) tracking
+    _consecutive_401s: int = field(default=0, repr=False)
+    _first_401_time: float | None = field(default=None, repr=False)
 
     @property
     def state(self) -> UsageState:
@@ -334,6 +346,7 @@ class UsagePoller:
             self._flush_audit_records(conn, fp)
 
         self._reset_rate_limit_state(conn)
+        self._reset_auth_failure_state()
         self._parse_and_store(data, conn)
         self._purge_old_snapshots(conn)
         conn.commit()
@@ -404,6 +417,7 @@ class UsagePoller:
                 token = self.credential_manager.refresh_token()
                 if token is None:
                     logger.warning("Token refresh failed — skipping usage poll")
+                    self._record_auth_failure()
                     return
                 fp = token_fingerprint(token)
                 self._check_key_rotation(conn, fp)
@@ -413,6 +427,7 @@ class UsagePoller:
                 except Exception:
                     self._flush_audit_records(conn, fp)
                     logger.exception("Usage API call failed after token refresh")
+                    self._record_auth_failure()
                     return
                 self._flush_audit_records(conn, fp)
             else:
@@ -429,6 +444,7 @@ class UsagePoller:
             self._flush_audit_records(conn, fp)
 
         self._reset_rate_limit_state(conn)
+        self._reset_auth_failure_state()
         self._parse_and_store(data, conn)
         self._purge_old_snapshots(conn)
         conn.commit()
@@ -485,6 +501,41 @@ class UsagePoller:
             self._consecutive_429s = 0
             self._active_poll_interval = None
             clear_backoff_state(conn)
+
+    def _record_auth_failure(self) -> None:
+        """Record a 401 auth failure and notify if threshold is reached."""
+        self._consecutive_401s += 1
+        if self._first_401_time is None:
+            self._first_401_time = time.monotonic()
+        logger.warning(
+            "Usage API 401 failure (consecutive: %d)", self._consecutive_401s,
+        )
+        if (
+            self._consecutive_401s >= AUTH_FAILURE_NOTIFY_THRESHOLD
+            and self.notifier is not None
+        ):
+            minutes_since = int(
+                (time.monotonic() - self._first_401_time) / 60,
+            )
+            self.notifier.notify_auth_failure(
+                consecutive_failures=self._consecutive_401s,
+                minutes_since_success=minutes_since if minutes_since > 0 else None,
+            )
+
+    def _reset_auth_failure_state(self) -> None:
+        """Reset auth failure tracking after a successful poll.
+
+        Sends a recovery notification if we were in a 401 outage.
+        """
+        if self._consecutive_401s > 0:
+            logger.info(
+                "Usage API auth recovered after %d consecutive 401(s)",
+                self._consecutive_401s,
+            )
+            if self.notifier is not None:
+                self.notifier.notify_auth_recovered()
+            self._consecutive_401s = 0
+            self._first_401_time = None
 
     def _fetch(self, token: str) -> dict:
         """Call the usage API synchronously via asyncio, with retry for transient errors."""

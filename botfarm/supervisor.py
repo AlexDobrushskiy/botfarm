@@ -168,9 +168,14 @@ class Supervisor(RecoveryMixin, OperationsMixin):
                 self._slot_manager.register_slot(project.name, sid)
         self._slot_manager.load()
 
+        # Webhook notifier (initialized early — used by UsagePoller)
+        self._notifier = Notifier(config.notifications)
+        self._was_busy = False  # Track busy→idle transition for notifications
+
         # Usage poller
         self._usage_poller = UsagePoller(
             poll_interval=config.usage_limits.poll_interval_seconds,
+            notifier=self._notifier,
         )
         self._usage_poller.restore_backoff_state(self._conn)
 
@@ -182,10 +187,6 @@ class Supervisor(RecoveryMixin, OperationsMixin):
 
         # Capacity monitoring state
         self._capacity_level = "normal"  # normal | warning | critical | blocked
-
-        # Webhook notifier
-        self._notifier = Notifier(config.notifications)
-        self._was_busy = False  # Track busy→idle transition for notifications
 
         # Track child processes: (project, slot_id) -> Process
         self._workers: dict[tuple[str, int], multiprocessing.Process] = {}
