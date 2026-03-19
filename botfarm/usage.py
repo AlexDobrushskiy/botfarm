@@ -8,7 +8,6 @@ can pause dispatch when limits are close.
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
 import hashlib
 import logging
 import math
@@ -17,6 +16,7 @@ import sqlite3
 import time
 from dataclasses import dataclass, field
 from email.utils import parsedate_to_datetime
+from typing import TYPE_CHECKING
 
 import httpx
 
