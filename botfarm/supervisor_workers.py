@@ -720,7 +720,7 @@ class WorkerLifecycleManager:
                 },
                 "prior_context": prior_context,
                 "merge_main_before_resume": merge_main_before_resume,
-                "bugtracker_type": self._config.bugtracker.type,
+                "bugtracker_type": self._config.bugtracker.type.title(),
             },
             daemon=False,
         )

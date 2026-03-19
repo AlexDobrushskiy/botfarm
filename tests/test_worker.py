@@ -3193,11 +3193,11 @@ class TestBuildImplementPrompt:
         assert "jira API or MCP tools" in prompt
 
     def test_standard_prompt_no_linear_for_non_linear_tracker(self):
-        prompt = _build_implement_prompt("SMA-42", None, "Jira")
+        prompt = _build_implement_prompt("SMA-42", None, "jira")
         assert "Linear" not in prompt
 
     def test_investigation_prompt_no_linear_for_non_linear_tracker(self):
-        prompt = _build_implement_prompt("SMA-42", ["Investigation"], "Jira")
+        prompt = _build_implement_prompt("SMA-42", ["Investigation"], "jira")
         assert "Linear" not in prompt
 
     def test_investigation_prompt_case_insensitive(self):
