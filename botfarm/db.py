@@ -1620,6 +1620,54 @@ def clear_backoff_state(conn: sqlite3.Connection) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 401 auth backoff state persistence
+# ---------------------------------------------------------------------------
+
+_401_BACKOFF_KEYS = (
+    "usage_401_consecutive_count",
+    "usage_401_backoff_until",
+)
+
+
+def save_401_backoff_state(
+    conn: sqlite3.Connection,
+    *,
+    consecutive_401s: int,
+    backoff_until: float,
+) -> None:
+    """Persist 401 auth backoff state so it survives supervisor restarts."""
+    write_runtime_config(conn, "usage_401_consecutive_count", consecutive_401s)
+    write_runtime_config(conn, "usage_401_backoff_until", backoff_until)
+    conn.commit()
+
+
+def load_401_backoff_state(
+    conn: sqlite3.Connection,
+) -> dict[str, int | float] | None:
+    """Load persisted 401 auth backoff state.
+
+    Returns a dict with ``consecutive_401s`` (int) and ``backoff_until``
+    (float, unix timestamp), or ``None`` if no state is stored.
+    """
+    config = read_runtime_config(conn)
+    count = config.get("usage_401_consecutive_count")
+    until = config.get("usage_401_backoff_until")
+    if count is None or until is None:
+        return None
+    return {
+        "consecutive_401s": int(count),
+        "backoff_until": float(until),
+    }
+
+
+def clear_401_backoff_state(conn: sqlite3.Connection) -> None:
+    """Remove persisted 401 auth backoff state."""
+    for key in _401_BACKOFF_KEYS:
+        conn.execute("DELETE FROM runtime_config WHERE key = ?", (key,))
+    conn.commit()
+
+
+# ---------------------------------------------------------------------------
 # Daily summary helpers
 # ---------------------------------------------------------------------------
 
