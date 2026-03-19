@@ -436,7 +436,7 @@ class TestLinearProjectAutoCreate:
             "id": "proj-new", "name": "my-proj",
         }
         with patch("botfarm.dashboard.routes_projects.setup_project") as mock_setup, \
-             patch("botfarm.dashboard.routes_projects._get_linear_client", return_value=mock_linear):
+             patch("botfarm.dashboard.routes_projects._get_bugtracker_client", return_value=mock_linear):
             mock_setup.return_value = {"name": "my-proj"}
             resp = client.post(
                 "/api/project/create",
@@ -458,7 +458,7 @@ class TestLinearProjectAutoCreate:
         client = TestClient(app)
         mock_linear = MagicMock()
         with patch("botfarm.dashboard.routes_projects.setup_project") as mock_setup, \
-             patch("botfarm.dashboard.routes_projects._get_linear_client", return_value=mock_linear):
+             patch("botfarm.dashboard.routes_projects._get_bugtracker_client", return_value=mock_linear):
             mock_setup.return_value = {"name": "my-proj"}
             resp = client.post(
                 "/api/project/create",
@@ -481,7 +481,7 @@ class TestLinearProjectAutoCreate:
         mock_linear = MagicMock()
         mock_linear.get_or_create_project.side_effect = Exception("API down")
         with patch("botfarm.dashboard.routes_projects.setup_project") as mock_setup, \
-             patch("botfarm.dashboard.routes_projects._get_linear_client", return_value=mock_linear):
+             patch("botfarm.dashboard.routes_projects._get_bugtracker_client", return_value=mock_linear):
             resp = client.post(
                 "/api/project/create",
                 json={
@@ -502,7 +502,7 @@ class TestLinearProjectAutoCreate:
         app = _make_app(tmp_path)
         client = TestClient(app)
         with patch("botfarm.dashboard.routes_projects.setup_project") as mock_setup, \
-             patch("botfarm.dashboard.routes_projects._get_linear_client", return_value=None):
+             patch("botfarm.dashboard.routes_projects._get_bugtracker_client", return_value=None):
             resp = client.post(
                 "/api/project/create",
                 json={

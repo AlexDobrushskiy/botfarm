@@ -865,9 +865,19 @@ class TestMigrationInfrastructure:
         c.execute("UPDATE schema_version SET version = 29")
         c.execute("DROP TABLE IF EXISTS usage_api_calls")
         c.execute("DROP TABLE IF EXISTS usage_api_key_sessions")
+        # Reverse the column renames from migration 032 so re-running works
+        c.execute("ALTER TABLE ticket_history RENAME COLUMN tracker_uuid TO linear_uuid")
+        c.execute("ALTER TABLE ticket_history RENAME COLUMN tracker_created_at TO linear_created_at")
+        c.execute("ALTER TABLE ticket_history RENAME COLUMN tracker_updated_at TO linear_updated_at")
+        c.execute("ALTER TABLE ticket_history RENAME COLUMN tracker_completed_at TO linear_completed_at")
+        c.execute("ALTER TABLE dispatch_state RENAME COLUMN tracker_issue_count TO linear_issue_count")
+        c.execute("ALTER TABLE dispatch_state RENAME COLUMN tracker_issue_limit TO linear_issue_limit")
+        c.execute("ALTER TABLE dispatch_state RENAME COLUMN tracker_capacity_checked_at TO linear_capacity_checked_at")
+        c.execute("ALTER TABLE dispatch_state RENAME COLUMN tracker_capacity_by_project TO linear_capacity_by_project")
+        c.execute("ALTER TABLE cleanup_batch_items RENAME COLUMN tracker_uuid TO linear_uuid")
         c.commit()
 
-        # Now run only migration 030
+        # Now run migrations 030, 031, and 032
         _run_migrations(c, from_version=29)
 
         # Verify the audit tables exist
@@ -900,9 +910,19 @@ class TestMigrationInfrastructure:
         c = init_db(db_file, allow_migration=True)
         # Simulate the old duplicate-028 state: DB is at v29 but audit tables exist
         c.execute("UPDATE schema_version SET version = 29")
+        # Reverse the column renames from migration 032 so re-running works
+        c.execute("ALTER TABLE ticket_history RENAME COLUMN tracker_uuid TO linear_uuid")
+        c.execute("ALTER TABLE ticket_history RENAME COLUMN tracker_created_at TO linear_created_at")
+        c.execute("ALTER TABLE ticket_history RENAME COLUMN tracker_updated_at TO linear_updated_at")
+        c.execute("ALTER TABLE ticket_history RENAME COLUMN tracker_completed_at TO linear_completed_at")
+        c.execute("ALTER TABLE dispatch_state RENAME COLUMN tracker_issue_count TO linear_issue_count")
+        c.execute("ALTER TABLE dispatch_state RENAME COLUMN tracker_issue_limit TO linear_issue_limit")
+        c.execute("ALTER TABLE dispatch_state RENAME COLUMN tracker_capacity_checked_at TO linear_capacity_checked_at")
+        c.execute("ALTER TABLE dispatch_state RENAME COLUMN tracker_capacity_by_project TO linear_capacity_by_project")
+        c.execute("ALTER TABLE cleanup_batch_items RENAME COLUMN tracker_uuid TO linear_uuid")
         c.commit()
 
-        # Running migration 030 must not fail on pre-existing tables
+        # Running migrations 030, 031, and 032 must not fail on pre-existing tables
         _run_migrations(c, from_version=29)
 
         # Verify version advanced to latest
@@ -2524,10 +2544,10 @@ class TestCapacityTracking:
 
     def test_columns_exist(self, conn):
         cols = {r[1] for r in conn.execute("PRAGMA table_info(dispatch_state)").fetchall()}
-        assert "linear_issue_count" in cols
-        assert "linear_issue_limit" in cols
-        assert "linear_capacity_checked_at" in cols
-        assert "linear_capacity_by_project" in cols
+        assert "tracker_issue_count" in cols
+        assert "tracker_issue_limit" in cols
+        assert "tracker_capacity_checked_at" in cols
+        assert "tracker_capacity_by_project" in cols
 
     def test_default_limit(self, conn):
         conn.execute(
@@ -2536,9 +2556,9 @@ class TestCapacityTracking:
         )
         conn.commit()
         row = conn.execute(
-            "SELECT linear_issue_limit FROM dispatch_state WHERE id = 1"
+            "SELECT tracker_issue_limit FROM dispatch_state WHERE id = 1"
         ).fetchone()
-        assert row["linear_issue_limit"] == 250
+        assert row["tracker_issue_limit"] == 250
 
     def test_load_returns_none_when_empty(self, conn):
         result = load_capacity_state(conn)
@@ -2686,7 +2706,7 @@ class TestUpsertTicketHistory:
         upsert_ticket_history(
             conn,
             ticket_id="SMA-200",
-            linear_uuid="uuid-123",
+            tracker_uuid="uuid-123",
             title="Full ticket",
             description="# Description\nSome markdown",
             status="In Progress",
@@ -2707,15 +2727,15 @@ class TestUpsertTicketHistory:
             comments_json=[{"body": "comment", "author": "user", "created_at": "2026-01-01"}],
             pr_url="https://github.com/test/pr/1",
             branch_name="feature-branch",
-            linear_created_at="2026-01-01T00:00:00Z",
-            linear_updated_at="2026-02-01T00:00:00Z",
-            linear_completed_at=None,
+            tracker_created_at="2026-01-01T00:00:00Z",
+            tracker_updated_at="2026-02-01T00:00:00Z",
+            tracker_completed_at=None,
             capture_source="dispatch",
             raw_json='{"id": "uuid-123"}',
         )
         conn.commit()
         row = get_ticket_history_entry(conn, "SMA-200")
-        assert row["linear_uuid"] == "uuid-123"
+        assert row["tracker_uuid"] == "uuid-123"
         assert row["description"] == "# Description\nSome markdown"
         assert row["priority"] == 2
         assert row["project_name"] == "Test Project"

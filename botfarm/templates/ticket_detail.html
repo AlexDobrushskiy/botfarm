@@ -54,14 +54,14 @@
             {% if ticket.due_date %}
             <tr><td><strong>Due Date</strong></td><td>{{ ticket.due_date }}</td></tr>
             {% endif %}
-            {% if ticket.linear_created_at %}
-            <tr><td><strong>Created (Linear)</strong></td><td><time data-timestamp="{{ ticket.linear_created_at }}" title="{{ ticket.linear_created_at[:19] }}">{{ ticket.linear_created_at[:19] }}</time></td></tr>
+            {% if ticket.tracker_created_at %}
+            <tr><td><strong>Created (Tracker)</strong></td><td><time data-timestamp="{{ ticket.tracker_created_at }}" title="{{ ticket.tracker_created_at[:19] }}">{{ ticket.tracker_created_at[:19] }}</time></td></tr>
             {% endif %}
-            {% if ticket.linear_updated_at %}
-            <tr><td><strong>Updated (Linear)</strong></td><td><time data-timestamp="{{ ticket.linear_updated_at }}" title="{{ ticket.linear_updated_at[:19] }}">{{ ticket.linear_updated_at[:19] }}</time></td></tr>
+            {% if ticket.tracker_updated_at %}
+            <tr><td><strong>Updated (Tracker)</strong></td><td><time data-timestamp="{{ ticket.tracker_updated_at }}" title="{{ ticket.tracker_updated_at[:19] }}">{{ ticket.tracker_updated_at[:19] }}</time></td></tr>
             {% endif %}
-            {% if ticket.linear_completed_at %}
-            <tr><td><strong>Completed (Linear)</strong></td><td><time data-timestamp="{{ ticket.linear_completed_at }}" title="{{ ticket.linear_completed_at[:19] }}">{{ ticket.linear_completed_at[:19] }}</time></td></tr>
+            {% if ticket.tracker_completed_at %}
+            <tr><td><strong>Completed (Tracker)</strong></td><td><time data-timestamp="{{ ticket.tracker_completed_at }}" title="{{ ticket.tracker_completed_at[:19] }}">{{ ticket.tracker_completed_at[:19] }}</time></td></tr>
             {% endif %}
             {% if ticket.captured_at %}
             <tr><td><strong>Captured At</strong></td><td><time data-timestamp="{{ ticket.captured_at }}" title="{{ ticket.captured_at[:19] }}">{{ ticket.captured_at[:19] }}</time></td></tr>

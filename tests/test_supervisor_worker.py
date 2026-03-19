@@ -1895,7 +1895,7 @@ class TestRefactoringAnalysisNotification:
         config = make_config(tmp_path)
         config.refactoring_analysis = RefactoringAnalysisConfig(
             enabled=True,
-            linear_label="My Custom Label",
+            tracker_label="My Custom Label",
         )
         (tmp_path / "repo").mkdir(exist_ok=True)
         mock_poller = MagicMock()
@@ -1924,7 +1924,7 @@ class TestRefactoringAnalysisNotification:
         config = make_config(tmp_path)
         config.refactoring_analysis = RefactoringAnalysisConfig(
             enabled=True,
-            linear_label="My Custom Label",
+            tracker_label="My Custom Label",
         )
         (tmp_path / "repo").mkdir(exist_ok=True)
         mock_poller = MagicMock()

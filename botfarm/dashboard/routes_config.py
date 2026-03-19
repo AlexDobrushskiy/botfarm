@@ -314,9 +314,9 @@ async def config_update(request: Request):
 # Maps (role, field) to the env var name used in .env / config.yaml
 _IDENTITY_SECRET_FIELDS: dict[tuple[str, str], str] = {
     ("coder", "github_token"): "CODER_GITHUB_TOKEN",
-    ("coder", "linear_api_key"): "CODER_LINEAR_API_KEY",
+    ("coder", "tracker_api_key"): "CODER_LINEAR_API_KEY",
     ("reviewer", "github_token"): "REVIEWER_GITHUB_TOKEN",
-    ("reviewer", "linear_api_key"): "REVIEWER_LINEAR_API_KEY",
+    ("reviewer", "tracker_api_key"): "REVIEWER_LINEAR_API_KEY",
 }
 
 # Non-secret fields written directly to config.yaml
@@ -351,14 +351,14 @@ def _identity_status(app) -> dict:
             "ssh_key_exists": ssh_exists,
             "git_author_name": coder.git_author_name,
             "git_author_email": coder.git_author_email,
-            "linear_api_key": _mask_secret(coder.linear_api_key),
-            "linear_api_key_set": bool(coder.linear_api_key),
+            "tracker_api_key": _mask_secret(coder.tracker_api_key),
+            "tracker_api_key_set": bool(coder.tracker_api_key),
         },
         "reviewer": {
             "github_token": _mask_secret(reviewer.github_token),
             "github_token_set": bool(reviewer.github_token),
-            "linear_api_key": _mask_secret(reviewer.linear_api_key),
-            "linear_api_key_set": bool(reviewer.linear_api_key),
+            "tracker_api_key": _mask_secret(reviewer.tracker_api_key),
+            "tracker_api_key_set": bool(reviewer.tracker_api_key),
         },
     }
 

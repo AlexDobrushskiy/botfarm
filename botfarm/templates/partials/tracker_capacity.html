@@ -1,12 +1,12 @@
 {% if capacity %}
 {% if capacity.severity == "blocked" %}
 <div style="padding: 0.75rem; margin-bottom: 0.75rem; border: 2px solid var(--pico-color-red-500, #e53935); border-radius: var(--pico-border-radius); background: rgba(229,57,53,0.15); animation: pulse 2s infinite;">
-    <strong class="status-failed">DISPATCH PAUSED — Linear capacity at {{ "%.0f"|format(capacity.pct) }}%</strong>
+    <strong class="status-failed">DISPATCH PAUSED — Tracker capacity at {{ "%.0f"|format(capacity.pct) }}%</strong>
     <br><small>Issue creation is blocked. Archive completed issues to free capacity.</small>
 </div>
 {% elif capacity.severity == "critical" %}
 <div style="padding: 0.75rem; margin-bottom: 0.75rem; border: 1px solid var(--pico-color-red-500, #e53935); border-radius: var(--pico-border-radius); background: rgba(229,57,53,0.10);">
-    <strong class="status-failed">Warning: Linear capacity at {{ "%.0f"|format(capacity.pct) }}% — approaching limit</strong>
+    <strong class="status-failed">Warning: Tracker capacity at {{ "%.0f"|format(capacity.pct) }}% — approaching limit</strong>
 </div>
 {% endif %}
 

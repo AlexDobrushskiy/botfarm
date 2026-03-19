@@ -98,7 +98,7 @@ def issue_details_to_history_kwargs(details: IssueDetails) -> dict:
     """Convert ``IssueDetails`` to kwargs for ``db.upsert_ticket_history``."""
     return {
         "ticket_id": details.ticket_id,
-        "linear_uuid": details.id,
+        "tracker_uuid": details.id,
         "title": details.title,
         "description": details.description,
         "status": details.status,
@@ -120,8 +120,8 @@ def issue_details_to_history_kwargs(details: IssueDetails) -> dict:
             {"body": c.body, "author": c.author, "created_at": c.created_at}
             for c in details.comments
         ]),
-        "linear_created_at": details.created_at,
-        "linear_updated_at": details.updated_at,
-        "linear_completed_at": details.completed_at,
+        "tracker_created_at": details.created_at,
+        "tracker_updated_at": details.updated_at,
+        "tracker_completed_at": details.completed_at,
         "raw_json": json.dumps(details.raw),
     }

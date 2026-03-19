@@ -321,7 +321,7 @@ TICKET_PAGE_SIZE = 25
 
 ALLOWED_TICKET_SORT_COLS = {
     "ticket_id", "title", "project_name", "status", "priority",
-    "captured_at", "linear_created_at",
+    "captured_at", "tracker_created_at",
 }
 
 
