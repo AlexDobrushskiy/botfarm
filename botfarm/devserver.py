@@ -153,10 +153,17 @@ class DevServerManager:
                     if project is not None:
                         logger.info("Auto-restarting dev server for %s", name)
                         restart_count = info.restart_count + 1
+                        self._close_log_file(info)
                         self._servers.pop(name, None)
                         self._do_start(project, restart_count)
                     else:
+                        self._close_log_file(info)
                         self._servers.pop(name, None)
+                else:
+                    # Remove crashed entry to avoid repeated warnings;
+                    # close log file to prevent fd leak.
+                    self._close_log_file(info)
+                    self._servers.pop(name, None)
 
     def running_projects(self) -> list[str]:
         """Return names of projects with running dev servers."""
@@ -168,6 +175,15 @@ class DevServerManager:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _close_log_file(info: _ServerInfo) -> None:
+        """Close the log file handle on a _ServerInfo if present."""
+        if info.log_file is not None:
+            try:
+                info.log_file.close()
+            except Exception:
+                pass
 
     def _do_start(self, project: ProjectConfig, restart_count: int) -> None:
         """Launch the dev server subprocess."""
@@ -216,12 +232,7 @@ class DevServerManager:
 
     def _do_stop(self, info: _ServerInfo, project_name: str) -> None:
         """Terminate a dev server process group."""
-        # Close the log file handle if present
-        if info.log_file is not None:
-            try:
-                info.log_file.close()
-            except Exception:
-                pass
+        self._close_log_file(info)
 
         if info.proc.poll() is not None:
             logger.info("Dev server for %s already exited (PID %d)", project_name, info.pid)
@@ -239,5 +250,6 @@ class DevServerManager:
             logger.warning("Dev server for %s did not stop gracefully — sending SIGKILL", project_name)
             try:
                 os.killpg(pgid, signal.SIGKILL)
+                info.proc.wait()  # reap the zombie
             except OSError:
                 pass

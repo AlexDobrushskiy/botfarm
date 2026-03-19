@@ -181,13 +181,18 @@ class TestDevServerManagerStop:
         assert "web-app" not in mgr._servers
 
     def test_stop_escalates_to_sigkill(self, tmp_path):
-        """stop() escalates to SIGKILL if SIGTERM doesn't work."""
+        """stop() escalates to SIGKILL if SIGTERM doesn't work and reaps zombie."""
         mgr = DevServerManager(log_dir=tmp_path / "logs")
 
         mock_proc = MagicMock()
         mock_proc.pid = 1234
         mock_proc.poll.return_value = None
-        mock_proc.wait.side_effect = subprocess.TimeoutExpired(cmd="npm", timeout=5)
+        # First wait() raises TimeoutExpired (SIGTERM grace period);
+        # second wait() succeeds (reap after SIGKILL).
+        mock_proc.wait.side_effect = [
+            subprocess.TimeoutExpired(cmd="npm", timeout=5),
+            0,
+        ]
         mgr._servers["web-app"] = _ServerInfo(mock_proc)
 
         with patch("botfarm.devserver.os.getpgid", return_value=1234), \
@@ -197,6 +202,8 @@ class TestDevServerManagerStop:
             assert mock_killpg.call_count == 2
             mock_killpg.assert_any_call(1234, signal.SIGTERM)
             mock_killpg.assert_any_call(1234, signal.SIGKILL)
+            # proc.wait() called twice: once for SIGTERM timeout, once to reap after SIGKILL
+            assert mock_proc.wait.call_count == 2
 
     def test_stop_noop_when_not_running(self, tmp_path):
         """stop() is a no-op for unknown project."""
@@ -257,7 +264,7 @@ class TestDevServerManagerStatus:
 
 class TestDevServerManagerHealthCheck:
     def test_health_check_detects_crash(self, tmp_path):
-        """health_check() logs warning for crashed process."""
+        """health_check() logs warning and removes crashed entry."""
         mgr = DevServerManager(log_dir=tmp_path / "logs", auto_restart=False)
 
         mock_proc = MagicMock()
@@ -266,7 +273,23 @@ class TestDevServerManagerHealthCheck:
         mgr._servers["web-app"] = _ServerInfo(mock_proc)
 
         mgr.health_check()
-        # Process stays in _servers (for status reporting) when auto_restart=False
+        # Crashed entry is removed to avoid repeated warnings
+        assert "web-app" not in mgr._servers
+
+    def test_health_check_closes_log_on_crash(self, tmp_path):
+        """health_check() closes log file when removing crashed entry."""
+        mgr = DevServerManager(log_dir=tmp_path / "logs", auto_restart=False)
+
+        mock_proc = MagicMock()
+        mock_proc.pid = 1234
+        mock_proc.poll.return_value = 1
+        info = _ServerInfo(mock_proc)
+        mock_log = MagicMock()
+        info.log_file = mock_log
+        mgr._servers["web-app"] = info
+
+        mgr.health_check()
+        mock_log.close.assert_called_once()
 
     def test_health_check_auto_restarts(self, tmp_path):
         """health_check() auto-restarts crashed process when enabled."""
@@ -278,6 +301,8 @@ class TestDevServerManagerHealthCheck:
         mock_proc.pid = 1234
         mock_proc.poll.return_value = 1  # crashed
         info = _ServerInfo(mock_proc, restart_count=2)
+        mock_log = MagicMock()
+        info.log_file = mock_log
         mgr._servers["web-app"] = info
 
         with patch("botfarm.devserver.subprocess.Popen") as mock_popen:
@@ -289,6 +314,8 @@ class TestDevServerManagerHealthCheck:
 
             mock_popen.assert_called_once()
             assert mgr._servers["web-app"].restart_count == 3
+            # Old log file was closed before restart
+            mock_log.close.assert_called_once()
             assert mgr._servers["web-app"].pid == 5678
 
     def test_health_check_skips_running(self, tmp_path):

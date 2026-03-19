@@ -269,6 +269,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
         )
         for project in config.projects:
             self._devserver_mgr.register_project(project)
+        self._devserver_tick_count = 0
 
     @property
     def slot_manager(self) -> SlotManager:
@@ -980,9 +981,8 @@ class Supervisor(RecoveryMixin, OperationsMixin):
 
     def _check_devservers(self) -> None:
         """Periodic liveness check for dev server processes."""
-        tick_count = getattr(self, "_devserver_tick_count", 0) + 1
-        self._devserver_tick_count = tick_count  # type: ignore[attr-defined]
-        if tick_count % self._DEVSERVER_CHECK_INTERVAL != 0:
+        self._devserver_tick_count += 1
+        if self._devserver_tick_count % self._DEVSERVER_CHECK_INTERVAL != 0:
             return
         self._devserver_mgr.health_check()
 
@@ -1146,7 +1146,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
         for entry in self._log_dir.iterdir():
             if not entry.is_dir():
                 continue
-            if entry.name in ("slot_dbs",):
+            if entry.name in ("slot_dbs", "devserver"):
                 continue
             if entry.name in active_tickets:
                 continue

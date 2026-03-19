@@ -1479,6 +1479,9 @@ Note: The supervisor handles status transitions automatically — do not move th
                 registered_slots.append(slot_id)
             self._slot_manager.save()
 
+            # Register with dev server manager (if project has run_command)
+            self._devserver_mgr.register_project(new_project_cfg)
+
             # Create a poller for the new project
             poller = create_poller(self._config, new_project_cfg)
             self._pollers[project_name] = poller
@@ -1506,6 +1509,8 @@ Note: The supervisor handles status transitions automatically — do not move th
                     self._slot_manager.save()
                 except Exception:
                     pass
+            # Deregister from dev server manager
+            self._devserver_mgr._projects.pop(project_name, None)
             if added_to_config:
                 self._config.projects = [
                     p for p in self._config.projects if p.name != project_name
