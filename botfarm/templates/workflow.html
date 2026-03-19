@@ -1161,6 +1161,7 @@ function _findDetail(node) {
 
 function _closeDrawerSilent() {
     if (!_drawerState) return;
+    document.getElementById('stage-drawer-body').style.visibility = '';
     _drawerState.element.style.display = 'none';
     if (_drawerState.originalNext) {
         _drawerState.originalParent.insertBefore(_drawerState.element, _drawerState.originalNext);
@@ -1176,9 +1177,15 @@ function _closeDrawerSilent() {
 }
 
 function closeDrawer() {
-    _closeDrawerSilent();
-    document.getElementById('stage-drawer').classList.remove('stage-drawer-open');
+    if (!_drawerState) return;
+    var closingState = _drawerState;
+    var drawer = document.getElementById('stage-drawer');
+    document.getElementById('stage-drawer-body').style.visibility = 'hidden';
+    drawer.classList.remove('stage-drawer-open');
     document.getElementById('stage-drawer-overlay').classList.remove('stage-drawer-overlay-visible');
+    setTimeout(function() {
+        if (_drawerState === closingState) _closeDrawerSilent();
+    }, 260);
 }
 
 function openStageDrawer(node) {
@@ -1242,8 +1249,13 @@ function openLoopDrawer(loopId, diamondEl) {
 document.addEventListener('keydown', function(e) {
     if (e.key === 'Escape' && _drawerState) closeDrawer();
 });
-// Close drawer on overlay click
-document.getElementById('stage-drawer-overlay').addEventListener('click', closeDrawer);
+// Close drawer on click outside drawer and stage/loop nodes
+document.addEventListener('mousedown', function(e) {
+    if (!_drawerState) return;
+    if (document.getElementById('stage-drawer').contains(e.target)) return;
+    if (e.target.closest('.workflow-node') || e.target.closest('.workflow-decision')) return;
+    closeDrawer();
+});
 
 /* ── Stage properties editor functions ── */
 
