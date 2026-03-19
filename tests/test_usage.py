@@ -439,13 +439,16 @@ class TestUsagePollerErrors:
             # Linear: poll_interval * (1 + 1) = 10 * 2 = 20
             assert poller._active_poll_interval == 20
 
+            # Reset both cooldowns to simulate backoff period elapsed
             poller._last_force_poll = 0
+            poller._last_poll = 0
             poller.force_poll(conn)
             assert poller._consecutive_401s == 2
             # Linear: poll_interval * (1 + 2) = 10 * 3 = 30
             assert poller._active_poll_interval == 30
 
             poller._last_force_poll = 0
+            poller._last_poll = 0
             poller.force_poll(conn)
             assert poller._consecutive_401s == 3
             # Linear: poll_interval * (1 + 3) = 10 * 4 = 40
@@ -469,6 +472,7 @@ class TestUsagePollerErrors:
         with patch.object(p, "_fetch", side_effect=error):
             for _ in range(20):
                 p._last_force_poll = 0
+                p._last_poll = 0
                 p.force_poll(conn)
 
         assert p._active_poll_interval == MAX_401_BACKOFF_INTERVAL
@@ -487,13 +491,15 @@ class TestUsagePollerErrors:
         with patch.object(poller, "_fetch", side_effect=error):
             poller.force_poll(conn)
             poller._last_force_poll = 0
+            poller._last_poll = 0
             poller.force_poll(conn)
 
         assert poller._consecutive_401s == 2
         assert poller._active_poll_interval is not None
 
-        # Now a successful poll
+        # Now a successful poll (backoff period elapsed)
         poller._last_force_poll = 0
+        poller._last_poll = 0
         with patch.object(poller, "_fetch", return_value=SAMPLE_USAGE_RESPONSE):
             poller.force_poll(conn)
 
@@ -565,6 +571,32 @@ class TestUsagePollerErrors:
 
         # Should keep the larger 429 interval
         assert poller._active_poll_interval == 1000
+
+    def test_force_poll_suppressed_during_401_backoff(self, poller, conn):
+        """force_poll() is suppressed while 401 backoff is active."""
+        response = httpx.Response(
+            401,
+            request=httpx.Request("GET", "https://api.anthropic.com/api/oauth/usage"),
+        )
+        error = httpx.HTTPStatusError("", request=response.request, response=response)
+        poller.credential_manager.refresh_token.return_value = "test-token"
+
+        with patch.object(poller, "_fetch", side_effect=error) as mock_fetch:
+            # First call — triggers 401 backoff
+            poller.force_poll(conn)
+            assert poller._consecutive_401s == 1
+            first_call_count = mock_fetch.call_count
+
+            # Second call without advancing time — should be suppressed
+            poller._last_force_poll = 0  # bypass cooldown
+            result = poller.force_poll(conn)
+            assert mock_fetch.call_count == first_call_count  # no new API call
+            assert poller.last_polled_fresh is False
+
+            # Also suppressed with bypass_cooldown=True
+            result = poller.force_poll(conn, bypass_cooldown=True)
+            assert mock_fetch.call_count == first_call_count
+            assert poller.last_polled_fresh is False
 
     def test_non_401_http_error_uses_last_known(self, poller, conn):
         response = httpx.Response(

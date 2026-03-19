@@ -256,8 +256,9 @@ class UsagePoller:
         Pass ``bypass_cooldown=True`` for safety-critical paths that need
         a guaranteed fresh reading (e.g. limit checks, resume decisions).
 
-        Even with ``bypass_cooldown=True``, 429 adaptive backoff is always
-        respected — hammering a rate-limited API makes the block permanent.
+        Even with ``bypass_cooldown=True``, 429 and 401 adaptive backoff is
+        always respected — hammering a rate-limited or auth-failing API
+        makes the situation worse.
         """
         now = time.monotonic()
 
@@ -266,6 +267,16 @@ class UsagePoller:
             if now - self._last_poll < self.effective_poll_interval:
                 logger.debug(
                     "force_poll() suppressed — in 429 backoff (%ds remaining)",
+                    self.effective_poll_interval - (now - self._last_poll),
+                )
+                self._last_polled_fresh = False
+                return self._state
+
+        # Also enforce 401 backoff — repeated auth failures cause 429 cascades
+        if self._consecutive_401s > 0:
+            if now - self._last_poll < self.effective_poll_interval:
+                logger.debug(
+                    "force_poll() suppressed — in 401 backoff (%ds remaining)",
                     self.effective_poll_interval - (now - self._last_poll),
                 )
                 self._last_polled_fresh = False
