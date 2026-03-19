@@ -228,6 +228,115 @@ class TestSuggestNameEndpoint:
         assert resp.json()["name"] == ""
 
 
+class TestProjectCreateNoRepoUrl:
+    """Test creating projects without a repo URL (init path)."""
+
+    def test_empty_repo_url_accepted(self, tmp_path):
+        app = _make_app(tmp_path)
+        client = TestClient(app)
+        with patch("botfarm.dashboard.routes_projects.setup_project") as mock_setup:
+            mock_setup.return_value = {"name": "new-proj"}
+            resp = client.post(
+                "/api/project/create",
+                json={
+                    "repo_url": "",
+                    "name": "new-proj",
+                    "team": "ENG",
+                    "slots": 2,
+                },
+            )
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["status"] == "started"
+            time.sleep(0.1)
+
+    def test_invalid_repo_url_still_rejected(self, tmp_path):
+        app = _make_app(tmp_path)
+        client = TestClient(app)
+        resp = client.post(
+            "/api/project/create",
+            json={
+                "repo_url": "not-a-url",
+                "name": "test",
+                "team": "ENG",
+                "slots": 1,
+            },
+        )
+        assert resp.status_code == 400
+        assert any("URL" in e for e in resp.json()["errors"])
+
+    def test_create_github_passed_through(self, tmp_path):
+        app = _make_app(tmp_path)
+        client = TestClient(app)
+        with patch("botfarm.dashboard.routes_projects.setup_project") as mock_setup:
+            mock_setup.return_value = {"name": "gh-proj"}
+            resp = client.post(
+                "/api/project/create",
+                json={
+                    "repo_url": "",
+                    "name": "gh-proj",
+                    "team": "ENG",
+                    "slots": 1,
+                    "create_github": True,
+                },
+            )
+            assert resp.status_code == 200
+            time.sleep(0.1)
+            # Verify create_github was passed
+            assert mock_setup.call_args.kwargs.get("create_github") is True
+
+
+class TestSetupGitEndpoint:
+    def test_missing_name(self, tmp_path):
+        app = _make_app(tmp_path)
+        client = TestClient(app)
+        resp = client.post(
+            "/api/project/setup-git",
+            json={"name": ""},
+        )
+        assert resp.status_code == 400
+
+    def test_unknown_project(self, tmp_path):
+        app = _make_app(tmp_path)
+        client = TestClient(app)
+        resp = client.post(
+            "/api/project/setup-git",
+            json={"name": "nonexistent"},
+        )
+        assert resp.status_code == 404
+
+    def test_successful_start(self, tmp_path):
+        existing = ProjectConfig(
+            name="my-proj", team="ENG",
+            base_dir="/tmp/x", worktree_prefix="/tmp/x-slot-", slots=[1],
+        )
+        cfg = _make_config(projects=[existing])
+        app = _make_app(tmp_path, config=cfg)
+        client = TestClient(app)
+        with patch("botfarm.dashboard.routes_projects.setup_project_git") as mock_setup:
+            resp = client.post(
+                "/api/project/setup-git",
+                json={"name": "my-proj"},
+            )
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["status"] == "started"
+            assert "task_id" in data
+            time.sleep(0.1)
+
+    def test_no_config(self, tmp_path):
+        db_path = tmp_path / "test.db"
+        conn = init_db(db_path)
+        conn.close()
+        app = create_app(db_path=db_path)
+        client = TestClient(app)
+        resp = client.post(
+            "/api/project/setup-git",
+            json={"name": "test"},
+        )
+        assert resp.status_code == 503
+
+
 class TestAddProjectPage:
     def test_renders(self, tmp_path):
         app = _make_app(tmp_path)

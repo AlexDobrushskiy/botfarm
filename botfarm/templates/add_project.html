@@ -7,14 +7,19 @@
 <div id="add-project-form-container">
     <form id="add-project-form" onsubmit="return submitAddProject(event)">
         <label for="repo_url">
-            Repository URL
-            <input type="text" id="repo_url" name="repo_url" placeholder="git@github.com:user/repo.git" required
-                   oninput="suggestProjectName()">
+            Repository URL <small>(leave empty to create a new repo)</small>
+            <input type="text" id="repo_url" name="repo_url" placeholder="git@github.com:user/repo.git"
+                   oninput="suggestProjectName(); toggleGithubOption()">
         </label>
 
         <label for="project_name">
             Project name
             <input type="text" id="project_name" name="name" placeholder="my-project" required>
+        </label>
+
+        <label id="create_github_label" style="display:none;">
+            <input type="checkbox" id="create_github" name="create_github" role="switch">
+            Create GitHub repository (private, via <code>gh</code> CLI)
         </label>
 
         <label for="team">
@@ -97,6 +102,12 @@ document.getElementById("project_name").addEventListener("input", function() {
     this.dataset.userEdited = "1";
 });
 
+function toggleGithubOption() {
+    var url = document.getElementById("repo_url").value.trim();
+    document.getElementById("create_github_label").style.display = url ? "none" : "";
+    if (url) document.getElementById("create_github").checked = false;
+}
+
 function loadTeams() {
     var sel = document.getElementById("team");
     fetch("/api/linear/teams")
@@ -165,7 +176,8 @@ function submitAddProject(evt) {
         team: document.getElementById("team").value,
         tracker_project: trackerProject,
         create_linear_project: createLinear,
-        slots: parseInt(document.getElementById("slots_count").value, 10) || 1
+        slots: parseInt(document.getElementById("slots_count").value, 10) || 1,
+        create_github: document.getElementById("create_github").checked
     };
 
     fetch("/api/project/create", {
@@ -248,6 +260,9 @@ function showFormAgain() {
     btn.textContent = "Add Project";
 }
 
-document.addEventListener("DOMContentLoaded", loadTeams);
+document.addEventListener("DOMContentLoaded", function() {
+    loadTeams();
+    toggleGithubOption();
+});
 </script>
 {% endblock %}

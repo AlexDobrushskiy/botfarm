@@ -14,7 +14,12 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from sse_starlette.sse import EventSourceResponse
 
 from botfarm.bugtracker import create_client
-from botfarm.project_setup import extract_repo_name, setup_project, ProjectSetupError
+from botfarm.project_setup import (
+    extract_repo_name,
+    setup_project,
+    setup_project_git,
+    ProjectSetupError,
+)
 
 from .state import get_capacity_data, manual_pause_state, read_state, supervisor_status
 
@@ -110,12 +115,11 @@ async def api_project_create(request: Request):
     tracker_project = (body.get("tracker_project") or "").strip()
     create_linear_project = bool(body.get("create_linear_project", False))
     slots_count = body.get("slots", 1)
+    create_github = bool(body.get("create_github", False))
 
     # Validation
     errors = []
-    if not repo_url:
-        errors.append("Repository URL is required")
-    elif not _GIT_URL_RE.match(repo_url):
+    if repo_url and not _GIT_URL_RE.match(repo_url):
         errors.append("Repository URL must be a valid git URL (SSH or HTTPS)")
 
     if not name:
@@ -186,6 +190,7 @@ async def api_project_create(request: Request):
                 tracker_project=tracker_project,
                 slots=slot_ids,
                 config_path=config_path,
+                create_github=create_github,
                 progress_callback=_on_progress,
             )
             # Notify supervisor to register the new project
@@ -252,6 +257,84 @@ async def api_project_create_progress(request: Request, task_id: str = ""):
                     _setup_tasks.pop(task_id, None)
 
     return EventSourceResponse(event_generator())
+
+
+# --- Git setup (retry) endpoint ---
+
+
+@router.post("/api/project/setup-git")
+async def api_project_setup_git(request: Request):
+    """Set up or repair git repo and worktrees for an existing project.
+
+    Reads the project from config and ensures the repo directory and all
+    worktrees exist.  Useful when the initial setup failed partway through.
+    """
+    app = request.app
+    cfg = app.state.botfarm_config
+    if cfg is None:
+        return JSONResponse(
+            {"error": "Botfarm config not available"}, status_code=503,
+        )
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "Expected a JSON object"}, status_code=400)
+
+    name = (body.get("name") or "").strip()
+    create_github = bool(body.get("create_github", False))
+
+    if not name:
+        return JSONResponse({"error": "Project name is required"}, status_code=400)
+
+    # Verify project exists in config
+    if not any(p.name == name for p in cfg.projects):
+        return JSONResponse(
+            {"error": f"Project '{name}' not found in config"}, status_code=404,
+        )
+
+    task_id = str(uuid.uuid4())
+    task_state = {
+        "messages": [],
+        "done": False,
+        "error": None,
+        "project_name": name,
+    }
+    with _setup_tasks_lock:
+        _setup_tasks[task_id] = task_state
+
+    def _run_setup():
+        def _on_progress(msg: str):
+            with _setup_tasks_lock:
+                task_state["messages"].append(msg)
+
+        try:
+            config_path = Path(cfg.source_path)
+            setup_project_git(
+                name=name,
+                config_path=config_path,
+                create_github=create_github,
+                progress_callback=_on_progress,
+            )
+            with _setup_tasks_lock:
+                task_state["done"] = True
+
+        except ProjectSetupError as exc:
+            with _setup_tasks_lock:
+                task_state["error"] = str(exc)
+                task_state["done"] = True
+        except Exception as exc:
+            logger.exception("Unexpected error in git setup for %s", name)
+            with _setup_tasks_lock:
+                task_state["error"] = str(exc)
+                task_state["done"] = True
+
+    thread = Thread(target=_run_setup, daemon=True, name=f"setup-git-{name}")
+    thread.start()
+
+    return JSONResponse({"status": "started", "task_id": task_id})
 
 
 # --- Add Project page ---
