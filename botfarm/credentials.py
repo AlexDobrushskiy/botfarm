@@ -48,37 +48,32 @@ class OAuthToken:
 
 @dataclass
 class CredentialManager:
-    """Retrieves and caches Claude Code OAuth tokens.
+    """Retrieves Claude Code OAuth tokens from the OS credential store.
 
-    Auto-detects the OS and uses the appropriate retrieval method.
-    On failure, logs a warning and disables limit checking rather than crashing.
+    Always re-reads credentials from disk to pick up tokens refreshed by
+    concurrent ``claude -p`` worker sessions.  This is called at most once
+    per usage poll (~10 min), so the I/O cost is negligible.
     """
 
-    _cached_token: OAuthToken | None = field(default=None, repr=False)
-
     def get_token(self) -> str | None:
-        """Return the cached OAuth access token, loading it if needed.
+        """Load and return the current OAuth access token.
 
         Returns None if credentials are unavailable (logs a warning).
         """
-        if self._cached_token is not None:
-            return self._cached_token.access_token
-
         try:
             token = _load_token()
-            self._cached_token = token
             return token.access_token
         except CredentialError as exc:
             logger.warning("Could not load OAuth credentials: %s", exc)
             return None
 
-    def clear_cache(self) -> None:
-        """Clear the cached token (e.g. after a 401 response)."""
-        self._cached_token = None
-
     def refresh_token(self) -> str | None:
-        """Clear cache and reload the token from the OS credential store."""
-        self.clear_cache()
+        """Reload the token from the OS credential store.
+
+        Kept for API compatibility with callers that explicitly refresh
+        after a 401, but behaves identically to ``get_token()`` since
+        we always read fresh from disk.
+        """
         return self.get_token()
 
 
