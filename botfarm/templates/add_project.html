@@ -24,12 +24,30 @@
             </select>
         </label>
 
-        <label for="tracker_project">
-            Project filter <small>(optional)</small>
-            <select id="tracker_project" name="tracker_project">
-                <option value="">— None —</option>
-            </select>
-        </label>
+        <fieldset>
+            <label>
+                <input type="checkbox" id="create_linear_project" name="create_linear_project" checked
+                       onchange="toggleLinearProjectMode()">
+                Create new Linear project
+            </label>
+        </fieldset>
+
+        <div id="linear-project-new">
+            <label for="new_linear_project_name">
+                New Linear project name
+                <input type="text" id="new_linear_project_name" name="new_linear_project_name"
+                       placeholder="Will use project name if empty">
+            </label>
+        </div>
+
+        <div id="linear-project-existing" style="display:none;">
+            <label for="tracker_project">
+                Existing Linear project <small>(optional)</small>
+                <select id="tracker_project" name="tracker_project">
+                    <option value="">— None —</option>
+                </select>
+            </label>
+        </div>
 
         <label for="slots_count">
             Number of slots
@@ -49,6 +67,12 @@
 </div>
 
 <script>
+function toggleLinearProjectMode() {
+    var checked = document.getElementById("create_linear_project").checked;
+    document.getElementById("linear-project-new").style.display = checked ? "block" : "none";
+    document.getElementById("linear-project-existing").style.display = checked ? "none" : "block";
+}
+
 var _suggestTimer = null;
 
 function suggestProjectName() {
@@ -126,11 +150,21 @@ function submitAddProject(evt) {
     btn.disabled = true;
     btn.textContent = "Starting...";
 
+    var createLinear = document.getElementById("create_linear_project").checked;
+    var trackerProject;
+    if (createLinear) {
+        trackerProject = document.getElementById("new_linear_project_name").value.trim() ||
+                         document.getElementById("project_name").value.trim();
+    } else {
+        trackerProject = document.getElementById("tracker_project").value;
+    }
+
     var body = {
         repo_url: document.getElementById("repo_url").value.trim(),
         name: document.getElementById("project_name").value.trim(),
         team: document.getElementById("team").value,
-        tracker_project: document.getElementById("tracker_project").value,
+        tracker_project: trackerProject,
+        create_linear_project: createLinear,
         slots: parseInt(document.getElementById("slots_count").value, 10) || 1
     };
 

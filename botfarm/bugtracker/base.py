@@ -151,6 +151,23 @@ class BugtrackerClient(ABC):
         """Look up a project ID by name. Returns ``None`` if not found."""
         raise NotImplementedError
 
+    def create_project(
+        self,
+        team_id: str,
+        name: str,
+        description: str | None = None,
+    ) -> dict:
+        """Create a new project. Returns a dict with ``id`` and ``name``."""
+        raise NotImplementedError
+
+    def get_or_create_project(
+        self,
+        team_key: str,
+        project_name: str,
+    ) -> dict:
+        """Get existing or create a new project. Returns dict with ``id`` and ``name``."""
+        raise NotImplementedError
+
 
 class BugtrackerPoller(ABC):
     """Polls a bugtracker for actionable tickets and manages issue state."""
