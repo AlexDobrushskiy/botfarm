@@ -760,9 +760,9 @@ class WorkerLifecycleManager:
             return
 
         # Auto-assign ticket to coder bot (best-effort)
-        if sup._coder_linear:
+        if sup._coder_tracker:
             try:
-                sup._coder_linear.assign_issue(issue.identifier, sup._coder_viewer_id)
+                sup._coder_tracker.assign_issue(issue.identifier, sup._coder_viewer_id)
             except Exception:
                 logger.warning("Failed to assign %s to coder bot — continuing", issue.identifier)
 

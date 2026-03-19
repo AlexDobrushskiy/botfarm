@@ -1385,7 +1385,7 @@ class TestCreatePollersCoderClient:
             bugtracker=LinearConfig(api_key="owner-key"),
             database=DatabaseConfig(),
             identities=IdentitiesConfig(
-                coder=CoderIdentity(linear_api_key="coder-key"),
+                coder=CoderIdentity(tracker_api_key="coder-key"),
             ),
         )
         pollers = create_pollers(config)
@@ -1400,7 +1400,7 @@ class TestCreatePollersCoderClient:
             bugtracker=LinearConfig(api_key="owner-key"),
             database=DatabaseConfig(),
             identities=IdentitiesConfig(
-                coder=CoderIdentity(linear_api_key=""),
+                coder=CoderIdentity(tracker_api_key=""),
             ),
         )
         pollers = create_pollers(config)
@@ -1426,7 +1426,7 @@ class TestCreatePollersCoderClient:
             bugtracker=LinearConfig(api_key="owner-key"),
             database=DatabaseConfig(),
             identities=IdentitiesConfig(
-                coder=CoderIdentity(linear_api_key="coder-key"),
+                coder=CoderIdentity(tracker_api_key="coder-key"),
             ),
         )
         pollers = create_pollers(config)

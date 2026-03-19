@@ -972,18 +972,18 @@ def save_capacity_state(
     by_project: dict[str, int],
     checked_at: str,
 ) -> None:
-    """Persist Linear capacity snapshot into the dispatch_state singleton row."""
+    """Persist bugtracker capacity snapshot into the dispatch_state singleton row."""
     by_project_json = json.dumps(by_project)
     conn.execute(
         """
-        INSERT INTO dispatch_state (id, paused, linear_issue_count, linear_issue_limit,
-                                    linear_capacity_by_project, linear_capacity_checked_at, updated_at)
+        INSERT INTO dispatch_state (id, paused, tracker_issue_count, tracker_issue_limit,
+                                    tracker_capacity_by_project, tracker_capacity_checked_at, updated_at)
         VALUES (1, 0, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
-            linear_issue_count=excluded.linear_issue_count,
-            linear_issue_limit=excluded.linear_issue_limit,
-            linear_capacity_by_project=excluded.linear_capacity_by_project,
-            linear_capacity_checked_at=excluded.linear_capacity_checked_at,
+            tracker_issue_count=excluded.tracker_issue_count,
+            tracker_issue_limit=excluded.tracker_issue_limit,
+            tracker_capacity_by_project=excluded.tracker_capacity_by_project,
+            tracker_capacity_checked_at=excluded.tracker_capacity_checked_at,
             updated_at=excluded.updated_at
         """,
         (issue_count, limit, by_project_json, checked_at, _now_iso()),
@@ -993,24 +993,24 @@ def save_capacity_state(
 def load_capacity_state(
     conn: sqlite3.Connection,
 ) -> dict | None:
-    """Load cached Linear capacity data from dispatch_state.
+    """Load cached bugtracker capacity data from dispatch_state.
 
     Returns a dict with keys ``issue_count``, ``limit``, ``by_project``,
     and ``checked_at``, or ``None`` if no capacity data has been saved yet.
     """
     row = conn.execute(
-        "SELECT linear_issue_count, linear_issue_limit, "
-        "linear_capacity_by_project, linear_capacity_checked_at "
+        "SELECT tracker_issue_count, tracker_issue_limit, "
+        "tracker_capacity_by_project, tracker_capacity_checked_at "
         "FROM dispatch_state WHERE id = 1"
     ).fetchone()
-    if row is None or row["linear_issue_count"] is None:
+    if row is None or row["tracker_issue_count"] is None:
         return None
-    by_project_raw = row["linear_capacity_by_project"]
+    by_project_raw = row["tracker_capacity_by_project"]
     return {
-        "issue_count": row["linear_issue_count"],
-        "limit": row["linear_issue_limit"],
+        "issue_count": row["tracker_issue_count"],
+        "limit": row["tracker_issue_limit"],
         "by_project": json.loads(by_project_raw) if by_project_raw else {},
-        "checked_at": row["linear_capacity_checked_at"],
+        "checked_at": row["tracker_capacity_checked_at"],
     }
 
 
@@ -1078,14 +1078,22 @@ def upsert_ticket_history(conn: sqlite3.Connection, **fields: object) -> None:
             fields[list_field] = json.dumps(val)
 
     allowed_columns = {
-        "ticket_id", "linear_uuid", "title", "description", "status",
+        "ticket_id", "tracker_uuid", "title", "description", "status",
         "priority", "url", "assignee_name", "assignee_email", "creator_name",
         "project_name", "team_name", "estimate", "due_date", "parent_id",
         "children_ids", "blocked_by", "blocks", "labels", "comments_json",
-        "pr_url", "branch_name", "linear_created_at", "linear_updated_at",
-        "linear_completed_at", "captured_at", "capture_source", "raw_json",
+        "pr_url", "branch_name", "tracker_created_at", "tracker_updated_at",
+        "tracker_completed_at", "captured_at", "capture_source", "raw_json",
         "deleted_from_linear",
     }
+    # Accept old column names as aliases for backward compatibility
+    _COLUMN_ALIASES = {
+        "linear_uuid": "tracker_uuid",
+        "linear_created_at": "tracker_created_at",
+        "linear_updated_at": "tracker_updated_at",
+        "linear_completed_at": "tracker_completed_at",
+    }
+    fields = {_COLUMN_ALIASES.get(k, k): v for k, v in fields.items()}
     filtered = {k: v for k, v in fields.items() if k in allowed_columns}
 
     if "captured_at" not in filtered:
@@ -1130,7 +1138,7 @@ def get_ticket_history_list(
     """Return ticket history entries with optional filters."""
     allowed_sort_cols = {
         "ticket_id", "title", "project_name", "status", "priority",
-        "captured_at", "linear_created_at", "linear_updated_at",
+        "captured_at", "tracker_created_at", "tracker_updated_at",
     }
     if sort_by not in allowed_sort_cols:
         sort_by = "captured_at"
@@ -1256,7 +1264,7 @@ def insert_cleanup_batch_item(
     conn: sqlite3.Connection,
     *,
     batch_id: str,
-    linear_uuid: str,
+    tracker_uuid: str,
     identifier: str,
     action: str,
     success: bool,
@@ -1266,10 +1274,10 @@ def insert_cleanup_batch_item(
     conn.execute(
         """
         INSERT INTO cleanup_batch_items
-            (batch_id, linear_uuid, identifier, action, success, error, created_at)
+            (batch_id, tracker_uuid, identifier, action, success, error, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-        (batch_id, linear_uuid, identifier, action, int(success), error, _now_iso()),
+        (batch_id, tracker_uuid, identifier, action, int(success), error, _now_iso()),
     )
 
 

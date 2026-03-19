@@ -36,13 +36,13 @@ class LinearPoller(BugtrackerPoller):
 def create_pollers(config: BotfarmConfig) -> list[LinearPoller]:
     """Create one LinearPoller per configured project.
 
-    When ``identities.coder.linear_api_key`` is configured, a separate
+    When ``identities.coder.tracker_api_key`` is configured, a separate
     ``LinearClient`` is created for coder-initiated operations (moving
     tickets, posting comments) so they appear under the coder bot's identity.
     Polling always uses the owner's client.
     """
     client = LinearClient(api_key=config.bugtracker.api_key)
-    coder_key = config.identities.coder.linear_api_key
+    coder_key = config.identities.coder.tracker_api_key
     coder_client = LinearClient(api_key=coder_key) if coder_key else None
     return [
         LinearPoller(

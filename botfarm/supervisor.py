@@ -144,7 +144,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
             p.name: p for p in config.projects
         }
 
-        # Linear pollers keyed by project name
+        # Bugtracker pollers keyed by project name
         pollers = create_pollers(config)
         self._pollers: dict[str, BugtrackerPoller] = {
             p.project_name: p for p in pollers
@@ -183,7 +183,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
         self._codex_usage_poller = CodexUsagePoller(config=config.codex_usage)
 
         # Bugtracker client for capacity monitoring (uses owner API key)
-        self._linear_client = create_client(config)
+        self._bugtracker_client = create_client(config)
 
         # Capacity monitoring state
         self._capacity_level = "normal"  # normal | warning | critical | blocked
@@ -245,20 +245,20 @@ class Supervisor(RecoveryMixin, OperationsMixin):
         self._git_env = build_git_env(config.identities)
 
         # Coder bugtracker self-assignment
-        coder_key = config.identities.coder.linear_api_key
+        coder_key = config.identities.coder.tracker_api_key
         if coder_key:
             try:
-                coder_linear = create_client(config, api_key=coder_key)
-                self._coder_viewer_id: str | None = coder_linear.get_viewer_id()
-                self._coder_linear: BugtrackerClient | None = coder_linear
-                logger.info("Cached coder Linear viewer ID: %s", self._coder_viewer_id)
+                coder_client = create_client(config, api_key=coder_key)
+                self._coder_viewer_id: str | None = coder_client.get_viewer_id()
+                self._coder_tracker: BugtrackerClient | None = coder_client
+                logger.info("Cached coder bugtracker viewer ID: %s", self._coder_viewer_id)
             except Exception:
                 logger.warning("Failed to resolve coder viewer ID — auto-assignment disabled")
                 self._coder_viewer_id = None
-                self._coder_linear: BugtrackerClient | None = None
+                self._coder_tracker: BugtrackerClient | None = None
         else:
             self._coder_viewer_id: str | None = None
-            self._coder_linear: BugtrackerClient | None = None
+            self._coder_tracker: BugtrackerClient | None = None
 
         # Sub-managers
         self._worker_mgr = WorkerLifecycleManager(self)
@@ -330,7 +330,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
             self._dashboard_thread = start_dashboard(
                 self._config.dashboard,
                 db_path=self._db_path,
-                linear_workspace=self._config.bugtracker.workspace,
+                workspace=self._config.bugtracker.workspace,
                 botfarm_config=self._config,
                 logs_dir=self._log_dir,
                 on_pause=self.request_pause,
@@ -655,7 +655,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
         if not cap_config.enabled:
             return
 
-        result = self._linear_client.count_active_issues()
+        result = self._bugtracker_client.count_active_issues()
         if result is None:
             logger.warning("Capacity poll failed — skipping this tick")
             return
@@ -693,7 +693,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
 
         if new_level == "blocked":
             logger.warning(
-                "Linear capacity %s — auto-pausing dispatch", detail,
+                "Tracker capacity %s — auto-pausing dispatch", detail,
             )
             insert_event(
                 self._conn, event_type="capacity_blocked", detail=detail,
@@ -705,7 +705,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
             )
 
         elif new_level == "critical":
-            logger.warning("Linear capacity %s — critical", detail)
+            logger.warning("Tracker capacity %s — critical", detail)
             insert_event(
                 self._conn, event_type="capacity_critical", detail=detail,
             )
@@ -715,7 +715,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
             )
 
         elif new_level == "warning":
-            logger.warning("Linear capacity %s — approaching limits", detail)
+            logger.warning("Tracker capacity %s — approaching limits", detail)
             insert_event(
                 self._conn, event_type="capacity_warning", detail=detail,
             )
@@ -726,7 +726,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
 
         # Clearing from blocked state — resume dispatch
         if old_level == "blocked" and new_level != "blocked":
-            logger.info("Linear capacity %s — resuming dispatch", detail)
+            logger.info("Tracker capacity %s — resuming dispatch", detail)
             insert_event(
                 self._conn, event_type="capacity_cleared", detail=detail,
             )
@@ -894,7 +894,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
 
         for blocker_id, blocked_ids in blocker_to_blocked.items():
             try:
-                result = self._linear_client.fetch_issue_labels(blocker_id)
+                result = self._bugtracker_client.fetch_issue_labels(blocker_id)
             except Exception:
                 logger.debug("Failed to fetch labels for blocker %s", blocker_id)
                 continue

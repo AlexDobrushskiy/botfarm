@@ -82,7 +82,7 @@ Dashboard code lives under `botfarm/dashboard/`:
 | `GET /partials/usage` | Usage widget |
 | `GET /partials/supervisor-badge` | Supervisor health indicator |
 | `GET /partials/supervisor-controls` | Pause/Resume/Stop buttons |
-| `GET /partials/linear-capacity` | Workspace capacity gauge |
+| `GET /partials/tracker-capacity` | Workspace capacity gauge |
 | `GET /partials/history` | History table (paginated) |
 | `GET /partials/tickets` | Ticket table (paginated) |
 | `GET /partials/start-paused-banner` | Alert when starting paused |

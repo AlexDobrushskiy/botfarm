@@ -42,7 +42,7 @@ def _make_config(
     cadence_days: int = 14,
     cadence_tickets: int = 20,
     priority: int = 4,
-    linear_label: str = "Refactoring Analysis",
+    tracker_label: str = "Refactoring Analysis",
 ) -> BotfarmConfig:
     return BotfarmConfig(
         projects=[
@@ -64,7 +64,7 @@ def _make_config(
             cadence_days=cadence_days,
             cadence_tickets=cadence_tickets,
             priority=priority,
-            linear_label=linear_label,
+            tracker_label=tracker_label,
         ),
     )
 
@@ -93,20 +93,20 @@ def _setup_linear_mocks(sup, *, states=None):
     """Set up standard Linear client mocks for ticket creation."""
     if states is None:
         states = {"Todo": "todo-state-id", "Backlog": "backlog-state-id"}
-    sup._linear_client.get_team_id = MagicMock(return_value="team-uuid")
-    sup._linear_client.get_or_create_label = MagicMock(
+    sup._bugtracker_client.get_team_id = MagicMock(return_value="team-uuid")
+    sup._bugtracker_client.get_or_create_label = MagicMock(
         return_value="label-uuid"
     )
-    sup._linear_client.get_team_states = MagicMock(return_value=states)
-    sup._linear_client.get_project_id = MagicMock(return_value=None)
-    sup._linear_client.create_issue = MagicMock(
+    sup._bugtracker_client.get_team_states = MagicMock(return_value=states)
+    sup._bugtracker_client.get_project_id = MagicMock(return_value=None)
+    sup._bugtracker_client.create_issue = MagicMock(
         return_value=CreatedIssue(
             id="issue-uuid",
             identifier="TST-100",
             url="https://linear.app/test/TST-100",
         )
     )
-    sup._linear_client.fetch_open_issues_with_label = MagicMock(
+    sup._bugtracker_client.fetch_open_issues_with_label = MagicMock(
         return_value=[]
     )
 
@@ -220,7 +220,7 @@ class TestRefactoringAnalysisConfig:
         assert cfg.enabled is False
         assert cfg.cadence_days == 14
         assert cfg.cadence_tickets == 20
-        assert cfg.linear_label == "Refactoring Analysis"
+        assert cfg.tracker_label == "Refactoring Analysis"
         assert cfg.priority == 4
 
     def test_config_loads_refactoring_analysis(self, tmp_path):
@@ -254,7 +254,7 @@ class TestRefactoringAnalysisConfig:
         assert cfg.refactoring_analysis.enabled is True
         assert cfg.refactoring_analysis.cadence_days == 7
         assert cfg.refactoring_analysis.cadence_tickets == 10
-        assert cfg.refactoring_analysis.linear_label == "Custom Label"
+        assert cfg.refactoring_analysis.tracker_label == "Custom Label"
         assert cfg.refactoring_analysis.priority == 2
 
     def test_config_defaults_when_missing(self, tmp_path):
@@ -371,7 +371,7 @@ class TestRefactoringAnalysisConfig:
         path = tmp_path / "config.yaml"
         path.write_text(yaml.dump(data))
 
-        with pytest.raises(ConfigError, match="linear_label"):
+        with pytest.raises(ConfigError, match="tracker_label"):
             load_config(path)
 
     def test_validation_rejects_bad_priority(self, tmp_path):
@@ -408,36 +408,36 @@ class TestRefactoringScheduler:
         config = _make_config(tmp_path, ra_enabled=False)
         sup, _ = _make_supervisor(tmp_path, monkeypatch, config)
 
-        with patch.object(sup._linear_client, "create_issue") as mock_create:
+        with patch.object(sup._bugtracker_client, "create_issue") as mock_create:
             sup._maybe_create_refactoring_analysis_ticket()
             mock_create.assert_not_called()
 
     def test_creates_ticket_when_no_previous(self, tmp_path, monkeypatch):
         sup, mock_poller = _make_supervisor(tmp_path, monkeypatch)
 
-        sup._linear_client.get_team_id = MagicMock(return_value="team-uuid")
-        sup._linear_client.get_or_create_label = MagicMock(
+        sup._bugtracker_client.get_team_id = MagicMock(return_value="team-uuid")
+        sup._bugtracker_client.get_or_create_label = MagicMock(
             return_value="label-uuid"
         )
-        sup._linear_client.get_team_states = MagicMock(
+        sup._bugtracker_client.get_team_states = MagicMock(
             return_value={"Todo": "todo-state-id"}
         )
-        sup._linear_client.get_project_id = MagicMock(return_value=None)
-        sup._linear_client.create_issue = MagicMock(
+        sup._bugtracker_client.get_project_id = MagicMock(return_value=None)
+        sup._bugtracker_client.create_issue = MagicMock(
             return_value=CreatedIssue(
                 id="issue-uuid",
                 identifier="TST-100",
                 url="https://linear.app/test/TST-100",
             )
         )
-        sup._linear_client.fetch_open_issues_with_label = MagicMock(
+        sup._bugtracker_client.fetch_open_issues_with_label = MagicMock(
             return_value=[]
         )
 
         sup._maybe_create_refactoring_analysis_ticket()
 
-        sup._linear_client.create_issue.assert_called_once()
-        call_kwargs = sup._linear_client.create_issue.call_args[1]
+        sup._bugtracker_client.create_issue.assert_called_once()
+        call_kwargs = sup._bugtracker_client.create_issue.call_args[1]
         assert call_kwargs["team_id"] == "team-uuid"
         assert "Refactoring Analysis" in call_kwargs["title"]
         assert call_kwargs["priority"] == 4
@@ -457,7 +457,7 @@ class TestRefactoringScheduler:
         record_refactoring_analysis_created(sup._conn, "TST-50")
         sup._conn.commit()
 
-        with patch.object(sup._linear_client, "create_issue") as mock_create:
+        with patch.object(sup._bugtracker_client, "create_issue") as mock_create:
             sup._maybe_create_refactoring_analysis_ticket()
             mock_create.assert_not_called()
 
@@ -480,28 +480,28 @@ class TestRefactoringScheduler:
         for poller in sup._pollers.values():
             poller.is_issue_terminal.return_value = True
 
-        sup._linear_client.get_team_id = MagicMock(return_value="team-uuid")
-        sup._linear_client.get_or_create_label = MagicMock(
+        sup._bugtracker_client.get_team_id = MagicMock(return_value="team-uuid")
+        sup._bugtracker_client.get_or_create_label = MagicMock(
             return_value="label-uuid"
         )
-        sup._linear_client.get_team_states = MagicMock(
+        sup._bugtracker_client.get_team_states = MagicMock(
             return_value={"Todo": "todo-state-id"}
         )
-        sup._linear_client.get_project_id = MagicMock(return_value=None)
-        sup._linear_client.create_issue = MagicMock(
+        sup._bugtracker_client.get_project_id = MagicMock(return_value=None)
+        sup._bugtracker_client.create_issue = MagicMock(
             return_value=CreatedIssue(
                 id="new-uuid",
                 identifier="TST-101",
                 url="https://linear.app/test/TST-101",
             )
         )
-        sup._linear_client.fetch_open_issues_with_label = MagicMock(
+        sup._bugtracker_client.fetch_open_issues_with_label = MagicMock(
             return_value=[]
         )
 
         sup._maybe_create_refactoring_analysis_ticket()
 
-        sup._linear_client.create_issue.assert_called_once()
+        sup._bugtracker_client.create_issue.assert_called_once()
 
     def test_skips_when_open_ticket_in_linear(self, tmp_path, monkeypatch):
         config = _make_config(tmp_path, cadence_days=1)
@@ -523,11 +523,11 @@ class TestRefactoringScheduler:
             poller.is_issue_terminal.return_value = True
 
         # But Linear shows open tickets with the label
-        sup._linear_client.fetch_open_issues_with_label = MagicMock(
+        sup._bugtracker_client.fetch_open_issues_with_label = MagicMock(
             return_value=[{"id": "x", "identifier": "TST-55"}]
         )
 
-        with patch.object(sup._linear_client, "create_issue") as mock_create:
+        with patch.object(sup._bugtracker_client, "create_issue") as mock_create:
             sup._maybe_create_refactoring_analysis_ticket()
             mock_create.assert_not_called()
 
@@ -548,35 +548,35 @@ class TestRefactoringScheduler:
         # Poller says ticket is NOT terminal
         mock_poller.is_issue_terminal.return_value = False
 
-        with patch.object(sup._linear_client, "create_issue") as mock_create:
+        with patch.object(sup._bugtracker_client, "create_issue") as mock_create:
             sup._maybe_create_refactoring_analysis_ticket()
             mock_create.assert_not_called()
 
     def test_ticket_content_matches_template(self, tmp_path, monkeypatch):
         sup, _ = _make_supervisor(tmp_path, monkeypatch)
 
-        sup._linear_client.get_team_id = MagicMock(return_value="team-uuid")
-        sup._linear_client.get_or_create_label = MagicMock(
+        sup._bugtracker_client.get_team_id = MagicMock(return_value="team-uuid")
+        sup._bugtracker_client.get_or_create_label = MagicMock(
             return_value="label-uuid"
         )
-        sup._linear_client.get_team_states = MagicMock(
+        sup._bugtracker_client.get_team_states = MagicMock(
             return_value={"Todo": "todo-state-id"}
         )
-        sup._linear_client.get_project_id = MagicMock(return_value=None)
-        sup._linear_client.create_issue = MagicMock(
+        sup._bugtracker_client.get_project_id = MagicMock(return_value=None)
+        sup._bugtracker_client.create_issue = MagicMock(
             return_value=CreatedIssue(
                 id="issue-uuid",
                 identifier="TST-200",
                 url="https://linear.app/test/TST-200",
             )
         )
-        sup._linear_client.fetch_open_issues_with_label = MagicMock(
+        sup._bugtracker_client.fetch_open_issues_with_label = MagicMock(
             return_value=[]
         )
 
         sup._maybe_create_refactoring_analysis_ticket()
 
-        call_kwargs = sup._linear_client.create_issue.call_args[1]
+        call_kwargs = sup._bugtracker_client.create_issue.call_args[1]
         desc = call_kwargs["description"]
         assert "Periodic Codebase Refactoring Analysis" in desc
         assert "automatically scheduled investigation" in desc
@@ -586,25 +586,25 @@ class TestRefactoringScheduler:
     def test_creates_both_labels(self, tmp_path, monkeypatch):
         sup, _ = _make_supervisor(tmp_path, monkeypatch)
 
-        sup._linear_client.get_team_id = MagicMock(return_value="team-uuid")
+        sup._bugtracker_client.get_team_id = MagicMock(return_value="team-uuid")
         label_calls = []
-        sup._linear_client.get_or_create_label = MagicMock(
+        sup._bugtracker_client.get_or_create_label = MagicMock(
             side_effect=lambda tk, name: (
                 label_calls.append(name) or f"label-{name}"
             )
         )
-        sup._linear_client.get_team_states = MagicMock(
+        sup._bugtracker_client.get_team_states = MagicMock(
             return_value={"Todo": "todo-state-id"}
         )
-        sup._linear_client.get_project_id = MagicMock(return_value=None)
-        sup._linear_client.create_issue = MagicMock(
+        sup._bugtracker_client.get_project_id = MagicMock(return_value=None)
+        sup._bugtracker_client.create_issue = MagicMock(
             return_value=CreatedIssue(
                 id="issue-uuid",
                 identifier="TST-300",
                 url="https://linear.app/test/TST-300",
             )
         )
-        sup._linear_client.fetch_open_issues_with_label = MagicMock(
+        sup._bugtracker_client.fetch_open_issues_with_label = MagicMock(
             return_value=[]
         )
 
@@ -618,10 +618,10 @@ class TestRefactoringScheduler:
     ):
         sup, _ = _make_supervisor(tmp_path, monkeypatch)
 
-        sup._linear_client.fetch_open_issues_with_label = MagicMock(
+        sup._bugtracker_client.fetch_open_issues_with_label = MagicMock(
             return_value=[]
         )
-        sup._linear_client.get_team_id = MagicMock(
+        sup._bugtracker_client.get_team_id = MagicMock(
             side_effect=LinearAPIError("API down")
         )
 
@@ -638,11 +638,11 @@ class TestRefactoringScheduler:
         """Does not create a ticket if all Linear API checks fail."""
         sup, _ = _make_supervisor(tmp_path, monkeypatch)
 
-        sup._linear_client.fetch_open_issues_with_label = MagicMock(
+        sup._bugtracker_client.fetch_open_issues_with_label = MagicMock(
             side_effect=Exception("API unreachable")
         )
 
-        with patch.object(sup._linear_client, "create_issue") as mock_create:
+        with patch.object(sup._bugtracker_client, "create_issue") as mock_create:
             sup._maybe_create_refactoring_analysis_ticket()
             mock_create.assert_not_called()
 
@@ -652,30 +652,30 @@ class TestRefactoringScheduler:
         config.projects[0].tracker_project = "My Project"
         sup, _ = _make_supervisor(tmp_path, monkeypatch, config)
 
-        sup._linear_client.get_team_id = MagicMock(return_value="team-uuid")
-        sup._linear_client.get_or_create_label = MagicMock(
+        sup._bugtracker_client.get_team_id = MagicMock(return_value="team-uuid")
+        sup._bugtracker_client.get_or_create_label = MagicMock(
             return_value="label-uuid"
         )
-        sup._linear_client.get_team_states = MagicMock(
+        sup._bugtracker_client.get_team_states = MagicMock(
             return_value={"Todo": "todo-state-id"}
         )
-        sup._linear_client.get_project_id = MagicMock(
+        sup._bugtracker_client.get_project_id = MagicMock(
             return_value="project-uuid"
         )
-        sup._linear_client.create_issue = MagicMock(
+        sup._bugtracker_client.create_issue = MagicMock(
             return_value=CreatedIssue(
                 id="issue-uuid",
                 identifier="TST-400",
                 url="https://linear.app/test/TST-400",
             )
         )
-        sup._linear_client.fetch_open_issues_with_label = MagicMock(
+        sup._bugtracker_client.fetch_open_issues_with_label = MagicMock(
             return_value=[]
         )
 
         sup._maybe_create_refactoring_analysis_ticket()
 
-        call_kwargs = sup._linear_client.create_issue.call_args[1]
+        call_kwargs = sup._bugtracker_client.create_issue.call_args[1]
         assert call_kwargs["project_id"] == "project-uuid"
         assert call_kwargs["state_id"] == "todo-state-id"
 
@@ -685,19 +685,19 @@ class TestRefactoringScheduler:
         config.projects[0].tracker_project = "Nonexistent Project"
         sup, _ = _make_supervisor(tmp_path, monkeypatch, config)
 
-        sup._linear_client.get_team_id = MagicMock(return_value="team-uuid")
-        sup._linear_client.get_or_create_label = MagicMock(
+        sup._bugtracker_client.get_team_id = MagicMock(return_value="team-uuid")
+        sup._bugtracker_client.get_or_create_label = MagicMock(
             return_value="label-uuid"
         )
-        sup._linear_client.get_team_states = MagicMock(
+        sup._bugtracker_client.get_team_states = MagicMock(
             return_value={"Todo": "todo-state-id"}
         )
-        sup._linear_client.get_project_id = MagicMock(return_value=None)
-        sup._linear_client.fetch_open_issues_with_label = MagicMock(
+        sup._bugtracker_client.get_project_id = MagicMock(return_value=None)
+        sup._bugtracker_client.fetch_open_issues_with_label = MagicMock(
             return_value=[]
         )
 
-        with patch.object(sup._linear_client, "create_issue") as mock_create:
+        with patch.object(sup._bugtracker_client, "create_issue") as mock_create:
             sup._maybe_create_refactoring_analysis_ticket()
             mock_create.assert_not_called()
 
@@ -705,18 +705,18 @@ class TestRefactoringScheduler:
         """Skips ticket creation when configured todo state doesn't exist."""
         sup, _ = _make_supervisor(tmp_path, monkeypatch)
 
-        sup._linear_client.get_team_id = MagicMock(return_value="team-uuid")
-        sup._linear_client.get_or_create_label = MagicMock(
+        sup._bugtracker_client.get_team_id = MagicMock(return_value="team-uuid")
+        sup._bugtracker_client.get_or_create_label = MagicMock(
             return_value="label-uuid"
         )
-        sup._linear_client.get_team_states = MagicMock(
+        sup._bugtracker_client.get_team_states = MagicMock(
             return_value={"Backlog": "backlog-state-id"}  # No "Todo" state
         )
-        sup._linear_client.fetch_open_issues_with_label = MagicMock(
+        sup._bugtracker_client.fetch_open_issues_with_label = MagicMock(
             return_value=[]
         )
 
-        with patch.object(sup._linear_client, "create_issue") as mock_create:
+        with patch.object(sup._bugtracker_client, "create_issue") as mock_create:
             sup._maybe_create_refactoring_analysis_ticket()
             mock_create.assert_not_called()
 
@@ -724,15 +724,15 @@ class TestRefactoringScheduler:
         """Aborts ticket creation when the refactoring analysis label fails."""
         sup, _ = _make_supervisor(tmp_path, monkeypatch)
 
-        sup._linear_client.get_team_id = MagicMock(return_value="team-uuid")
-        sup._linear_client.get_or_create_label = MagicMock(
+        sup._bugtracker_client.get_team_id = MagicMock(return_value="team-uuid")
+        sup._bugtracker_client.get_or_create_label = MagicMock(
             side_effect=Exception("label API down")
         )
-        sup._linear_client.fetch_open_issues_with_label = MagicMock(
+        sup._bugtracker_client.fetch_open_issues_with_label = MagicMock(
             return_value=[]
         )
 
-        with patch.object(sup._linear_client, "create_issue") as mock_create:
+        with patch.object(sup._bugtracker_client, "create_issue") as mock_create:
             sup._maybe_create_refactoring_analysis_ticket()
             mock_create.assert_not_called()
 
@@ -742,53 +742,53 @@ class TestRefactoringScheduler:
         """Creates ticket even if Investigation label fails, as long as RA label succeeds."""
         sup, _ = _make_supervisor(tmp_path, monkeypatch)
 
-        sup._linear_client.get_team_id = MagicMock(return_value="team-uuid")
+        sup._bugtracker_client.get_team_id = MagicMock(return_value="team-uuid")
 
         def label_side_effect(team_key, name):
             if name == "Investigation":
                 raise Exception("label API error")
             return "ra-label-id"
 
-        sup._linear_client.get_or_create_label = MagicMock(
+        sup._bugtracker_client.get_or_create_label = MagicMock(
             side_effect=label_side_effect
         )
-        sup._linear_client.get_team_states = MagicMock(
+        sup._bugtracker_client.get_team_states = MagicMock(
             return_value={"Todo": "todo-state-id"}
         )
-        sup._linear_client.get_project_id = MagicMock(return_value=None)
-        sup._linear_client.create_issue = MagicMock(
+        sup._bugtracker_client.get_project_id = MagicMock(return_value=None)
+        sup._bugtracker_client.create_issue = MagicMock(
             return_value=CreatedIssue(
                 id="issue-uuid",
                 identifier="TST-500",
                 url="https://linear.app/test/TST-500",
             )
         )
-        sup._linear_client.fetch_open_issues_with_label = MagicMock(
+        sup._bugtracker_client.fetch_open_issues_with_label = MagicMock(
             return_value=[]
         )
 
         sup._maybe_create_refactoring_analysis_ticket()
 
-        sup._linear_client.create_issue.assert_called_once()
-        call_kwargs = sup._linear_client.create_issue.call_args[1]
+        sup._bugtracker_client.create_issue.assert_called_once()
+        call_kwargs = sup._bugtracker_client.create_issue.call_args[1]
         assert call_kwargs["label_ids"] == ["ra-label-id"]
 
     def test_skips_when_identifier_missing(self, tmp_path, monkeypatch):
         """Does not record event when Linear returns no identifier."""
         sup, _ = _make_supervisor(tmp_path, monkeypatch)
 
-        sup._linear_client.get_team_id = MagicMock(return_value="team-uuid")
-        sup._linear_client.get_or_create_label = MagicMock(
+        sup._bugtracker_client.get_team_id = MagicMock(return_value="team-uuid")
+        sup._bugtracker_client.get_or_create_label = MagicMock(
             return_value="label-uuid"
         )
-        sup._linear_client.get_team_states = MagicMock(
+        sup._bugtracker_client.get_team_states = MagicMock(
             return_value={"Todo": "todo-state-id"}
         )
-        sup._linear_client.get_project_id = MagicMock(return_value=None)
-        sup._linear_client.create_issue = MagicMock(
+        sup._bugtracker_client.get_project_id = MagicMock(return_value=None)
+        sup._bugtracker_client.create_issue = MagicMock(
             return_value=CreatedIssue(id="issue-uuid", identifier="", url="")
         )
-        sup._linear_client.fetch_open_issues_with_label = MagicMock(
+        sup._bugtracker_client.fetch_open_issues_with_label = MagicMock(
             return_value=[]
         )
 
@@ -805,18 +805,18 @@ class TestRefactoringScheduler:
         config.projects[0].tracker_project = "My Project"
         sup, _ = _make_supervisor(tmp_path, monkeypatch, config)
 
-        sup._linear_client.get_team_id = MagicMock(return_value="team-uuid")
-        sup._linear_client.get_or_create_label = MagicMock(
+        sup._bugtracker_client.get_team_id = MagicMock(return_value="team-uuid")
+        sup._bugtracker_client.get_or_create_label = MagicMock(
             return_value="label-uuid"
         )
-        sup._linear_client.get_project_id = MagicMock(
+        sup._bugtracker_client.get_project_id = MagicMock(
             side_effect=Exception("API error")
         )
-        sup._linear_client.fetch_open_issues_with_label = MagicMock(
+        sup._bugtracker_client.fetch_open_issues_with_label = MagicMock(
             return_value=[]
         )
 
-        with patch.object(sup._linear_client, "create_issue") as mock_create:
+        with patch.object(sup._bugtracker_client, "create_issue") as mock_create:
             sup._maybe_create_refactoring_analysis_ticket()
             mock_create.assert_not_called()
 
@@ -1008,7 +1008,7 @@ class TestTicketCountTrigger:
 
         sup._maybe_create_refactoring_analysis_ticket()
 
-        sup._linear_client.create_issue.assert_called_once()
+        sup._bugtracker_client.create_issue.assert_called_once()
 
     def test_ticket_count_trigger_does_not_fire_below_threshold(
         self, tmp_path, monkeypatch,
@@ -1024,7 +1024,7 @@ class TestTicketCountTrigger:
 
         sup._maybe_create_refactoring_analysis_ticket()
 
-        sup._linear_client.create_issue.assert_not_called()
+        sup._bugtracker_client.create_issue.assert_not_called()
 
     def test_ticket_count_trigger_uses_backlog_state(
         self, tmp_path, monkeypatch,
@@ -1040,7 +1040,7 @@ class TestTicketCountTrigger:
 
         sup._maybe_create_refactoring_analysis_ticket()
 
-        call_kwargs = sup._linear_client.create_issue.call_args[1]
+        call_kwargs = sup._bugtracker_client.create_issue.call_args[1]
         assert call_kwargs["state_id"] == "backlog-state-id"
 
     def test_ticket_count_trigger_sends_notification(
@@ -1088,7 +1088,7 @@ class TestTicketCountTrigger:
 
         sup._maybe_create_refactoring_analysis_ticket()
 
-        call_kwargs = sup._linear_client.create_issue.call_args[1]
+        call_kwargs = sup._bugtracker_client.create_issue.call_args[1]
         assert call_kwargs["state_id"] == "todo-state-id"
 
     def test_cadence_tickets_zero_disables_count_trigger(
@@ -1106,7 +1106,7 @@ class TestTicketCountTrigger:
         sup._maybe_create_refactoring_analysis_ticket()
 
         # No trigger fires: time hasn't elapsed and count trigger disabled
-        sup._linear_client.create_issue.assert_not_called()
+        sup._bugtracker_client.create_issue.assert_not_called()
 
     def test_both_triggers_fire_time_takes_priority(
         self, tmp_path, monkeypatch,
@@ -1121,7 +1121,7 @@ class TestTicketCountTrigger:
 
         sup._maybe_create_refactoring_analysis_ticket()
 
-        call_kwargs = sup._linear_client.create_issue.call_args[1]
+        call_kwargs = sup._bugtracker_client.create_issue.call_args[1]
         assert call_kwargs["state_id"] == "todo-state-id"
 
     def test_triggers_fire_independently(self, tmp_path, monkeypatch):
@@ -1143,8 +1143,8 @@ class TestTicketCountTrigger:
 
         sup._maybe_create_refactoring_analysis_ticket()
 
-        sup._linear_client.create_issue.assert_called_once()
-        call_kwargs = sup._linear_client.create_issue.call_args[1]
+        sup._bugtracker_client.create_issue.assert_called_once()
+        call_kwargs = sup._bugtracker_client.create_issue.call_args[1]
         assert call_kwargs["state_id"] == "backlog-state-id"
 
     def test_dedup_prevents_duplicate_creation(self, tmp_path, monkeypatch):
@@ -1160,7 +1160,7 @@ class TestTicketCountTrigger:
         sup._conn.commit()
         mock_poller.is_issue_terminal.return_value = False
 
-        with patch.object(sup._linear_client, "create_issue") as mock_create:
+        with patch.object(sup._bugtracker_client, "create_issue") as mock_create:
             sup._maybe_create_refactoring_analysis_ticket()
             mock_create.assert_not_called()
 
@@ -1190,7 +1190,7 @@ class TestTicketCountTrigger:
         sup._maybe_create_refactoring_analysis_ticket()
 
         # 2 < 5 threshold, so no creation
-        sup._linear_client.create_issue.assert_not_called()
+        sup._bugtracker_client.create_issue.assert_not_called()
 
     def test_backlog_state_not_found_skips_creation(
         self, tmp_path, monkeypatch,
@@ -1206,7 +1206,7 @@ class TestTicketCountTrigger:
 
         sup._maybe_create_refactoring_analysis_ticket()
 
-        sup._linear_client.create_issue.assert_not_called()
+        sup._bugtracker_client.create_issue.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

@@ -228,7 +228,7 @@ class TestCleanupBatchDb:
         insert_cleanup_batch_item(
             conn,
             batch_id="batch-3",
-            linear_uuid="uuid-1",
+            tracker_uuid="uuid-1",
             identifier="SMA-100",
             action="archive",
             success=True,
@@ -236,7 +236,7 @@ class TestCleanupBatchDb:
         insert_cleanup_batch_item(
             conn,
             batch_id="batch-3",
-            linear_uuid="uuid-2",
+            tracker_uuid="uuid-2",
             identifier="SMA-101",
             action="archive",
             success=False,
@@ -679,7 +679,7 @@ class TestCleanupServiceUndo:
         insert_cleanup_batch_item(
             conn,
             batch_id="undo-batch",
-            linear_uuid="uuid-1",
+            tracker_uuid="uuid-1",
             identifier="SMA-100",
             action="archive",
             success=True,
@@ -687,7 +687,7 @@ class TestCleanupServiceUndo:
         insert_cleanup_batch_item(
             conn,
             batch_id="undo-batch",
-            linear_uuid="uuid-2",
+            tracker_uuid="uuid-2",
             identifier="SMA-101",
             action="archive",
             success=True,
@@ -713,7 +713,7 @@ class TestCleanupServiceUndo:
         insert_cleanup_batch_item(
             conn,
             batch_id="undo-batch-2",
-            linear_uuid="uuid-1",
+            tracker_uuid="uuid-1",
             identifier="SMA-100",
             action="archive",
             success=True,
@@ -721,7 +721,7 @@ class TestCleanupServiceUndo:
         insert_cleanup_batch_item(
             conn,
             batch_id="undo-batch-2",
-            linear_uuid="uuid-2",
+            tracker_uuid="uuid-2",
             identifier="SMA-101",
             action="archive",
             success=False,
@@ -759,7 +759,7 @@ class TestCleanupServiceUndo:
         insert_cleanup_batch_item(
             conn,
             batch_id="undo-partial",
-            linear_uuid="uuid-1",
+            tracker_uuid="uuid-1",
             identifier="SMA-100",
             action="archive",
             success=True,
@@ -767,7 +767,7 @@ class TestCleanupServiceUndo:
         insert_cleanup_batch_item(
             conn,
             batch_id="undo-partial",
-            linear_uuid="uuid-2",
+            tracker_uuid="uuid-2",
             identifier="SMA-101",
             action="archive",
             success=True,

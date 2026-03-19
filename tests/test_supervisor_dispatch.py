@@ -380,7 +380,7 @@ class TestHumanBlockerDetection:
             candidates=[], blocked=[blocked], auto_close_parents=[],
         )
 
-        supervisor._linear_client.fetch_issue_labels = MagicMock(
+        supervisor._bugtracker_client.fetch_issue_labels = MagicMock(
             return_value=("Create GitHub accounts", ["Human"]),
         )
 
@@ -404,7 +404,7 @@ class TestHumanBlockerDetection:
             candidates=[], blocked=[blocked], auto_close_parents=[],
         )
 
-        supervisor._linear_client.fetch_issue_labels = MagicMock(
+        supervisor._bugtracker_client.fetch_issue_labels = MagicMock(
             return_value=("Some other task", ["Bug"]),
         )
 
@@ -425,12 +425,12 @@ class TestHumanBlockerDetection:
             candidates=[candidate], blocked=[blocked], auto_close_parents=[],
         )
 
-        supervisor._linear_client.fetch_issue_labels = MagicMock()
+        supervisor._bugtracker_client.fetch_issue_labels = MagicMock()
 
         with patch.object(supervisor, "_dispatch_worker"):
             supervisor._poll_and_dispatch()
 
-        supervisor._linear_client.fetch_issue_labels.assert_not_called()
+        supervisor._bugtracker_client.fetch_issue_labels.assert_not_called()
 
     def test_multiple_blocked_by_same_human_blocker(self, supervisor):
         """Multiple blocked issues sharing one Human blocker → single notification."""
@@ -445,7 +445,7 @@ class TestHumanBlockerDetection:
             candidates=[], blocked=[blocked1, blocked2], auto_close_parents=[],
         )
 
-        supervisor._linear_client.fetch_issue_labels = MagicMock(
+        supervisor._bugtracker_client.fetch_issue_labels = MagicMock(
             return_value=("Manual step", ["Human"]),
         )
 
@@ -468,7 +468,7 @@ class TestHumanBlockerDetection:
             candidates=[], blocked=[blocked], auto_close_parents=[],
         )
 
-        supervisor._linear_client.fetch_issue_labels = MagicMock(
+        supervisor._bugtracker_client.fetch_issue_labels = MagicMock(
             side_effect=Exception("API error"),
         )
 
@@ -497,12 +497,12 @@ class TestHumanBlockerDetection:
             candidates=[], blocked=[blocked], auto_close_parents=[],
         )
 
-        supervisor._linear_client.fetch_issue_labels = MagicMock()
+        supervisor._bugtracker_client.fetch_issue_labels = MagicMock()
 
         with patch.object(supervisor, "_dispatch_worker"):
             supervisor._poll_and_dispatch()
 
-        supervisor._linear_client.fetch_issue_labels.assert_not_called()
+        supervisor._bugtracker_client.fetch_issue_labels.assert_not_called()
 
 
 class TestParentAutoClose:
@@ -738,7 +738,7 @@ class TestDispatchWorker:
 
 
 def _make_config_with_coder(tmp_path: Path) -> BotfarmConfig:
-    """Build a config with coder identity (linear_api_key set)."""
+    """Build a config with coder identity (tracker_api_key set)."""
     return BotfarmConfig(
         projects=[
             ProjectConfig(
@@ -756,7 +756,7 @@ def _make_config_with_coder(tmp_path: Path) -> BotfarmConfig:
         ),
         database=DatabaseConfig(),
         identities=IdentitiesConfig(
-            coder=CoderIdentity(linear_api_key="coder-key"),
+            coder=CoderIdentity(tracker_api_key="coder-key"),
         ),
     )
 
@@ -790,18 +790,18 @@ class TestCoderAutoAssignment:
             sup = Supervisor(config, log_dir=tmp_path / "logs")
 
         # Attach the mock so tests can assert on it
-        sup._coder_linear = mock_coder_client
+        sup._coder_tracker = mock_coder_client
         return sup
 
     def test_init_caches_coder_viewer_id(self, supervisor_with_coder):
         """Supervisor caches coder viewer ID at startup."""
         assert supervisor_with_coder._coder_viewer_id == "coder-user-id-123"
-        assert supervisor_with_coder._coder_linear is not None
+        assert supervisor_with_coder._coder_tracker is not None
 
     def test_init_no_coder_key_skips_caching(self, supervisor):
-        """Without coder linear_api_key, no coder client is created."""
+        """Without coder tracker_api_key, no coder client is created."""
         assert supervisor._coder_viewer_id is None
-        assert supervisor._coder_linear is None
+        assert supervisor._coder_tracker is None
 
     def test_init_coder_viewer_id_failure_disables_assignment(self, tmp_path, monkeypatch):
         """If get_viewer_id() fails at startup, auto-assignment is disabled."""
@@ -826,7 +826,7 @@ class TestCoderAutoAssignment:
             sup = Supervisor(config, log_dir=tmp_path / "logs")
 
         assert sup._coder_viewer_id is None
-        assert sup._coder_linear is None
+        assert sup._coder_tracker is None
 
     def test_dispatch_assigns_to_coder(self, supervisor_with_coder):
         """Dispatch auto-assigns the ticket to the coder bot."""
@@ -841,7 +841,7 @@ class TestCoderAutoAssignment:
 
             supervisor_with_coder._dispatch_worker("test-project", slot, issue, poller)
 
-        supervisor_with_coder._coder_linear.assign_issue.assert_called_once_with(
+        supervisor_with_coder._coder_tracker.assign_issue.assert_called_once_with(
             issue.identifier, "coder-user-id-123",
         )
 
@@ -850,7 +850,7 @@ class TestCoderAutoAssignment:
         issue = make_issue()
         slot = supervisor_with_coder.slot_manager.get_slot("test-project", 1)
         poller = supervisor_with_coder._pollers["test-project"]
-        supervisor_with_coder._coder_linear.assign_issue.side_effect = Exception("API error")
+        supervisor_with_coder._coder_tracker.assign_issue.side_effect = Exception("API error")
 
         with patch("botfarm.supervisor.multiprocessing.Process") as MockProc:
             mock_proc = MagicMock()
@@ -876,7 +876,7 @@ class TestCoderAutoAssignment:
             supervisor._dispatch_worker("test-project", slot, issue, poller)
 
         # No coder_linear means no assign_issue call — verify via attribute
-        assert supervisor._coder_linear is None
+        assert supervisor._coder_tracker is None
 
 
 

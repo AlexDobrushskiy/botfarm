@@ -317,7 +317,7 @@ class CleanupService:
                 insert_cleanup_batch_item(
                     self._conn,
                     batch_id=batch_id,
-                    linear_uuid=candidate.linear_uuid,
+                    tracker_uuid=candidate.linear_uuid,
                     identifier=candidate.identifier,
                     action=action,
                     success=False,
@@ -342,7 +342,7 @@ class CleanupService:
                     insert_cleanup_batch_item(
                         self._conn,
                         batch_id=batch_id,
-                        linear_uuid=candidate.linear_uuid,
+                        tracker_uuid=candidate.linear_uuid,
                         identifier=candidate.identifier,
                         action=action,
                         success=True,
@@ -361,7 +361,7 @@ class CleanupService:
                     insert_cleanup_batch_item(
                         self._conn,
                         batch_id=batch_id,
-                        linear_uuid=candidate.linear_uuid,
+                        tracker_uuid=candidate.linear_uuid,
                         identifier=candidate.identifier,
                         action=action,
                         success=False,
@@ -374,7 +374,7 @@ class CleanupService:
                 insert_cleanup_batch_item(
                     self._conn,
                     batch_id=batch_id,
-                    linear_uuid=candidate.linear_uuid,
+                    tracker_uuid=candidate.linear_uuid,
                     identifier=candidate.identifier,
                     action=action,
                     success=False,
@@ -435,7 +435,7 @@ class CleanupService:
             self._check_rate_limit()
 
             try:
-                success = self._client.unarchive_issue(item["linear_uuid"])
+                success = self._client.unarchive_issue(item["tracker_uuid"])
                 if success:
                     result.succeeded += 1
                     insert_event(

@@ -157,10 +157,10 @@
                 <td>{{ identity.coder.git_author_email or "-" }}</td>
             </tr>
             <tr>
-                <td>Linear API Key</td>
+                <td>Tracker API Key</td>
                 <td>
-                    {% if identity.coder.linear_api_key_set %}
-                    <code>{{ identity.coder.linear_api_key }}</code>
+                    {% if identity.coder.tracker_api_key_set %}
+                    <code>{{ identity.coder.tracker_api_key }}</code>
                     <span class="identity-badge identity-badge-set">Set</span>
                     {% else %}
                     <span class="identity-badge identity-badge-unset">Not set</span>
@@ -189,10 +189,10 @@
                 </td>
             </tr>
             <tr>
-                <td>Linear API Key</td>
+                <td>Tracker API Key</td>
                 <td>
-                    {% if identity.reviewer.linear_api_key_set %}
-                    <code>{{ identity.reviewer.linear_api_key }}</code>
+                    {% if identity.reviewer.tracker_api_key_set %}
+                    <code>{{ identity.reviewer.tracker_api_key }}</code>
                     <span class="identity-badge identity-badge-set">Set</span>
                     {% else %}
                     <span class="identity-badge identity-badge-unset">Not set</span>
@@ -243,10 +243,10 @@
             </label>
         </div>
 
-        <label for="coder-linear_api_key">
-            Linear API Key
-            <input type="password" id="coder-linear_api_key" name="linear_api_key"
-                   placeholder="{{ identity.coder.linear_api_key or 'lin_api_...' }}" autocomplete="off">
+        <label for="coder-tracker_api_key">
+            Tracker API Key
+            <input type="password" id="coder-tracker_api_key" name="tracker_api_key"
+                   placeholder="{{ identity.coder.tracker_api_key or 'lin_api_...' }}" autocomplete="off">
             <small class="secret-note">Leave empty to keep current value. Stored in .env file.</small>
         </label>
 
@@ -265,10 +265,10 @@
             <small class="secret-note">Leave empty to keep current value. Stored in .env file.</small>
         </label>
 
-        <label for="reviewer-linear_api_key">
-            Linear API Key
-            <input type="password" id="reviewer-linear_api_key" name="linear_api_key"
-                   placeholder="{{ identity.reviewer.linear_api_key or 'lin_api_...' }}" autocomplete="off">
+        <label for="reviewer-tracker_api_key">
+            Tracker API Key
+            <input type="password" id="reviewer-tracker_api_key" name="tracker_api_key"
+                   placeholder="{{ identity.reviewer.tracker_api_key or 'lin_api_...' }}" autocomplete="off">
             <small class="secret-note">Leave empty to keep current value. Stored in .env file.</small>
         </label>
 

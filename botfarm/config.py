@@ -103,7 +103,7 @@ agents:
 #   enabled: true
 #   cadence_days: 14
 #   cadence_tickets: 20  # Also trigger after N completed tickets (0 = disabled)
-#   linear_label: "Refactoring Analysis"
+#   tracker_label: "Refactoring Analysis"
 #   priority: 4  # Low priority — doesn't preempt feature work
 
 # Start with dispatch paused — use the dashboard to begin dispatching.
@@ -322,7 +322,7 @@ class RefactoringAnalysisConfig:
     enabled: bool = False
     cadence_days: int = 14
     cadence_tickets: int = 20  # 0 = disabled
-    linear_label: str = "Refactoring Analysis"
+    tracker_label: str = "Refactoring Analysis"
     priority: int = 4  # Low priority
 
 
@@ -340,7 +340,7 @@ class CoderIdentity:
     ssh_key_path: str = ""
     git_author_name: str = ""
     git_author_email: str = ""
-    linear_api_key: str = ""
+    tracker_api_key: str = ""
     jira_api_token: str = ""
     jira_email: str = ""
 
@@ -348,7 +348,7 @@ class CoderIdentity:
 @dataclass
 class ReviewerIdentity:
     github_token: str = ""
-    linear_api_key: str = ""
+    tracker_api_key: str = ""
 
 
 @dataclass
@@ -719,8 +719,8 @@ def _validate_config(config: BotfarmConfig) -> None:
         raise ConfigError("logging.ticket_log_retention_days must be at least 1")
 
     ra = config.refactoring_analysis
-    if not ra.linear_label:
-        raise ConfigError("refactoring_analysis.linear_label must not be empty")
+    if not ra.tracker_label:
+        raise ConfigError("refactoring_analysis.tracker_label must not be empty")
     if ra.cadence_days < 1:
         raise ConfigError("refactoring_analysis.cadence_days must be at least 1")
     if ra.cadence_tickets < 0:
@@ -1001,13 +1001,17 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
             ssh_key_path=str(coder_data.get("ssh_key_path", "")),
             git_author_name=str(coder_data.get("git_author_name", "")),
             git_author_email=str(coder_data.get("git_author_email", "")),
-            linear_api_key=str(coder_data.get("linear_api_key", "")),
+            tracker_api_key=str(
+                coder_data.get("tracker_api_key", coder_data.get("linear_api_key", ""))
+            ),
             jira_api_token=str(coder_data.get("jira_api_token", "")),
             jira_email=str(coder_data.get("jira_email", "")),
         ),
         reviewer=ReviewerIdentity(
             github_token=str(reviewer_data.get("github_token", "")),
-            linear_api_key=str(reviewer_data.get("linear_api_key", "")),
+            tracker_api_key=str(
+                reviewer_data.get("tracker_api_key", reviewer_data.get("linear_api_key", ""))
+            ),
         ),
     )
 
@@ -1018,7 +1022,9 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         enabled=_parse_bool(ra_data, "enabled", False, section="refactoring_analysis"),
         cadence_days=int(ra_data.get("cadence_days", 14)),
         cadence_tickets=int(ra_data.get("cadence_tickets", 20)),
-        linear_label=str(ra_data.get("linear_label", "Refactoring Analysis")).strip(),
+        tracker_label=str(
+            ra_data.get("tracker_label", ra_data.get("linear_label", "Refactoring Analysis"))
+        ).strip(),
         priority=int(ra_data.get("priority", 4)),
     )
 
