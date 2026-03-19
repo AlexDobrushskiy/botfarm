@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import platform
+import re
 import subprocess
 import tempfile
 import time
@@ -267,7 +268,6 @@ def _refresh_oauth_token(refresh_token_value: str) -> OAuthToken:
         resp = httpx.post(
             OAUTH_TOKEN_URL,
             json=payload,
-            headers={"Content-Type": "application/json"},
             timeout=OAUTH_REFRESH_TIMEOUT,
         )
     except httpx.HTTPError as exc:
@@ -357,8 +357,32 @@ def _save_token_linux(token: OAuthToken) -> None:
         raise
 
 
+def _get_keychain_account(service: str) -> str | None:
+    """Extract the account name from an existing macOS keychain entry.
+
+    Runs ``security find-generic-password -s <service>`` (without ``-w``)
+    and parses the ``acct`` attribute from the output.
+    """
+    try:
+        result = subprocess.run(
+            ["security", "find-generic-password", "-s", service],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode != 0:
+            return None
+        output = result.stdout + result.stderr
+        match = re.search(r'"acct"<blob>="([^"]*)"', output)
+        return match.group(1) if match else None
+    except Exception:
+        return None
+
+
 def _save_token_macos(token: OAuthToken) -> None:
     """Update the macOS keychain with new token data."""
+    # Extract the account used by the existing keychain entry so we update
+    # the correct item (add-generic-password matches by service + account).
+    account = _get_keychain_account(MACOS_KEYCHAIN_SERVICE)
+
     # Read current keychain data
     try:
         result = subprocess.run(
@@ -385,14 +409,18 @@ def _save_token_macos(token: OAuthToken) -> None:
     existing["claudeAiOauth"] = oauth
     payload = json.dumps(existing)
 
+    cmd = [
+        "security", "add-generic-password",
+        "-U",  # update if exists
+        "-s", MACOS_KEYCHAIN_SERVICE,
+    ]
+    if account is not None:
+        cmd.extend(["-a", account])
+    cmd.extend(["-w", payload])
+
     try:
         subprocess.run(
-            [
-                "security", "add-generic-password",
-                "-U",  # update if exists
-                "-s", MACOS_KEYCHAIN_SERVICE,
-                "-w", payload,
-            ],
+            cmd,
             capture_output=True, text=True, timeout=10, check=True,
         )
     except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as exc:
