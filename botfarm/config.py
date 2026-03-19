@@ -521,15 +521,15 @@ def _parse_project(data: dict) -> ProjectConfig:
     run_port = run_port_raw
     if run_port < 0:
         raise ConfigError(
-            f"Project '{data['name']}': run_port must be a positive integer"
+            f"Project '{data['name']}': run_port must be a non-negative integer"
         )
 
     # Derive defaults from project_type when not explicitly set.
     if project_type and project_type in _PROJECT_TYPE_RUN_DEFAULTS:
         defaults = _PROJECT_TYPE_RUN_DEFAULTS[project_type]
-        if not run_command:
+        if "run_command" not in data:
             run_command = str(defaults.get("run_command", ""))
-        if run_port == 0 and defaults.get("run_port"):
+        if "run_port" not in data and defaults.get("run_port"):
             run_port = int(defaults["run_port"])
 
     return ProjectConfig(
@@ -1457,7 +1457,7 @@ def _validate_project_updates(
                 )
             elif rp < 0:
                 errors.append(
-                    f"projects[{i}] '{name}': run_port must be a positive integer"
+                    f"projects[{i}] '{name}': run_port must be a non-negative integer"
                 )
 
         if is_new:
@@ -1583,11 +1583,11 @@ def write_structural_config_updates(config_path: Path, updates: dict) -> None:
                         new_proj["project_type"] = proj_update["project_type"]
                     if proj_update.get("setup_commands"):
                         new_proj["setup_commands"] = proj_update["setup_commands"]
-                    if proj_update.get("run_command"):
+                    if "run_command" in proj_update:
                         new_proj["run_command"] = proj_update["run_command"]
-                    if proj_update.get("run_env"):
+                    if "run_env" in proj_update:
                         new_proj["run_env"] = proj_update["run_env"]
-                    if proj_update.get("run_port"):
+                    if "run_port" in proj_update:
                         new_proj["run_port"] = proj_update["run_port"]
                     existing_projects.append(new_proj)
 

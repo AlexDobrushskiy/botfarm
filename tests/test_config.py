@@ -1769,7 +1769,7 @@ class TestValidateStructuralConfigUpdates:
             "projects": [{"name": "project-a", "run_port": -1}],
         }
         errors = validate_structural_config_updates(updates, config)
-        assert any("run_port must be a positive" in e for e in errors)
+        assert any("run_port must be a non-negative" in e for e in errors)
 
     def test_run_port_bool_rejected(self):
         config = _make_config_for_structural()
@@ -3108,7 +3108,7 @@ class TestProjectRunCommandFields:
             "bugtracker": {"type": "linear", "api_key": "k"},
         }
         config_path = _write_config(tmp_path, data)
-        with pytest.raises(ConfigError, match="run_port must be a positive integer"):
+        with pytest.raises(ConfigError, match="run_port must be a non-negative integer"):
             load_config(config_path)
 
     def test_invalid_run_port_bool(self, tmp_path):
