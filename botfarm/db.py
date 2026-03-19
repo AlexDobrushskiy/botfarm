@@ -1620,6 +1620,60 @@ def clear_backoff_state(conn: sqlite3.Connection) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 401 auth failure state persistence
+# ---------------------------------------------------------------------------
+
+_AUTH_FAILURE_KEYS = (
+    "usage_401_consecutive_count",
+    "usage_401_backoff_until",
+    "usage_401_first_failure_time",
+)
+
+
+def save_auth_failure_state(
+    conn: sqlite3.Connection,
+    *,
+    consecutive_401s: int,
+    backoff_until: float,
+    first_failure_time: float,
+) -> None:
+    """Persist 401 auth failure state so it survives supervisor restarts."""
+    write_runtime_config(conn, "usage_401_consecutive_count", consecutive_401s)
+    write_runtime_config(conn, "usage_401_backoff_until", backoff_until)
+    write_runtime_config(conn, "usage_401_first_failure_time", first_failure_time)
+    conn.commit()
+
+
+def load_auth_failure_state(
+    conn: sqlite3.Connection,
+) -> dict[str, int | float] | None:
+    """Load persisted 401 auth failure state.
+
+    Returns a dict with ``consecutive_401s`` (int), ``backoff_until``
+    (float, unix timestamp), and ``first_failure_time`` (float, unix
+    timestamp), or ``None`` if no state is stored.
+    """
+    config = read_runtime_config(conn)
+    count = config.get("usage_401_consecutive_count")
+    until = config.get("usage_401_backoff_until")
+    first = config.get("usage_401_first_failure_time")
+    if count is None or until is None or first is None:
+        return None
+    return {
+        "consecutive_401s": int(count),
+        "backoff_until": float(until),
+        "first_failure_time": float(first),
+    }
+
+
+def clear_auth_failure_state(conn: sqlite3.Connection) -> None:
+    """Remove persisted 401 auth failure state (called after recovery)."""
+    for key in _AUTH_FAILURE_KEYS:
+        conn.execute("DELETE FROM runtime_config WHERE key = ?", (key,))
+    conn.commit()
+
+
+# ---------------------------------------------------------------------------
 # Daily summary helpers
 # ---------------------------------------------------------------------------
 

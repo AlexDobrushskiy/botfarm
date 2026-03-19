@@ -22,13 +22,16 @@ import httpx
 
 from botfarm.credentials import USAGE_API_TIMEOUT, CredentialManager, fetch_usage
 from botfarm.db import (
+    clear_auth_failure_state,
     clear_backoff_state,
     get_active_key_session,
     insert_usage_api_call,
     insert_usage_snapshot,
+    load_auth_failure_state,
     load_backoff_state,
     mark_key_session_replaced,
     purge_old_usage_api_calls,
+    save_auth_failure_state,
     save_backoff_state,
     upsert_usage_api_key_session,
 )
@@ -356,7 +359,7 @@ class UsagePoller:
             self._flush_audit_records(conn, fp)
 
         self._reset_rate_limit_state(conn)
-        self._reset_auth_failure_state()
+        self._reset_auth_failure_state(conn)
         self._parse_and_store(data, conn)
         self._purge_old_snapshots(conn)
         conn.commit()
@@ -403,6 +406,34 @@ class UsagePoller:
             int(remaining),
         )
 
+    def restore_auth_failure_state(self, conn: sqlite3.Connection) -> None:
+        """Restore 401 auth failure state from the database after a restart.
+
+        If ``backoff_until`` is still in the future, the poller resumes
+        the backoff so it doesn't immediately hammer an auth-failing API.
+        If the backoff has expired, the persisted state is cleared.
+        """
+        state = load_auth_failure_state(conn)
+        if state is None:
+            return
+        remaining = state["backoff_until"] - time.time()
+        if remaining <= 0:
+            clear_auth_failure_state(conn)
+            return
+        self._consecutive_401s = state["consecutive_401s"]
+        self._active_poll_interval = math.ceil(remaining)
+        # Convert persisted wall-clock first_failure_time to monotonic
+        elapsed_since_first = time.time() - state["first_failure_time"]
+        self._first_401_time = time.monotonic() - elapsed_since_first
+        # Align monotonic _last_poll so that the remaining backoff is respected
+        self._last_poll = time.monotonic() - (self._active_poll_interval - remaining)
+        logger.info(
+            "Restored 401 auth failure state: %d consecutive 401(s), "
+            "backing off for %ds more",
+            self._consecutive_401s,
+            int(remaining),
+        )
+
     def _do_poll(self, conn: sqlite3.Connection) -> None:
         """Execute one poll cycle: fetch → parse → store → purge."""
         token = self.credential_manager.get_token()
@@ -432,7 +463,7 @@ class UsagePoller:
                 token = self.credential_manager.refresh_token()
                 if token is None:
                     logger.warning("Token refresh failed — skipping usage poll")
-                    self._handle_401()
+                    self._handle_401(conn)
                     return
                 new_fp = token_fingerprint(token)
                 if new_fp == original_fp:
@@ -440,7 +471,7 @@ class UsagePoller:
                         "Token fingerprint unchanged after refresh — "
                         "skipping retry (token not yet rotated)",
                     )
-                    self._handle_401()
+                    self._handle_401(conn)
                     return
                 fp = new_fp
                 self._check_key_rotation(conn, fp)
@@ -450,7 +481,7 @@ class UsagePoller:
                 except Exception:
                     self._flush_audit_records(conn, fp)
                     logger.exception("Usage API call failed after token refresh")
-                    self._handle_401()
+                    self._handle_401(conn)
                     return
                 self._flush_audit_records(conn, fp)
             else:
@@ -467,7 +498,7 @@ class UsagePoller:
             self._flush_audit_records(conn, fp)
 
         self._reset_rate_limit_state(conn)
-        self._reset_auth_failure_state()
+        self._reset_auth_failure_state(conn)
         self._parse_and_store(data, conn)
         self._purge_old_snapshots(conn)
         conn.commit()
@@ -512,13 +543,16 @@ class UsagePoller:
             backoff_until=time.time() + self._active_poll_interval,
         )
 
-    def _handle_401(self) -> None:
+    def _handle_401(self, conn: sqlite3.Connection) -> None:
         """Handle a 401 auth error by applying progressive linear backoff
         and sending webhook notifications after repeated failures.
 
         Uses a gentler curve than 429 (linear vs exponential) because 401
         failures are self-inflicted — we're waiting for token refresh, not
         for rate limit clearance.
+
+        The backoff state is persisted to the database so that it survives
+        supervisor restarts.
         """
         self._consecutive_401s += 1
         if self._first_401_time is None:
@@ -533,6 +567,12 @@ class UsagePoller:
             "poll interval now %ds",
             self._consecutive_401s,
             self._active_poll_interval,
+        )
+        save_auth_failure_state(
+            conn,
+            consecutive_401s=self._consecutive_401s,
+            backoff_until=time.time() + self._active_poll_interval,
+            first_failure_time=time.time() - (time.monotonic() - self._first_401_time),
         )
         if (
             self._consecutive_401s >= AUTH_FAILURE_NOTIFY_THRESHOLD
@@ -559,11 +599,11 @@ class UsagePoller:
             clear_backoff_state(conn)
             self._active_poll_interval = None
 
-    def _reset_auth_failure_state(self) -> None:
+    def _reset_auth_failure_state(self, conn: sqlite3.Connection) -> None:
         """Reset auth failure tracking after a successful poll.
 
-        Clears 401 backoff and sends a recovery notification if we were
-        in a 401 outage.
+        Clears 401 backoff (both in-memory and persisted) and sends a
+        recovery notification if we were in a 401 outage.
         """
         if self._consecutive_401s > 0:
             logger.info(
@@ -580,6 +620,7 @@ class UsagePoller:
             self._consecutive_401s = 0
             self._first_401_time = None
             self._active_poll_interval = None
+            clear_auth_failure_state(conn)
 
     def _fetch(self, token: str) -> dict:
         """Call the usage API synchronously via asyncio, with retry for transient errors."""

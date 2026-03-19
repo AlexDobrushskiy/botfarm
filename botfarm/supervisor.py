@@ -178,6 +178,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
             notifier=self._notifier,
         )
         self._usage_poller.restore_backoff_state(self._conn)
+        self._usage_poller.restore_auth_failure_state(self._conn)
 
         # Codex (OpenAI) usage poller — optional, no-op if not configured
         self._codex_usage_poller = CodexUsagePoller(config=config.codex_usage)

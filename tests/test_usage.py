@@ -2347,3 +2347,111 @@ class TestAuthFailureTracking:
             poller.force_poll(conn)
 
         assert poller._consecutive_401s == 0
+
+    def test_401_state_persisted_to_db(self, poller_with_notifier, conn):
+        """401 auth failure state is persisted to the database."""
+        from botfarm.db import load_auth_failure_state
+
+        poller = poller_with_notifier
+        error = _make_401_error()
+        poller.credential_manager.refresh_token.return_value = None
+
+        with patch.object(poller, "_fetch", side_effect=error):
+            poller.force_poll(conn)
+
+        state = load_auth_failure_state(conn)
+        assert state is not None
+        assert state["consecutive_401s"] == 1
+        assert state["backoff_until"] > time.time()
+        assert state["first_failure_time"] <= time.time()
+
+    def test_401_state_cleared_on_recovery(self, poller_with_notifier, conn):
+        """401 auth failure state is cleared from DB on successful poll."""
+        from botfarm.db import load_auth_failure_state
+
+        poller = poller_with_notifier
+        error = _make_401_error()
+        poller.credential_manager.refresh_token.return_value = None
+
+        # Build up 401s
+        for i in range(AUTH_FAILURE_NOTIFY_THRESHOLD):
+            with patch.object(poller, "_fetch", side_effect=error):
+                poller._last_poll = 0
+                poller._last_force_poll = 0
+                poller.force_poll(conn)
+
+        assert load_auth_failure_state(conn) is not None
+
+        # Successful poll clears persisted state
+        with patch.object(poller, "_fetch", return_value=SAMPLE_USAGE_RESPONSE):
+            poller._last_poll = 0
+            poller._last_force_poll = 0
+            poller.force_poll(conn)
+
+        assert load_auth_failure_state(conn) is None
+
+    def test_restore_active_401_state(self, conn):
+        """New poller restores unexpired 401 state from DB."""
+        from botfarm.db import save_auth_failure_state
+
+        save_auth_failure_state(
+            conn,
+            consecutive_401s=5,
+            backoff_until=time.time() + 300,
+            first_failure_time=time.time() - 600,
+        )
+
+        p = UsagePoller(poll_interval=10)
+        p.restore_auth_failure_state(conn)
+
+        assert p._consecutive_401s == 5
+        assert p._active_poll_interval is not None
+        assert p._first_401_time is not None
+
+    def test_restore_expired_401_state_clears(self, conn):
+        """New poller ignores expired 401 state and clears it from DB."""
+        from botfarm.db import load_auth_failure_state, save_auth_failure_state
+
+        save_auth_failure_state(
+            conn,
+            consecutive_401s=3,
+            backoff_until=time.time() - 10,
+            first_failure_time=time.time() - 600,
+        )
+
+        p = UsagePoller(poll_interval=10)
+        p.restore_auth_failure_state(conn)
+
+        assert p._consecutive_401s == 0
+        assert p._active_poll_interval is None
+        assert load_auth_failure_state(conn) is None
+
+    def test_restore_no_401_state_is_noop(self, conn):
+        """restore_auth_failure_state is a no-op when no state is stored."""
+        p = UsagePoller(poll_interval=10)
+        p.restore_auth_failure_state(conn)
+
+        assert p._consecutive_401s == 0
+        assert p._first_401_time is None
+
+    def test_restored_401_backoff_blocks_force_poll(self, conn):
+        """After restoring active 401 state, force_poll() returns cached data."""
+        from botfarm.db import save_auth_failure_state
+
+        save_auth_failure_state(
+            conn,
+            consecutive_401s=3,
+            backoff_until=time.time() + 300,
+            first_failure_time=time.time() - 600,
+        )
+
+        cred_mgr = MagicMock(spec=CredentialManager)
+        cred_mgr.get_token.return_value = "test-token"
+        p = UsagePoller(credential_manager=cred_mgr, poll_interval=10)
+        p.restore_auth_failure_state(conn)
+
+        with patch.object(p, "_fetch", return_value=SAMPLE_USAGE_RESPONSE) as mock_fetch:
+            p.force_poll(conn)
+
+        mock_fetch.assert_not_called()
+        assert p.last_polled_fresh is False
