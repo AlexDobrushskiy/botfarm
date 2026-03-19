@@ -687,7 +687,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
 
         if new_level == "blocked":
             logger.warning(
-                "Linear capacity %s — auto-pausing dispatch", detail,
+                "Tracker capacity %s — auto-pausing dispatch", detail,
             )
             insert_event(
                 self._conn, event_type="capacity_blocked", detail=detail,
@@ -699,7 +699,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
             )
 
         elif new_level == "critical":
-            logger.warning("Linear capacity %s — critical", detail)
+            logger.warning("Tracker capacity %s — critical", detail)
             insert_event(
                 self._conn, event_type="capacity_critical", detail=detail,
             )
@@ -709,7 +709,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
             )
 
         elif new_level == "warning":
-            logger.warning("Linear capacity %s — approaching limits", detail)
+            logger.warning("Tracker capacity %s — approaching limits", detail)
             insert_event(
                 self._conn, event_type="capacity_warning", detail=detail,
             )
@@ -720,7 +720,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
 
         # Clearing from blocked state — resume dispatch
         if old_level == "blocked" and new_level != "blocked":
-            logger.info("Linear capacity %s — resuming dispatch", detail)
+            logger.info("Tracker capacity %s — resuming dispatch", detail)
             insert_event(
                 self._conn, event_type="capacity_cleared", detail=detail,
             )

@@ -971,13 +971,13 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
             git_author_name=str(coder_data.get("git_author_name", "")),
             git_author_email=str(coder_data.get("git_author_email", "")),
             tracker_api_key=str(
-                coder_data.get("tracker_api_key") or coder_data.get("linear_api_key", "")
+                coder_data.get("tracker_api_key", coder_data.get("linear_api_key", ""))
             ),
         ),
         reviewer=ReviewerIdentity(
             github_token=str(reviewer_data.get("github_token", "")),
             tracker_api_key=str(
-                reviewer_data.get("tracker_api_key") or reviewer_data.get("linear_api_key", "")
+                reviewer_data.get("tracker_api_key", reviewer_data.get("linear_api_key", ""))
             ),
         ),
     )
@@ -990,7 +990,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         cadence_days=int(ra_data.get("cadence_days", 14)),
         cadence_tickets=int(ra_data.get("cadence_tickets", 20)),
         tracker_label=str(
-            ra_data.get("tracker_label") or ra_data.get("linear_label", "Refactoring Analysis")
+            ra_data.get("tracker_label", ra_data.get("linear_label", "Refactoring Analysis"))
         ).strip(),
         priority=int(ra_data.get("priority", 4)),
     )

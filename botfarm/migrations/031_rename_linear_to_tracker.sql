@@ -1,6 +1,8 @@
 -- Migration 031: Rename Linear-specific column names to tracker-agnostic names.
 -- Supports clean multi-bugtracker integration by removing Linear-specific naming.
 -- SQLite supports ALTER TABLE ... RENAME COLUMN since 3.25.0.
+-- Note: ticket_history.deleted_from_linear is intentionally NOT renamed here —
+-- it genuinely refers to Linear deletion status and is part of the Linear adapter.
 
 -- ticket_history table
 ALTER TABLE ticket_history RENAME COLUMN linear_uuid TO tracker_uuid;

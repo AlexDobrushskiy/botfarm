@@ -77,9 +77,9 @@ def __getattr__(name: str):
             "CooldownError": CooldownError,
             "UndoResult": UndoResult,
         }
-        val = _map[name]
-        globals()[name] = val
-        return val
+        for k, v in _map.items():
+            globals()[k] = v
+        return _map[name]
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
