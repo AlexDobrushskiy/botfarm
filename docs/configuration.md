@@ -31,11 +31,12 @@ Config values support `${VAR}` syntax for environment variable expansion. If a r
 
 Botfarm loads `~/.botfarm/.env` automatically via `python-dotenv`. This is the **only** `.env` file that botfarm reads — `.env` files in the current working directory are ignored. If a CWD `.env` is detected, botfarm prints a warning to stderr.
 
-Required:
+Required (depends on bugtracker type):
 
 | Variable | Purpose |
 |---|---|
-| `LINEAR_API_KEY` | Linear API key for polling tickets and updating status |
+| `LINEAR_API_KEY` | Linear API key for polling tickets and updating status (when `type: linear`) |
+| `JIRA_API_TOKEN` | Jira Cloud API token (when `type: jira`) |
 
 Usage limit monitoring reads your Claude Code OAuth token automatically from `~/.claude/.credentials.json` (Linux) or the system keychain (macOS). No extra env var needed.
 
@@ -69,11 +70,13 @@ projects:
 
 ### `bugtracker`
 
-Bugtracker API connection and workflow configuration. Currently supports Linear (`type: linear`).
+Bugtracker API connection and workflow configuration. Supports Linear (`type: linear`) and Jira (`type: jira`).
+
+#### Linear configuration
 
 ```yaml
 bugtracker:
-  type: linear                      # "linear" (future: "jira", "github")
+  type: linear                      # "linear" or "jira"
   api_key: ${LINEAR_API_KEY}        # Required. Supports env var expansion
   workspace: my-workspace           # Workspace slug
   poll_interval_seconds: 120        # How often to poll for new tickets (default: 120)
@@ -90,6 +93,33 @@ bugtracker:
   comment_on_failure: true          # Post a comment when a task fails (default: true)
   comment_on_completion: false      # Post a comment on success (default: false)
   comment_on_limit_pause: false     # Post when paused by usage limits (default: false)
+```
+
+#### Jira configuration
+
+```yaml
+bugtracker:
+  type: jira
+  api_key: ${JIRA_API_TOKEN}        # Jira Cloud API token
+  workspace: my-org                  # Jira Cloud site name (e.g. "acme" for acme.atlassian.net)
+  poll_interval_seconds: 120
+  exclude_tags:
+    - Human
+
+  # Workflow status names — must match your Jira project's workflow
+  todo_status: To Do
+  in_progress_status: In Progress
+  done_status: Done
+  in_review_status: In Review
+
+  comment_on_failure: true
+  comment_on_completion: false
+  comment_on_limit_pause: false
+```
+
+For Jira, set the API token in `~/.botfarm/.env`:
+```
+JIRA_API_TOKEN=your-jira-api-token
 ```
 
 ---

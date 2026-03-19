@@ -321,6 +321,7 @@ def _worker_entry(
     agent_adapters_config: dict[str, dict] | None = None,
     prior_context: str = "",
     merge_main_before_resume: bool = False,
+    bugtracker_type: str = "Linear",
 ) -> None:
     """Entry point for a worker subprocess.
 
@@ -423,6 +424,7 @@ def _worker_entry(
             agent_adapters_config=adapters_cfg,
             prior_context=prior_context,
             merge_main_before_resume=merge_main_before_resume,
+            bugtracker_type=bugtracker_type,
         )
         if result.paused:
             result_queue.put(_WorkerResult(
@@ -718,6 +720,7 @@ class WorkerLifecycleManager:
                 },
                 "prior_context": prior_context,
                 "merge_main_before_resume": merge_main_before_resume,
+                "bugtracker_type": self._config.bugtracker.type.title(),
             },
             daemon=False,
         )

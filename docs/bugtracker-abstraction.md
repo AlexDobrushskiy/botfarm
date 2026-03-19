@@ -132,6 +132,32 @@ bugtracker:
 
 Adapter-specific fields can be added to the config as needed.
 
+## Jira Adapter Notes
+
+The Jira adapter (`botfarm/bugtracker/jira/`) follows the same structure as Linear. Key differences to be aware of when implementing:
+
+### API Differences
+- **Authentication:** Jira Cloud uses API tokens (email + token) via Basic auth, not bearer tokens
+- **Issue keys:** Jira uses `PROJECT-123` format (similar to Linear identifiers)
+- **Branch names:** Jira doesn't have a built-in `gitBranchName` field — derive from the issue key and summary
+- **Blocking relations:** Jira uses issue link types (`Blocks`/`is blocked by`) rather than dedicated relation fields
+- **Status transitions:** Jira workflows may require specific transition IDs rather than setting status by name; use the transition API
+
+### Agent Prompt Variables
+Stage template prompts use `{bugtracker_type}` to reference the tracker type. When `bugtracker.type` is `"jira"`, prompts render as e.g. "Work on Jira ticket PROJECT-123" (the value is title-cased at the injection point). The variable is automatically injected by the worker pipeline.
+
+### Workflow Mapping
+| Concept | Linear | Jira |
+|---|---|---|
+| Team | Team key (e.g. "SMA") | Project key (e.g. "PROJ") |
+| Status polling | GraphQL `issues` query | JQL search |
+| Comments | Linear comment API | Jira comment REST API |
+| Labels | Linear labels | Jira labels |
+| Relations | `isBlockedBy`/`blocks` | Issue links with link types |
+| Branch name | `gitBranchName` field | Derived from key + summary |
+
+See `docs/jira-workflow.md` for the agent-facing workflow guide.
+
 ## Shared Types
 
 All adapters use the shared types from `botfarm/bugtracker/types.py`:

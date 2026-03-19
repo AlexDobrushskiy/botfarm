@@ -865,7 +865,7 @@ class TestMigrationInfrastructure:
         c.execute("UPDATE schema_version SET version = 29")
         c.execute("DROP TABLE IF EXISTS usage_api_calls")
         c.execute("DROP TABLE IF EXISTS usage_api_key_sessions")
-        # Reverse the column renames from migration 031 so re-running works
+        # Reverse the column renames from migration 032 so re-running works
         c.execute("ALTER TABLE ticket_history RENAME COLUMN tracker_uuid TO linear_uuid")
         c.execute("ALTER TABLE ticket_history RENAME COLUMN tracker_created_at TO linear_created_at")
         c.execute("ALTER TABLE ticket_history RENAME COLUMN tracker_updated_at TO linear_updated_at")
@@ -877,7 +877,7 @@ class TestMigrationInfrastructure:
         c.execute("ALTER TABLE cleanup_batch_items RENAME COLUMN tracker_uuid TO linear_uuid")
         c.commit()
 
-        # Now run migrations 030 and 031
+        # Now run migrations 030, 031, and 032
         _run_migrations(c, from_version=29)
 
         # Verify the audit tables exist
@@ -910,7 +910,7 @@ class TestMigrationInfrastructure:
         c = init_db(db_file, allow_migration=True)
         # Simulate the old duplicate-028 state: DB is at v29 but audit tables exist
         c.execute("UPDATE schema_version SET version = 29")
-        # Reverse the column renames from migration 031 so re-running works
+        # Reverse the column renames from migration 032 so re-running works
         c.execute("ALTER TABLE ticket_history RENAME COLUMN tracker_uuid TO linear_uuid")
         c.execute("ALTER TABLE ticket_history RENAME COLUMN tracker_created_at TO linear_created_at")
         c.execute("ALTER TABLE ticket_history RENAME COLUMN tracker_updated_at TO linear_updated_at")
@@ -922,10 +922,10 @@ class TestMigrationInfrastructure:
         c.execute("ALTER TABLE cleanup_batch_items RENAME COLUMN tracker_uuid TO linear_uuid")
         c.commit()
 
-        # Running migration 030 and 031 must not fail on pre-existing tables
+        # Running migrations 030, 031, and 032 must not fail on pre-existing tables
         _run_migrations(c, from_version=29)
 
-        # Verify version advanced to current
+        # Verify version advanced to latest
         row = c.execute("SELECT version FROM schema_version").fetchone()
         assert row[0] == SCHEMA_VERSION
 
@@ -2278,6 +2278,32 @@ class TestWorkflowDefinitionTables:
         assert row["result_parser"] == "pr_url"
         assert "{ticket_id}" in row["prompt_template"]
 
+    def test_implement_prompt_is_tracker_agnostic(self, conn):
+        """After migration 031, implement prompt must use {bugtracker_type} not 'Linear'."""
+        impl_id = conn.execute(
+            "SELECT id FROM pipeline_templates WHERE name = 'implementation'"
+        ).fetchone()["id"]
+        row = conn.execute(
+            "SELECT prompt_template FROM stage_templates WHERE pipeline_id = ? AND name = 'implement'",
+            (impl_id,),
+        ).fetchone()
+        prompt = row["prompt_template"]
+        assert "{bugtracker_type}" in prompt
+        assert "Linear" not in prompt
+
+    def test_investigation_prompt_is_tracker_agnostic(self, conn):
+        """After migration 031, investigation prompt must use {bugtracker_type} not 'Linear'."""
+        inv_id = conn.execute(
+            "SELECT id FROM pipeline_templates WHERE name = 'investigation'"
+        ).fetchone()["id"]
+        row = conn.execute(
+            "SELECT prompt_template FROM stage_templates WHERE pipeline_id = ? AND name = 'implement'",
+            (inv_id,),
+        ).fetchone()
+        prompt = row["prompt_template"]
+        assert "{bugtracker_type}" in prompt
+        assert "Linear" not in prompt
+
     def test_review_stage_properties(self, conn):
         impl_id = conn.execute(
             "SELECT id FROM pipeline_templates WHERE name = 'implementation'"
@@ -2353,9 +2379,8 @@ class TestWorkflowDefinitionTables:
             (inv_id,),
         ).fetchone()
         prompt = row["prompt_template"]
-        assert "blockedBy" in prompt
-        assert "blocks" in prompt
-        assert "save_issue" in prompt
+        assert "blocking relationships between tickets" in prompt
+        assert "{bugtracker_type} API or MCP tools" in prompt
 
     def test_migration_019_preserves_custom_investigation_prompt(self, conn):
         """Migration 019 must not overwrite a user-customized prompt."""

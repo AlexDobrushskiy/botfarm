@@ -55,7 +55,11 @@ def _is_investigation(labels: list[str] | None) -> bool:
     return any(lbl.lower() in _NO_PR_LABELS for lbl in labels)
 
 
-def _build_implement_prompt(ticket_id: str, labels: list[str] | None) -> str:
+def _build_implement_prompt(
+    ticket_id: str,
+    labels: list[str] | None,
+    bugtracker_type: str = "Linear",
+) -> str:
     """Build the implement-stage prompt, varying by ticket labels.
 
     .. deprecated::
@@ -64,19 +68,19 @@ def _build_implement_prompt(ticket_id: str, labels: list[str] | None) -> str:
     """
     if _is_investigation(labels):
         return (
-            f"Work on Linear ticket {ticket_id}. "
+            f"Work on {bugtracker_type} ticket {ticket_id}. "
             "This is an investigation ticket. Produce a summary of findings "
-            "as a Linear comment on the ticket. If you identify implementation "
-            "work, create follow-up Linear tickets. Do not create a PR.\n\n"
+            "as a comment on the ticket. If you identify implementation "
+            "work, create follow-up tickets. Do not create a PR.\n\n"
             "When creating multiple follow-up tickets where one depends on another, "
-            "set blockedBy / blocks relationships between them using the Linear MCP "
-            "save_issue tool. This ensures the supervisor dispatches them in the correct "
+            f"set blocking relationships between tickets using the {bugtracker_type} "
+            "API or MCP tools. This ensures the supervisor dispatches them in the correct "
             "order. Do not just mention dependencies in the description \u2014 set them as "
-            "actual Linear relations."
+            "actual blocking relations."
         )
     return (
-        f"Work on Linear ticket {ticket_id}. "
-        "Follow the Linear Tickets workflow in AGENTS.md. "
+        f"Work on {bugtracker_type} ticket {ticket_id}. "
+        "Follow the Tickets workflow in AGENTS.md. "
         "Complete all steps through PR creation. Do not stop until the PR is created. "
         "If the work described in the ticket is already fully implemented on main "
         "(e.g. delivered by another PR), verify all acceptance criteria are met, "
@@ -96,7 +100,7 @@ def _run_agent_stage(
     env: dict[str, str] | None = None,
     timeout: float | None = None,
     on_context_fill: ContextFillCallback | None = None,
-    bugtracker_type: str = "linear",
+    bugtracker_type: str = "Linear",
 ) -> StageResult:
     """Generic runner for any agent-executor stage using its DB template.
 
@@ -218,6 +222,7 @@ def _run_implement(
     stage_tpl: StageTemplate | None = None,
     shared_mem_path: Path | None = None,
     prior_context: str = "",
+    bugtracker_type: str = "Linear",
 ) -> StageResult:
     """IMPLEMENT stage — Claude Code implements the ticket and creates a PR."""
     if stage_tpl is not None:
@@ -225,13 +230,14 @@ def _run_implement(
         if shared_mem_path:
             prompt_vars["shared_mem_path"] = str(shared_mem_path)
         prompt_vars["prior_context"] = prior_context
+        prompt_vars["bugtracker_type"] = bugtracker_type
         return _run_claude_stage(
             stage_tpl, cwd=cwd, max_turns=max_turns,
             prompt_vars=prompt_vars,
             log_file=log_file, env=env, on_context_fill=on_context_fill,
         )
     # Legacy fallback
-    prompt = _build_implement_prompt(ticket_id, ticket_labels)
+    prompt = _build_implement_prompt(ticket_id, ticket_labels, bugtracker_type)
     if prior_context:
         prompt = prior_context + prompt
     if shared_mem_path:
@@ -1180,6 +1186,7 @@ def _execute_stage(
     codex_timeout: float | None = None,
     codex_log_file: Path | None = None,
     review_iteration: int = 1,
+    bugtracker_type: str = "Linear",
 ) -> StageResult:
     """Dispatch to the appropriate stage runner.
 
@@ -1255,6 +1262,7 @@ def _execute_stage(
             stage_tpl, adapter, cwd=cwd, max_turns=max_turns,
             prompt_vars=prompt_vars,
             log_file=log_file, env=env, on_context_fill=on_context_fill,
+            bugtracker_type=bugtracker_type,
         )
 
     # --- Legacy name-based routing (no DB template) ---
@@ -1265,6 +1273,7 @@ def _execute_stage(
             env=env, on_context_fill=on_context_fill,
             shared_mem_path=shared_mem_path,
             prior_context=prior_context,
+            bugtracker_type=bugtracker_type,
         )
     elif stage == "review":
         if not pr_url:
