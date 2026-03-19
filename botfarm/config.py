@@ -341,6 +341,7 @@ class CoderIdentity:
     git_author_email: str = ""
     linear_api_key: str = ""
     jira_api_token: str = ""
+    jira_email: str = ""
 
 
 @dataclass
@@ -1001,6 +1002,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
             git_author_email=str(coder_data.get("git_author_email", "")),
             linear_api_key=str(coder_data.get("linear_api_key", "")),
             jira_api_token=str(coder_data.get("jira_api_token", "")),
+            jira_email=str(coder_data.get("jira_email", "")),
         ),
         reviewer=ReviewerIdentity(
             github_token=str(reviewer_data.get("github_token", "")),
@@ -1158,7 +1160,7 @@ def validate_config_updates(
     cap_fields = updates.get("bugtracker.capacity_monitoring", {})
     if isinstance(cap_fields, dict):
         # Resolve effective values: use update if present, fall back to config
-        cap_cfg = config.bugtracker.capacity_monitoring if config else None
+        cap_cfg = getattr(config.bugtracker, "capacity_monitoring", None) if config else None
 
         def _resolve(field: str) -> float | None:
             val = cap_fields.get(field)

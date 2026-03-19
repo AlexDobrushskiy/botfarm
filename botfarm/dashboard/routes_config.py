@@ -57,7 +57,7 @@ def _full_config_values(app) -> dict:
         ],
         "bugtracker": {
             "api_key": _mask_secret(cfg.bugtracker.api_key),
-            "workspace": cfg.bugtracker.workspace,
+            "workspace": getattr(cfg.bugtracker, "workspace", ""),
             "poll_interval_seconds": cfg.bugtracker.poll_interval_seconds,
             "exclude_tags": list(cfg.bugtracker.exclude_tags),
             "todo_status": cfg.bugtracker.todo_status,

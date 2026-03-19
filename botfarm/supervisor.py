@@ -37,7 +37,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import FrameType
 
-from botfarm.config import BotfarmConfig, ProjectConfig, resolve_stage_timeout, sync_agent_config_to_db
+from botfarm.config import BotfarmConfig, LinearBugtrackerConfig, ProjectConfig, resolve_stage_timeout, sync_agent_config_to_db
 from botfarm.db import (
     get_task,
     init_db,
@@ -330,7 +330,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
             self._dashboard_thread = start_dashboard(
                 self._config.dashboard,
                 db_path=self._db_path,
-                linear_workspace=self._config.bugtracker.workspace,
+                linear_workspace=getattr(self._config.bugtracker, "workspace", ""),
                 botfarm_config=self._config,
                 logs_dir=self._log_dir,
                 on_pause=self.request_pause,
@@ -634,7 +634,10 @@ class Supervisor(RecoveryMixin, OperationsMixin):
 
     def _compute_capacity_level(self, utilization: float) -> str:
         """Map a utilization ratio to a capacity level string."""
-        cap = self._config.bugtracker.capacity_monitoring
+        bt = self._config.bugtracker
+        if not isinstance(bt, LinearBugtrackerConfig):
+            return "normal"
+        cap = bt.capacity_monitoring
         if utilization >= cap.pause_threshold:
             return "blocked"
         if utilization >= cap.critical_threshold:
@@ -645,7 +648,10 @@ class Supervisor(RecoveryMixin, OperationsMixin):
 
     def _poll_capacity(self) -> None:
         """Poll Linear issue count and auto-pause/resume dispatch at thresholds."""
-        cap_config = self._config.bugtracker.capacity_monitoring
+        bt = self._config.bugtracker
+        if not isinstance(bt, LinearBugtrackerConfig):
+            return
+        cap_config = bt.capacity_monitoring
         if not cap_config.enabled:
             return
 
@@ -654,7 +660,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
             logger.warning("Capacity poll failed — skipping this tick")
             return
 
-        limit = self._config.bugtracker.issue_limit
+        limit = bt.issue_limit
         checked_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
         save_capacity_state(

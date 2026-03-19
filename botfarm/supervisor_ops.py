@@ -501,7 +501,7 @@ class OperationsMixin:
             return
 
         ticket_id = slot.ticket_id or "unknown"
-        workspace = self._config.bugtracker.workspace
+        workspace = getattr(self._config.bugtracker, "workspace", "")
         if workspace:
             linear_url = f"https://linear.app/{workspace}/issue/{ticket_id}"
         else:

@@ -147,7 +147,9 @@ class JiraPoller(BugtrackerPoller):
             for name, sid in raw_states.items():
                 self._state_cache[name] = sid
                 self._state_cache[name.lower()] = sid
-        state_id = self._state_cache.get(state_name) or self._state_cache.get(state_name.lower())
+        state_id = self._state_cache.get(state_name)
+        if state_id is None:
+            state_id = self._state_cache.get(state_name.lower())
         if state_id is None:
             raise BugtrackerError(
                 f"State '{state_name}' not found for project "
@@ -207,8 +209,9 @@ def create_pollers(config: BotfarmConfig) -> list[JiraPoller]:
 
     client = JiraClient(url=bt.url, email=bt.email, api_token=bt.api_key)
     coder_token = config.identities.coder.jira_api_token
+    coder_email = config.identities.coder.jira_email or bt.email
     coder_client = (
-        JiraClient(url=bt.url, email=bt.email, api_token=coder_token)
+        JiraClient(url=bt.url, email=coder_email, api_token=coder_token)
         if coder_token else None
     )
     return [

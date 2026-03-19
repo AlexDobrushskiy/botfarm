@@ -132,8 +132,9 @@ def create_poller(
             raise ValueError("Jira bugtracker requires JiraBugtrackerConfig")
         client = JiraClient(url=bt.url, email=bt.email, api_token=bt.api_key)
         coder_token = config.identities.coder.jira_api_token
+        coder_email = config.identities.coder.jira_email or bt.email
         coder_client = (
-            JiraClient(url=bt.url, email=bt.email, api_token=coder_token)
+            JiraClient(url=bt.url, email=coder_email, api_token=coder_token)
             if coder_token else None
         )
         return JiraPoller(
