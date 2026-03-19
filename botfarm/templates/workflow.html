@@ -231,9 +231,9 @@
                             data-pipeline-id="{{ pipeline.id }}" data-stage-id="{{ stage.id }}"
                             onclick="moveStageDown(this.dataset.pipelineId, this.dataset.stageId)"
                             {% if loop.last %}disabled{% endif %}>&#x25BC;</button>
-                    <button type="button" class="stage-action-btn stage-remove-btn" title="Remove stage"
+                    <button type="button" class="stage-action-btn stage-remove-btn" title="Delete stage"
                             data-stage-id="{{ stage.id }}" data-stage-name="{{ stage.name }}" data-pipeline-id="{{ pipeline.id }}"
-                            onclick="removeStage(this.dataset.stageId, this.dataset.stageName, this.dataset.pipelineId)">&#x2715;</button>
+                            onclick="removeStage(this.dataset.stageId, this.dataset.stageName, this.dataset.pipelineId)"><svg width="11" height="12" viewBox="0 0 14 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1 4h12M5 4V2.5A1.5 1.5 0 0 1 6.5 1h1A1.5 1.5 0 0 1 9 2.5V4m2 0v9a1.5 1.5 0 0 1-1.5 1.5h-5A1.5 1.5 0 0 1 3 13V4"/></svg> Delete</button>
                 </div>
                 {{ stage_detail(stage) }}
 
@@ -896,6 +896,13 @@ input[type="number"].stage-prop-input {
 .stage-action-btn[disabled] {
     opacity: 0.3;
     cursor: default;
+}
+.stage-remove-btn {
+    width: auto;
+    padding: 0 0.4rem;
+    gap: 0.2rem;
+    font-size: 0.6rem;
+    font-weight: 600;
 }
 .stage-remove-btn:hover:not([disabled]) {
     border-color: var(--pico-del-color);
@@ -1769,9 +1776,9 @@ function removeStage(stageId, stageName, pipelineId) {
         }
     });
 
-    var msg = 'Remove stage \u201c' + stageName + '\u201d?';
+    var msg = 'Delete stage \u201c' + stageName + '\u201d?';
     if (referencedByLoop) {
-        msg += ' This stage is referenced by a loop \u2014 the loop will also be removed.';
+        msg += ' This stage is referenced by a loop \u2014 the loop will also be deleted.';
     }
     if (!confirm(msg)) return;
 
