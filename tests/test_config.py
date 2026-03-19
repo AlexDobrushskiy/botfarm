@@ -2735,6 +2735,109 @@ class TestProjectConfigFields:
         config = load_config(config_path)
         assert config.projects[0].team == "TST"
 
+    def test_project_type_field(self):
+        p = ProjectConfig(name="p", team="T", base_dir="d", worktree_prefix="s-",
+                          slots=[1], project_type="python")
+        assert p.project_type == "python"
+
+    def test_project_type_default(self):
+        p = ProjectConfig(name="p", team="T", base_dir="d", worktree_prefix="s-", slots=[1])
+        assert p.project_type == ""
+
+    def test_setup_commands_field(self):
+        cmds = ["pip install -r requirements.txt", "pip install -e ."]
+        p = ProjectConfig(name="p", team="T", base_dir="d", worktree_prefix="s-",
+                          slots=[1], setup_commands=cmds)
+        assert p.setup_commands == cmds
+
+    def test_setup_commands_default(self):
+        p = ProjectConfig(name="p", team="T", base_dir="d", worktree_prefix="s-", slots=[1])
+        assert p.setup_commands == []
+
+    def test_yaml_project_type_loads(self, tmp_path):
+        data = {
+            "projects": [{
+                "name": "p", "team": "TST", "base_dir": "~/d",
+                "worktree_prefix": "s-", "slots": [1],
+                "project_type": "python",
+            }],
+            "bugtracker": {"type": "linear", "api_key": "k"},
+        }
+        config_path = _write_config(tmp_path, data)
+        config = load_config(config_path)
+        assert config.projects[0].project_type == "python"
+
+    def test_yaml_setup_commands_loads(self, tmp_path):
+        data = {
+            "projects": [{
+                "name": "p", "team": "TST", "base_dir": "~/d",
+                "worktree_prefix": "s-", "slots": [1],
+                "setup_commands": ["npm install"],
+            }],
+            "bugtracker": {"type": "linear", "api_key": "k"},
+        }
+        config_path = _write_config(tmp_path, data)
+        config = load_config(config_path)
+        assert config.projects[0].setup_commands == ["npm install"]
+
+    def test_yaml_missing_optional_fields(self, tmp_path):
+        config_path = _write_config(tmp_path, MINIMAL_CONFIG)
+        config = load_config(config_path)
+        assert config.projects[0].project_type == ""
+        assert config.projects[0].setup_commands == []
+
+    def test_invalid_project_type(self, tmp_path):
+        data = {
+            "projects": [{
+                "name": "p", "team": "TST", "base_dir": "~/d",
+                "worktree_prefix": "s-", "slots": [1],
+                "project_type": 123,
+            }],
+            "bugtracker": {"type": "linear", "api_key": "k"},
+        }
+        config_path = _write_config(tmp_path, data)
+        with pytest.raises(ConfigError, match="project_type must be a string"):
+            load_config(config_path)
+
+    def test_invalid_project_type_falsy_non_string(self, tmp_path):
+        data = {
+            "projects": [{
+                "name": "p", "team": "TST", "base_dir": "~/d",
+                "worktree_prefix": "s-", "slots": [1],
+                "project_type": 0,
+            }],
+            "bugtracker": {"type": "linear", "api_key": "k"},
+        }
+        config_path = _write_config(tmp_path, data)
+        with pytest.raises(ConfigError, match="project_type must be a string"):
+            load_config(config_path)
+
+    def test_invalid_setup_commands_not_list(self, tmp_path):
+        data = {
+            "projects": [{
+                "name": "p", "team": "TST", "base_dir": "~/d",
+                "worktree_prefix": "s-", "slots": [1],
+                "setup_commands": "not a list",
+            }],
+            "bugtracker": {"type": "linear", "api_key": "k"},
+        }
+        config_path = _write_config(tmp_path, data)
+        with pytest.raises(ConfigError, match="setup_commands must be a list"):
+            load_config(config_path)
+
+    def test_invalid_setup_commands_not_strings(self, tmp_path):
+        data = {
+            "projects": [{
+                "name": "p", "team": "TST", "base_dir": "~/d",
+                "worktree_prefix": "s-", "slots": [1],
+                "setup_commands": [1, 2],
+            }],
+            "bugtracker": {"type": "linear", "api_key": "k"},
+        }
+        config_path = _write_config(tmp_path, data)
+        with pytest.raises(ConfigError, match="setup_commands must be a list of strings"):
+            load_config(config_path)
+
 
 class TestBotfarmConfigBugtracker:
     """Test BotfarmConfig.bugtracker field."""

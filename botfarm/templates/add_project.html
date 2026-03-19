@@ -59,6 +59,22 @@
             <input type="number" id="slots_count" name="slots" value="1" min="1" max="20" required>
         </label>
 
+        <label for="project_type">
+            Project type <small>(optional — e.g. python, node, generic)</small>
+            <select id="project_type" name="project_type" onchange="updateSetupCommands()">
+                <option value="">— None —</option>
+                <option value="python">Python</option>
+                <option value="node">Node.js</option>
+                <option value="generic">Generic</option>
+            </select>
+        </label>
+
+        <label for="setup_commands">
+            Setup commands <small>(optional — run in each worktree after creation)</small>
+            <textarea id="setup_commands" name="setup_commands" rows="3"
+                      placeholder="One command per line, e.g.&#10;python -m venv .venv&#10;.venv/bin/pip install -r requirements.txt"></textarea>
+        </label>
+
         <div id="form-errors" style="display:none; color: var(--pico-del-color); margin-bottom: 1rem;"></div>
 
         <button type="submit" id="submit-btn">Add Project</button>
@@ -107,6 +123,22 @@ function toggleGithubOption() {
     document.getElementById("create_github_label").style.display = url ? "none" : "";
     if (url) document.getElementById("create_github").checked = false;
 }
+
+var _defaultSetupCommands = {
+    "python": "python -m venv .venv\n.venv/bin/pip install -r requirements.txt\n.venv/bin/pip install -e .",
+    "node": "npm install"
+};
+
+function updateSetupCommands() {
+    var sel = document.getElementById("project_type");
+    var textarea = document.getElementById("setup_commands");
+    if (textarea.dataset.userEdited) return;
+    textarea.value = _defaultSetupCommands[sel.value] || "";
+}
+
+document.getElementById("setup_commands").addEventListener("input", function() {
+    this.dataset.userEdited = "1";
+});
 
 function loadTeams() {
     var sel = document.getElementById("team");
@@ -177,7 +209,9 @@ function submitAddProject(evt) {
         tracker_project: trackerProject,
         create_linear_project: createLinear,
         slots: parseInt(document.getElementById("slots_count").value, 10) || 1,
-        create_github: document.getElementById("create_github").checked
+        create_github: document.getElementById("create_github").checked,
+        project_type: document.getElementById("project_type").value,
+        setup_commands: document.getElementById("setup_commands").value.trim()
     };
 
     fetch("/api/project/create", {

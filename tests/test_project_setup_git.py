@@ -500,3 +500,180 @@ class TestSetupProjectGit:
 
         with pytest.raises(ProjectSetupError, match="not a git repo"):
             setup_project_git(name="notgit", config_path=config_path)
+
+    def test_runs_setup_commands_on_new_worktrees(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        repo_dir = tmp_path / "projects" / "cmd" / "repo"
+        wt_prefix = tmp_path / "projects" / "cmd" / "cmd-slot-"
+        data = {
+            "projects": [{
+                "name": "cmd",
+                "team": "ENG",
+                "base_dir": str(repo_dir),
+                "worktree_prefix": str(wt_prefix),
+                "slots": [1],
+                "setup_commands": ["touch setup-marker.txt"],
+            }]
+        }
+        config_path.write_text(yaml.dump(data))
+
+        init_repo(repo_dir, "cmd")
+        messages = []
+        setup_project_git(
+            name="cmd", config_path=config_path,
+            progress_callback=messages.append,
+        )
+        wt1 = tmp_path / "projects" / "cmd" / "cmd-slot-1"
+        assert (wt1 / "setup-marker.txt").exists()
+        assert any("OK" in m for m in messages)
+
+    def test_runs_setup_commands_in_existing_worktrees(self, tmp_path):
+        """Setup commands run in all worktrees so retry via 'Setup Git' works."""
+        config_path = tmp_path / "config.yaml"
+        repo_dir = tmp_path / "projects" / "retry" / "repo"
+        wt_prefix = tmp_path / "projects" / "retry" / "retry-slot-"
+        data = {
+            "projects": [{
+                "name": "retry",
+                "team": "ENG",
+                "base_dir": str(repo_dir),
+                "worktree_prefix": str(wt_prefix),
+                "slots": [1],
+                "setup_commands": ["touch setup-marker.txt"],
+            }]
+        }
+        config_path.write_text(yaml.dump(data))
+
+        # Pre-create repo and worktree
+        init_repo(repo_dir, "retry")
+        from botfarm.project_setup import create_worktree
+        wt1 = tmp_path / "projects" / "retry" / "retry-slot-1"
+        create_worktree(repo_dir, wt1, "slot-1-placeholder")
+
+        messages = []
+        setup_project_git(
+            name="retry", config_path=config_path,
+            progress_callback=messages.append,
+        )
+        # Setup commands should run even in existing worktrees
+        assert (wt1 / "setup-marker.txt").exists()
+
+
+class TestSetupProjectSetupCommands:
+    """Test setup command execution in setup_project."""
+
+    def _write_config(self, path, projects=None):
+        data = {"projects": projects or []}
+        path.write_text(yaml.dump(data))
+
+    def test_runs_setup_commands_in_each_worktree(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        projects_dir = tmp_path / "projects" / "cmd-proj"
+        self._write_config(config_path)
+
+        messages = []
+        result = setup_project(
+            repo_url="",
+            name="cmd-proj",
+            team="ENG",
+            tracker_project="",
+            slots=[1, 2],
+            config_path=config_path,
+            projects_dir=projects_dir,
+            progress_callback=messages.append,
+            setup_commands=["touch setup-done.txt"],
+        )
+
+        wt1 = projects_dir / "cmd-proj-slot-1"
+        wt2 = projects_dir / "cmd-proj-slot-2"
+        assert (wt1 / "setup-done.txt").exists()
+        assert (wt2 / "setup-done.txt").exists()
+        assert "setup_commands" in result
+
+    def test_no_setup_commands_by_default(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        projects_dir = tmp_path / "projects" / "no-cmd"
+        self._write_config(config_path)
+
+        messages = []
+        result = setup_project(
+            repo_url="",
+            name="no-cmd",
+            team="ENG",
+            tracker_project="",
+            slots=[1],
+            config_path=config_path,
+            projects_dir=projects_dir,
+            progress_callback=messages.append,
+        )
+
+        # No setup_commands in result
+        assert "setup_commands" not in result
+        assert not any("setup commands" in m.lower() for m in messages)
+
+    def test_failing_setup_command_does_not_abort(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        projects_dir = tmp_path / "projects" / "fail-cmd"
+        self._write_config(config_path)
+
+        messages = []
+        result = setup_project(
+            repo_url="",
+            name="fail-cmd",
+            team="ENG",
+            tracker_project="",
+            slots=[1],
+            config_path=config_path,
+            projects_dir=projects_dir,
+            progress_callback=messages.append,
+            setup_commands=["false", "touch after-fail.txt"],
+        )
+
+        # Setup should still complete (non-fatal)
+        assert result["name"] == "fail-cmd"
+        # The second command should still run
+        wt1 = projects_dir / "fail-cmd-slot-1"
+        assert (wt1 / "after-fail.txt").exists()
+        # Should have a WARN message for the failing command
+        assert any("WARN" in m for m in messages)
+
+    def test_project_type_in_result(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        projects_dir = tmp_path / "projects" / "typed"
+        self._write_config(config_path)
+
+        result = setup_project(
+            repo_url="",
+            name="typed",
+            team="ENG",
+            tracker_project="",
+            slots=[1],
+            config_path=config_path,
+            projects_dir=projects_dir,
+            project_type="python",
+        )
+
+        assert result["project_type"] == "python"
+        data = yaml.safe_load(config_path.read_text())
+        proj = next(p for p in data["projects"] if p["name"] == "typed")
+        assert proj["project_type"] == "python"
+
+    def test_project_type_omitted_when_empty(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        projects_dir = tmp_path / "projects" / "notype"
+        self._write_config(config_path)
+
+        result = setup_project(
+            repo_url="",
+            name="notype",
+            team="ENG",
+            tracker_project="",
+            slots=[1],
+            config_path=config_path,
+            projects_dir=projects_dir,
+        )
+
+        assert "project_type" not in result
+        data = yaml.safe_load(config_path.read_text())
+        proj = next(p for p in data["projects"] if p["name"] == "notype")
+        assert "project_type" not in proj

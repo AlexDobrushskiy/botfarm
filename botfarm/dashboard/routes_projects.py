@@ -116,6 +116,11 @@ async def api_project_create(request: Request):
     create_linear_project = bool(body.get("create_linear_project", False))
     slots_count = body.get("slots", 1)
     create_github = bool(body.get("create_github", False))
+    project_type_raw = body.get("project_type")
+    if not isinstance(project_type_raw, str):
+        project_type_raw = ""
+    project_type = project_type_raw.strip()
+    setup_commands_raw = body.get("setup_commands")
 
     # Validation
     errors = []
@@ -141,6 +146,16 @@ async def api_project_create(request: Request):
         errors.append("Slots must be an integer")
     elif slots_count < 1 or slots_count > 20:
         errors.append("Slots must be between 1 and 20")
+
+    # Parse setup_commands — accept list or newline-separated string
+    setup_commands: list[str] = []
+    if isinstance(setup_commands_raw, list):
+        setup_commands = [str(c).strip() for c in setup_commands_raw if str(c).strip()]
+    elif isinstance(setup_commands_raw, str) and setup_commands_raw.strip():
+        setup_commands = [
+            line.strip() for line in setup_commands_raw.strip().splitlines()
+            if line.strip()
+        ]
 
     if errors:
         return JSONResponse({"errors": errors}, status_code=400)
@@ -192,6 +207,8 @@ async def api_project_create(request: Request):
                 config_path=config_path,
                 create_github=create_github,
                 progress_callback=_on_progress,
+                project_type=project_type,
+                setup_commands=setup_commands or None,
             )
             # Notify supervisor to register the new project
             cb = app.state.on_add_project

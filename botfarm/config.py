@@ -127,11 +127,13 @@ start_paused: true
 class ProjectConfig:
     """Project configuration.
 
-    Fields: ``team``, ``tracker_project``.
+    Fields: ``team``, ``tracker_project``, ``project_type``,
+    ``setup_commands``.
     """
 
     __slots__ = ("name", "base_dir", "worktree_prefix", "slots",
-                 "team", "tracker_project")
+                 "team", "tracker_project", "project_type",
+                 "setup_commands")
 
     def __init__(
         self,
@@ -141,6 +143,8 @@ class ProjectConfig:
         slots: list[int] | None = None,
         team: str = "",
         tracker_project: str = "",
+        project_type: str = "",
+        setup_commands: list[str] | None = None,
     ) -> None:
         self.name = name
         self.base_dir = base_dir
@@ -148,6 +152,8 @@ class ProjectConfig:
         self.slots = slots if slots is not None else []
         self.team = team
         self.tracker_project = tracker_project
+        self.project_type = project_type
+        self.setup_commands = setup_commands if setup_commands is not None else []
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, ProjectConfig):
@@ -155,12 +161,16 @@ class ProjectConfig:
         return (self.name == other.name and self.base_dir == other.base_dir
                 and self.worktree_prefix == other.worktree_prefix
                 and self.slots == other.slots and self.team == other.team
-                and self.tracker_project == other.tracker_project)
+                and self.tracker_project == other.tracker_project
+                and self.project_type == other.project_type
+                and self.setup_commands == other.setup_commands)
 
     def __repr__(self) -> str:
         return (f"ProjectConfig(name={self.name!r}, team={self.team!r}, "
                 f"base_dir={self.base_dir!r}, worktree_prefix={self.worktree_prefix!r}, "
-                f"slots={self.slots!r}, tracker_project={self.tracker_project!r})")
+                f"slots={self.slots!r}, tracker_project={self.tracker_project!r}, "
+                f"project_type={self.project_type!r}, "
+                f"setup_commands={self.setup_commands!r})")
 
 
 @dataclass
@@ -447,6 +457,19 @@ def _parse_project(data: dict) -> ProjectConfig:
         raise ConfigError(
             f"Project '{data['name']}': slots contains duplicate values"
         )
+    project_type = data.get("project_type", "")
+    if not isinstance(project_type, str):
+        raise ConfigError(
+            f"Project '{data['name']}': project_type must be a string"
+        )
+    setup_commands = data.get("setup_commands")
+    if setup_commands is not None:
+        if (not isinstance(setup_commands, list)
+                or not all(isinstance(c, str) for c in setup_commands)):
+            raise ConfigError(
+                f"Project '{data['name']}': setup_commands must be a list of strings"
+            )
+
     return ProjectConfig(
         name=data["name"],
         team=str(team),
@@ -454,6 +477,8 @@ def _parse_project(data: dict) -> ProjectConfig:
         worktree_prefix=data["worktree_prefix"],
         slots=slots,
         tracker_project=str(tracker_project),
+        project_type=project_type,
+        setup_commands=setup_commands,
     )
 
 
@@ -1297,7 +1322,7 @@ def _validate_project_updates(
     existing_names = {p.name for p in config.projects}
 
     _NEW_PROJECT_REQUIRED = {"name", "team", "base_dir", "worktree_prefix", "slots"}
-    _NEW_PROJECT_OPTIONAL = {"tracker_project"}
+    _NEW_PROJECT_OPTIONAL = {"tracker_project", "project_type", "setup_commands"}
     _NEW_PROJECT_ALLOWED = _NEW_PROJECT_REQUIRED | _NEW_PROJECT_OPTIONAL
     seen_names: set[str] = set()
 
@@ -1460,6 +1485,10 @@ def write_structural_config_updates(config_path: Path, updates: dict) -> None:
                     }
                     if proj_update.get("tracker_project"):
                         new_proj["tracker_project"] = proj_update["tracker_project"]
+                    if proj_update.get("project_type"):
+                        new_proj["project_type"] = proj_update["project_type"]
+                    if proj_update.get("setup_commands"):
+                        new_proj["setup_commands"] = proj_update["setup_commands"]
                     existing_projects.append(new_proj)
 
     write_yaml_atomic(config_path, data)
