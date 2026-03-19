@@ -274,7 +274,7 @@ class TestWorkflowPage:
         resp = client.get("/workflow")
         body = resp.text
         assert "loop-editor" in body
-        assert "toggleLoopEditor" in body
+        assert "openLoopDrawer" in body
 
     def test_workflow_loop_editor_has_all_fields(self, client):
         resp = client.get("/workflow")
