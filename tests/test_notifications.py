@@ -75,6 +75,8 @@ class TestNotifierDisabled:
             blocker_title="Manual step",
             blocked_tickets=["X-2", "X-3"],
         )
+        n.notify_auth_failure(consecutive_failures=5, minutes_since_success=30)
+        n.notify_auth_recovered()
         n.close()
 
 
@@ -757,3 +759,106 @@ class TestHumanBlockerNotifications:
         payload = notifier._client.post.call_args[1]["json"]
         assert "SMA-51" in payload["text"]
         assert "SMA-50" in payload["text"]
+
+
+# ---------------------------------------------------------------------------
+# Auth failure notifications
+# ---------------------------------------------------------------------------
+
+
+class TestAuthFailureNotifications:
+    @pytest.fixture()
+    def notifier(self):
+        n = Notifier(NotificationsConfig(
+            webhook_url="https://hooks.slack.com/services/xxx",
+            webhook_format="slack",
+            rate_limit_seconds=300,
+        ))
+        n._client = MagicMock()
+        response = MagicMock()
+        response.raise_for_status = MagicMock()
+        n._client.post.return_value = response
+        yield n
+        n.close()
+
+    def test_auth_failure_message_format(self, notifier):
+        notifier.notify_auth_failure(
+            consecutive_failures=5,
+            minutes_since_success=45,
+        )
+        notifier._client.post.assert_called_once()
+        payload = notifier._client.post.call_args[1]["json"]
+        text = payload["text"]
+        assert "auth failure" in text.lower()
+        assert "5 consecutive 401" in text
+        assert "45m ago" in text
+        assert "OAuth token" in text
+
+    def test_auth_failure_hours_format(self, notifier):
+        notifier.notify_auth_failure(
+            consecutive_failures=10,
+            minutes_since_success=125,
+        )
+        payload = notifier._client.post.call_args[1]["json"]
+        text = payload["text"]
+        assert "2h5m ago" in text
+
+    def test_auth_failure_no_time_since_success(self, notifier):
+        notifier.notify_auth_failure(
+            consecutive_failures=3,
+        )
+        payload = notifier._client.post.call_args[1]["json"]
+        text = payload["text"]
+        assert "3 consecutive 401" in text
+        assert "Last successful poll" not in text
+
+    def test_auth_failure_rate_limited_at_1_hour(self, notifier):
+        notifier.notify_auth_failure(consecutive_failures=3)
+        assert notifier._client.post.call_count == 1
+        # Second call within the hour should be rate-limited
+        notifier.notify_auth_failure(consecutive_failures=4)
+        assert notifier._client.post.call_count == 1
+
+    def test_auth_failure_resends_after_cooldown(self, notifier):
+        notifier.notify_auth_failure(consecutive_failures=3)
+        assert notifier._client.post.call_count == 1
+        # Simulate 1 hour passing
+        notifier._last_sent["auth_failure"] = time.monotonic() - 3601
+        notifier.notify_auth_failure(consecutive_failures=6)
+        assert notifier._client.post.call_count == 2
+
+    def test_auth_recovered_message_format(self, notifier):
+        notifier.notify_auth_recovered()
+        notifier._client.post.assert_called_once()
+        payload = notifier._client.post.call_args[1]["json"]
+        text = payload["text"]
+        assert "auth recovered" in text.lower()
+        assert "polling resumed" in text.lower()
+
+    def test_auth_recovered_not_rate_limited(self, notifier):
+        notifier.notify_auth_recovered()
+        notifier.notify_auth_recovered()
+        assert notifier._client.post.call_count == 2
+
+    def test_auth_recovered_clears_failure_rate_limit(self, notifier):
+        """Recovery should clear the auth_failure cooldown so a new outage
+        gets an immediate notification."""
+        notifier.notify_auth_failure(consecutive_failures=3)
+        assert notifier._client.post.call_count == 1
+        # Second failure is rate-limited
+        notifier.notify_auth_failure(consecutive_failures=4)
+        assert notifier._client.post.call_count == 1
+
+        # Recovery clears the cooldown
+        notifier.notify_auth_recovered()
+        assert notifier._client.post.call_count == 2
+
+        # New outage should get through immediately
+        notifier.notify_auth_failure(consecutive_failures=3)
+        assert notifier._client.post.call_count == 3
+
+    def test_disabled_notifier_noop(self):
+        n = Notifier(NotificationsConfig(webhook_url=""))
+        n.notify_auth_failure(consecutive_failures=5, minutes_since_success=30)
+        n.notify_auth_recovered()
+        n.close()

@@ -17,6 +17,7 @@ from botfarm.db import (
     get_usage_snapshots,
 )
 from botfarm.usage import (
+    AUTH_FAILURE_NOTIFY_THRESHOLD,
     BACKOFF_JITTER_FRACTION,
     DEFAULT_PAUSE_5H_THRESHOLD,
     DEFAULT_PAUSE_7D_THRESHOLD,
@@ -2129,3 +2130,220 @@ class TestBackoffJitter:
             assert poller.effective_poll_interval == poller.poll_interval * 2
 
 
+# ---------------------------------------------------------------------------
+# Auth failure (401) tracking and notifications
+# ---------------------------------------------------------------------------
+
+
+def _make_401_error():
+    """Create an httpx.HTTPStatusError for a 401 response."""
+    response = httpx.Response(
+        401,
+        request=httpx.Request("GET", "https://api.anthropic.com/api/oauth/usage"),
+    )
+    return httpx.HTTPStatusError("", request=response.request, response=response)
+
+
+class TestAuthFailureTracking:
+    @pytest.fixture()
+    def notifier(self):
+        n = MagicMock()
+        n.enabled = True
+        return n
+
+    @pytest.fixture()
+    def poller_with_notifier(self, notifier):
+        cred_mgr = MagicMock(spec=CredentialManager)
+        cred_mgr.get_token.return_value = "test-token"
+        return UsagePoller(
+            credential_manager=cred_mgr,
+            poll_interval=10,
+            notifier=notifier,
+        )
+
+    def test_401_increments_consecutive_count(self, poller_with_notifier, conn):
+        poller = poller_with_notifier
+        error = _make_401_error()
+        poller.credential_manager.refresh_token.return_value = None
+
+        with patch.object(poller, "_fetch", side_effect=error):
+            poller.force_poll(conn)
+
+        assert poller._consecutive_401s == 1
+
+    def test_401_below_threshold_no_notification(self, poller_with_notifier, notifier, conn):
+        poller = poller_with_notifier
+        error = _make_401_error()
+        poller.credential_manager.refresh_token.return_value = None
+
+        # Do fewer than threshold 401s
+        for i in range(AUTH_FAILURE_NOTIFY_THRESHOLD - 1):
+            with patch.object(poller, "_fetch", side_effect=error):
+                poller._last_poll = 0
+                poller._last_force_poll = 0
+                poller.force_poll(conn)
+
+        assert poller._consecutive_401s == AUTH_FAILURE_NOTIFY_THRESHOLD - 1
+        notifier.notify_auth_failure.assert_not_called()
+
+    def test_401_at_threshold_triggers_notification(self, poller_with_notifier, notifier, conn):
+        poller = poller_with_notifier
+        error = _make_401_error()
+        poller.credential_manager.refresh_token.return_value = None
+
+        for i in range(AUTH_FAILURE_NOTIFY_THRESHOLD):
+            with patch.object(poller, "_fetch", side_effect=error):
+                poller._last_poll = 0
+                poller._last_force_poll = 0
+                poller.force_poll(conn)
+
+        assert poller._consecutive_401s == AUTH_FAILURE_NOTIFY_THRESHOLD
+        notifier.notify_auth_failure.assert_called_once()
+        call_kwargs = notifier.notify_auth_failure.call_args[1]
+        assert call_kwargs["consecutive_failures"] == AUTH_FAILURE_NOTIFY_THRESHOLD
+
+    def test_401_continued_failures_keep_notifying(self, poller_with_notifier, notifier, conn):
+        poller = poller_with_notifier
+        error = _make_401_error()
+        poller.credential_manager.refresh_token.return_value = None
+
+        for i in range(AUTH_FAILURE_NOTIFY_THRESHOLD + 2):
+            with patch.object(poller, "_fetch", side_effect=error):
+                poller._last_poll = 0
+                poller._last_force_poll = 0
+                poller.force_poll(conn)
+
+        # Called for each poll at or above the threshold
+        assert notifier.notify_auth_failure.call_count == 3
+
+    def test_successful_poll_resets_401_counter(self, poller_with_notifier, notifier, conn):
+        poller = poller_with_notifier
+        error = _make_401_error()
+        poller.credential_manager.refresh_token.return_value = None
+
+        # Accumulate some 401s
+        for i in range(AUTH_FAILURE_NOTIFY_THRESHOLD):
+            with patch.object(poller, "_fetch", side_effect=error):
+                poller._last_poll = 0
+                poller._last_force_poll = 0
+                poller.force_poll(conn)
+
+        assert poller._consecutive_401s == AUTH_FAILURE_NOTIFY_THRESHOLD
+
+        # Successful poll resets the counter
+        with patch.object(poller, "_fetch", return_value=SAMPLE_USAGE_RESPONSE):
+            poller._last_poll = 0
+            poller._last_force_poll = 0
+            poller.force_poll(conn)
+
+        assert poller._consecutive_401s == 0
+        assert poller._first_401_time is None
+
+    def test_recovery_notification_sent_after_401_outage(self, poller_with_notifier, notifier, conn):
+        poller = poller_with_notifier
+        error = _make_401_error()
+        poller.credential_manager.refresh_token.return_value = None
+
+        # Build up 401s
+        for i in range(AUTH_FAILURE_NOTIFY_THRESHOLD):
+            with patch.object(poller, "_fetch", side_effect=error):
+                poller._last_poll = 0
+                poller._last_force_poll = 0
+                poller.force_poll(conn)
+
+        # Now succeed
+        with patch.object(poller, "_fetch", return_value=SAMPLE_USAGE_RESPONSE):
+            poller._last_poll = 0
+            poller._last_force_poll = 0
+            poller.force_poll(conn)
+
+        notifier.notify_auth_recovered.assert_called_once()
+
+    def test_below_threshold_401s_no_recovery_notification(self, poller_with_notifier, notifier, conn):
+        """1-2 transient 401s followed by success should not send recovery."""
+        poller = poller_with_notifier
+        error = _make_401_error()
+        poller.credential_manager.refresh_token.return_value = None
+
+        # Fewer than threshold 401s
+        for i in range(AUTH_FAILURE_NOTIFY_THRESHOLD - 1):
+            with patch.object(poller, "_fetch", side_effect=error):
+                poller._last_poll = 0
+                poller._last_force_poll = 0
+                poller.force_poll(conn)
+
+        assert poller._consecutive_401s == AUTH_FAILURE_NOTIFY_THRESHOLD - 1
+        notifier.notify_auth_failure.assert_not_called()
+
+        # Successful poll — should NOT trigger recovery notification
+        with patch.object(poller, "_fetch", return_value=SAMPLE_USAGE_RESPONSE):
+            poller._last_poll = 0
+            poller._last_force_poll = 0
+            poller.force_poll(conn)
+
+        assert poller._consecutive_401s == 0
+        notifier.notify_auth_recovered.assert_not_called()
+
+    def test_no_recovery_notification_if_no_prior_401s(self, poller_with_notifier, notifier, conn):
+        # Successful poll with no prior 401s — no recovery notification
+        with patch.object(poller_with_notifier, "_fetch", return_value=SAMPLE_USAGE_RESPONSE):
+            poller_with_notifier.force_poll(conn)
+
+        notifier.notify_auth_recovered.assert_not_called()
+
+    def test_401_refresh_succeeds_counts_as_recovery(self, poller_with_notifier, notifier, conn):
+        poller = poller_with_notifier
+        error = _make_401_error()
+        poller.credential_manager.refresh_token.return_value = None
+
+        # Build up 401 failures
+        for i in range(AUTH_FAILURE_NOTIFY_THRESHOLD):
+            with patch.object(poller, "_fetch", side_effect=error):
+                poller._last_poll = 0
+                poller._last_force_poll = 0
+                poller.force_poll(conn)
+
+        # Now 401 again, but refresh succeeds and retry works
+        call_count = 0
+
+        def fetch_side_effect(token):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise error
+            return SAMPLE_USAGE_RESPONSE
+
+        poller.credential_manager.refresh_token.return_value = "new-token"
+
+        with patch.object(poller, "_fetch", side_effect=fetch_side_effect):
+            poller._last_poll = 0
+            poller._last_force_poll = 0
+            poller.force_poll(conn)
+
+        notifier.notify_auth_recovered.assert_called_once()
+        assert poller._consecutive_401s == 0
+
+    def test_no_notifier_does_not_crash(self, conn):
+        """UsagePoller without a notifier should track 401s without crashing."""
+        cred_mgr = MagicMock(spec=CredentialManager)
+        cred_mgr.get_token.return_value = "test-token"
+        cred_mgr.refresh_token.return_value = None
+        poller = UsagePoller(credential_manager=cred_mgr, poll_interval=10)
+
+        error = _make_401_error()
+
+        for i in range(AUTH_FAILURE_NOTIFY_THRESHOLD + 1):
+            with patch.object(poller, "_fetch", side_effect=error):
+                poller._last_poll = 0
+                poller._last_force_poll = 0
+                poller.force_poll(conn)
+
+        assert poller._consecutive_401s == AUTH_FAILURE_NOTIFY_THRESHOLD + 1
+
+        # Recovery also doesn't crash
+        with patch.object(poller, "_fetch", return_value=SAMPLE_USAGE_RESPONSE):
+            poller._last_poll = 0
+            poller._last_force_poll = 0
+            poller.force_poll(conn)
+
+        assert poller._consecutive_401s == 0

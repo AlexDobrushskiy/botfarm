@@ -9,12 +9,14 @@ Sends formatted messages to Slack or Discord webhooks on:
 - Capacity critical (configurable critical threshold, default 85%)
 - Capacity blocked (configurable pause threshold, default 95% — dispatch paused)
 - Capacity cleared (dropped below resume threshold — dispatch resumed)
+- Auth failure (prolonged usage API 401 errors)
+- Auth recovered (usage API polling succeeds after 401 outage)
 - All slots idle
 
 Notifications are non-blocking and fire-and-forget — failures never
 affect supervisor operation.  Repeated limit_hit, capacity_warning,
-and capacity_critical events are rate-limited to avoid spam during
-frequent polling.
+capacity_critical, and auth_failure events are rate-limited to avoid
+spam during frequent polling.
 """
 
 from __future__ import annotations
@@ -299,6 +301,45 @@ class Notifier:
             logger.debug("Sent daily_summary notification")
         except Exception:
             logger.debug("Failed to send daily_summary notification", exc_info=True)
+
+    def notify_auth_failure(
+        self,
+        *,
+        consecutive_failures: int,
+        minutes_since_success: int | None = None,
+    ) -> None:
+        """Notify that usage API polling has sustained 401 auth failures.
+
+        Rate-limited to once per hour to avoid spam during ongoing outages.
+        """
+        lines = [
+            f"*Usage API auth failure* — {consecutive_failures} consecutive 401 errors",
+        ]
+        if minutes_since_success is not None:
+            if minutes_since_success >= 60:
+                hours = minutes_since_success // 60
+                mins = minutes_since_success % 60
+                lines.append(f"Last successful poll: {hours}h{mins}m ago")
+            else:
+                lines.append(f"Last successful poll: {minutes_since_success}m ago")
+        lines.append(
+            "_Check OAuth token expiry and refresh credentials._"
+        )
+        self._send(
+            "auth_failure", "\n".join(lines), rate_limit_seconds=3600,
+        )
+
+    def notify_auth_recovered(self) -> None:
+        """Notify that usage API polling recovered after a 401 outage.
+
+        Also clears the ``auth_failure`` rate-limit cooldown so that a
+        subsequent outage gets a fresh notification immediately.
+        """
+        self._last_sent.pop("auth_failure", None)
+        self._send(
+            "auth_recovered",
+            "*Usage API auth recovered* — polling resumed successfully",
+        )
 
     def notify_supervisor_shutdown(self, *, reason: str) -> None:
         """Notify that the supervisor is shutting down unexpectedly."""

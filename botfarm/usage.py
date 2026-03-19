@@ -8,6 +8,7 @@ can pause dispatch when limits are close.
 from __future__ import annotations
 
 import asyncio
+from typing import TYPE_CHECKING
 import hashlib
 import logging
 import math
@@ -32,6 +33,9 @@ from botfarm.db import (
     upsert_usage_api_key_session,
 )
 
+if TYPE_CHECKING:
+    from botfarm.notifications import Notifier
+
 _async_sleep = asyncio.sleep  # local alias for testability
 
 logger = logging.getLogger(__name__)
@@ -55,6 +59,9 @@ MAX_ADAPTIVE_POLL_INTERVAL = 1800  # 30 minutes cap for adaptive interval
 MAX_401_BACKOFF_INTERVAL = 3600  # 1 hour cap for 401 auth error backoff
 BACKOFF_JITTER_FRACTION = 0.5  # add up to 50% random jitter to backoff intervals
 FORCE_POLL_COOLDOWN = 30  # minimum seconds between force_poll API calls
+
+# Auth failure alerting thresholds
+AUTH_FAILURE_NOTIFY_THRESHOLD = 3  # consecutive 401s before first notification
 
 
 def token_fingerprint(token: str) -> str:
@@ -189,6 +196,7 @@ class UsagePoller:
     credential_manager: CredentialManager = field(default_factory=CredentialManager)
     poll_interval: int = DEFAULT_POLL_INTERVAL
     retention_days: int = DEFAULT_RETENTION_DAYS
+    notifier: Notifier | None = None
 
     _state: UsageState = field(default_factory=UsageState)
     _last_poll: float = 0.0
@@ -197,6 +205,7 @@ class UsagePoller:
     _consecutive_429s: int = field(default=0, repr=False)
     _consecutive_401s: int = field(default=0, repr=False)
     _active_poll_interval: int | None = field(default=None, repr=False)
+    _first_401_time: float | None = field(default=None, repr=False)
     _last_force_poll: float = field(default=0.0, repr=False)
     _current_caller: str | None = field(default=None, repr=False)
     _attempt_records: list[dict] = field(default_factory=list, repr=False)
@@ -347,6 +356,7 @@ class UsagePoller:
             self._flush_audit_records(conn, fp)
 
         self._reset_rate_limit_state(conn)
+        self._reset_auth_failure_state()
         self._parse_and_store(data, conn)
         self._purge_old_snapshots(conn)
         conn.commit()
@@ -457,6 +467,7 @@ class UsagePoller:
             self._flush_audit_records(conn, fp)
 
         self._reset_rate_limit_state(conn)
+        self._reset_auth_failure_state()
         self._parse_and_store(data, conn)
         self._purge_old_snapshots(conn)
         conn.commit()
@@ -502,13 +513,16 @@ class UsagePoller:
         )
 
     def _handle_401(self) -> None:
-        """Handle a 401 auth error by applying progressive linear backoff.
+        """Handle a 401 auth error by applying progressive linear backoff
+        and sending webhook notifications after repeated failures.
 
         Uses a gentler curve than 429 (linear vs exponential) because 401
         failures are self-inflicted — we're waiting for token refresh, not
         for rate limit clearance.
         """
         self._consecutive_401s += 1
+        if self._first_401_time is None:
+            self._first_401_time = time.monotonic()
         new_interval = self.poll_interval * (1 + self._consecutive_401s)
         new_interval = min(new_interval, MAX_401_BACKOFF_INTERVAL)
         # Don't reduce interval if 429 backoff is active and larger
@@ -520,10 +534,20 @@ class UsagePoller:
             self._consecutive_401s,
             self._active_poll_interval,
         )
+        if (
+            self._consecutive_401s >= AUTH_FAILURE_NOTIFY_THRESHOLD
+            and self.notifier is not None
+        ):
+            minutes_since = int(
+                (time.monotonic() - self._first_401_time) / 60,
+            )
+            self.notifier.notify_auth_failure(
+                consecutive_failures=self._consecutive_401s,
+                minutes_since_success=minutes_since if minutes_since > 0 else None,
+            )
 
     def _reset_rate_limit_state(self, conn: sqlite3.Connection) -> None:
-        """Reset adaptive poll interval after a successful API response."""
-        had_backoff = False
+        """Reset 429 rate-limit backoff after a successful API response."""
         if self._consecutive_429s > 0:
             logger.info(
                 "Usage API recovered after %d consecutive 429(s) — "
@@ -533,17 +557,28 @@ class UsagePoller:
             )
             self._consecutive_429s = 0
             clear_backoff_state(conn)
-            had_backoff = True
+            self._active_poll_interval = None
+
+    def _reset_auth_failure_state(self) -> None:
+        """Reset auth failure tracking after a successful poll.
+
+        Clears 401 backoff and sends a recovery notification if we were
+        in a 401 outage.
+        """
         if self._consecutive_401s > 0:
             logger.info(
-                "Usage API recovered after %d consecutive 401(s) — "
+                "Usage API auth recovered after %d consecutive 401(s) — "
                 "resetting poll interval to %ds",
                 self._consecutive_401s,
                 self.poll_interval,
             )
+            if (
+                self._consecutive_401s >= AUTH_FAILURE_NOTIFY_THRESHOLD
+                and self.notifier is not None
+            ):
+                self.notifier.notify_auth_recovered()
             self._consecutive_401s = 0
-            had_backoff = True
-        if had_backoff:
+            self._first_401_time = None
             self._active_poll_interval = None
 
     def _fetch(self, token: str) -> dict:
