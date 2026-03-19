@@ -842,6 +842,50 @@ class TestMigrationInfrastructure:
         assert SCHEMA_VERSION == max(migrations.keys())
         assert SCHEMA_VERSION == get_schema_version()
 
+    def test_no_duplicate_migration_numbers(self):
+        """Each migration file must have a unique version number prefix."""
+        from pathlib import Path
+        import re
+
+        migrations_dir = Path(__file__).resolve().parent.parent / "botfarm" / "migrations"
+        version_counts: dict[int, list[str]] = {}
+        for sql_file in sorted(migrations_dir.glob("*.sql")):
+            match = re.match(r"^(\d+)", sql_file.name)
+            if match:
+                ver = int(match.group(1))
+                version_counts.setdefault(ver, []).append(sql_file.name)
+        dupes = {v: files for v, files in version_counts.items() if len(files) > 1}
+        assert dupes == {}, f"Duplicate migration numbers: {dupes}"
+
+    def test_migration_030_creates_audit_tables(self, tmp_path):
+        """Migration 030 (usage API audit) creates usage_api_calls and usage_api_key_sessions."""
+        db_file = tmp_path / "v29.db"
+        # Build a DB at version 29 by running all migrations up to 29
+        c = init_db(db_file, allow_migration=True)
+
+        # Verify the audit tables exist (created by migration 030)
+        tables = {
+            r[0] for r in c.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        assert "usage_api_calls" in tables
+        assert "usage_api_key_sessions" in tables
+
+        # Verify columns on usage_api_calls
+        api_cols = {r[1] for r in c.execute("PRAGMA table_info(usage_api_calls)").fetchall()}
+        for col in ("token_fingerprint", "status_code", "success", "error_type",
+                     "error_detail", "response_time_ms", "retry_after", "caller"):
+            assert col in api_cols, f"Missing column {col} in usage_api_calls"
+
+        # Verify columns on usage_api_key_sessions
+        sess_cols = {r[1] for r in c.execute("PRAGMA table_info(usage_api_key_sessions)").fetchall()}
+        for col in ("token_fingerprint", "consecutive_errors", "total_errors",
+                     "total_successes", "status", "blocked_at"):
+            assert col in sess_cols, f"Missing column {col} in usage_api_key_sessions"
+
+        c.close()
+
     def test_fresh_db_runs_all_migrations(self, tmp_path):
         """A fresh database reaches SCHEMA_VERSION with all tables and cost_usd dropped."""
         db_file = tmp_path / "fresh.db"
@@ -861,6 +905,7 @@ class TestMigrationInfrastructure:
         assert tables >= {
             "tasks", "stage_runs", "usage_snapshots", "task_events",
             "schema_version", "slots", "dispatch_state", "queue_entries",
+            "usage_api_calls", "usage_api_key_sessions",
         }
 
         # cost_usd columns should NOT exist (dropped by migration 006)
