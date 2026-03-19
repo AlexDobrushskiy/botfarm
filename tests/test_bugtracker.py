@@ -422,11 +422,11 @@ class TestCreateClient:
 
     def test_unknown_type_raises(self):
         from botfarm.bugtracker import create_client
-        from botfarm.config import BotfarmConfig, LinearBugtrackerConfig
+        from botfarm.config import BotfarmConfig, BugtrackerConfig
 
         config = BotfarmConfig(
             projects=[],
-            bugtracker=LinearBugtrackerConfig(type="jira", api_key="k"),
+            bugtracker=BugtrackerConfig(type="github", api_key="k"),
         )
         with pytest.raises(ValueError, match="Unknown bugtracker type"):
             create_client(config)
@@ -458,11 +458,11 @@ class TestCreatePollers:
 
     def test_unknown_type_raises(self):
         from botfarm.bugtracker import create_pollers
-        from botfarm.config import BotfarmConfig, LinearBugtrackerConfig
+        from botfarm.config import BotfarmConfig, BugtrackerConfig
 
         config = BotfarmConfig(
             projects=[],
-            bugtracker=LinearBugtrackerConfig(type="jira", api_key="k"),
+            bugtracker=BugtrackerConfig(type="github", api_key="k"),
         )
         with pytest.raises(ValueError, match="Unknown bugtracker type"):
             create_pollers(config)

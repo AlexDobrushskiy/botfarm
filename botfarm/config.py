@@ -224,6 +224,14 @@ LinearConfig = LinearBugtrackerConfig
 
 
 @dataclass
+class JiraBugtrackerConfig(BugtrackerConfig):
+    """Jira-specific bugtracker configuration."""
+
+    url: str = ""  # Jira instance URL, e.g. https://mycompany.atlassian.net
+    email: str = ""  # Email for Jira API authentication
+
+
+@dataclass
 class DatabaseConfig:
     path: str = ""
 
@@ -332,6 +340,7 @@ class CoderIdentity:
     git_author_name: str = ""
     git_author_email: str = ""
     linear_api_key: str = ""
+    jira_api_token: str = ""
 
 
 @dataclass
@@ -371,7 +380,7 @@ class BotfarmConfig:
     def __init__(
         self,
         projects: list[ProjectConfig],
-        bugtracker: LinearBugtrackerConfig | None = None,
+        bugtracker: BugtrackerConfig | None = None,
         database: DatabaseConfig | None = None,
         usage_limits: UsageLimitsConfig | None = None,
         dashboard: DashboardConfig | None = None,
@@ -573,7 +582,7 @@ def _validate_config(config: BotfarmConfig) -> None:
     """Validate cross-field constraints."""
     bt = config.bugtracker
 
-    supported_types = {"linear"}
+    supported_types = {"linear", "jira"}
     if bt.type not in supported_types:
         raise ConfigError(
             f"Unsupported bugtracker type: {bt.type!r}. "
@@ -613,30 +622,37 @@ def _validate_config(config: BotfarmConfig) -> None:
         if not (0.0 <= val <= 1.0):
             raise ConfigError(f"usage_limits.{attr} must be between 0.0 and 1.0")
 
-    if bt.issue_limit < 1:
-        raise ConfigError("bugtracker.issue_limit must be at least 1")
+    if isinstance(bt, LinearBugtrackerConfig):
+        if bt.issue_limit < 1:
+            raise ConfigError("bugtracker.issue_limit must be at least 1")
 
-    cap = bt.capacity_monitoring
-    for attr in ("warning_threshold", "critical_threshold", "pause_threshold", "resume_threshold"):
-        val = getattr(cap, attr)
-        if not (0.0 <= val <= 1.0):
+        cap = bt.capacity_monitoring
+        for attr in ("warning_threshold", "critical_threshold", "pause_threshold", "resume_threshold"):
+            val = getattr(cap, attr)
+            if not (0.0 <= val <= 1.0):
+                raise ConfigError(
+                    f"bugtracker.capacity_monitoring.{attr} must be between 0.0 and 1.0"
+                )
+        if cap.warning_threshold > cap.critical_threshold:
             raise ConfigError(
-                f"bugtracker.capacity_monitoring.{attr} must be between 0.0 and 1.0"
+                "bugtracker.capacity_monitoring.warning_threshold must be "
+                "less than or equal to critical_threshold"
             )
-    if cap.warning_threshold > cap.critical_threshold:
-        raise ConfigError(
-            "bugtracker.capacity_monitoring.warning_threshold must be "
-            "less than or equal to critical_threshold"
-        )
-    if cap.critical_threshold > cap.pause_threshold:
-        raise ConfigError(
-            "bugtracker.capacity_monitoring.critical_threshold must be "
-            "less than or equal to pause_threshold"
-        )
-    if cap.resume_threshold >= cap.pause_threshold:
-        raise ConfigError(
-            "bugtracker.capacity_monitoring.resume_threshold must be less than pause_threshold"
-        )
+        if cap.critical_threshold > cap.pause_threshold:
+            raise ConfigError(
+                "bugtracker.capacity_monitoring.critical_threshold must be "
+                "less than or equal to pause_threshold"
+            )
+        if cap.resume_threshold >= cap.pause_threshold:
+            raise ConfigError(
+                "bugtracker.capacity_monitoring.resume_threshold must be less than pause_threshold"
+            )
+
+    if isinstance(bt, JiraBugtrackerConfig):
+        if not bt.url:
+            raise ConfigError("bugtracker.url must be set for Jira")
+        if not bt.email:
+            raise ConfigError("bugtracker.email must be set for Jira")
 
     if config.agents.max_review_iterations < 1:
         raise ConfigError("agents.max_review_iterations must be at least 1")
@@ -805,24 +821,12 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
 
     bt_section = "bugtracker" if "bugtracker" in data else "linear"
 
-    cap_data = bt_data.get("capacity_monitoring", {})
-    if not isinstance(cap_data, dict):
-        cap_data = {}
-    capacity_monitoring = CapacityConfig(
-        enabled=_parse_bool(cap_data, "enabled", True, section=f"{bt_section}.capacity_monitoring"),
-        warning_threshold=float(cap_data.get("warning_threshold", 0.70)),
-        critical_threshold=float(cap_data.get("critical_threshold", 0.85)),
-        pause_threshold=float(cap_data.get("pause_threshold", 0.95)),
-        resume_threshold=float(cap_data.get("resume_threshold", 0.90)),
-    )
-
-    bugtracker = LinearBugtrackerConfig(
+    # Common bugtracker fields shared by all tracker types.
+    bt_common = dict(
         type=str(bt_data.get("type", "linear")),
         api_key=bt_data.get("api_key", ""),
-        workspace=bt_data.get("workspace", ""),
         poll_interval_seconds=bt_data.get("poll_interval_seconds", 30),
         exclude_tags=bt_data.get("exclude_tags", ["Human"]),
-        issue_limit=int(bt_data.get("issue_limit", 250)),
         todo_status=str(bt_data.get("todo_status", "Todo")),
         in_progress_status=str(bt_data.get("in_progress_status", "In Progress")),
         done_status=str(bt_data.get("done_status", "Done")),
@@ -830,8 +834,33 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         comment_on_failure=_parse_bool(bt_data, "comment_on_failure", True, section=bt_section),
         comment_on_completion=_parse_bool(bt_data, "comment_on_completion", False, section=bt_section),
         comment_on_limit_pause=_parse_bool(bt_data, "comment_on_limit_pause", False, section=bt_section),
-        capacity_monitoring=capacity_monitoring,
     )
+
+    bt_type = bt_common["type"]
+    if bt_type == "jira":
+        bugtracker: BugtrackerConfig = JiraBugtrackerConfig(
+            **bt_common,
+            url=str(bt_data.get("url", "")),
+            email=str(bt_data.get("email", "")),
+        )
+    else:
+        # Default to Linear (handles both explicit "linear" and legacy configs).
+        cap_data = bt_data.get("capacity_monitoring", {})
+        if not isinstance(cap_data, dict):
+            cap_data = {}
+        capacity_monitoring = CapacityConfig(
+            enabled=_parse_bool(cap_data, "enabled", True, section=f"{bt_section}.capacity_monitoring"),
+            warning_threshold=float(cap_data.get("warning_threshold", 0.70)),
+            critical_threshold=float(cap_data.get("critical_threshold", 0.85)),
+            pause_threshold=float(cap_data.get("pause_threshold", 0.95)),
+            resume_threshold=float(cap_data.get("resume_threshold", 0.90)),
+        )
+        bugtracker = LinearBugtrackerConfig(
+            **bt_common,
+            workspace=bt_data.get("workspace", ""),
+            issue_limit=int(bt_data.get("issue_limit", 250)),
+            capacity_monitoring=capacity_monitoring,
+        )
 
     db_data = data.get("database", {})
     database = DatabaseConfig(
@@ -971,6 +1000,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
             git_author_name=str(coder_data.get("git_author_name", "")),
             git_author_email=str(coder_data.get("git_author_email", "")),
             linear_api_key=str(coder_data.get("linear_api_key", "")),
+            jira_api_token=str(coder_data.get("jira_api_token", "")),
         ),
         reviewer=ReviewerIdentity(
             github_token=str(reviewer_data.get("github_token", "")),
@@ -1234,13 +1264,14 @@ def apply_config_updates(config: BotfarmConfig, updates: dict) -> None:
     no explicit lock is needed.  If the runtime ever moves to free-threaded
     Python, a lock should be added here.
     """
-    section_map = {
+    section_map: dict[str, object] = {
         "bugtracker": config.bugtracker,
-        "bugtracker.capacity_monitoring": config.bugtracker.capacity_monitoring,
         "usage_limits": config.usage_limits,
         "agents": config.agents,
         "daily_summary": config.daily_summary,
     }
+    if isinstance(config.bugtracker, LinearBugtrackerConfig):
+        section_map["bugtracker.capacity_monitoring"] = config.bugtracker.capacity_monitoring
     for section, fields in updates.items():
         obj = section_map.get(section)
         if obj is None:

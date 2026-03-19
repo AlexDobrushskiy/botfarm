@@ -2793,10 +2793,10 @@ class TestBugtrackerConfigSection:
     def test_unsupported_bugtracker_type_raises(self, tmp_path):
         data = {
             **MINIMAL_BUGTRACKER_CONFIG,
-            "bugtracker": {"type": "jira", "api_key": "k"},
+            "bugtracker": {"type": "github", "api_key": "k"},
         }
         config_path = _write_config(tmp_path, data)
-        with pytest.raises(ConfigError, match="Unsupported bugtracker type: 'jira'"):
+        with pytest.raises(ConfigError, match="Unsupported bugtracker type: 'github'"):
             load_config(config_path)
 
 
@@ -3210,3 +3210,161 @@ class TestDefaultConfigTemplateBugtracker:
     def test_template_has_linear_type(self):
         from botfarm.config import DEFAULT_CONFIG_TEMPLATE
         assert "type: linear" in DEFAULT_CONFIG_TEMPLATE
+
+
+# ---------------------------------------------------------------------------
+# Jira bugtracker config (SMA-497)
+# ---------------------------------------------------------------------------
+
+
+class TestJiraBugtrackerConfig:
+    """Test JiraBugtrackerConfig dataclass and YAML loading."""
+
+    def test_jira_config_defaults(self):
+        from botfarm.config import JiraBugtrackerConfig
+        cfg = JiraBugtrackerConfig()
+        assert cfg.type == "linear"  # inherited default
+        assert cfg.url == ""
+        assert cfg.email == ""
+
+    def test_jira_inherits_from_bugtracker(self):
+        from botfarm.config import BugtrackerConfig, JiraBugtrackerConfig
+        assert issubclass(JiraBugtrackerConfig, BugtrackerConfig)
+
+    def test_jira_config_loads_from_yaml(self, tmp_path):
+        data = {
+            "projects": [
+                {
+                    "name": "p",
+                    "team": "PROJ",
+                    "base_dir": "~/d",
+                    "worktree_prefix": "s-",
+                    "slots": [1],
+                }
+            ],
+            "bugtracker": {
+                "type": "jira",
+                "api_key": "jira-token",
+                "url": "https://mycompany.atlassian.net",
+                "email": "bot@example.com",
+                "poll_interval_seconds": 45,
+                "exclude_tags": ["Manual"],
+                "todo_status": "To Do",
+                "in_progress_status": "In Progress",
+                "done_status": "Done",
+                "in_review_status": "In Review",
+            },
+        }
+        config_path = _write_config(tmp_path, data)
+        config = load_config(config_path)
+        bt = config.bugtracker
+        assert bt.type == "jira"
+        assert bt.api_key == "jira-token"
+        assert bt.url == "https://mycompany.atlassian.net"
+        assert bt.email == "bot@example.com"
+        assert bt.poll_interval_seconds == 45
+        assert bt.exclude_tags == ["Manual"]
+        assert bt.todo_status == "To Do"
+
+    def test_jira_missing_url_raises(self, tmp_path):
+        data = {
+            "projects": [
+                {
+                    "name": "p",
+                    "team": "PROJ",
+                    "base_dir": "~/d",
+                    "worktree_prefix": "s-",
+                    "slots": [1],
+                }
+            ],
+            "bugtracker": {
+                "type": "jira",
+                "api_key": "jira-token",
+                "email": "bot@example.com",
+            },
+        }
+        config_path = _write_config(tmp_path, data)
+        with pytest.raises(ConfigError, match="bugtracker.url must be set for Jira"):
+            load_config(config_path)
+
+    def test_jira_missing_email_raises(self, tmp_path):
+        data = {
+            "projects": [
+                {
+                    "name": "p",
+                    "team": "PROJ",
+                    "base_dir": "~/d",
+                    "worktree_prefix": "s-",
+                    "slots": [1],
+                }
+            ],
+            "bugtracker": {
+                "type": "jira",
+                "api_key": "jira-token",
+                "url": "https://mycompany.atlassian.net",
+            },
+        }
+        config_path = _write_config(tmp_path, data)
+        with pytest.raises(ConfigError, match="bugtracker.email must be set for Jira"):
+            load_config(config_path)
+
+    def test_jira_no_capacity_monitoring(self, tmp_path):
+        """Jira config should not have capacity_monitoring or issue_limit."""
+        from botfarm.config import JiraBugtrackerConfig
+        data = {
+            "projects": [
+                {
+                    "name": "p",
+                    "team": "PROJ",
+                    "base_dir": "~/d",
+                    "worktree_prefix": "s-",
+                    "slots": [1],
+                }
+            ],
+            "bugtracker": {
+                "type": "jira",
+                "api_key": "jira-token",
+                "url": "https://mycompany.atlassian.net",
+                "email": "bot@example.com",
+            },
+        }
+        config_path = _write_config(tmp_path, data)
+        config = load_config(config_path)
+        assert isinstance(config.bugtracker, JiraBugtrackerConfig)
+        assert not hasattr(config.bugtracker, "issue_limit")
+        assert not hasattr(config.bugtracker, "capacity_monitoring")
+
+    def test_botfarm_config_accepts_jira_bugtracker(self):
+        from botfarm.config import JiraBugtrackerConfig
+        cfg = BotfarmConfig(
+            projects=[],
+            bugtracker=JiraBugtrackerConfig(
+                type="jira",
+                api_key="k",
+                url="https://x.atlassian.net",
+                email="e@x.com",
+            ),
+        )
+        assert cfg.bugtracker.type == "jira"
+
+
+class TestCoderIdentityJiraToken:
+    """Test jira_api_token field on CoderIdentity."""
+
+    def test_default_empty(self):
+        from botfarm.config import CoderIdentity
+        c = CoderIdentity()
+        assert c.jira_api_token == ""
+
+    def test_jira_api_token_from_yaml(self, tmp_path):
+        data = {
+            **MINIMAL_BUGTRACKER_CONFIG,
+            "identities": {
+                "coder": {
+                    "jira_api_token": "coder-jira-tok",
+                },
+            },
+        }
+        config_path = _write_config(tmp_path, data)
+        config = load_config(config_path)
+        assert config.identities.coder.jira_api_token == "coder-jira-tok"
