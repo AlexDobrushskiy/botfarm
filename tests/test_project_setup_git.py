@@ -319,6 +319,55 @@ class TestSetupProjectInitPath:
         # Should be cleaned up
         assert not (projects_dir / "repo").exists()
 
+    def test_cleanup_worktrees_on_failure_reuse_existing(self, tmp_path):
+        """When reusing an existing repo, newly-created worktrees are cleaned
+        up on failure while the repo is preserved."""
+        config_path = tmp_path / "config.yaml"
+        projects_dir = tmp_path / "projects" / "reuse-fail"
+        self._write_config(config_path)
+
+        # Pre-create the repo
+        repo_dir = projects_dir / "repo"
+        repo_dir.mkdir(parents=True)
+        env = _clean_git_env()
+        subprocess.run(["git", "init", str(repo_dir)], capture_output=True, env=env)
+        (repo_dir / "dummy").write_text("x")
+        subprocess.run(
+            ["git", "-C", str(repo_dir), "add", "."],
+            capture_output=True, env=env,
+        )
+        subprocess.run(
+            ["git", "-C", str(repo_dir), "commit", "-m", "seed"],
+            capture_output=True, env=env,
+        )
+
+        # create_worktree succeeds for slot 1, then fails for slot 2
+        original_create_worktree = __import__("botfarm.project_setup", fromlist=["create_worktree"]).create_worktree
+        call_count = [0]
+
+        def _fail_on_second(*args, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 2:
+                raise ProjectSetupError("slot 2 failed")
+            return original_create_worktree(*args, **kwargs)
+
+        with patch("botfarm.project_setup.create_worktree", side_effect=_fail_on_second):
+            with pytest.raises(ProjectSetupError, match="slot 2 failed"):
+                setup_project(
+                    repo_url="",
+                    name="reuse-fail",
+                    team="ENG",
+                    tracker_project="",
+                    slots=[1, 2],
+                    config_path=config_path,
+                    projects_dir=projects_dir,
+                )
+
+        # Repo preserved (was reused), but slot 1 worktree cleaned up
+        assert repo_dir.is_dir()
+        wt1 = projects_dir / "reuse-fail-slot-1"
+        assert not wt1.exists()
+
 
 class TestSetupProjectGit:
     """Test the standalone setup_project_git function."""
@@ -407,6 +456,31 @@ class TestSetupProjectGit:
 
         # Should now be a proper worktree
         assert is_git_repo(plain_dir)
+
+    def test_repairs_worktree_when_branch_exists_but_dir_deleted(self, tmp_path):
+        """When the worktree dir was deleted but the branch still exists,
+        setup_project_git should prune stale state and reattach."""
+        config_path = tmp_path / "config.yaml"
+        repo_dir = tmp_path / "projects" / "repair" / "repo"
+        wt_prefix = tmp_path / "projects" / "repair" / "repair-slot-"
+        self._write_config_with_project(
+            config_path, "repair", repo_dir, [1], wt_prefix,
+        )
+
+        init_repo(repo_dir, "repair")
+        # Create the worktree normally, then delete the directory
+        # to simulate a partially-failed setup.
+        from botfarm.project_setup import create_worktree
+        wt1 = tmp_path / "projects" / "repair" / "repair-slot-1"
+        create_worktree(repo_dir, wt1, "slot-1-placeholder")
+        import shutil
+        shutil.rmtree(wt1)
+        assert not wt1.exists()
+
+        # Retry — should succeed by pruning stale entry and reattaching
+        setup_project_git(name="repair", config_path=config_path)
+        assert wt1.is_dir()
+        assert is_git_repo(wt1)
 
     def test_raises_for_unknown_project(self, tmp_path):
         config_path = tmp_path / "config.yaml"

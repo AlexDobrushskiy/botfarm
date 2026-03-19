@@ -514,19 +514,38 @@ def clone_repo(repo_url: str, target_dir: Path) -> None:
         raise ProjectSetupError("git clone timed out after 5 minutes")
 
 
-def create_worktree(repo_dir: Path, worktree_path: Path, branch_name: str) -> None:
-    """Create a git worktree with a new branch.
+def _branch_exists(repo_dir: Path, branch_name: str) -> bool:
+    """Check whether a local branch exists in the repository."""
+    result = subprocess.run(
+        ["git", "-C", str(repo_dir), "rev-parse", "--verify", f"refs/heads/{branch_name}"],
+        capture_output=True, text=True, timeout=10, env=_clean_git_env(),
+    )
+    return result.returncode == 0
+
+
+def create_worktree(
+    repo_dir: Path,
+    worktree_path: Path,
+    branch_name: str,
+    *,
+    create_branch: bool = True,
+) -> None:
+    """Create a git worktree, optionally creating a new branch.
+
+    When *create_branch* is ``True`` (default), uses ``git worktree add -b``
+    to create a new branch.  When ``False``, attaches the worktree to an
+    existing branch via ``git worktree add <path> <branch>``.
 
     Raises ProjectSetupError on failure.
     """
+    cmd = ["git", "-C", str(repo_dir), "worktree", "add"]
+    if create_branch:
+        cmd += ["-b", branch_name, str(worktree_path)]
+    else:
+        cmd += [str(worktree_path), branch_name]
     try:
         result = subprocess.run(
-            [
-                "git", "-C", str(repo_dir),
-                "worktree", "add",
-                "-b", branch_name,
-                str(worktree_path),
-            ],
+            cmd,
             capture_output=True,
             text=True,
             timeout=30,
@@ -638,6 +657,9 @@ def setup_project(
 
     # Track whether we created projects_dir so we can clean up on failure
     created_projects_dir = not projects_dir.exists()
+    # Track worktrees created during this call so we can clean them up
+    # on failure even when reusing an existing repo.
+    created_worktrees: list[Path] = []
 
     try:
         projects_dir.mkdir(parents=True, exist_ok=True)
@@ -661,6 +683,7 @@ def setup_project(
             branch_name = f"slot-{slot_id}-placeholder"
             worktree_path = projects_dir / f"{worktree_prefix}{slot_id}"
             create_worktree(repo_dir, worktree_path, branch_name)
+            created_worktrees.append(worktree_path)
             _progress(f"Slot {slot_id}: {worktree_path} (branch: {branch_name})")
 
         _progress("Updating config...")
@@ -686,11 +709,15 @@ def setup_project(
         elif projects_dir.exists() and not reuse_existing:
             if repo_dir.exists():
                 shutil.rmtree(repo_dir, ignore_errors=True)
-            for slot_id in slots:
-                wt = projects_dir / f"{worktree_prefix}{slot_id}"
+            for wt in created_worktrees:
                 if wt.exists():
                     shutil.rmtree(wt, ignore_errors=True)
             _progress(f"Cleaned up cloned repo and worktrees from {projects_dir}")
+        elif reuse_existing and created_worktrees:
+            for wt in created_worktrees:
+                if wt.exists():
+                    shutil.rmtree(wt, ignore_errors=True)
+            _progress(f"Cleaned up newly-created worktrees from {projects_dir}")
         if isinstance(exc, ProjectSetupError):
             raise
         raise ProjectSetupError(str(exc)) from exc
@@ -768,6 +795,13 @@ def setup_project_git(
         gh_url = create_github_repo(repo_dir, name)
         _progress(f"GitHub repo created: {gh_url}")
 
+    # Prune stale worktree bookkeeping left by interrupted setups so that
+    # branches whose directories were removed can be reattached cleanly.
+    subprocess.run(
+        ["git", "-C", str(repo_dir), "worktree", "prune"],
+        capture_output=True, text=True, timeout=30, env=_clean_git_env(),
+    )
+
     # Worktree setup — skip slots that already have healthy worktrees
     for slot_id in slot_ids:
         branch_name = f"slot-{slot_id}-placeholder"
@@ -780,7 +814,13 @@ def setup_project_git(
             # git worktree add can succeed.
             shutil.rmtree(worktree_path, ignore_errors=True)
         _progress(f"Creating worktree for slot {slot_id}...")
-        create_worktree(repo_dir, worktree_path, branch_name)
+        # If the branch already exists (from a prior partial setup), attach
+        # to it instead of trying to create a new one with -b.
+        branch_already_exists = _branch_exists(repo_dir, branch_name)
+        create_worktree(
+            repo_dir, worktree_path, branch_name,
+            create_branch=not branch_already_exists,
+        )
         _progress(f"Slot {slot_id}: {worktree_path} (branch: {branch_name})")
 
     _progress(f"Git setup for '{name}' complete!")
