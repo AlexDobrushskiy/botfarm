@@ -9,9 +9,11 @@ import pytest
 
 from botfarm.db import (
     DEFAULT_RETENTION_DAYS,
+    MIGRATIONS_DIR,
     SCHEMA_VERSION,
     SchemaVersionError,
     _discover_migrations,
+    _run_migrations,
     clear_slot_stage,
     count_tasks,
     count_ticket_history,
@@ -842,6 +844,82 @@ class TestMigrationInfrastructure:
         assert SCHEMA_VERSION == max(migrations.keys())
         assert SCHEMA_VERSION == get_schema_version()
 
+    def test_no_duplicate_migration_numbers(self):
+        """Each migration file must have a unique version number prefix."""
+        import re
+
+        version_counts: dict[int, list[str]] = {}
+        for sql_file in sorted(MIGRATIONS_DIR.glob("*.sql")):
+            match = re.match(r"^(\d+)", sql_file.name)
+            if match:
+                ver = int(match.group(1))
+                version_counts.setdefault(ver, []).append(sql_file.name)
+        dupes = {v: files for v, files in version_counts.items() if len(files) > 1}
+        assert dupes == {}, f"Duplicate migration numbers: {dupes}"
+
+    def test_migration_030_creates_audit_tables(self, tmp_path):
+        """Migration 030 creates audit tables when upgrading from v29."""
+        db_file = tmp_path / "audit.db"
+        # Build a DB at version 29 by running migrations up to 29
+        c = init_db(db_file, allow_migration=True)
+        c.execute("UPDATE schema_version SET version = 29")
+        c.execute("DROP TABLE IF EXISTS usage_api_calls")
+        c.execute("DROP TABLE IF EXISTS usage_api_key_sessions")
+        c.commit()
+
+        # Now run only migration 030
+        _run_migrations(c, from_version=29)
+
+        # Verify the audit tables exist
+        tables = {
+            r[0] for r in c.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        assert "usage_api_calls" in tables
+        assert "usage_api_key_sessions" in tables
+
+        # Verify columns on usage_api_calls
+        api_cols = {r[1] for r in c.execute("PRAGMA table_info(usage_api_calls)").fetchall()}
+        for col in ("token_fingerprint", "status_code", "success", "error_type",
+                     "error_detail", "response_time_ms", "retry_after", "caller"):
+            assert col in api_cols, f"Missing column {col} in usage_api_calls"
+
+        # Verify columns on usage_api_key_sessions
+        sess_cols = {r[1] for r in c.execute("PRAGMA table_info(usage_api_key_sessions)").fetchall()}
+        for col in ("token_fingerprint", "consecutive_errors", "total_errors",
+                     "total_successes", "status", "blocked_at"):
+            assert col in sess_cols, f"Missing column {col} in usage_api_key_sessions"
+
+        c.close()
+
+    def test_migration_030_idempotent_when_audit_tables_exist(self, tmp_path):
+        """Migration 030 succeeds on a v29 DB that already has audit tables (duplicate-028 legacy)."""
+        db_file = tmp_path / "legacy.db"
+        # Build a full DB (which creates all tables including audit ones)
+        c = init_db(db_file, allow_migration=True)
+        # Simulate the old duplicate-028 state: DB is at v29 but audit tables exist
+        c.execute("UPDATE schema_version SET version = 29")
+        c.commit()
+
+        # Running migration 030 must not fail on pre-existing tables
+        _run_migrations(c, from_version=29)
+
+        # Verify version advanced to 030
+        row = c.execute("SELECT version FROM schema_version").fetchone()
+        assert row[0] == 30
+
+        # Tables still exist and are intact
+        tables = {
+            r[0] for r in c.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        assert "usage_api_calls" in tables
+        assert "usage_api_key_sessions" in tables
+
+        c.close()
+
     def test_fresh_db_runs_all_migrations(self, tmp_path):
         """A fresh database reaches SCHEMA_VERSION with all tables and cost_usd dropped."""
         db_file = tmp_path / "fresh.db"
@@ -861,6 +939,7 @@ class TestMigrationInfrastructure:
         assert tables >= {
             "tasks", "stage_runs", "usage_snapshots", "task_events",
             "schema_version", "slots", "dispatch_state", "queue_entries",
+            "usage_api_calls", "usage_api_key_sessions",
         }
 
         # cost_usd columns should NOT exist (dropped by migration 006)
