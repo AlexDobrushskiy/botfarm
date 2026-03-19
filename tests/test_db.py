@@ -9,9 +9,11 @@ import pytest
 
 from botfarm.db import (
     DEFAULT_RETENTION_DAYS,
+    MIGRATIONS_DIR,
     SCHEMA_VERSION,
     SchemaVersionError,
     _discover_migrations,
+    _run_migrations,
     clear_slot_stage,
     count_tasks,
     count_ticket_history,
@@ -844,12 +846,10 @@ class TestMigrationInfrastructure:
 
     def test_no_duplicate_migration_numbers(self):
         """Each migration file must have a unique version number prefix."""
-        from pathlib import Path
         import re
 
-        migrations_dir = Path(__file__).resolve().parent.parent / "botfarm" / "migrations"
         version_counts: dict[int, list[str]] = {}
-        for sql_file in sorted(migrations_dir.glob("*.sql")):
+        for sql_file in sorted(MIGRATIONS_DIR.glob("*.sql")):
             match = re.match(r"^(\d+)", sql_file.name)
             if match:
                 ver = int(match.group(1))
@@ -858,12 +858,19 @@ class TestMigrationInfrastructure:
         assert dupes == {}, f"Duplicate migration numbers: {dupes}"
 
     def test_migration_030_creates_audit_tables(self, tmp_path):
-        """Migration 030 (usage API audit) creates usage_api_calls and usage_api_key_sessions."""
-        db_file = tmp_path / "v29.db"
-        # Build a DB at version 29 by running all migrations up to 29
+        """Migration 030 creates audit tables when upgrading from v29."""
+        db_file = tmp_path / "audit.db"
+        # Build a DB at version 29 by running migrations up to 29
         c = init_db(db_file, allow_migration=True)
+        c.execute("UPDATE schema_version SET version = 29")
+        c.execute("DROP TABLE IF EXISTS usage_api_calls")
+        c.execute("DROP TABLE IF EXISTS usage_api_key_sessions")
+        c.commit()
 
-        # Verify the audit tables exist (created by migration 030)
+        # Now run only migration 030
+        _run_migrations(c, from_version=29)
+
+        # Verify the audit tables exist
         tables = {
             r[0] for r in c.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'"
@@ -883,6 +890,33 @@ class TestMigrationInfrastructure:
         for col in ("token_fingerprint", "consecutive_errors", "total_errors",
                      "total_successes", "status", "blocked_at"):
             assert col in sess_cols, f"Missing column {col} in usage_api_key_sessions"
+
+        c.close()
+
+    def test_migration_030_idempotent_when_audit_tables_exist(self, tmp_path):
+        """Migration 030 succeeds on a v29 DB that already has audit tables (duplicate-028 legacy)."""
+        db_file = tmp_path / "legacy.db"
+        # Build a full DB (which creates all tables including audit ones)
+        c = init_db(db_file, allow_migration=True)
+        # Simulate the old duplicate-028 state: DB is at v29 but audit tables exist
+        c.execute("UPDATE schema_version SET version = 29")
+        c.commit()
+
+        # Running migration 030 must not fail on pre-existing tables
+        _run_migrations(c, from_version=29)
+
+        # Verify version advanced to 030
+        row = c.execute("SELECT version FROM schema_version").fetchone()
+        assert row[0] == 30
+
+        # Tables still exist and are intact
+        tables = {
+            r[0] for r in c.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        assert "usage_api_calls" in tables
+        assert "usage_api_key_sessions" in tables
 
         c.close()
 
