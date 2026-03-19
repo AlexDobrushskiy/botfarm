@@ -330,7 +330,12 @@ class Notifier:
         )
 
     def notify_auth_recovered(self) -> None:
-        """Notify that usage API polling recovered after a 401 outage."""
+        """Notify that usage API polling recovered after a 401 outage.
+
+        Also clears the ``auth_failure`` rate-limit cooldown so that a
+        subsequent outage gets a fresh notification immediately.
+        """
+        self._last_sent.pop("auth_failure", None)
         self._send(
             "auth_recovered",
             "*Usage API auth recovered* — polling resumed successfully",

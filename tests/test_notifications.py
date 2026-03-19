@@ -840,6 +840,23 @@ class TestAuthFailureNotifications:
         notifier.notify_auth_recovered()
         assert notifier._client.post.call_count == 2
 
+    def test_auth_recovered_clears_failure_rate_limit(self, notifier):
+        """Recovery should clear the auth_failure cooldown so a new outage
+        gets an immediate notification."""
+        notifier.notify_auth_failure(consecutive_failures=3)
+        assert notifier._client.post.call_count == 1
+        # Second failure is rate-limited
+        notifier.notify_auth_failure(consecutive_failures=4)
+        assert notifier._client.post.call_count == 1
+
+        # Recovery clears the cooldown
+        notifier.notify_auth_recovered()
+        assert notifier._client.post.call_count == 2
+
+        # New outage should get through immediately
+        notifier.notify_auth_failure(consecutive_failures=3)
+        assert notifier._client.post.call_count == 3
+
     def test_disabled_notifier_noop(self):
         n = Notifier(NotificationsConfig(webhook_url=""))
         n.notify_auth_failure(consecutive_failures=5, minutes_since_success=30)

@@ -2259,6 +2259,31 @@ class TestAuthFailureTracking:
 
         notifier.notify_auth_recovered.assert_called_once()
 
+    def test_below_threshold_401s_no_recovery_notification(self, poller_with_notifier, notifier, conn):
+        """1-2 transient 401s followed by success should not send recovery."""
+        poller = poller_with_notifier
+        error = _make_401_error()
+        poller.credential_manager.refresh_token.return_value = None
+
+        # Fewer than threshold 401s
+        for i in range(AUTH_FAILURE_NOTIFY_THRESHOLD - 1):
+            with patch.object(poller, "_fetch", side_effect=error):
+                poller._last_poll = 0
+                poller._last_force_poll = 0
+                poller.force_poll(conn)
+
+        assert poller._consecutive_401s == AUTH_FAILURE_NOTIFY_THRESHOLD - 1
+        notifier.notify_auth_failure.assert_not_called()
+
+        # Successful poll — should NOT trigger recovery notification
+        with patch.object(poller, "_fetch", return_value=SAMPLE_USAGE_RESPONSE):
+            poller._last_poll = 0
+            poller._last_force_poll = 0
+            poller.force_poll(conn)
+
+        assert poller._consecutive_401s == 0
+        notifier.notify_auth_recovered.assert_not_called()
+
     def test_no_recovery_notification_if_no_prior_401s(self, poller_with_notifier, notifier, conn):
         # Successful poll with no prior 401s — no recovery notification
         with patch.object(poller_with_notifier, "_fetch", return_value=SAMPLE_USAGE_RESPONSE):

@@ -572,7 +572,10 @@ class UsagePoller:
                 self._consecutive_401s,
                 self.poll_interval,
             )
-            if self.notifier is not None:
+            if (
+                self._consecutive_401s >= AUTH_FAILURE_NOTIFY_THRESHOLD
+                and self.notifier is not None
+            ):
                 self.notifier.notify_auth_recovered()
             self._consecutive_401s = 0
             self._first_401_time = None
