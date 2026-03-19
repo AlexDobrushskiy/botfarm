@@ -33,6 +33,7 @@ from botfarm.workflow import load_all_pipelines, resolve_max_iterations
 
 from .formatters import build_pipeline_state, review_display_status
 from .state import (
+    collect_devserver_statuses,
     context_fill_class,
     elapsed,
     format_duration,
@@ -666,15 +667,7 @@ def index(request: Request):
     projects = [p.name for p in cfg.projects] if cfg else []
     # Build dev server status for initial render
     mgr = getattr(app.state, "devserver_manager", None)
-    devservers = []
-    if mgr is not None:
-        for pname in sorted(mgr._projects):
-            s = mgr.status(pname)
-            if s.get("uptime") is not None:
-                s["uptime_display"] = format_duration(int(s["uptime"]))
-            else:
-                s["uptime_display"] = None
-            devservers.append(s)
+    devservers = collect_devserver_statuses(mgr) if mgr is not None else []
     return templates.TemplateResponse("index.html", {
         "request": request,
         "slots": slots,

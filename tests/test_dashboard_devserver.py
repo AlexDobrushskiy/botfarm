@@ -191,9 +191,8 @@ class TestDevserverStream:
 
     def test_stream_reads_log(self, client, devserver_mgr, tmp_path):
         """SSE stream reads log file and emits stdout events."""
-        log_dir = devserver_mgr._log_dir
-        log_dir.mkdir(parents=True, exist_ok=True)
-        log_file = log_dir / "myapp.log"
+        log_file = devserver_mgr.log_path("myapp")
+        log_file.parent.mkdir(parents=True, exist_ok=True)
         log_file.write_text("line one\nline two\n")
 
         with patch.object(
@@ -212,9 +211,8 @@ class TestDevserverStream:
 
     def test_stream_strips_ansi(self, client, devserver_mgr, tmp_path):
         """ANSI escape codes should be stripped from log output."""
-        log_dir = devserver_mgr._log_dir
-        log_dir.mkdir(parents=True, exist_ok=True)
-        log_file = log_dir / "myapp.log"
+        log_file = devserver_mgr.log_path("myapp")
+        log_file.parent.mkdir(parents=True, exist_ok=True)
         log_file.write_text("\x1b[32mgreen text\x1b[0m\n")
 
         with patch.object(

@@ -10,8 +10,8 @@ from fastapi.responses import HTMLResponse
 
 from .state import (
     check_commits_behind,
+    collect_devserver_statuses,
     context_fill_class,
-    format_duration,
     elapsed,
     get_capacity_data,
     get_db,
@@ -238,15 +238,7 @@ def partial_devserver_status(request: Request):
     app = request.app
     templates = request.app.state.templates
     mgr = getattr(app.state, "devserver_manager", None)
-    devservers = []
-    if mgr is not None:
-        for project_name in sorted(mgr._projects):
-            s = mgr.status(project_name)
-            if s.get("uptime") is not None:
-                s["uptime_display"] = format_duration(int(s["uptime"]))
-            else:
-                s["uptime_display"] = None
-            devservers.append(s)
+    devservers = collect_devserver_statuses(mgr) if mgr is not None else []
     return templates.TemplateResponse("partials/devserver_status.html", {
         "request": request,
         "devservers": devservers,

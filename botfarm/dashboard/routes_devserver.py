@@ -11,7 +11,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 
-from .state import format_duration
+from .state import collect_devserver_statuses
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,7 @@ def _get_log_path(request: Request, project: str) -> Path | None:
     mgr = _get_manager(request)
     if mgr is None:
         return None
-    return mgr._log_dir / f"{project}.log"
+    return mgr.log_path(project)
 
 
 def _has_run_command(request: Request, project: str) -> bool:
@@ -41,7 +41,7 @@ def _has_run_command(request: Request, project: str) -> bool:
     mgr = _get_manager(request)
     if mgr is None:
         return False
-    return project in mgr._projects
+    return project in mgr.project_names
 
 
 @router.post("/api/devserver/{project}/start")
@@ -118,16 +118,7 @@ def api_devserver_status(request: Request):
     mgr = _get_manager(request)
     if mgr is None:
         return JSONResponse({"servers": []})
-    statuses = []
-    for project_name in sorted(mgr._projects):
-        s = mgr.status(project_name)
-        # Convert uptime to human-readable
-        if s.get("uptime") is not None:
-            s["uptime_display"] = format_duration(int(s["uptime"]))
-        else:
-            s["uptime_display"] = None
-        statuses.append(s)
-    return JSONResponse({"servers": statuses})
+    return JSONResponse({"servers": collect_devserver_statuses(mgr)})
 
 
 def _is_devserver_running(request: Request, project: str) -> bool:
