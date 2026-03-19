@@ -669,6 +669,60 @@
         .log-line-system     { color: #8b949e; font-style: italic; }
         .log-line-log        { color: #c9d1d9; }
 
+        /* Dev server status cards */
+        .devserver-grid {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.75rem;
+        }
+        .devserver-card {
+            background: var(--pico-card-background-color, #1a1a2e);
+            border: 1px solid var(--pico-muted-border-color, #333);
+            border-radius: var(--pico-border-radius);
+            padding: 0.75rem 1rem;
+            min-width: 220px;
+        }
+        .devserver-card-header {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-bottom: 0.5rem;
+        }
+        .devserver-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            display: inline-block;
+            flex-shrink: 0;
+        }
+        .devserver-dot-running { background: #3fb950; }
+        .devserver-dot-stopped { background: #8b949e; }
+        .devserver-dot-crashed { background: #f85149; }
+        .devserver-uptime {
+            color: var(--pico-muted-color);
+            margin-left: auto;
+        }
+        .devserver-card-actions {
+            display: flex;
+            gap: 0.4rem;
+        }
+        .devserver-btn {
+            padding: 0.25rem 0.6rem;
+            font-size: 0.8rem;
+            border-radius: var(--pico-border-radius);
+            border: 1px solid var(--pico-muted-border-color);
+            background: transparent;
+            color: var(--pico-color);
+            cursor: pointer;
+            transition: all 0.15s ease;
+        }
+        .devserver-btn:hover { border-color: var(--pico-primary); color: var(--pico-primary); }
+        .devserver-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .devserver-btn-start { border-color: #3fb950; color: #3fb950; }
+        .devserver-btn-start:hover { background: rgba(63,185,80,0.1); }
+        .devserver-btn-stop { border-color: #f85149; color: #f85149; }
+        .devserver-btn-stop:hover { background: rgba(248,81,73,0.1); }
+
         /* Workflow visualization */
         .workflow-tabs {
             display: flex;

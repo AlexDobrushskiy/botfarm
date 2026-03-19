@@ -344,6 +344,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
                 update_failed_event=self._update_failed_event,
                 git_env=self._git_env,
                 auto_restart=self._auto_restart,
+                devserver_manager=self._devserver_mgr,
             )
 
         # Auto-repair core.bare=true corruption before preflight

@@ -1,0 +1,39 @@
+{# Dev server status cards — refreshed via htmx every 5s.
+   Requires template variables:
+     - devservers: list of dicts from DevServerManager.status()
+       Each has: project, status, pid, uptime_display, restart_count
+#}
+{% if devservers %}
+<div class="devserver-grid">
+    {% for srv in devservers %}
+    <div class="devserver-card">
+        <div class="devserver-card-header">
+            <span class="devserver-dot devserver-dot-{{ srv.status }}" title="{{ srv.status }}"></span>
+            <strong>{{ srv.project }}</strong>
+            {% if srv.uptime_display %}
+            <small class="devserver-uptime">{{ srv.uptime_display }}</small>
+            {% endif %}
+        </div>
+        <div class="devserver-card-actions">
+            {% if srv.status == "running" %}
+            <button class="devserver-btn devserver-btn-stop"
+                    onclick="devserverAction('{{ srv.project }}', 'stop')"
+                    title="Stop dev server">Stop</button>
+            <button class="devserver-btn devserver-btn-restart"
+                    onclick="devserverAction('{{ srv.project }}', 'restart')"
+                    title="Restart dev server">Restart</button>
+            {% else %}
+            <button class="devserver-btn devserver-btn-start"
+                    onclick="devserverAction('{{ srv.project }}', 'start')"
+                    title="Start dev server">Run</button>
+            {% endif %}
+            <button class="devserver-btn devserver-btn-logs"
+                    onclick="toggleDevserverTerminal('{{ srv.project }}')"
+                    title="Toggle terminal output">Logs</button>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<p style="color: var(--pico-muted-color);">No projects with <code>run_command</code> configured.</p>
+{% endif %}

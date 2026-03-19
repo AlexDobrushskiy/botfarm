@@ -664,6 +664,20 @@ def index(request: Request):
     _linear_url = lambda tid: linear_url(app, tid)
     cfg = app.state.botfarm_config
     projects = [p.name for p in cfg.projects] if cfg else []
+    # Build dev server status for initial render
+    mgr = getattr(app.state, "devserver_manager", None)
+    devservers = []
+    if mgr is not None:
+        for pname in sorted(mgr._projects):
+            s = mgr.status(pname)
+            if s.get("uptime") is not None:
+                total = int(s["uptime"])
+                mins, secs = divmod(total, 60)
+                hours, mins = divmod(mins, 60)
+                s["uptime_display"] = f"{hours}h{mins}m" if hours else (f"{mins}m{secs}s" if mins else f"{secs}s")
+            else:
+                s["uptime_display"] = None
+            devservers.append(s)
     return templates.TemplateResponse("index.html", {
         "request": request,
         "slots": slots,
@@ -682,6 +696,7 @@ def index(request: Request):
         "pause_state": manual_pause_state(state),
         "has_callbacks": app.state.on_pause is not None,
         "capacity": get_capacity_data(app),
+        "devservers": devservers,
     })
 
 

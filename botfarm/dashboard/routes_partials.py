@@ -232,6 +232,34 @@ def partial_health_checks(request: Request):
     })
 
 
+@router.get("/partials/devserver-status", response_class=HTMLResponse)
+def partial_devserver_status(request: Request):
+    app = request.app
+    templates = request.app.state.templates
+    mgr = getattr(app.state, "devserver_manager", None)
+    devservers = []
+    if mgr is not None:
+        for project_name in sorted(mgr._projects):
+            s = mgr.status(project_name)
+            if s.get("uptime") is not None:
+                total = int(s["uptime"])
+                mins, secs = divmod(total, 60)
+                hours, mins = divmod(mins, 60)
+                if hours:
+                    s["uptime_display"] = f"{hours}h{mins}m"
+                elif mins:
+                    s["uptime_display"] = f"{mins}m{secs}s"
+                else:
+                    s["uptime_display"] = f"{secs}s"
+            else:
+                s["uptime_display"] = None
+            devservers.append(s)
+    return templates.TemplateResponse("partials/devserver_status.html", {
+        "request": request,
+        "devservers": devservers,
+    })
+
+
 @router.get("/partials/health-badge", response_class=HTMLResponse)
 def partial_health_badge(request: Request):
     from .routes_api import _get_preflight_data
