@@ -248,7 +248,7 @@ class TestPartialQueue:
         conn = init_db(db_path)
         _seed_queue_entry(conn, "proj", 0, "TST-99", "Linked ticket")
         conn.close()
-        app = create_app(db_path=db_path, linear_workspace="myws")
+        app = create_app(db_path=db_path, workspace="myws")
         c = TestClient(app)
         resp = c.get("/partials/queue")
         body = resp.text
@@ -360,7 +360,7 @@ class TestSlotPanelEnhancements:
     def test_ticket_link_with_workspace(self, db_file):
         app = create_app(
             db_path=db_file,
-            linear_workspace="my-team",
+            workspace="my-team",
         )
         client = TestClient(app)
         resp = client.get("/partials/slots")

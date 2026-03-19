@@ -1132,11 +1132,11 @@ def _make_identity_config(tmp_path, *, coder=None, reviewer=None):
         ssh_key_path="~/.botfarm/coder_id_ed25519",
         git_author_name="Coder Bot",
         git_author_email="coder@example.com",
-        linear_api_key="lin_api_test123",
+        tracker_api_key="lin_api_test123",
     )
     reviewer_identity = reviewer or ReviewerIdentity(
         github_token="ghp_reviewer789xyz",
-        linear_api_key="lin_api_reviewer456",
+        tracker_api_key="lin_api_reviewer456",
     )
 
     config_data = {
@@ -1319,7 +1319,7 @@ class TestIdentitiesUpdate:
         resp = client.post("/identities", json={
             "reviewer": {
                 "github_token": "ghp_reviewernew",
-                "linear_api_key": "lin_api_new",
+                "tracker_api_key": "lin_api_new",
             },
         })
         assert resp.status_code == 200

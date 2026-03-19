@@ -900,11 +900,11 @@ class TestApiDeleteLoop:
         assert resp.json()["ok"] is False
 
 
-# --- Linear Capacity Widget (SMA-275) ---
+# --- Tracker Capacity Widget (SMA-275) ---
 
 
-class TestLinearCapacityPartial:
-    """Tests for the /partials/linear-capacity endpoint and index integration."""
+class TestTrackerCapacityPartial:
+    """Tests for the /partials/tracker-capacity endpoint and index integration."""
 
     def _make_client(self, tmp_path, *, issue_count=None, limit=250,
                      by_project=None, checked_at="2026-03-01T12:00:00+00:00",
@@ -930,14 +930,14 @@ class TestLinearCapacityPartial:
     def test_no_capacity_data(self, tmp_path):
         """Shows fallback message when no capacity data exists."""
         client = self._make_client(tmp_path)
-        resp = client.get("/partials/linear-capacity")
+        resp = client.get("/partials/tracker-capacity")
         assert resp.status_code == 200
         assert "No capacity data available" in resp.text
 
     def test_capacity_green(self, tmp_path):
         """Low utilization shows green status."""
         client = self._make_client(tmp_path, issue_count=100, limit=250)
-        resp = client.get("/partials/linear-capacity")
+        resp = client.get("/partials/tracker-capacity")
         assert resp.status_code == 200
         assert "100 / 250" in resp.text
         assert "status-free" in resp.text
@@ -946,7 +946,7 @@ class TestLinearCapacityPartial:
     def test_capacity_yellow_warning(self, tmp_path):
         """At 70%+ utilization shows yellow/warning status."""
         client = self._make_client(tmp_path, issue_count=180, limit=250)
-        resp = client.get("/partials/linear-capacity")
+        resp = client.get("/partials/tracker-capacity")
         assert resp.status_code == 200
         assert "status-busy" in resp.text
         assert "180 / 250" in resp.text
@@ -954,7 +954,7 @@ class TestLinearCapacityPartial:
     def test_capacity_red_critical(self, tmp_path):
         """At 85%+ utilization shows red/critical status with warning banner."""
         client = self._make_client(tmp_path, issue_count=220, limit=250)
-        resp = client.get("/partials/linear-capacity")
+        resp = client.get("/partials/tracker-capacity")
         assert resp.status_code == 200
         assert "status-failed" in resp.text
         assert "approaching limit" in resp.text
@@ -962,7 +962,7 @@ class TestLinearCapacityPartial:
     def test_capacity_blocked(self, tmp_path):
         """At 95%+ utilization shows blocked banner with dispatch paused notice."""
         client = self._make_client(tmp_path, issue_count=240, limit=250)
-        resp = client.get("/partials/linear-capacity")
+        resp = client.get("/partials/tracker-capacity")
         assert resp.status_code == 200
         assert "DISPATCH PAUSED" in resp.text
         assert "Archive completed issues" in resp.text
@@ -973,7 +973,7 @@ class TestLinearCapacityPartial:
         client = self._make_client(
             tmp_path, issue_count=100, limit=250, by_project=by_project,
         )
-        resp = client.get("/partials/linear-capacity")
+        resp = client.get("/partials/tracker-capacity")
         body = resp.text
         assert "Alpha" in body
         assert "Beta" in body
@@ -987,28 +987,28 @@ class TestLinearCapacityPartial:
             tmp_path, issue_count=50, limit=250,
             checked_at="2026-03-01T12:00:00+00:00",
         )
-        resp = client.get("/partials/linear-capacity")
+        resp = client.get("/partials/tracker-capacity")
         assert "Last checked:" in resp.text
         assert "ago" in resp.text
 
-    def test_index_contains_linear_capacity_section(self, db_file):
-        """Index page includes the Linear Capacity section with htmx polling."""
+    def test_index_contains_tracker_capacity_section(self, db_file):
+        """Index page includes the Tracker Capacity section with htmx polling."""
         app = create_app(db_path=db_file)
         client = TestClient(app)
         resp = client.get("/")
         assert resp.status_code == 200
-        assert "Linear Capacity" in resp.text
-        assert "linear-capacity-panel" in resp.text
+        assert "Tracker Capacity" in resp.text
+        assert "tracker-capacity-panel" in resp.text
         assert "every 30s" in resp.text
 
     def test_index_capacity_between_usage_and_queue(self, db_file):
-        """Linear Capacity section appears between Usage and Queue."""
+        """Tracker Capacity section appears between Usage and Queue."""
         app = create_app(db_path=db_file)
         client = TestClient(app)
         resp = client.get("/")
         body = resp.text
         usage_pos = body.find(">Usage<")
-        capacity_pos = body.find(">Linear Capacity<")
+        capacity_pos = body.find(">Tracker Capacity<")
         queue_pos = body.find(">Queue<")
         assert usage_pos < capacity_pos < queue_pos
 
@@ -1028,13 +1028,13 @@ class TestLinearCapacityPartial:
         client = self._make_client(
             tmp_path, issue_count=160, limit=250, botfarm_config=cfg,
         )
-        resp = client.get("/partials/linear-capacity")
+        resp = client.get("/partials/tracker-capacity")
         assert "status-failed" in resp.text
 
     def test_capacity_widget_free_up_space_button(self, tmp_path):
         """Capacity widget should include a 'Free Up Space' link."""
         client = self._make_client(tmp_path, issue_count=200, limit=250)
-        resp = client.get("/partials/linear-capacity")
+        resp = client.get("/partials/tracker-capacity")
         assert "Free Up Space" in resp.text
         assert 'href="/cleanup"' in resp.text
 
@@ -1370,7 +1370,7 @@ class TestCleanupBatchDetailAPI:
         insert_cleanup_batch_item(
             conn,
             batch_id="detail-batch",
-            linear_uuid="uuid-1",
+            tracker_uuid="uuid-1",
             identifier="SMA-100",
             action="archive",
             success=True,

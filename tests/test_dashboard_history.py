@@ -85,7 +85,7 @@ class TestHistoryPage:
     def test_ticket_links_to_linear(self, db_file):
         app = create_app(
             db_path=db_file,
-            linear_workspace="my-team",
+            workspace="my-team",
         )
         client = TestClient(app)
         resp = client.get("/history")
@@ -253,7 +253,7 @@ class TestTaskDetailPage:
     def test_ticket_links_to_linear(self, db_file):
         app = create_app(
             db_path=db_file,
-            linear_workspace="my-team",
+            workspace="my-team",
         )
         client = TestClient(app)
         resp = client.get("/task/1")

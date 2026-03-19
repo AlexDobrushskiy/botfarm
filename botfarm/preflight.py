@@ -556,8 +556,8 @@ def check_identity_linear_api_key(config: BotfarmConfig) -> list[CheckResult]:
     results: list[CheckResult] = []
 
     keys = [
-        ("coder", config.identities.coder.linear_api_key),
-        ("reviewer", config.identities.reviewer.linear_api_key),
+        ("coder", config.identities.coder.tracker_api_key),
+        ("reviewer", config.identities.reviewer.tracker_api_key),
     ]
 
     for role, api_key in keys:

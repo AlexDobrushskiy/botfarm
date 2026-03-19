@@ -495,7 +495,7 @@ class OperationsMixin:
 
     def _maybe_send_refactoring_notification(self, slot: SlotState) -> None:
         """Send a refactoring-analysis-specific notification if applicable."""
-        ra_label = self._config.refactoring_analysis.linear_label.lower()
+        ra_label = self._config.refactoring_analysis.tracker_label.lower()
         labels = slot.ticket_labels or []
         if not any(lbl.lower() == ra_label for lbl in labels):
             return
@@ -659,9 +659,9 @@ Note: The supervisor handles status transitions automatically — do not move th
                 continue
             checked_teams.add(poller.team_key)
             try:
-                open_issues = self._linear_client.fetch_open_issues_with_label(
+                open_issues = self._bugtracker_client.fetch_open_issues_with_label(
                     poller.team_key,
-                    ra_config.linear_label,
+                    ra_config.tracker_label,
                 )
                 any_check_succeeded = True
                 if open_issues:
@@ -669,7 +669,7 @@ Note: The supervisor handles status transitions automatically — do not move th
                         "Skipping refactoring analysis — found %d open ticket(s) "
                         "with label '%s'",
                         len(open_issues),
-                        ra_config.linear_label,
+                        ra_config.tracker_label,
                     )
                     return
             except Exception as exc:
@@ -707,25 +707,25 @@ Note: The supervisor handles status transitions automatically — do not move th
         team_key = first_project.team
 
         try:
-            team_id = self._linear_client.get_team_id(team_key)
+            team_id = self._bugtracker_client.get_team_id(team_key)
 
             label_ids = []
             try:
-                ra_label_id = self._linear_client.get_or_create_label(
-                    team_key, ra_config.linear_label
+                ra_label_id = self._bugtracker_client.get_or_create_label(
+                    team_key, ra_config.tracker_label
                 )
                 label_ids.append(ra_label_id)
             except Exception as exc:
                 logger.warning(
                     "Failed to resolve/create label '%s' — aborting ticket "
                     "creation: %s",
-                    ra_config.linear_label,
+                    ra_config.tracker_label,
                     exc,
                 )
                 return
 
             try:
-                inv_label_id = self._linear_client.get_or_create_label(
+                inv_label_id = self._bugtracker_client.get_or_create_label(
                     team_key, "Investigation"
                 )
                 label_ids.append(inv_label_id)
@@ -738,7 +738,7 @@ Note: The supervisor handles status transitions automatically — do not move th
             project_id: str | None = None
             if first_project.tracker_project:
                 try:
-                    project_id = self._linear_client.get_project_id(
+                    project_id = self._bugtracker_client.get_project_id(
                         first_project.tracker_project
                     )
                 except Exception as exc:
@@ -759,7 +759,7 @@ Note: The supervisor handles status transitions automatically — do not move th
             target_status = "Backlog" if use_backlog else self._config.bugtracker.todo_status
             state_id: str | None = None
             try:
-                states = self._linear_client.get_team_states(team_key)
+                states = self._bugtracker_client.get_team_states(team_key)
                 state_id = states.get(target_status)
             except Exception as exc:
                 logger.warning(
@@ -780,7 +780,7 @@ Note: The supervisor handles status transitions automatically — do not move th
 
             description = self._REFACTORING_ANALYSIS_TICKET_TEMPLATE
 
-            issue = self._linear_client.create_issue(
+            issue = self._bugtracker_client.create_issue(
                 team_id=team_id,
                 title=title,
                 description=description,

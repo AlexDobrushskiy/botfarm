@@ -960,7 +960,7 @@ class TestCheckIdentityLinearApiKey:
 
     def test_pass_valid_key(self, tmp_path):
         config = _make_config(tmp_path, identities=IdentitiesConfig(
-            coder=CoderIdentity(linear_api_key="lin_api_abc"),
+            coder=CoderIdentity(tracker_api_key="lin_api_abc"),
         ))
         with patch.object(
             __import__("botfarm.bugtracker.linear.client", fromlist=["LinearClient"]).LinearClient,
@@ -973,7 +973,7 @@ class TestCheckIdentityLinearApiKey:
 
     def test_fail_invalid_key(self, tmp_path):
         config = _make_config(tmp_path, identities=IdentitiesConfig(
-            coder=CoderIdentity(linear_api_key="lin_api_bad"),
+            coder=CoderIdentity(tracker_api_key="lin_api_bad"),
         ))
         with patch.object(
             __import__("botfarm.bugtracker.linear.client", fromlist=["LinearClient"]).LinearClient,
@@ -987,7 +987,7 @@ class TestCheckIdentityLinearApiKey:
 
     def test_pass_reviewer_key(self, tmp_path):
         config = _make_config(tmp_path, identities=IdentitiesConfig(
-            reviewer=ReviewerIdentity(linear_api_key="lin_api_rev"),
+            reviewer=ReviewerIdentity(tracker_api_key="lin_api_rev"),
         ))
         with patch.object(
             __import__("botfarm.bugtracker.linear.client", fromlist=["LinearClient"]).LinearClient,
@@ -1001,8 +1001,8 @@ class TestCheckIdentityLinearApiKey:
 
     def test_pass_both_keys(self, tmp_path):
         config = _make_config(tmp_path, identities=IdentitiesConfig(
-            coder=CoderIdentity(linear_api_key="lin_api_coder"),
-            reviewer=ReviewerIdentity(linear_api_key="lin_api_rev"),
+            coder=CoderIdentity(tracker_api_key="lin_api_coder"),
+            reviewer=ReviewerIdentity(tracker_api_key="lin_api_rev"),
         ))
         with patch.object(
             __import__("botfarm.bugtracker.linear.client", fromlist=["LinearClient"]).LinearClient,

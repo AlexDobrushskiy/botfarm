@@ -38,7 +38,7 @@ _GIT_URL_RE = re.compile(
 )
 
 
-def _get_linear_client(app):
+def _get_bugtracker_client(app):
     cfg = app.state.botfarm_config
     if cfg is None or not cfg.bugtracker.api_key:
         return None
@@ -51,7 +51,7 @@ def _get_linear_client(app):
 @router.get("/api/linear/teams")
 def api_linear_teams(request: Request):
     """Return Linear teams for the dropdown."""
-    client = _get_linear_client(request.app)
+    client = _get_bugtracker_client(request.app)
     if client is None:
         return JSONResponse(
             {"error": "Linear API key not configured"}, status_code=503,
@@ -73,7 +73,7 @@ def api_linear_projects(request: Request, team: str = ""):
         return JSONResponse(
             {"error": "team query parameter is required"}, status_code=400,
         )
-    client = _get_linear_client(request.app)
+    client = _get_bugtracker_client(request.app)
     if client is None:
         return JSONResponse(
             {"error": "Linear API key not configured"}, status_code=503,
@@ -181,7 +181,7 @@ async def api_project_create(request: Request):
             if create_linear_project and tracker_project:
                 _on_progress(f"Creating Linear project '{tracker_project}'...")
                 try:
-                    client = _get_linear_client(app)
+                    client = _get_bugtracker_client(app)
                     if client is None:
                         raise ProjectSetupError(
                             "Linear API key not configured — cannot create project"

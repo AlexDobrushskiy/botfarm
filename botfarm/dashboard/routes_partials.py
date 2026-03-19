@@ -119,11 +119,11 @@ def partial_usage(request: Request):
     })
 
 
-@router.get("/partials/linear-capacity", response_class=HTMLResponse)
-def partial_linear_capacity(request: Request):
+@router.get("/partials/tracker-capacity", response_class=HTMLResponse)
+def partial_tracker_capacity(request: Request):
     app = request.app
     templates = request.app.state.templates
-    return templates.TemplateResponse("partials/linear_capacity.html", {
+    return templates.TemplateResponse("partials/tracker_capacity.html", {
         "request": request,
         "capacity": get_capacity_data(app),
         "elapsed": elapsed,

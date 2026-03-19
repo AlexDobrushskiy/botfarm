@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 def create_app(
     *,
     db_path: str | Path,
-    linear_workspace: str = "",
+    workspace: str = "",
     botfarm_config: BotfarmConfig | None = None,
     state_file: str | Path | None = None,
     logs_dir: str | Path | None = None,
@@ -53,8 +53,8 @@ def create_app(
     ----------
     db_path:
         Path to the SQLite database.
-    linear_workspace:
-        Linear workspace slug used for building ticket URLs.
+    workspace:
+        Bugtracker workspace slug used for building ticket URLs.
     botfarm_config:
         Live BotfarmConfig object for runtime editing. If ``None``, the
         config page is disabled.
@@ -102,7 +102,7 @@ def create_app(
 
     # Store paths on app state for route handlers
     app.state.db_path = Path(db_path).expanduser()
-    app.state.linear_workspace = linear_workspace
+    app.state.linear_workspace = workspace
     app.state.botfarm_config = botfarm_config
     app.state.restart_required = False
     app.state.on_pause = on_pause
@@ -142,7 +142,7 @@ def start_dashboard(
     config: DashboardConfig,
     *,
     db_path: str | Path,
-    linear_workspace: str = "",
+    workspace: str = "",
     botfarm_config: BotfarmConfig | None = None,
     state_file: str | Path | None = None,
     logs_dir: str | Path | None = None,
@@ -169,7 +169,7 @@ def start_dashboard(
 
     app = create_app(
         db_path=db_path,
-        linear_workspace=linear_workspace,
+        workspace=workspace,
         botfarm_config=botfarm_config,
         logs_dir=logs_dir,
         on_pause=on_pause,

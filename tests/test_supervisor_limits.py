@@ -1465,16 +1465,16 @@ class TestPollCapacity:
     def test_disabled_config_skips_polling(self, supervisor):
         """When capacity_monitoring.enabled is False, nothing happens."""
         supervisor._config.bugtracker.capacity_monitoring = CapacityConfig(enabled=False)
-        supervisor._linear_client = MagicMock()
+        supervisor._bugtracker_client = MagicMock()
 
         supervisor._poll_capacity()
 
-        supervisor._linear_client.count_active_issues.assert_not_called()
+        supervisor._bugtracker_client.count_active_issues.assert_not_called()
 
     def test_api_failure_skips_tick(self, supervisor, caplog):
         """When count_active_issues returns None, the tick is skipped."""
-        supervisor._linear_client = MagicMock()
-        supervisor._linear_client.count_active_issues.return_value = None
+        supervisor._bugtracker_client = MagicMock()
+        supervisor._bugtracker_client.count_active_issues.return_value = None
 
         with caplog.at_level(logging.WARNING):
             supervisor._poll_capacity()
@@ -1484,8 +1484,8 @@ class TestPollCapacity:
 
     def test_normal_level_no_events(self, supervisor):
         """Below warning threshold, no events are emitted."""
-        supervisor._linear_client = MagicMock()
-        supervisor._linear_client.count_active_issues.return_value = ActiveIssuesCount(
+        supervisor._bugtracker_client = MagicMock()
+        supervisor._bugtracker_client.count_active_issues.return_value = ActiveIssuesCount(
             total=100, by_project={"proj": 100},
         )
 
@@ -1497,8 +1497,8 @@ class TestPollCapacity:
 
     def test_warning_threshold_emits_event(self, supervisor):
         """Crossing the warning threshold emits a capacity_warning event."""
-        supervisor._linear_client = MagicMock()
-        supervisor._linear_client.count_active_issues.return_value = ActiveIssuesCount(
+        supervisor._bugtracker_client = MagicMock()
+        supervisor._bugtracker_client.count_active_issues.return_value = ActiveIssuesCount(
             total=180, by_project={"proj": 180},
         )
 
@@ -1511,8 +1511,8 @@ class TestPollCapacity:
 
     def test_critical_threshold_emits_event(self, supervisor):
         """Crossing the critical threshold emits a capacity_critical event."""
-        supervisor._linear_client = MagicMock()
-        supervisor._linear_client.count_active_issues.return_value = ActiveIssuesCount(
+        supervisor._bugtracker_client = MagicMock()
+        supervisor._bugtracker_client.count_active_issues.return_value = ActiveIssuesCount(
             total=215, by_project={"proj": 215},
         )
 
@@ -1524,8 +1524,8 @@ class TestPollCapacity:
 
     def test_blocked_threshold_pauses_dispatch(self, supervisor):
         """At >=95% capacity, dispatch is auto-paused with reason capacity_blocked."""
-        supervisor._linear_client = MagicMock()
-        supervisor._linear_client.count_active_issues.return_value = ActiveIssuesCount(
+        supervisor._bugtracker_client = MagicMock()
+        supervisor._bugtracker_client.count_active_issues.return_value = ActiveIssuesCount(
             total=238, by_project={"proj": 238},
         )
 
@@ -1539,17 +1539,17 @@ class TestPollCapacity:
 
     def test_hysteresis_stays_blocked_above_resume_threshold(self, supervisor):
         """Once blocked, stays blocked until utilization drops below resume_threshold."""
-        supervisor._linear_client = MagicMock()
+        supervisor._bugtracker_client = MagicMock()
 
         # First: enter blocked state
-        supervisor._linear_client.count_active_issues.return_value = ActiveIssuesCount(
+        supervisor._bugtracker_client.count_active_issues.return_value = ActiveIssuesCount(
             total=240, by_project={"proj": 240},
         )
         supervisor._poll_capacity()
         assert supervisor._capacity_level == "blocked"
 
         # Drop to 92% — above resume_threshold (90%), should stay blocked
-        supervisor._linear_client.count_active_issues.return_value = ActiveIssuesCount(
+        supervisor._bugtracker_client.count_active_issues.return_value = ActiveIssuesCount(
             total=230, by_project={"proj": 230},
         )
         supervisor._poll_capacity()
@@ -1558,17 +1558,17 @@ class TestPollCapacity:
 
     def test_resume_below_resume_threshold(self, supervisor):
         """Dispatch resumes when utilization drops below resume_threshold."""
-        supervisor._linear_client = MagicMock()
+        supervisor._bugtracker_client = MagicMock()
 
         # Enter blocked state
-        supervisor._linear_client.count_active_issues.return_value = ActiveIssuesCount(
+        supervisor._bugtracker_client.count_active_issues.return_value = ActiveIssuesCount(
             total=240, by_project={"proj": 240},
         )
         supervisor._poll_capacity()
         assert supervisor._capacity_level == "blocked"
 
         # Drop below resume threshold (90% of 250 = 225)
-        supervisor._linear_client.count_active_issues.return_value = ActiveIssuesCount(
+        supervisor._bugtracker_client.count_active_issues.return_value = ActiveIssuesCount(
             total=220, by_project={"proj": 220},
         )
         supervisor._poll_capacity()
@@ -1580,8 +1580,8 @@ class TestPollCapacity:
 
     def test_event_emitted_only_on_transition(self, supervisor):
         """Repeated polls at same level don't produce duplicate events."""
-        supervisor._linear_client = MagicMock()
-        supervisor._linear_client.count_active_issues.return_value = ActiveIssuesCount(
+        supervisor._bugtracker_client = MagicMock()
+        supervisor._bugtracker_client.count_active_issues.return_value = ActiveIssuesCount(
             total=180, by_project={"proj": 180},
         )
 
@@ -1594,8 +1594,8 @@ class TestPollCapacity:
 
     def test_capacity_state_saved_to_db(self, supervisor):
         """Each poll persists the capacity snapshot to dispatch_state."""
-        supervisor._linear_client = MagicMock()
-        supervisor._linear_client.count_active_issues.return_value = ActiveIssuesCount(
+        supervisor._bugtracker_client = MagicMock()
+        supervisor._bugtracker_client.count_active_issues.return_value = ActiveIssuesCount(
             total=150, by_project={"proj-a": 100, "proj-b": 50},
         )
 
@@ -1610,8 +1610,8 @@ class TestPollCapacity:
 
     def test_blocked_event_on_jump_from_normal(self, supervisor):
         """Jumping from normal directly to blocked emits capacity_blocked."""
-        supervisor._linear_client = MagicMock()
-        supervisor._linear_client.count_active_issues.return_value = ActiveIssuesCount(
+        supervisor._bugtracker_client = MagicMock()
+        supervisor._bugtracker_client.count_active_issues.return_value = ActiveIssuesCount(
             total=245, by_project={"proj": 245},
         )
 
@@ -1649,8 +1649,8 @@ class TestCapacityNotificationIntegration:
 
     def test_warning_transition_notifies(self, supervisor):
         """Transitioning to warning level calls notify_capacity_warning."""
-        supervisor._linear_client = MagicMock()
-        supervisor._linear_client.count_active_issues.return_value = ActiveIssuesCount(
+        supervisor._bugtracker_client = MagicMock()
+        supervisor._bugtracker_client.count_active_issues.return_value = ActiveIssuesCount(
             total=180, by_project={"proj": 180},
         )
         supervisor._notifier = MagicMock()
@@ -1663,8 +1663,8 @@ class TestCapacityNotificationIntegration:
 
     def test_critical_transition_notifies(self, supervisor):
         """Transitioning to critical level calls notify_capacity_critical."""
-        supervisor._linear_client = MagicMock()
-        supervisor._linear_client.count_active_issues.return_value = ActiveIssuesCount(
+        supervisor._bugtracker_client = MagicMock()
+        supervisor._bugtracker_client.count_active_issues.return_value = ActiveIssuesCount(
             total=215, by_project={"proj": 215},
         )
         supervisor._notifier = MagicMock()
@@ -1677,8 +1677,8 @@ class TestCapacityNotificationIntegration:
 
     def test_blocked_transition_notifies(self, supervisor):
         """Transitioning to blocked level calls notify_capacity_blocked."""
-        supervisor._linear_client = MagicMock()
-        supervisor._linear_client.count_active_issues.return_value = ActiveIssuesCount(
+        supervisor._bugtracker_client = MagicMock()
+        supervisor._bugtracker_client.count_active_issues.return_value = ActiveIssuesCount(
             total=238, by_project={"proj": 238},
         )
         supervisor._notifier = MagicMock()
@@ -1691,18 +1691,18 @@ class TestCapacityNotificationIntegration:
 
     def test_cleared_transition_notifies(self, supervisor):
         """Resuming from blocked calls notify_capacity_cleared."""
-        supervisor._linear_client = MagicMock()
+        supervisor._bugtracker_client = MagicMock()
         supervisor._notifier = MagicMock()
 
         # Enter blocked state
-        supervisor._linear_client.count_active_issues.return_value = ActiveIssuesCount(
+        supervisor._bugtracker_client.count_active_issues.return_value = ActiveIssuesCount(
             total=240, by_project={"proj": 240},
         )
         supervisor._poll_capacity()
         supervisor._notifier.reset_mock()
 
         # Drop below resume threshold (90% of 250 = 225)
-        supervisor._linear_client.count_active_issues.return_value = ActiveIssuesCount(
+        supervisor._bugtracker_client.count_active_issues.return_value = ActiveIssuesCount(
             total=220, by_project={"proj": 220},
         )
         supervisor._poll_capacity()
@@ -1713,8 +1713,8 @@ class TestCapacityNotificationIntegration:
 
     def test_no_notification_on_same_level(self, supervisor):
         """Repeated polls at the same level do not fire notifications."""
-        supervisor._linear_client = MagicMock()
-        supervisor._linear_client.count_active_issues.return_value = ActiveIssuesCount(
+        supervisor._bugtracker_client = MagicMock()
+        supervisor._bugtracker_client.count_active_issues.return_value = ActiveIssuesCount(
             total=180, by_project={"proj": 180},
         )
         supervisor._notifier = MagicMock()
@@ -1928,10 +1928,10 @@ class TestStartPaused:
         """When capacity_blocked clears and _startup_paused is set, restore start_paused."""
         sm = supervisor.slot_manager
         supervisor._startup_paused = True
-        supervisor._linear_client = MagicMock()
+        supervisor._bugtracker_client = MagicMock()
 
         # Enter blocked state
-        supervisor._linear_client.count_active_issues.return_value = ActiveIssuesCount(
+        supervisor._bugtracker_client.count_active_issues.return_value = ActiveIssuesCount(
             total=240, by_project={"proj": 240},
         )
         supervisor._poll_capacity()
@@ -1939,7 +1939,7 @@ class TestStartPaused:
         assert sm.dispatch_pause_reason == "capacity_blocked"
 
         # Drop below resume threshold — should restore start_paused, not unpause
-        supervisor._linear_client.count_active_issues.return_value = ActiveIssuesCount(
+        supervisor._bugtracker_client.count_active_issues.return_value = ActiveIssuesCount(
             total=220, by_project={"proj": 220},
         )
         supervisor._poll_capacity()
