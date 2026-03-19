@@ -1510,7 +1510,7 @@ Note: The supervisor handles status transitions automatically — do not move th
                 except Exception:
                     pass
             # Deregister from dev server manager
-            self._devserver_mgr._projects.pop(project_name, None)
+            self._devserver_mgr.unregister_project(project_name)
             if added_to_config:
                 self._config.projects = [
                     p for p in self._config.projects if p.name != project_name

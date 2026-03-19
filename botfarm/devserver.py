@@ -72,6 +72,10 @@ class DevServerManager:
         if project.run_command:
             self._projects[project.name] = project
 
+    def unregister_project(self, project_name: str) -> None:
+        """Remove a project registration (e.g. during rollback)."""
+        self._projects.pop(project_name, None)
+
     def start(self, project_name: str) -> None:
         """Start the dev server for *project_name*.
 
@@ -88,6 +92,8 @@ class DevServerManager:
             raise ValueError(f"Project {project_name!r} not registered or has no run_command")
 
         restart_count = existing.restart_count if existing else 0
+        if existing is not None:
+            self._close_log_file(existing)
         self._do_start(project, restart_count)
 
     def stop(self, project_name: str) -> None:
