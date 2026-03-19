@@ -106,6 +106,18 @@ class TestJiraClientRequest:
                 mock_sleep.assert_called_once_with(1)
                 assert result.status_code == 200
 
+    def test_429_raises_after_max_retries(self):
+        client = _make_client()
+        rate_limit_resp = _jira_response(
+            status_code=429,
+            json_data={},
+            headers={"Retry-After": "1"},
+        )
+        with patch("httpx.request", return_value=rate_limit_resp):
+            with patch("time.sleep"):
+                with pytest.raises(JiraAPIError, match="Rate limited after"):
+                    client._request("GET", "/myself")
+
 
 # ---------------------------------------------------------------------------
 # Rank field discovery
@@ -282,7 +294,8 @@ class TestFetchTeamIssues:
                                 "key": "PROJ-5",
                                 "fields": {
                                     "status": {
-                                        "statusCategory": {"key": "done"}
+                                        "name": "Done",
+                                        "statusCategory": {"key": "done"},
                                     }
                                 },
                             },
@@ -290,7 +303,8 @@ class TestFetchTeamIssues:
                                 "key": "PROJ-6",
                                 "fields": {
                                     "status": {
-                                        "statusCategory": {"key": "indeterminate"}
+                                        "name": "In Progress",
+                                        "statusCategory": {"key": "indeterminate"},
                                     }
                                 },
                             },
@@ -306,6 +320,41 @@ class TestFetchTeamIssues:
             ("PROJ-5", "completed"),
             ("PROJ-6", "started"),
         ]
+
+    def test_subtask_canceled_status_detected(self):
+        client = _make_client()
+        search_resp = _jira_response(json_data={
+            "total": 1,
+            "issues": [
+                {
+                    "id": "10004",
+                    "key": "PROJ-4",
+                    "fields": {
+                        "summary": "Parent task",
+                        "status": {"name": "Todo"},
+                        "labels": [],
+                        "assignee": None,
+                        "priority": {"id": "3"},
+                        "issuelinks": [],
+                        "subtasks": [
+                            {
+                                "key": "PROJ-5",
+                                "fields": {
+                                    "status": {
+                                        "name": "Canceled",
+                                        "statusCategory": {"key": "done"},
+                                    }
+                                },
+                            },
+                        ],
+                    },
+                }
+            ],
+        })
+        with patch("httpx.request", return_value=search_resp):
+            issues = client.fetch_team_issues("PROJ")
+
+        assert issues[0].children_states == [("PROJ-5", "canceled")]
 
     def test_pagination(self):
         client = _make_client()
@@ -509,13 +558,21 @@ class TestSimpleMethods:
             with pytest.raises(JiraAPIError, match="Failed to retrieve viewer ID"):
                 client.get_viewer_id()
 
-    def test_assign_issue(self):
-        client = _make_client()
+    def test_assign_issue_cloud(self):
+        client = _make_client(email="user@example.com")
         resp = _jira_response(status_code=204, json_data={})
         with patch("httpx.request", return_value=resp) as mock_req:
             client.assign_issue("10001", "acc123")
         _, kwargs = mock_req.call_args
         assert kwargs["json"]["fields"]["assignee"]["accountId"] == "acc123"
+
+    def test_assign_issue_server_dc(self):
+        client = _make_client(email="")
+        resp = _jira_response(status_code=204, json_data={})
+        with patch("httpx.request", return_value=resp) as mock_req:
+            client.assign_issue("10001", "jsmith")
+        _, kwargs = mock_req.call_args
+        assert kwargs["json"]["fields"]["assignee"]["name"] == "jsmith"
 
     def test_add_labels(self):
         client = _make_client()

@@ -47,6 +47,8 @@ class JiraClient(BugtrackerClient):
             # Jira Server/DC: Bearer auth
             self._auth_header = f"Bearer {api_token}"
 
+    _MAX_RETRIES = 3
+
     def _request(
         self,
         method: str,
@@ -54,10 +56,11 @@ class JiraClient(BugtrackerClient):
         *,
         json: dict | None = None,
         params: dict | None = None,
+        _retry_count: int = 0,
     ) -> httpx.Response:
         """Execute an HTTP request against the Jira API.
 
-        Handles 429 rate limiting with Retry-After header.
+        Handles 429 rate limiting with Retry-After header (up to _MAX_RETRIES).
         Raises JiraAPIError on failures.
         """
         url = f"{self._base_url}/rest/api/2{path}"
@@ -79,6 +82,10 @@ class JiraClient(BugtrackerClient):
             raise JiraAPIError(f"HTTP request failed: {exc}") from exc
 
         if response.status_code == 429:
+            if _retry_count >= self._MAX_RETRIES:
+                raise JiraAPIError(
+                    f"Rate limited after {self._MAX_RETRIES} retries"
+                )
             retry_after = response.headers.get("Retry-After", "5")
             try:
                 wait = int(retry_after)
@@ -86,7 +93,10 @@ class JiraClient(BugtrackerClient):
                 wait = 5
             logger.warning("Jira rate limit hit, retrying after %ds", wait)
             time.sleep(wait)
-            return self._request(method, path, json=json, params=params)
+            return self._request(
+                method, path, json=json, params=params,
+                _retry_count=_retry_count + 1,
+            )
 
         if response.status_code >= 400:
             raise JiraAPIError(
@@ -125,16 +135,17 @@ class JiraClient(BugtrackerClient):
         first: int = 50,
         project_name: str = "",
     ) -> list[Issue]:
+        if project_name:
+            logger.warning(
+                "Jira does not support sub-project filtering; "
+                "project_name=%r is ignored (team_key=%r already selects the project)",
+                project_name,
+                team_key,
+            )
+
         self._ensure_rank_field()
 
         jql = f'project = "{team_key}" AND status = "{status_name}"'
-        order_by = (
-            f"ORDER BY cf[{self._rank_field_id.split('_')[-1]}] ASC"
-            if self._rank_field_id
-            else "ORDER BY priority DESC, created ASC"
-        )
-        # Simplify: just use "ORDER BY Rank ASC" which Jira understands
-        # if the field exists, otherwise fallback
         if self._rank_field_id:
             order_by = "ORDER BY Rank ASC"
         else:
@@ -184,23 +195,18 @@ class JiraClient(BugtrackerClient):
                     children_states = []
                     for sub in subtasks:
                         sub_key = sub.get("key", "")
+                        sub_status = sub.get("fields", {}).get("status", {})
                         sub_cat = (
-                            sub.get("fields", {})
-                            .get("status", {})
+                            sub_status
                             .get("statusCategory", {})
                             .get("key", "")
                         )
+                        sub_name = sub_status.get("name", "").lower()
                         children_states.append(
-                            (sub_key, self._map_status_category(sub_cat))
+                            (sub_key, self._map_status_category(sub_cat, sub_name))
                         )
 
-                # Determine sort_order
                 sort_order = float(start_at + idx)
-                if self._rank_field_id:
-                    rank_val = fields_data.get(self._rank_field_id)
-                    if rank_val is not None:
-                        # Jira Rank is a string like "0|hzzzzz:", use index as fallback
-                        sort_order = float(start_at + idx)
 
                 assignee = fields_data.get("assignee") or {}
                 priority_obj = fields_data.get("priority") or {}
@@ -307,10 +313,14 @@ class JiraClient(BugtrackerClient):
         return viewer_id
 
     def assign_issue(self, issue_id: str, assignee_id: str) -> None:
+        if self._email:
+            assignee_field = {"accountId": assignee_id}
+        else:
+            assignee_field = {"name": assignee_id}
         self._request(
             "PUT",
             f"/issue/{issue_id}",
-            json={"fields": {"assignee": {"accountId": assignee_id}}},
+            json={"fields": {"assignee": assignee_field}},
         )
 
     def add_labels(self, issue_id: str, label_ids: list[str]) -> None:
