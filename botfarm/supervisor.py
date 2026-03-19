@@ -52,6 +52,7 @@ from botfarm.notifications import Notifier
 from botfarm.preflight import CheckResult, log_preflight_summary, repair_core_bare, run_preflight_checks
 from botfarm.slots import SlotManager, SlotState, _is_pid_alive
 from botfarm.codex_usage import CodexUsagePoller
+from botfarm.devserver import DevServerManager
 from botfarm.usage import DEFAULT_PAUSE_5H_THRESHOLD, DEFAULT_PAUSE_7D_THRESHOLD, UsagePoller
 from botfarm.worker import STAGES, PipelineResult, build_git_env, run_pipeline
 
@@ -262,9 +263,20 @@ class Supervisor(RecoveryMixin, OperationsMixin):
         self._worker_mgr = WorkerLifecycleManager(self)
         self._pause_resume_mgr = PauseResumeManager(self)
 
+        # Dev server manager — manages dev server processes for web projects
+        self._devserver_mgr = DevServerManager(
+            log_dir=self._log_dir / "devserver",
+        )
+        for project in config.projects:
+            self._devserver_mgr.register_project(project)
+
     @property
     def slot_manager(self) -> SlotManager:
         return self._slot_manager
+
+    @property
+    def devserver_manager(self) -> DevServerManager:
+        return self._devserver_mgr
 
     @property
     def shutdown_requested(self) -> bool:
@@ -495,6 +507,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
             self._poll_capacity,
             self._poll_and_dispatch,
             self._cleanup_old_ticket_logs,
+            self._check_devservers,
             self._maybe_create_refactoring_analysis_ticket,
             self._maybe_send_daily_summary,
         ):
@@ -929,6 +942,9 @@ class Supervisor(RecoveryMixin, OperationsMixin):
             reason = "SIGTERM/SIGINT received" if self._shutdown_requested else "unexpected error"
             self._notifier.notify_supervisor_shutdown(reason=reason)
 
+        # Stop all dev servers before final cleanup
+        self._devserver_mgr.stop_all()
+
         self._slot_manager.save()
         self._usage_poller.close()
         self._codex_usage_poller.close()
@@ -955,6 +971,20 @@ class Supervisor(RecoveryMixin, OperationsMixin):
         self._conn.close()
 
         logger.info("Supervisor stopped")
+
+    # ------------------------------------------------------------------
+    # Dev server health check
+    # ------------------------------------------------------------------
+
+    _DEVSERVER_CHECK_INTERVAL = 5  # check every N ticks
+
+    def _check_devservers(self) -> None:
+        """Periodic liveness check for dev server processes."""
+        tick_count = getattr(self, "_devserver_tick_count", 0) + 1
+        self._devserver_tick_count = tick_count  # type: ignore[attr-defined]
+        if tick_count % self._DEVSERVER_CHECK_INTERVAL != 0:
+            return
+        self._devserver_mgr.health_check()
 
     # ------------------------------------------------------------------
     # Helpers
