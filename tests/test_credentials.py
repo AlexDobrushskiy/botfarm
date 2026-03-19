@@ -555,6 +555,29 @@ def test_save_token_linux_writes_correctly(tmp_path, monkeypatch):
     assert saved["claudeAiOauth"]["scopes"] == ["user:profile"]
 
 
+def test_save_token_linux_clears_stale_expires_at(tmp_path, monkeypatch):
+    """Saving a token with expires_at=None removes stale expiresAt from file."""
+    cred_file = tmp_path / ".credentials.json"
+    existing = {
+        "claudeAiOauth": {
+            "accessToken": "old-token",
+            "expiresAt": 1000,
+        },
+    }
+    cred_file.write_text(json.dumps(existing))
+    monkeypatch.setattr("botfarm.credentials.LINUX_CREDENTIALS_PATH", cred_file)
+
+    new_token = OAuthToken(
+        access_token="new-access",
+        expires_at=None,
+    )
+    _save_token_linux(new_token)
+
+    saved = json.loads(cred_file.read_text())
+    assert saved["claudeAiOauth"]["accessToken"] == "new-access"
+    assert "expiresAt" not in saved["claudeAiOauth"]
+
+
 def test_save_token_linux_creates_if_no_existing(tmp_path, monkeypatch):
     """Saving when no credential file exists creates it."""
     cred_file = tmp_path / ".credentials.json"

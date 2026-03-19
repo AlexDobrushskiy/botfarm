@@ -141,8 +141,9 @@ class CredentialManager:
     def is_token_expired(self) -> bool:
         """Check if the current token is expired or about to expire.
 
-        Returns True if the token expires within TOKEN_EXPIRY_BUFFER_MS,
-        or if expiry info is unavailable (conservative).
+        Returns True if the token expires within TOKEN_EXPIRY_BUFFER_MS.
+        Returns True if credentials cannot be loaded at all.
+        Returns False if expiry info is missing (assume valid).
         """
         try:
             token = _load_token()
@@ -335,6 +336,8 @@ def _save_token_linux(token: OAuthToken) -> None:
         oauth["refreshToken"] = token.refresh_token
     if token.expires_at is not None:
         oauth["expiresAt"] = token.expires_at
+    else:
+        oauth.pop("expiresAt", None)
 
     existing["claudeAiOauth"] = oauth
 
@@ -405,6 +408,8 @@ def _save_token_macos(token: OAuthToken) -> None:
         oauth["refreshToken"] = token.refresh_token
     if token.expires_at is not None:
         oauth["expiresAt"] = token.expires_at
+    else:
+        oauth.pop("expiresAt", None)
 
     existing["claudeAiOauth"] = oauth
     payload = json.dumps(existing)
