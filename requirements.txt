@@ -12,3 +12,4 @@ pytest
 pytest-asyncio
 pytest-playwright
 pytest-xdist
+curl_cffi
