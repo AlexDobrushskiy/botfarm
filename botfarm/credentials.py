@@ -105,6 +105,14 @@ class CredentialManager:
         """
         return self.get_token()
 
+    def get_expires_at(self) -> str | None:
+        """Return the expiresAt field from the credential store, or None."""
+        try:
+            token = _load_token()
+            return token.expires_at
+        except CredentialError:
+            return None
+
 
 def _load_token() -> OAuthToken:
     """Load the OAuth token from the OS-appropriate credential store."""

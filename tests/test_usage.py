@@ -24,6 +24,7 @@ from botfarm.usage import (
     DEFAULT_POLL_INTERVAL,
     DEFAULT_RETENTION_DAYS,
     FORCE_POLL_COOLDOWN,
+    MAX_401_BACKOFF_INTERVAL,
     MAX_ADAPTIVE_POLL_INTERVAL,
     MAX_RETRIES,
     TRANSIENT_EXCEPTIONS,
@@ -400,6 +401,203 @@ class TestUsagePollerErrors:
             state = poller.force_poll(conn)
 
         assert state.utilization_5h is None
+
+    def test_401_skips_retry_when_fingerprint_unchanged(self, poller, conn):
+        """When refresh_token returns same fingerprint, retry is skipped."""
+        response = httpx.Response(
+            401,
+            request=httpx.Request("GET", "https://api.anthropic.com/api/oauth/usage"),
+        )
+        error = httpx.HTTPStatusError("", request=response.request, response=response)
+
+        # refresh_token returns a token with the same fingerprint (last 8 chars match)
+        poller.credential_manager.refresh_token.return_value = "test-token"
+
+        with patch.object(poller, "_fetch", side_effect=error) as mock_fetch:
+            state = poller.force_poll(conn)
+
+        # _fetch should only be called once (initial 401), not retried
+        mock_fetch.assert_called_once()
+        assert state.utilization_5h is None
+        # 401 backoff should be applied
+        assert poller._consecutive_401s == 1
+        assert poller._active_poll_interval is not None
+
+    def test_401_backoff_increments_consecutive_counter(self, poller, conn):
+        """Consecutive 401s increment the counter and apply linear backoff."""
+        response = httpx.Response(
+            401,
+            request=httpx.Request("GET", "https://api.anthropic.com/api/oauth/usage"),
+        )
+        error = httpx.HTTPStatusError("", request=response.request, response=response)
+
+        # Same fingerprint each time → always skips retry
+        poller.credential_manager.refresh_token.return_value = "test-token"
+
+        with patch.object(poller, "_fetch", side_effect=error):
+            poller.force_poll(conn)
+            assert poller._consecutive_401s == 1
+            # Linear: poll_interval * (1 + 1) = 10 * 2 = 20
+            assert poller._active_poll_interval == 20
+
+            # Reset both cooldowns to simulate backoff period elapsed
+            poller._last_force_poll = 0
+            poller._last_poll = 0
+            poller.force_poll(conn)
+            assert poller._consecutive_401s == 2
+            # Linear: poll_interval * (1 + 2) = 10 * 3 = 30
+            assert poller._active_poll_interval == 30
+
+            poller._last_force_poll = 0
+            poller._last_poll = 0
+            poller.force_poll(conn)
+            assert poller._consecutive_401s == 3
+            # Linear: poll_interval * (1 + 3) = 10 * 4 = 40
+            assert poller._active_poll_interval == 40
+
+    def test_401_backoff_capped_at_max(self, conn):
+        """401 backoff is capped at MAX_401_BACKOFF_INTERVAL (1 hour)."""
+        from botfarm.usage import MAX_401_BACKOFF_INTERVAL
+
+        cred_mgr = MagicMock(spec=CredentialManager)
+        cred_mgr.get_token.return_value = "test-token"
+        cred_mgr.refresh_token.return_value = "test-token"  # same fingerprint
+        p = UsagePoller(credential_manager=cred_mgr, poll_interval=600)
+
+        response = httpx.Response(
+            401,
+            request=httpx.Request("GET", "https://api.anthropic.com/api/oauth/usage"),
+        )
+        error = httpx.HTTPStatusError("", request=response.request, response=response)
+
+        with patch.object(p, "_fetch", side_effect=error):
+            for _ in range(20):
+                p._last_force_poll = 0
+                p._last_poll = 0
+                p.force_poll(conn)
+
+        assert p._active_poll_interval == MAX_401_BACKOFF_INTERVAL
+
+    def test_401_backoff_resets_on_success(self, poller, conn):
+        """A successful poll after 401 series resets the backoff."""
+        response = httpx.Response(
+            401,
+            request=httpx.Request("GET", "https://api.anthropic.com/api/oauth/usage"),
+        )
+        error = httpx.HTTPStatusError("", request=response.request, response=response)
+
+        # Same fingerprint → skips retry → applies backoff
+        poller.credential_manager.refresh_token.return_value = "test-token"
+
+        with patch.object(poller, "_fetch", side_effect=error):
+            poller.force_poll(conn)
+            poller._last_force_poll = 0
+            poller._last_poll = 0
+            poller.force_poll(conn)
+
+        assert poller._consecutive_401s == 2
+        assert poller._active_poll_interval is not None
+
+        # Now a successful poll (backoff period elapsed)
+        poller._last_force_poll = 0
+        poller._last_poll = 0
+        with patch.object(poller, "_fetch", return_value=SAMPLE_USAGE_RESPONSE):
+            poller.force_poll(conn)
+
+        assert poller._consecutive_401s == 0
+        assert poller._active_poll_interval is None
+        assert poller.effective_poll_interval == poller.poll_interval
+
+    def test_401_logs_expires_at(self, poller, conn):
+        """401 handler logs the token expiresAt from credential store."""
+        response = httpx.Response(
+            401,
+            request=httpx.Request("GET", "https://api.anthropic.com/api/oauth/usage"),
+        )
+        error = httpx.HTTPStatusError("", request=response.request, response=response)
+
+        poller.credential_manager.get_expires_at.return_value = "2026-03-19T12:00:00Z"
+        poller.credential_manager.refresh_token.return_value = "test-token"
+
+        with patch.object(poller, "_fetch", side_effect=error):
+            with patch("botfarm.usage.logger") as mock_logger:
+                poller.force_poll(conn)
+
+        # Check that expiresAt was logged in the 401 warning
+        calls = [str(c) for c in mock_logger.warning.call_args_list]
+        assert any("2026-03-19T12:00:00Z" in c for c in calls)
+
+    def test_401_retry_failure_applies_backoff(self, poller, conn):
+        """When token changes but retry fetch fails, backoff is still applied."""
+        response = httpx.Response(
+            401,
+            request=httpx.Request("GET", "https://api.anthropic.com/api/oauth/usage"),
+        )
+        error_401 = httpx.HTTPStatusError("", request=response.request, response=response)
+
+        poller.credential_manager.refresh_token.return_value = "new-token"
+
+        call_count = 0
+
+        def fetch_side_effect(token):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise error_401
+            raise Exception("network error on retry")
+
+        with patch.object(poller, "_fetch", side_effect=fetch_side_effect):
+            poller.force_poll(conn)
+
+        assert poller._consecutive_401s == 1
+        assert poller._active_poll_interval is not None
+
+    def test_401_backoff_does_not_reduce_429_interval(self, poller, conn):
+        """401 backoff never reduces an active 429 backoff interval."""
+        # Set up a large 429 backoff
+        poller._consecutive_429s = 3
+        poller._active_poll_interval = 1000
+
+        response = httpx.Response(
+            401,
+            request=httpx.Request("GET", "https://api.anthropic.com/api/oauth/usage"),
+        )
+        error = httpx.HTTPStatusError("", request=response.request, response=response)
+        poller.credential_manager.refresh_token.return_value = "test-token"
+
+        # 401 linear backoff = 10 * (1+1) = 20, but 429 is 1000
+        with patch.object(poller, "_fetch", side_effect=error):
+            poller._last_force_poll = 0
+            poller.force_poll(conn)
+
+        # Should keep the larger 429 interval
+        assert poller._active_poll_interval == 1000
+
+    def test_force_poll_suppressed_during_401_backoff(self, poller, conn):
+        """force_poll() is suppressed while 401 backoff is active."""
+        response = httpx.Response(
+            401,
+            request=httpx.Request("GET", "https://api.anthropic.com/api/oauth/usage"),
+        )
+        error = httpx.HTTPStatusError("", request=response.request, response=response)
+        poller.credential_manager.refresh_token.return_value = "test-token"
+
+        with patch.object(poller, "_fetch", side_effect=error) as mock_fetch:
+            # First call — triggers 401 backoff
+            poller.force_poll(conn)
+            assert poller._consecutive_401s == 1
+            first_call_count = mock_fetch.call_count
+
+            # Second call without advancing time — should be suppressed
+            poller._last_force_poll = 0  # bypass cooldown
+            result = poller.force_poll(conn)
+            assert mock_fetch.call_count == first_call_count  # no new API call
+            assert poller.last_polled_fresh is False
+
+            # Also suppressed with bypass_cooldown=True
+            result = poller.force_poll(conn, bypass_cooldown=True)
+            assert mock_fetch.call_count == first_call_count
+            assert poller.last_polled_fresh is False
 
     def test_non_401_http_error_uses_last_known(self, poller, conn):
         response = httpx.Response(
