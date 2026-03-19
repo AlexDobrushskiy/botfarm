@@ -11,6 +11,7 @@ from fastapi.responses import HTMLResponse
 from .state import (
     check_commits_behind,
     context_fill_class,
+    format_duration,
     elapsed,
     get_capacity_data,
     get_db,
@@ -242,15 +243,7 @@ def partial_devserver_status(request: Request):
         for project_name in sorted(mgr._projects):
             s = mgr.status(project_name)
             if s.get("uptime") is not None:
-                total = int(s["uptime"])
-                mins, secs = divmod(total, 60)
-                hours, mins = divmod(mins, 60)
-                if hours:
-                    s["uptime_display"] = f"{hours}h{mins}m"
-                elif mins:
-                    s["uptime_display"] = f"{mins}m{secs}s"
-                else:
-                    s["uptime_display"] = f"{secs}s"
+                s["uptime_display"] = format_duration(int(s["uptime"]))
             else:
                 s["uptime_display"] = None
             devservers.append(s)

@@ -11,6 +11,8 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 
+from .state import format_duration
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
@@ -83,7 +85,7 @@ def api_devserver_stop(request: Request, project: str):
     if status["status"] == "stopped":
         return JSONResponse(
             {"error": f"Dev server for {project!r} is not running"},
-            status_code=404,
+            status_code=409,
         )
     mgr.stop(project)
     return JSONResponse({"status": "ok", "message": f"Dev server stopped for {project}"})
@@ -121,15 +123,7 @@ def api_devserver_status(request: Request):
         s = mgr.status(project_name)
         # Convert uptime to human-readable
         if s.get("uptime") is not None:
-            total = int(s["uptime"])
-            mins, secs = divmod(total, 60)
-            hours, mins = divmod(mins, 60)
-            if hours:
-                s["uptime_display"] = f"{hours}h{mins}m"
-            elif mins:
-                s["uptime_display"] = f"{mins}m{secs}s"
-            else:
-                s["uptime_display"] = f"{secs}s"
+            s["uptime_display"] = format_duration(int(s["uptime"]))
         else:
             s["uptime_display"] = None
         statuses.append(s)

@@ -86,7 +86,7 @@ class TestDevserverStop:
     def test_stop_not_running(self, client, devserver_mgr):
         with patch.object(devserver_mgr, "status", return_value={"status": "stopped"}):
             resp = client.post("/api/devserver/myapp/stop")
-        assert resp.status_code == 404
+        assert resp.status_code == 409
         assert "not running" in resp.json()["error"]
 
     def test_stop_no_manager(self, client_no_mgr):
@@ -130,7 +130,7 @@ class TestDevserverStatus:
         srv = data["servers"][0]
         assert srv["project"] == "myapp"
         assert srv["status"] == "running"
-        assert srv["uptime_display"] == "1h1m"
+        assert srv["uptime_display"] == "1h01m"
 
     def test_status_stopped(self, client, devserver_mgr):
         with patch.object(
@@ -166,7 +166,7 @@ class TestDevserverStatus:
             },
         ):
             resp = client.get("/api/devserver/status")
-        assert resp.json()["servers"][0]["uptime_display"] == "2m5s"
+        assert resp.json()["servers"][0]["uptime_display"] == "2m05s"
 
     def test_status_uptime_seconds(self, client, devserver_mgr):
         with patch.object(

@@ -671,10 +671,7 @@ def index(request: Request):
         for pname in sorted(mgr._projects):
             s = mgr.status(pname)
             if s.get("uptime") is not None:
-                total = int(s["uptime"])
-                mins, secs = divmod(total, 60)
-                hours, mins = divmod(mins, 60)
-                s["uptime_display"] = f"{hours}h{mins}m" if hours else (f"{mins}m{secs}s" if mins else f"{secs}s")
+                s["uptime_display"] = format_duration(int(s["uptime"]))
             else:
                 s["uptime_display"] = None
             devservers.append(s)
