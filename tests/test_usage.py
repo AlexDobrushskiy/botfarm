@@ -274,6 +274,7 @@ def poller():
     """Return a UsagePoller with a mocked CredentialManager."""
     cred_mgr = MagicMock(spec=CredentialManager)
     cred_mgr.get_token.return_value = "test-token"
+    cred_mgr.is_token_expired.return_value = False
     return UsagePoller(credential_manager=cred_mgr, poll_interval=10)
 
 
@@ -336,12 +337,59 @@ class TestUsagePollerPoll:
     def test_poll_no_token_skips(self, conn):
         cred_mgr = MagicMock(spec=CredentialManager)
         cred_mgr.get_token.return_value = None
+        cred_mgr.is_token_expired.return_value = False
         p = UsagePoller(credential_manager=cred_mgr)
 
         state = p.force_poll(conn)
         assert state.utilization_5h is None
         snapshots = get_usage_snapshots(conn, limit=10)
         assert len(snapshots) == 0
+
+    def test_do_poll_proactive_refresh_when_expired(self, conn):
+        """_do_poll triggers proactive token refresh when token is expired."""
+        cred_mgr = MagicMock(spec=CredentialManager)
+        cred_mgr.is_token_expired.return_value = True
+        cred_mgr.refresh_token.return_value = "refreshed-token"
+        cred_mgr.get_token.return_value = "refreshed-token"
+        cred_mgr.get_expires_at.return_value = None
+        p = UsagePoller(credential_manager=cred_mgr, poll_interval=10)
+
+        with patch.object(p, "_fetch", return_value=SAMPLE_USAGE_RESPONSE):
+            state = p.force_poll(conn)
+
+        cred_mgr.is_token_expired.assert_called_once()
+        cred_mgr.refresh_token.assert_called_once()
+        assert state.utilization_5h == 0.42
+
+    def test_do_poll_no_refresh_when_not_expired(self, conn):
+        """_do_poll skips proactive refresh when token is still valid."""
+        cred_mgr = MagicMock(spec=CredentialManager)
+        cred_mgr.is_token_expired.return_value = False
+        cred_mgr.get_token.return_value = "valid-token"
+        cred_mgr.get_expires_at.return_value = None
+        p = UsagePoller(credential_manager=cred_mgr, poll_interval=10)
+
+        with patch.object(p, "_fetch", return_value=SAMPLE_USAGE_RESPONSE):
+            state = p.force_poll(conn)
+
+        cred_mgr.is_token_expired.assert_called_once()
+        cred_mgr.refresh_token.assert_not_called()
+        assert state.utilization_5h == 0.42
+
+    def test_do_poll_proactive_refresh_failure_continues(self, conn):
+        """_do_poll continues even if proactive refresh fails."""
+        cred_mgr = MagicMock(spec=CredentialManager)
+        cred_mgr.is_token_expired.return_value = True
+        cred_mgr.refresh_token.return_value = None  # refresh failed
+        cred_mgr.get_token.return_value = "old-token"  # still has old token
+        cred_mgr.get_expires_at.return_value = None
+        p = UsagePoller(credential_manager=cred_mgr, poll_interval=10)
+
+        with patch.object(p, "_fetch", return_value=SAMPLE_USAGE_RESPONSE):
+            state = p.force_poll(conn)
+
+        # Still proceeds with the poll using old token
+        assert state.utilization_5h == 0.42
 
 
 # ---------------------------------------------------------------------------

@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 
 from botfarm.credentials import (
+    OAUTH_CLIENT_ID,
+    OAUTH_SCOPES,
+    OAUTH_TOKEN_URL,
+    TOKEN_EXPIRY_BUFFER_MS,
     USAGE_API_TIMEOUT,
     USAGE_API_URL,
     CodexCredentials,
@@ -19,6 +24,8 @@ from botfarm.credentials import (
     _extract_token,
     _load_token,
     _load_token_linux,
+    _refresh_oauth_token,
+    _save_token_linux,
     load_codex_credentials,
     _load_token_macos,
     fetch_usage,
@@ -50,12 +57,14 @@ def test_extract_token_valid():
     token = _extract_token(VALID_CREDENTIALS)
     assert token.access_token == "test-access-token-123"
     assert token.expires_at == "2026-12-31T23:59:59Z"
+    assert token.refresh_token == "test-refresh-token"
 
 
 def test_extract_token_minimal():
     token = _extract_token(VALID_CREDENTIALS_MINIMAL)
     assert token.access_token == "minimal-token"
     assert token.expires_at is None
+    assert token.refresh_token is None
 
 
 def test_extract_token_missing_oauth_section():
@@ -247,7 +256,53 @@ def test_credential_manager_reads_fresh_on_every_call(monkeypatch, tmp_path):
     assert mgr.get_token() == "rotated-token-789"
 
 
-def test_credential_manager_refresh_token(monkeypatch, tmp_path):
+def test_credential_manager_refresh_token_oauth(monkeypatch, tmp_path):
+    """refresh_token() performs an actual OAuth refresh when refreshToken is present."""
+    cred_file = tmp_path / ".credentials.json"
+    cred_file.write_text(json.dumps(VALID_CREDENTIALS))
+    monkeypatch.setattr(
+        "botfarm.credentials.LINUX_CREDENTIALS_PATH", cred_file
+    )
+    monkeypatch.setattr("botfarm.credentials.platform.system", lambda: "Linux")
+
+    mock_response = httpx.Response(
+        200,
+        json={
+            "access_token": "new-oauth-token",
+            "refresh_token": "new-refresh-token",
+            "expires_in": 3600,
+        },
+        request=httpx.Request("POST", OAUTH_TOKEN_URL),
+    )
+
+    mgr = CredentialManager()
+    with patch("botfarm.credentials.httpx.post", return_value=mock_response):
+        token = mgr.refresh_token()
+
+    assert token == "new-oauth-token"
+
+    # Verify the new token was written back to the credential file
+    saved = json.loads(cred_file.read_text())
+    assert saved["claudeAiOauth"]["accessToken"] == "new-oauth-token"
+    assert saved["claudeAiOauth"]["refreshToken"] == "new-refresh-token"
+
+
+def test_credential_manager_refresh_no_refresh_token(monkeypatch, tmp_path):
+    """refresh_token() falls back to disk read when no refreshToken exists."""
+    cred_file = tmp_path / ".credentials.json"
+    cred_file.write_text(json.dumps(VALID_CREDENTIALS_MINIMAL))
+    monkeypatch.setattr(
+        "botfarm.credentials.LINUX_CREDENTIALS_PATH", cred_file
+    )
+    monkeypatch.setattr("botfarm.credentials.platform.system", lambda: "Linux")
+
+    mgr = CredentialManager()
+    token = mgr.refresh_token()
+    assert token == "minimal-token"
+
+
+def test_credential_manager_refresh_oauth_failure_falls_back(monkeypatch, tmp_path):
+    """On OAuth refresh failure, falls back to re-reading from disk."""
     cred_file = tmp_path / ".credentials.json"
     cred_file.write_text(json.dumps(VALID_CREDENTIALS))
     monkeypatch.setattr(
@@ -256,16 +311,14 @@ def test_credential_manager_refresh_token(monkeypatch, tmp_path):
     monkeypatch.setattr("botfarm.credentials.platform.system", lambda: "Linux")
 
     mgr = CredentialManager()
-    mgr.get_token()
+    with patch(
+        "botfarm.credentials._refresh_oauth_token",
+        side_effect=CredentialError("refresh failed"),
+    ):
+        token = mgr.refresh_token()
 
-    # Update the credential file with a new token
-    new_creds = {
-        "claudeAiOauth": {"accessToken": "refreshed-token-456"},
-    }
-    cred_file.write_text(json.dumps(new_creds))
-
-    token = mgr.refresh_token()
-    assert token == "refreshed-token-456"
+    # Should fall back to disk read
+    assert token == "test-access-token-123"
 
 
 def test_credential_manager_returns_none_on_error(monkeypatch, tmp_path):
@@ -295,6 +348,251 @@ def test_credential_manager_returns_none_does_not_cache(monkeypatch, tmp_path):
     # Now create the file
     cred_file.write_text(json.dumps(VALID_CREDENTIALS))
     assert mgr.get_token() == "test-access-token-123"
+
+
+# --- is_token_expired ---
+
+
+def test_is_token_expired_future(monkeypatch, tmp_path):
+    """Token with far-future expiresAt is not expired."""
+    future_ms = int(time.time() * 1000) + 3600_000  # 1 hour from now
+    creds = {
+        "claudeAiOauth": {
+            "accessToken": "tok",
+            "refreshToken": "rt",
+            "expiresAt": future_ms,
+        },
+    }
+    cred_file = tmp_path / ".credentials.json"
+    cred_file.write_text(json.dumps(creds))
+    monkeypatch.setattr("botfarm.credentials.LINUX_CREDENTIALS_PATH", cred_file)
+    monkeypatch.setattr("botfarm.credentials.platform.system", lambda: "Linux")
+
+    mgr = CredentialManager()
+    assert mgr.is_token_expired() is False
+
+
+def test_is_token_expired_past(monkeypatch, tmp_path):
+    """Token with past expiresAt is expired."""
+    past_ms = int(time.time() * 1000) - 3600_000  # 1 hour ago
+    creds = {
+        "claudeAiOauth": {
+            "accessToken": "tok",
+            "refreshToken": "rt",
+            "expiresAt": past_ms,
+        },
+    }
+    cred_file = tmp_path / ".credentials.json"
+    cred_file.write_text(json.dumps(creds))
+    monkeypatch.setattr("botfarm.credentials.LINUX_CREDENTIALS_PATH", cred_file)
+    monkeypatch.setattr("botfarm.credentials.platform.system", lambda: "Linux")
+
+    mgr = CredentialManager()
+    assert mgr.is_token_expired() is True
+
+
+def test_is_token_expired_within_buffer(monkeypatch, tmp_path):
+    """Token expiring within the buffer period is considered expired."""
+    # Expires 2 minutes from now, but buffer is 5 minutes
+    near_future_ms = int(time.time() * 1000) + 2 * 60 * 1000
+    creds = {
+        "claudeAiOauth": {
+            "accessToken": "tok",
+            "refreshToken": "rt",
+            "expiresAt": near_future_ms,
+        },
+    }
+    cred_file = tmp_path / ".credentials.json"
+    cred_file.write_text(json.dumps(creds))
+    monkeypatch.setattr("botfarm.credentials.LINUX_CREDENTIALS_PATH", cred_file)
+    monkeypatch.setattr("botfarm.credentials.platform.system", lambda: "Linux")
+
+    mgr = CredentialManager()
+    assert mgr.is_token_expired() is True
+
+
+def test_is_token_expired_no_expires_at(monkeypatch, tmp_path):
+    """Token without expiresAt is assumed valid."""
+    cred_file = tmp_path / ".credentials.json"
+    cred_file.write_text(json.dumps(VALID_CREDENTIALS_MINIMAL))
+    monkeypatch.setattr("botfarm.credentials.LINUX_CREDENTIALS_PATH", cred_file)
+    monkeypatch.setattr("botfarm.credentials.platform.system", lambda: "Linux")
+
+    mgr = CredentialManager()
+    assert mgr.is_token_expired() is False
+
+
+def test_is_token_expired_no_credentials(monkeypatch, tmp_path):
+    """Missing credential file means expired (conservative)."""
+    monkeypatch.setattr(
+        "botfarm.credentials.LINUX_CREDENTIALS_PATH", tmp_path / "missing.json"
+    )
+    monkeypatch.setattr("botfarm.credentials.platform.system", lambda: "Linux")
+
+    mgr = CredentialManager()
+    assert mgr.is_token_expired() is True
+
+
+# --- _refresh_oauth_token ---
+
+
+def test_refresh_oauth_token_success():
+    """Successful OAuth refresh returns new token data."""
+    mock_response = httpx.Response(
+        200,
+        json={
+            "access_token": "new-access",
+            "refresh_token": "new-refresh",
+            "expires_in": 7200,
+            "token_type": "bearer",
+        },
+        request=httpx.Request("POST", OAUTH_TOKEN_URL),
+    )
+
+    with patch("botfarm.credentials.httpx.post", return_value=mock_response) as mock_post:
+        token = _refresh_oauth_token("old-refresh-token")
+
+    assert token.access_token == "new-access"
+    assert token.refresh_token == "new-refresh"
+    assert token.expires_at is not None
+    # Verify request payload
+    call_kwargs = mock_post.call_args
+    assert call_kwargs[1]["json"]["grant_type"] == "refresh_token"
+    assert call_kwargs[1]["json"]["refresh_token"] == "old-refresh-token"
+    assert call_kwargs[1]["json"]["client_id"] == OAUTH_CLIENT_ID
+    assert call_kwargs[1]["json"]["scope"] == OAUTH_SCOPES
+
+
+def test_refresh_oauth_token_http_error():
+    """Network error during refresh raises CredentialError."""
+    with patch(
+        "botfarm.credentials.httpx.post",
+        side_effect=httpx.ConnectError("connection refused"),
+    ):
+        with pytest.raises(CredentialError, match="OAuth refresh request failed"):
+            _refresh_oauth_token("some-refresh-token")
+
+
+def test_refresh_oauth_token_non_200():
+    """Non-200 response raises CredentialError with status code."""
+    mock_response = httpx.Response(
+        401,
+        text="unauthorized",
+        request=httpx.Request("POST", OAUTH_TOKEN_URL),
+    )
+    with patch("botfarm.credentials.httpx.post", return_value=mock_response):
+        with pytest.raises(CredentialError, match="HTTP 401"):
+            _refresh_oauth_token("expired-refresh-token")
+
+
+def test_refresh_oauth_token_invalid_json():
+    """Invalid JSON in response raises CredentialError."""
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.side_effect = json.JSONDecodeError("err", "", 0)
+    with patch("botfarm.credentials.httpx.post", return_value=mock_response):
+        with pytest.raises(CredentialError, match="invalid JSON"):
+            _refresh_oauth_token("refresh-token")
+
+
+def test_refresh_oauth_token_missing_access_token():
+    """Response without access_token raises CredentialError."""
+    mock_response = httpx.Response(
+        200,
+        json={"refresh_token": "new-refresh"},
+        request=httpx.Request("POST", OAUTH_TOKEN_URL),
+    )
+    with patch("botfarm.credentials.httpx.post", return_value=mock_response):
+        with pytest.raises(CredentialError, match="missing access_token"):
+            _refresh_oauth_token("refresh-token")
+
+
+def test_refresh_oauth_token_no_expires_in():
+    """Response without expires_in still succeeds with expires_at=None."""
+    mock_response = httpx.Response(
+        200,
+        json={"access_token": "new-access"},
+        request=httpx.Request("POST", OAUTH_TOKEN_URL),
+    )
+    with patch("botfarm.credentials.httpx.post", return_value=mock_response):
+        token = _refresh_oauth_token("refresh-token")
+    assert token.access_token == "new-access"
+    assert token.expires_at is None
+    assert token.refresh_token is None
+
+
+# --- _save_token_linux ---
+
+
+def test_save_token_linux_writes_correctly(tmp_path, monkeypatch):
+    """Saving a token updates the credential file atomically."""
+    cred_file = tmp_path / ".credentials.json"
+    existing = {
+        "claudeAiOauth": {
+            "accessToken": "old-token",
+            "refreshToken": "old-refresh",
+            "expiresAt": 1000,
+            "scopes": ["user:profile"],
+        },
+        "mcpOAuth": {"some": "data"},
+    }
+    cred_file.write_text(json.dumps(existing))
+    monkeypatch.setattr("botfarm.credentials.LINUX_CREDENTIALS_PATH", cred_file)
+
+    new_token = OAuthToken(
+        access_token="new-access",
+        refresh_token="new-refresh",
+        expires_at=9999999,
+    )
+    _save_token_linux(new_token)
+
+    saved = json.loads(cred_file.read_text())
+    assert saved["claudeAiOauth"]["accessToken"] == "new-access"
+    assert saved["claudeAiOauth"]["refreshToken"] == "new-refresh"
+    assert saved["claudeAiOauth"]["expiresAt"] == 9999999
+    # Preserves other fields
+    assert saved["mcpOAuth"] == {"some": "data"}
+    assert saved["claudeAiOauth"]["scopes"] == ["user:profile"]
+
+
+def test_save_token_linux_clears_stale_expires_at(tmp_path, monkeypatch):
+    """Saving a token with expires_at=None removes stale expiresAt from file."""
+    cred_file = tmp_path / ".credentials.json"
+    existing = {
+        "claudeAiOauth": {
+            "accessToken": "old-token",
+            "expiresAt": 1000,
+        },
+    }
+    cred_file.write_text(json.dumps(existing))
+    monkeypatch.setattr("botfarm.credentials.LINUX_CREDENTIALS_PATH", cred_file)
+
+    new_token = OAuthToken(
+        access_token="new-access",
+        expires_at=None,
+    )
+    _save_token_linux(new_token)
+
+    saved = json.loads(cred_file.read_text())
+    assert saved["claudeAiOauth"]["accessToken"] == "new-access"
+    assert "expiresAt" not in saved["claudeAiOauth"]
+
+
+def test_save_token_linux_creates_if_no_existing(tmp_path, monkeypatch):
+    """Saving when no credential file exists creates it."""
+    cred_file = tmp_path / ".credentials.json"
+    monkeypatch.setattr("botfarm.credentials.LINUX_CREDENTIALS_PATH", cred_file)
+
+    new_token = OAuthToken(
+        access_token="fresh-token",
+        refresh_token="fresh-refresh",
+        expires_at=12345,
+    )
+    _save_token_linux(new_token)
+
+    assert cred_file.exists()
+    saved = json.loads(cred_file.read_text())
+    assert saved["claudeAiOauth"]["accessToken"] == "fresh-token"
 
 
 # --- fetch_usage ---
