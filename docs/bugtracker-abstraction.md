@@ -144,7 +144,7 @@ The Jira adapter (`botfarm/bugtracker/jira/`) follows the same structure as Line
 - **Status transitions:** Jira workflows may require specific transition IDs rather than setting status by name; use the transition API
 
 ### Agent Prompt Variables
-Stage template prompts use `{bugtracker_type}` to reference the tracker type. When `bugtracker.type` is `"jira"`, prompts render as e.g. "Work on jira ticket PROJECT-123". The variable is automatically injected by the worker pipeline.
+Stage template prompts use `{bugtracker_type}` to reference the tracker type. When `bugtracker.type` is `"jira"`, prompts render as e.g. "Work on Jira ticket PROJECT-123" (the value is title-cased at the injection point). The variable is automatically injected by the worker pipeline.
 
 ### Workflow Mapping
 | Concept | Linear | Jira |
