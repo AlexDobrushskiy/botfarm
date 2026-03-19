@@ -288,7 +288,7 @@ def get_capacity_data(app: FastAPI) -> dict | None:
 
     if capacity is not None:
         cfg = app.state.botfarm_config
-        cap_cfg = cfg.bugtracker.capacity_monitoring if cfg else None
+        cap_cfg = getattr(cfg.bugtracker, "capacity_monitoring", None) if cfg else None
         limit = capacity["limit"]
         count = capacity["issue_count"]
         ratio = count / limit if limit else 0

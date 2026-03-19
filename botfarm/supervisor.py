@@ -37,7 +37,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import FrameType
 
-from botfarm.config import BotfarmConfig, ProjectConfig, resolve_stage_timeout, sync_agent_config_to_db
+from botfarm.config import BotfarmConfig, JiraBugtrackerConfig, LinearBugtrackerConfig, ProjectConfig, resolve_stage_timeout, sync_agent_config_to_db
 from botfarm.db import (
     get_task,
     init_db,
@@ -245,10 +245,15 @@ class Supervisor(RecoveryMixin, OperationsMixin):
         self._git_env = build_git_env(config.identities)
 
         # Coder bugtracker self-assignment
-        coder_key = config.identities.coder.tracker_api_key
+        if isinstance(config.bugtracker, JiraBugtrackerConfig):
+            coder_key = config.identities.coder.jira_api_token
+            coder_email: str | None = config.identities.coder.jira_email or config.bugtracker.email
+        else:
+            coder_key = config.identities.coder.tracker_api_key
+            coder_email = None
         if coder_key:
             try:
-                coder_client = create_client(config, api_key=coder_key)
+                coder_client = create_client(config, api_key=coder_key, email=coder_email)
                 self._coder_viewer_id: str | None = coder_client.get_viewer_id()
                 self._coder_tracker: BugtrackerClient | None = coder_client
                 logger.info("Cached coder bugtracker viewer ID: %s", self._coder_viewer_id)
@@ -634,7 +639,10 @@ class Supervisor(RecoveryMixin, OperationsMixin):
 
     def _compute_capacity_level(self, utilization: float) -> str:
         """Map a utilization ratio to a capacity level string."""
-        cap = self._config.bugtracker.capacity_monitoring
+        bt = self._config.bugtracker
+        if not isinstance(bt, LinearBugtrackerConfig):
+            return "normal"
+        cap = bt.capacity_monitoring
         if utilization >= cap.pause_threshold:
             return "blocked"
         if utilization >= cap.critical_threshold:
@@ -645,7 +653,10 @@ class Supervisor(RecoveryMixin, OperationsMixin):
 
     def _poll_capacity(self) -> None:
         """Poll Linear issue count and auto-pause/resume dispatch at thresholds."""
-        cap_config = self._config.bugtracker.capacity_monitoring
+        bt = self._config.bugtracker
+        if not isinstance(bt, LinearBugtrackerConfig):
+            return
+        cap_config = bt.capacity_monitoring
         if not cap_config.enabled:
             return
 
@@ -654,7 +665,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
             logger.warning("Capacity poll failed — skipping this tick")
             return
 
-        limit = self._config.bugtracker.issue_limit
+        limit = bt.issue_limit
         checked_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
         save_capacity_state(

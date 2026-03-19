@@ -87,6 +87,7 @@ def create_client(
     config: BotfarmConfig | None = None,
     *,
     api_key: str | None = None,
+    email: str | None = None,
     bugtracker_type: str = "linear",
 ) -> BugtrackerClient:
     """Create a bugtracker client based on the configured tracker type.
@@ -94,6 +95,9 @@ def create_client(
     When *config* is provided, the tracker type and API key are read from
     ``config.bugtracker``.  *api_key* overrides the config value (useful
     for alternate identities like the coder bot).
+
+    For Jira, *email* overrides ``config.bugtracker.email`` — needed when
+    creating a coder client whose Jira account differs from the owner's.
 
     When called without *config* (e.g. during ``botfarm init``), the caller
     must supply *api_key* explicitly; *bugtracker_type* defaults to
@@ -110,6 +114,18 @@ def create_client(
         from botfarm.bugtracker.linear import LinearClient
 
         return LinearClient(api_key=key)
+    if bt_type == "jira":
+        from botfarm.bugtracker.jira.client import JiraClient
+        from botfarm.config import JiraBugtrackerConfig
+
+        if config and isinstance(config.bugtracker, JiraBugtrackerConfig):
+            jira_email = email or config.bugtracker.email
+            return JiraClient(
+                url=config.bugtracker.url,
+                email=jira_email,
+                api_token=key,
+            )
+        raise ValueError("Jira bugtracker requires url and email in config")
     raise ValueError(f"Unknown bugtracker type: {bt_type!r}")
 
 
@@ -132,6 +148,10 @@ def create_poller(
             todo_status=config.bugtracker.todo_status,
             coder_client=coder_client,
         )
+    if bt_type == "jira":
+        from botfarm.bugtracker.jira import create_poller as jira_create_poller
+
+        return jira_create_poller(config, project)
     raise ValueError(f"Unknown bugtracker type: {bt_type!r}")
 
 
@@ -142,4 +162,8 @@ def create_pollers(config: BotfarmConfig) -> list[BugtrackerPoller]:
         from botfarm.bugtracker.linear import create_pollers as linear_create_pollers
 
         return list(linear_create_pollers(config))
+    if bt_type == "jira":
+        from botfarm.bugtracker.jira import create_pollers as jira_create_pollers
+
+        return list(jira_create_pollers(config))
     raise ValueError(f"Unknown bugtracker type: {bt_type!r}")

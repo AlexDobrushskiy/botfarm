@@ -18,7 +18,7 @@ from pathlib import Path
 
 from botfarm.codex import check_codex_available
 from botfarm.worker_claude import check_claude_available
-from botfarm.config import BotfarmConfig
+from botfarm.config import BotfarmConfig, JiraBugtrackerConfig
 from botfarm.credentials import CredentialError, _load_token
 from botfarm.db import SCHEMA_VERSION, resolve_db_path
 from botfarm.bugtracker import BugtrackerError, create_client
@@ -552,31 +552,40 @@ def check_identity_github_tokens(config: BotfarmConfig) -> list[CheckResult]:
 
 
 def check_identity_linear_api_key(config: BotfarmConfig) -> list[CheckResult]:
-    """Validate coder and reviewer Linear API keys if configured."""
+    """Validate coder and reviewer tracker API keys if configured."""
     results: list[CheckResult] = []
+    is_jira = isinstance(config.bugtracker, JiraBugtrackerConfig)
+    tracker_name = "Jira" if is_jira else "Linear"
 
-    keys = [
-        ("coder", config.identities.coder.tracker_api_key),
-        ("reviewer", config.identities.reviewer.tracker_api_key),
-    ]
+    if is_jira:
+        keys: list[tuple[str, str, str | None]] = [
+            ("coder", config.identities.coder.jira_api_token,
+             config.identities.coder.jira_email or config.bugtracker.email),
+            ("reviewer", config.identities.reviewer.tracker_api_key, None),
+        ]
+    else:
+        keys = [
+            ("coder", config.identities.coder.tracker_api_key, None),
+            ("reviewer", config.identities.reviewer.tracker_api_key, None),
+        ]
 
-    for role, api_key in keys:
+    for role, api_key, email_override in keys:
         if not api_key:
             continue  # Not configured — skip
 
-        client = create_client(config, api_key=api_key)
+        client = create_client(config, api_key=api_key, email=email_override)
         try:
             client.get_viewer_id()
             results.append(CheckResult(
-                name=f"identity_linear_key:{role}",
+                name=f"identity_tracker_key:{role}",
                 passed=True,
-                message=f"OK — {role} Linear API key verified",
+                message=f"OK — {role} {tracker_name} API key verified",
             ))
         except BugtrackerError as exc:
             results.append(CheckResult(
-                name=f"identity_linear_key:{role}",
+                name=f"identity_tracker_key:{role}",
                 passed=False,
-                message=f"{role.capitalize()} Linear API key failed: {exc}",
+                message=f"{role.capitalize()} {tracker_name} API key failed: {exc}",
             ))
 
     return results

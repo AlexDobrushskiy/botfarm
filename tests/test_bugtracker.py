@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pytest
 
 from botfarm.bugtracker import (
@@ -159,89 +161,41 @@ class TestBugtrackerClientABC:
 
 
 class TestBugtrackerPollerABC:
-    """Verify BugtrackerPoller cannot be instantiated without all required methods."""
+    """Verify BugtrackerPoller cannot be instantiated without get_state_id."""
 
     def test_cannot_instantiate_directly(self):
         with pytest.raises(TypeError):
-            BugtrackerPoller()  # type: ignore[abstract]
+            BugtrackerPoller(  # type: ignore[abstract]
+                client=MagicMock(spec=BugtrackerClient),
+                project=MagicMock(name="proj", team="T", tracker_project=""),
+                exclude_tags=[],
+            )
 
-    def test_cannot_instantiate_with_partial_implementation(self):
+    def test_cannot_instantiate_without_get_state_id(self):
         class PartialPoller(BugtrackerPoller):
-            @property
-            def project_name(self):
-                return "proj"
+            pass
 
         with pytest.raises(TypeError):
-            PartialPoller()
+            PartialPoller(  # type: ignore[abstract]
+                client=MagicMock(spec=BugtrackerClient),
+                project=MagicMock(name="proj", team="T", tracker_project=""),
+                exclude_tags=[],
+            )
 
-    def test_can_instantiate_full_implementation(self):
-        class FullPoller(BugtrackerPoller):
-            @property
-            def project_name(self):
-                return "proj"
-
-            @property
-            def team_key(self):
-                return "TEAM"
-
-            def poll(self, active_ticket_ids=None):
-                return PollResult()
-
+    def test_can_instantiate_with_get_state_id(self):
+        class MinPoller(BugtrackerPoller):
             def get_state_id(self, state_name):
                 return "state-1"
 
-            def is_issue_terminal(self, identifier):
-                return False
-
-            def move_issue(self, issue_id, state_name):
-                pass
-
-            def assign_issue(self, issue_id, assignee_id):
-                pass
-
-            def add_comment(self, issue_id, body):
-                pass
-
-            def add_labels(self, issue_id, label_names):
-                pass
-
-        poller = FullPoller()
+        client = MagicMock(spec=BugtrackerClient)
+        project = MagicMock()
+        project.name = "proj"
+        project.team = "T"
+        project.tracker_project = ""
+        poller = MinPoller(client=client, project=project, exclude_tags=[])
         assert isinstance(poller, BugtrackerPoller)
-
-    def test_optional_add_comment_as_owner_raises(self):
-        class MinPoller(BugtrackerPoller):
-            @property
-            def project_name(self):
-                return "p"
-
-            @property
-            def team_key(self):
-                return "T"
-
-            def poll(self, active_ticket_ids=None):
-                return PollResult()
-
-            def get_state_id(self, state_name):
-                return "s"
-
-            def is_issue_terminal(self, identifier):
-                return False
-
-            def move_issue(self, issue_id, state_name):
-                pass
-
-            def assign_issue(self, issue_id, assignee_id):
-                pass
-
-            def add_comment(self, issue_id, body):
-                pass
-
-            def add_labels(self, issue_id, label_names):
-                pass
-
-        poller = MinPoller()
-        with pytest.raises(NotImplementedError):
-            poller.add_comment_as_owner("id", "body")
+        assert poller.project_name == "proj"
+        assert poller.team_key == "T"
 
 
 # ---------------------------------------------------------------------------
@@ -422,11 +376,11 @@ class TestCreateClient:
 
     def test_unknown_type_raises(self):
         from botfarm.bugtracker import create_client
-        from botfarm.config import BotfarmConfig, LinearBugtrackerConfig
+        from botfarm.config import BotfarmConfig, BugtrackerConfig
 
         config = BotfarmConfig(
             projects=[],
-            bugtracker=LinearBugtrackerConfig(type="jira", api_key="k"),
+            bugtracker=BugtrackerConfig(type="github", api_key="k"),
         )
         with pytest.raises(ValueError, match="Unknown bugtracker type"):
             create_client(config)
@@ -458,11 +412,11 @@ class TestCreatePollers:
 
     def test_unknown_type_raises(self):
         from botfarm.bugtracker import create_pollers
-        from botfarm.config import BotfarmConfig, LinearBugtrackerConfig
+        from botfarm.config import BotfarmConfig, BugtrackerConfig
 
         config = BotfarmConfig(
             projects=[],
-            bugtracker=LinearBugtrackerConfig(type="jira", api_key="k"),
+            bugtracker=BugtrackerConfig(type="github", api_key="k"),
         )
         with pytest.raises(ValueError, match="Unknown bugtracker type"):
             create_pollers(config)
