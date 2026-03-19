@@ -2395,3 +2395,160 @@ class TestAuthFailureTracking:
             poller.force_poll(conn)
 
         assert poller._consecutive_401s == 0
+
+
+# ---------------------------------------------------------------------------
+# 401 backoff state persistence across restarts (SMA-494)
+# ---------------------------------------------------------------------------
+
+
+class TestAuthBackoffStatePersistence:
+    def test_401_persists_backoff_to_db(self, poller, conn):
+        """A 401 response persists backoff state to the database."""
+        from botfarm.db import load_401_backoff_state
+
+        error = _make_401_error()
+        poller.credential_manager.refresh_token.return_value = "test-token"
+
+        with patch.object(poller, "_fetch", side_effect=error):
+            poller.force_poll(conn)
+
+        state = load_401_backoff_state(conn)
+        assert state is not None
+        assert state["consecutive_401s"] == 1
+        assert state["backoff_until"] > time.time()
+
+    def test_success_clears_persisted_401_state(self, poller, conn):
+        """A successful poll after 401s clears the persisted 401 state."""
+        from botfarm.db import load_401_backoff_state
+
+        error = _make_401_error()
+        poller.credential_manager.refresh_token.return_value = "test-token"
+
+        with patch.object(poller, "_fetch", side_effect=error):
+            poller.force_poll(conn)
+
+        assert load_401_backoff_state(conn) is not None
+
+        # Successful poll (backoff expired)
+        poller._last_force_poll = 0
+        poller._last_poll = 0
+        with patch.object(poller, "_fetch", return_value=SAMPLE_USAGE_RESPONSE):
+            poller.force_poll(conn)
+
+        assert load_401_backoff_state(conn) is None
+
+    def test_restore_active_401_backoff(self, conn):
+        """New poller restores unexpired 401 backoff from DB."""
+        from botfarm.db import save_401_backoff_state
+
+        save_401_backoff_state(conn, consecutive_401s=5, backoff_until=time.time() + 300)
+
+        p = UsagePoller(poll_interval=10)
+        p.restore_backoff_state(conn)
+
+        assert p._consecutive_401s == 5
+        assert p._active_poll_interval is not None
+        assert p._active_poll_interval == 300
+
+    def test_restore_expired_401_clears_state(self, conn):
+        """New poller ignores expired 401 backoff and clears it from DB."""
+        from botfarm.db import load_401_backoff_state, save_401_backoff_state
+
+        save_401_backoff_state(conn, consecutive_401s=3, backoff_until=time.time() - 10)
+
+        p = UsagePoller(poll_interval=10)
+        p.restore_backoff_state(conn)
+
+        assert p._consecutive_401s == 0
+        assert p._active_poll_interval is None
+        assert load_401_backoff_state(conn) is None
+
+    def test_restore_no_401_state_is_noop(self, conn):
+        """restore_backoff_state is a no-op for 401 when no state is stored."""
+        p = UsagePoller(poll_interval=10)
+        p.restore_backoff_state(conn)
+
+        assert p._consecutive_401s == 0
+
+    def test_restored_401_backoff_blocks_poll(self, conn):
+        """After restoring 401 backoff, poll() returns cached data."""
+        from botfarm.db import save_401_backoff_state
+
+        save_401_backoff_state(conn, consecutive_401s=3, backoff_until=time.time() + 300)
+
+        cred_mgr = MagicMock(spec=CredentialManager)
+        cred_mgr.get_token.return_value = "test-token"
+        p = UsagePoller(credential_manager=cred_mgr, poll_interval=10)
+        p.restore_backoff_state(conn)
+
+        with patch.object(p, "_fetch", return_value=SAMPLE_USAGE_RESPONSE) as mock_fetch:
+            p.poll(conn)
+
+        mock_fetch.assert_not_called()
+        assert p.last_polled_fresh is False
+
+    def test_401_survives_simulated_restart(self, conn):
+        """401 backoff state survives a save -> new poller -> restore cycle."""
+        from botfarm.db import load_401_backoff_state
+
+        cred_mgr = MagicMock(spec=CredentialManager)
+        cred_mgr.get_token.return_value = "test-token"
+        cred_mgr.refresh_token.return_value = "test-token"
+
+        # Poller 1: accumulate 401 backoff
+        p1 = UsagePoller(credential_manager=cred_mgr, poll_interval=10)
+        error = _make_401_error()
+        with patch.object(p1, "_fetch", side_effect=error):
+            p1.force_poll(conn)
+            p1._last_poll = 0
+            p1._last_force_poll = 0
+            p1.force_poll(conn)
+
+        assert p1._consecutive_401s == 2
+        state = load_401_backoff_state(conn)
+        assert state is not None
+        assert state["consecutive_401s"] == 2
+
+        # Poller 2: simulate restart — should restore backoff
+        p2 = UsagePoller(credential_manager=cred_mgr, poll_interval=10)
+        p2.restore_backoff_state(conn)
+
+        assert p2._consecutive_401s == 2
+        assert p2._active_poll_interval is not None
+        # Should suppress immediate polling
+        with patch.object(p2, "_fetch", return_value=SAMPLE_USAGE_RESPONSE) as mock_fetch:
+            p2.poll(conn)
+        mock_fetch.assert_not_called()
+
+    def test_429_and_401_restore_uses_larger_interval(self, conn):
+        """When both 429 and 401 state exist, the larger interval wins."""
+        from botfarm.db import save_401_backoff_state, save_backoff_state
+
+        # 429 with 100s remaining, 401 with 500s remaining
+        save_backoff_state(conn, consecutive_429s=1, backoff_until=time.time() + 100)
+        save_401_backoff_state(conn, consecutive_401s=5, backoff_until=time.time() + 500)
+
+        p = UsagePoller(poll_interval=10)
+        p.restore_backoff_state(conn)
+
+        assert p._consecutive_429s == 1
+        assert p._consecutive_401s == 5
+        # 401 interval is larger, so it should win
+        assert p._active_poll_interval == 500
+
+    def test_429_larger_than_401_keeps_429_interval(self, conn):
+        """When 429 interval is larger than 401, the 429 interval is kept."""
+        from botfarm.db import save_401_backoff_state, save_backoff_state
+
+        # 429 with 500s remaining, 401 with 100s remaining
+        save_backoff_state(conn, consecutive_429s=3, backoff_until=time.time() + 500)
+        save_401_backoff_state(conn, consecutive_401s=2, backoff_until=time.time() + 100)
+
+        p = UsagePoller(poll_interval=10)
+        p.restore_backoff_state(conn)
+
+        assert p._consecutive_429s == 3
+        assert p._consecutive_401s == 2
+        # 429 interval is larger, so it should be kept
+        assert p._active_poll_interval == 500
