@@ -444,6 +444,18 @@ query Organization {
 }
 """
 
+CREATE_PROJECT_MUTATION = """
+mutation CreateProject($input: ProjectCreateInput!) {
+  projectCreate(input: $input) {
+    success
+    project {
+      id
+      name
+    }
+  }
+}
+"""
+
 ACTIVE_ISSUES_FOR_PROJECT_COUNT_QUERY = """
 query ActiveIssuesForProjectCount($first: Int!, $after: String, $projectName: String!) {
   issues(

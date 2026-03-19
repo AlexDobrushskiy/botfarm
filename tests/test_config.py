@@ -2040,13 +2040,13 @@ def test_config_codex_editable():
 
 
 def test_config_codex_timeout_validation(tmp_path):
-    """codex_reviewer_timeout_minutes must be at least 1."""
+    """codex adapter timeout_minutes must be at least 1."""
     data = {
         **MINIMAL_CONFIG,
         "agents": {"codex_reviewer_timeout_minutes": 0},
     }
     config_path = _write_config(tmp_path, data)
-    with pytest.raises(ConfigError, match="codex_reviewer_timeout_minutes"):
+    with pytest.raises(ConfigError, match="timeout_minutes must be at least 1"):
         load_config(config_path)
 
 
@@ -2092,12 +2092,76 @@ def test_config_codex_editable_validation():
     assert any("boolean" in e for e in errors)
 
 
-def test_default_config_template_includes_codex_fields():
+def test_default_config_template_includes_adapter_fields():
     from botfarm.config import DEFAULT_CONFIG_TEMPLATE
-    assert "codex_reviewer_enabled:" in DEFAULT_CONFIG_TEMPLATE
-    assert "codex_reviewer_model:" in DEFAULT_CONFIG_TEMPLATE
-    assert "codex_reviewer_reasoning_effort:" in DEFAULT_CONFIG_TEMPLATE
-    assert "codex_reviewer_timeout_minutes:" in DEFAULT_CONFIG_TEMPLATE
+    assert "adapters:" in DEFAULT_CONFIG_TEMPLATE
+    assert "claude:" in DEFAULT_CONFIG_TEMPLATE
+    assert "codex:" in DEFAULT_CONFIG_TEMPLATE
+    assert "enabled:" in DEFAULT_CONFIG_TEMPLATE
+    assert "timeout_minutes:" in DEFAULT_CONFIG_TEMPLATE
+
+
+def test_config_adapters_new_format(tmp_path):
+    """New adapters: format parses correctly."""
+    data = {
+        **MINIMAL_CONFIG,
+        "agents": {
+            "adapters": {
+                "claude": {"enabled": True},
+                "codex": {
+                    "enabled": True,
+                    "model": "o4-mini",
+                    "timeout_minutes": 20,
+                    "reasoning_effort": "high",
+                    "skip_on_reiteration": False,
+                },
+            },
+        },
+    }
+    config_path = _write_config(tmp_path, data)
+    config = load_config(config_path)
+    assert config.agents.adapters["claude"].enabled is True
+    assert config.agents.adapters["codex"].enabled is True
+    assert config.agents.adapters["codex"].model == "o4-mini"
+    assert config.agents.adapters["codex"].timeout_minutes == 20
+    assert config.agents.adapters["codex"].reasoning_effort == "high"
+    assert config.agents.adapters["codex"].skip_on_reiteration is False
+    # Legacy accessors still work
+    assert config.agents.codex_reviewer_enabled is True
+    assert config.agents.codex_reviewer_model == "o4-mini"
+    assert config.agents.codex_reviewer_timeout_minutes == 20
+
+
+def test_config_adapters_backward_compat_migration(tmp_path):
+    """Legacy codex_reviewer_* fields are migrated to adapters.codex."""
+    data = {
+        **MINIMAL_CONFIG,
+        "agents": {
+            "codex_reviewer_enabled": True,
+            "codex_reviewer_model": "o3",
+            "codex_reviewer_timeout_minutes": 25,
+        },
+    }
+    config_path = _write_config(tmp_path, data)
+    config = load_config(config_path)
+    assert config.agents.adapters["codex"].enabled is True
+    assert config.agents.adapters["codex"].model == "o3"
+    assert config.agents.adapters["codex"].timeout_minutes == 25
+
+
+def test_config_adapters_new_format_timeout_validation(tmp_path):
+    """adapters.codex.timeout_minutes must be at least 1."""
+    data = {
+        **MINIMAL_CONFIG,
+        "agents": {
+            "adapters": {
+                "codex": {"timeout_minutes": 0},
+            },
+        },
+    }
+    config_path = _write_config(tmp_path, data)
+    with pytest.raises(ConfigError, match="timeout_minutes must be at least 1"):
+        load_config(config_path)
 
 
 # --- capacity_monitoring config ---

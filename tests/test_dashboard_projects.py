@@ -1,7 +1,7 @@
 """Tests for dashboard add-project routes: Linear lookups, project creation, SSE progress."""
 
 import time
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
 
@@ -346,6 +346,14 @@ class TestAddProjectPage:
         assert "Add Project" in resp.text
         assert "repo_url" in resp.text
 
+    def test_renders_create_linear_project_checkbox(self, tmp_path):
+        app = _make_app(tmp_path)
+        client = TestClient(app)
+        resp = client.get("/projects/add")
+        assert resp.status_code == 200
+        assert "create_linear_project" in resp.text
+        assert "Create new Linear project" in resp.text
+
     def test_add_project_button_on_status_page(self, tmp_path):
         app = _make_app(tmp_path)
         client = TestClient(app)
@@ -353,3 +361,96 @@ class TestAddProjectPage:
         assert resp.status_code == 200
         assert "Add Project" in resp.text
         assert "/projects/add" in resp.text
+
+
+class TestLinearProjectAutoCreate:
+    def test_auto_creates_linear_project_on_setup(self, tmp_path):
+        app = _make_app(tmp_path)
+        client = TestClient(app)
+        mock_linear = MagicMock()
+        mock_linear.get_or_create_project.return_value = {
+            "id": "proj-new", "name": "my-proj",
+        }
+        with patch("botfarm.dashboard.routes_projects.setup_project") as mock_setup, \
+             patch("botfarm.dashboard.routes_projects._get_linear_client", return_value=mock_linear):
+            mock_setup.return_value = {"name": "my-proj"}
+            resp = client.post(
+                "/api/project/create",
+                json={
+                    "repo_url": "git@github.com:user/repo.git",
+                    "name": "my-proj",
+                    "team": "ENG",
+                    "create_linear_project": True,
+                    "tracker_project": "my-proj",
+                    "slots": 1,
+                },
+            )
+            assert resp.status_code == 200
+            time.sleep(0.2)
+            mock_linear.get_or_create_project.assert_called_once_with("ENG", "my-proj")
+
+    def test_skips_linear_creation_when_flag_false(self, tmp_path):
+        app = _make_app(tmp_path)
+        client = TestClient(app)
+        mock_linear = MagicMock()
+        with patch("botfarm.dashboard.routes_projects.setup_project") as mock_setup, \
+             patch("botfarm.dashboard.routes_projects._get_linear_client", return_value=mock_linear):
+            mock_setup.return_value = {"name": "my-proj"}
+            resp = client.post(
+                "/api/project/create",
+                json={
+                    "repo_url": "git@github.com:user/repo.git",
+                    "name": "my-proj",
+                    "team": "ENG",
+                    "create_linear_project": False,
+                    "tracker_project": "Existing Project",
+                    "slots": 1,
+                },
+            )
+            assert resp.status_code == 200
+            time.sleep(0.2)
+            mock_linear.get_or_create_project.assert_not_called()
+
+    def test_linear_creation_failure_reports_error(self, tmp_path):
+        app = _make_app(tmp_path)
+        client = TestClient(app)
+        mock_linear = MagicMock()
+        mock_linear.get_or_create_project.side_effect = Exception("API down")
+        with patch("botfarm.dashboard.routes_projects.setup_project") as mock_setup, \
+             patch("botfarm.dashboard.routes_projects._get_linear_client", return_value=mock_linear):
+            resp = client.post(
+                "/api/project/create",
+                json={
+                    "repo_url": "git@github.com:user/repo.git",
+                    "name": "my-proj",
+                    "team": "ENG",
+                    "create_linear_project": True,
+                    "tracker_project": "my-proj",
+                    "slots": 1,
+                },
+            )
+            assert resp.status_code == 200
+            time.sleep(0.2)
+            # setup_project should NOT be called since linear creation failed
+            mock_setup.assert_not_called()
+
+    def test_no_linear_client_reports_error(self, tmp_path):
+        app = _make_app(tmp_path)
+        client = TestClient(app)
+        with patch("botfarm.dashboard.routes_projects.setup_project") as mock_setup, \
+             patch("botfarm.dashboard.routes_projects._get_linear_client", return_value=None):
+            resp = client.post(
+                "/api/project/create",
+                json={
+                    "repo_url": "git@github.com:user/repo.git",
+                    "name": "my-proj",
+                    "team": "ENG",
+                    "create_linear_project": True,
+                    "tracker_project": "my-proj",
+                    "slots": 1,
+                },
+            )
+            assert resp.status_code == 200
+            time.sleep(0.2)
+            # setup_project should NOT be called since linear client is unavailable
+            mock_setup.assert_not_called()

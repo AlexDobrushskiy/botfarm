@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from botfarm.config import AgentsConfig, sync_agent_config_to_db
+from botfarm.config import AdapterConfig, AgentsConfig, sync_agent_config_to_db
 from botfarm.db import (
     RUNTIME_CONFIG_KEYS,
     get_events,
@@ -74,11 +74,13 @@ class TestSyncAgentConfigToDb:
             max_review_iterations=4,
             max_ci_retries=3,
             max_merge_conflict_retries=5,
-            codex_reviewer_enabled=True,
-            codex_reviewer_model="o3",
-            codex_reviewer_reasoning_effort="low",
-            codex_reviewer_timeout_minutes=20,
-            codex_reviewer_skip_on_reiteration=False,
+            adapters={
+                "claude": AdapterConfig(enabled=True),
+                "codex": AdapterConfig(
+                    enabled=True, model="o3", reasoning_effort="low",
+                    timeout_minutes=20, skip_on_reiteration=False,
+                ),
+            },
         )
         sync_agent_config_to_db(conn, agents)
         result = read_runtime_config(conn)

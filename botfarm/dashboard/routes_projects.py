@@ -113,6 +113,7 @@ async def api_project_create(request: Request):
     name = (body.get("name") or "").strip()
     team = (body.get("team") or "").strip()
     tracker_project = (body.get("tracker_project") or "").strip()
+    create_linear_project = bool(body.get("create_linear_project", False))
     slots_count = body.get("slots", 1)
     create_github = bool(body.get("create_github", False))
 
@@ -162,6 +163,25 @@ async def api_project_create(request: Request):
                 task_state["messages"].append(msg)
 
         try:
+            if create_linear_project and tracker_project:
+                _on_progress(f"Creating Linear project '{tracker_project}'...")
+                try:
+                    client = _get_linear_client(app)
+                    if client is None:
+                        raise ProjectSetupError(
+                            "Linear API key not configured — cannot create project"
+                        )
+                    result = client.get_or_create_project(team, tracker_project)
+                    _on_progress(
+                        f"Linear project '{tracker_project}' ready (id: {result['id']})"
+                    )
+                except ProjectSetupError:
+                    raise
+                except Exception as exc:
+                    raise ProjectSetupError(
+                        f"Failed to create Linear project: {exc}"
+                    ) from exc
+
             config_path = Path(cfg.source_path)
             setup_project(
                 repo_url=repo_url,
