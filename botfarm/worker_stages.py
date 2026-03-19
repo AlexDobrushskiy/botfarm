@@ -80,7 +80,7 @@ def _build_implement_prompt(
         )
     return (
         f"Work on {bugtracker_type} ticket {ticket_id}. "
-        "Follow the Linear Tickets workflow in AGENTS.md. "
+        "Follow the Tickets workflow in AGENTS.md. "
         "Complete all steps through PR creation. Do not stop until the PR is created. "
         "If the work described in the ticket is already fully implemented on main "
         "(e.g. delivered by another PR), verify all acceptance criteria are met, "
@@ -100,7 +100,7 @@ def _run_agent_stage(
     env: dict[str, str] | None = None,
     timeout: float | None = None,
     on_context_fill: ContextFillCallback | None = None,
-    bugtracker_type: str = "linear",
+    bugtracker_type: str = "Linear",
 ) -> StageResult:
     """Generic runner for any agent-executor stage using its DB template.
 
@@ -230,6 +230,7 @@ def _run_implement(
         if shared_mem_path:
             prompt_vars["shared_mem_path"] = str(shared_mem_path)
         prompt_vars["prior_context"] = prior_context
+        prompt_vars["bugtracker_type"] = bugtracker_type
         return _run_claude_stage(
             stage_tpl, cwd=cwd, max_turns=max_turns,
             prompt_vars=prompt_vars,

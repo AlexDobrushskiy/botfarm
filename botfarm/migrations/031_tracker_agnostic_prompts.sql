@@ -14,6 +14,14 @@ WHERE name = 'implement'
   AND executor_type = 'claude'
   AND prompt_template LIKE '%Work on Linear ticket {ticket_id}%';
 
+-- "Follow the Linear Tickets workflow in CLAUDE.md" → "Follow the Tickets workflow in AGENTS.md"
+UPDATE stage_templates
+SET prompt_template = REPLACE(prompt_template, 'Follow the Linear Tickets workflow in CLAUDE.md', 'Follow the Tickets workflow in AGENTS.md')
+WHERE name = 'implement'
+  AND pipeline_id = (SELECT id FROM pipeline_templates WHERE is_default = 1)
+  AND executor_type = 'claude'
+  AND prompt_template LIKE '%Follow the Linear Tickets workflow in CLAUDE.md%';
+
 -- Investigation pipeline: implement stage
 -- Multiple replacements for Linear-specific references.
 -- "Work on Linear ticket" → "Work on {bugtracker_type} ticket"

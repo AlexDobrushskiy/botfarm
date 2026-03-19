@@ -67,7 +67,7 @@ For tracker-specific details see `docs/linear-workflow.md` or `docs/jira-workflo
 
 ### Implementation Tickets
 The supervisor handles status transitions (→ In Progress before, → In Review/Done after). Agent focuses on code:
-1. Fetch ticket details via the bugtracker API or MCP tools — use the branch name field for the branch name
+1. Fetch ticket details via the bugtracker API or MCP tools — see the tracker-specific workflow doc for how to determine the branch name
 2. `git fetch origin && git checkout -b <branchName> origin/main`
 3. Delete previous working branch if it exists (NEVER delete: main, slot-1-placeholder)
 4. Run baseline tests before starting work

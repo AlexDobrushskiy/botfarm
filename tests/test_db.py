@@ -2258,6 +2258,32 @@ class TestWorkflowDefinitionTables:
         assert row["result_parser"] == "pr_url"
         assert "{ticket_id}" in row["prompt_template"]
 
+    def test_implement_prompt_is_tracker_agnostic(self, conn):
+        """After migration 031, implement prompt must use {bugtracker_type} not 'Linear'."""
+        impl_id = conn.execute(
+            "SELECT id FROM pipeline_templates WHERE name = 'implementation'"
+        ).fetchone()["id"]
+        row = conn.execute(
+            "SELECT prompt_template FROM stage_templates WHERE pipeline_id = ? AND name = 'implement'",
+            (impl_id,),
+        ).fetchone()
+        prompt = row["prompt_template"]
+        assert "{bugtracker_type}" in prompt
+        assert "Linear" not in prompt
+
+    def test_investigation_prompt_is_tracker_agnostic(self, conn):
+        """After migration 031, investigation prompt must use {bugtracker_type} not 'Linear'."""
+        inv_id = conn.execute(
+            "SELECT id FROM pipeline_templates WHERE name = 'investigation'"
+        ).fetchone()["id"]
+        row = conn.execute(
+            "SELECT prompt_template FROM stage_templates WHERE pipeline_id = ? AND name = 'implement'",
+            (inv_id,),
+        ).fetchone()
+        prompt = row["prompt_template"]
+        assert "{bugtracker_type}" in prompt
+        assert "Linear" not in prompt
+
     def test_review_stage_properties(self, conn):
         impl_id = conn.execute(
             "SELECT id FROM pipeline_templates WHERE name = 'implementation'"
