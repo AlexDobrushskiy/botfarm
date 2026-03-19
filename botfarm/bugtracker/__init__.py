@@ -55,11 +55,13 @@ __all__ = [
 # Linear-specific; a future bugtracker adapter can provide its own.
 # Lazy import to avoid hard dependency on linear cleanup when using
 # a different tracker type.
+_CLEANUP_NAMES = {
+    "CleanupCandidate", "CleanupResult", "CleanupService",
+    "CooldownError", "UndoResult",
+}
+
+
 def __getattr__(name: str):
-    _CLEANUP_NAMES = {
-        "CleanupCandidate", "CleanupResult", "CleanupService",
-        "CooldownError", "UndoResult",
-    }
     if name in _CLEANUP_NAMES:
         from .linear.cleanup import (
             CleanupCandidate,
@@ -75,7 +77,9 @@ def __getattr__(name: str):
             "CooldownError": CooldownError,
             "UndoResult": UndoResult,
         }
-        return _map[name]
+        val = _map[name]
+        globals()[name] = val
+        return val
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 

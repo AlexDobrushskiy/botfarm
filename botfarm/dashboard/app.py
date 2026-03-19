@@ -102,7 +102,7 @@ def create_app(
 
     # Store paths on app state for route handlers
     app.state.db_path = Path(db_path).expanduser()
-    app.state.linear_workspace = workspace
+    app.state.workspace = workspace
     app.state.botfarm_config = botfarm_config
     app.state.restart_required = False
     app.state.on_pause = on_pause

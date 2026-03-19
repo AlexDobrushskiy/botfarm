@@ -214,7 +214,7 @@ def context_fill_class(pct: float | None) -> str:
 
 def linear_url(app: FastAPI, ticket_id: str) -> str:
     """Build a Linear issue URL from a ticket identifier."""
-    ws = app.state.linear_workspace
+    ws = app.state.workspace
     if ws:
         return f"https://linear.app/{ws}/issue/{ticket_id}"
     return f"https://linear.app/issue/{ticket_id}"
