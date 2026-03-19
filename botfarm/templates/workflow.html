@@ -181,7 +181,7 @@
     {# Investigation pipeline — single stage #}
     <div class="workflow-single">
         {% set stage = pipeline.stages[0] %}
-        <div class="workflow-node workflow-node-{{ stage.executor_type }}" onclick="toggleDetail(this)">
+        <div class="workflow-node workflow-node-{{ stage.executor_type }}" onclick="openStageDrawer(this)">
             <div class="workflow-node-name">{{ stage.name }}</div>
             {% if stage.identity %}
             <span class="workflow-identity-badge">{{ stage.identity }}</span>
@@ -213,7 +213,7 @@
             {% endif %}
 
             <div class="workflow-stage-col" data-stage-id="{{ stage.id }}" data-stage-name="{{ stage.name }}">
-                <div class="workflow-node workflow-node-{{ stage.executor_type }}" onclick="toggleDetail(this)">
+                <div class="workflow-node workflow-node-{{ stage.executor_type }}" onclick="openStageDrawer(this)">
                     <div class="workflow-node-name">{{ stage.name }}</div>
                     {% if stage.identity %}
                     <span class="workflow-identity-badge">{{ stage.identity }}</span>
@@ -241,7 +241,7 @@
                 {% for lp in pipeline.loops %}
                 {% if lp.decision_stage == stage.name %}
                 <div class="workflow-loop-branch" data-loop-id="{{ lp.id }}" data-decision-stage="{{ lp.decision_stage }}" data-start-stage="{{ lp.start_stage }}" data-end-stage="{{ lp.end_stage }}" data-failure-stage="{{ lp.on_failure_stage or '' }}">
-                    <div class="workflow-decision" onclick="toggleLoopEditor({{ lp.id }})" title="Click to edit loop">
+                    <div class="workflow-decision" onclick="openLoopDrawer({{ lp.id }}, this)" title="Click to edit loop">
                         <svg class="workflow-diamond-svg" width="80" height="50" viewBox="0 0 80 50">
                             <polygon points="40,2 78,25 40,48 2,25" fill="none" stroke="var(--pico-color-yellow-500, #eab308)" stroke-width="2"/>
                             <text x="40" y="29" text-anchor="middle" fill="var(--pico-color-yellow-500, #eab308)" font-size="10" font-weight="600">{{ lp.question }}</text>
@@ -254,7 +254,7 @@
                             <line x1="1" y1="0" x2="1" y2="20" stroke="var(--pico-del-color)" stroke-width="2"/>
                         </svg>
                         {% if lp.fix_stage %}
-                        <div class="workflow-node workflow-node-{{ lp.fix_stage.executor_type }} workflow-node-loop" onclick="toggleDetail(this)">
+                        <div class="workflow-node workflow-node-{{ lp.fix_stage.executor_type }} workflow-node-loop" onclick="openStageDrawer(this)">
                             <div class="workflow-node-name">{{ lp.fix_stage.name }}</div>
                             {% if lp.fix_stage.identity %}
                             <span class="workflow-identity-badge">{{ lp.fix_stage.identity }}</span>
@@ -328,7 +328,7 @@
                             <div class="loop-editor-feedback" id="loop-feedback-{{ lp.id }}"></div>
                             <div class="stage-props-actions loop-editor-actions">
                                 <button type="button" class="prompt-save-btn" onclick="saveLoop({{ lp.id }})">Save</button>
-                                <button type="button" class="prompt-cancel-btn" onclick="toggleLoopEditor({{ lp.id }})">Cancel</button>
+                                <button type="button" class="prompt-cancel-btn" onclick="closeDrawer()">Cancel</button>
                                 <button type="button" class="pipeline-action-btn pipeline-action-btn-danger loop-delete-btn"
                                         data-loop-id="{{ lp.id }}" data-loop-name="{{ lp.name }}"
                                         onclick="deleteLoop(this.dataset.loopId, this.dataset.loopName)">Remove Loop</button>
@@ -511,6 +511,16 @@
         </footer>
     </article>
 </dialog>
+
+{# ── Right-side drawer for stage / loop editing ── #}
+<div class="stage-drawer-overlay" id="stage-drawer-overlay"></div>
+<div class="stage-drawer" id="stage-drawer">
+    <div class="stage-drawer-header">
+        <span class="stage-drawer-title" id="stage-drawer-title"></span>
+        <button class="stage-drawer-close" onclick="closeDrawer()">&times;</button>
+    </div>
+    <div class="stage-drawer-body" id="stage-drawer-body"></div>
+</div>
 
 <style>
 /* ── Stage properties form styles ── */
@@ -1134,20 +1144,106 @@ function deletePipeline(pipelineId, pipelineName, isDefault) {
     });
 }
 
-function toggleDetail(node) {
+/* ── Drawer state ── */
+var _drawerState = null; // {type, element, originalParent, originalNext, node}
+
+function _findDetail(node) {
     var detail = node.nextElementSibling;
     while (detail && !detail.classList.contains('workflow-detail')) {
         detail = detail.nextElementSibling;
     }
     if (!detail) {
-        // Check parent's next sibling for loop nodes
         var parent = node.parentElement;
         detail = parent ? parent.querySelector('.workflow-detail') : null;
     }
-    if (detail) {
-        detail.style.display = detail.style.display === 'none' ? 'block' : 'none';
-    }
+    return detail;
 }
+
+function _closeDrawerSilent() {
+    if (!_drawerState) return;
+    _drawerState.element.style.display = 'none';
+    if (_drawerState.originalNext) {
+        _drawerState.originalParent.insertBefore(_drawerState.element, _drawerState.originalNext);
+    } else {
+        _drawerState.originalParent.appendChild(_drawerState.element);
+    }
+    if (_drawerState.type === 'stage') {
+        _drawerState.node.classList.remove('workflow-node-selected');
+    } else if (_drawerState.node) {
+        _drawerState.node.classList.remove('workflow-decision-selected');
+    }
+    _drawerState = null;
+}
+
+function closeDrawer() {
+    _closeDrawerSilent();
+    document.getElementById('stage-drawer').classList.remove('stage-drawer-open');
+    document.getElementById('stage-drawer-overlay').classList.remove('stage-drawer-overlay-visible');
+}
+
+function openStageDrawer(node) {
+    if (_drawerState && _drawerState.node === node) {
+        closeDrawer();
+        return;
+    }
+    if (_drawerState) _closeDrawerSilent();
+
+    var detail = _findDetail(node);
+    if (!detail) return;
+
+    var nameEl = node.querySelector('.workflow-node-name');
+    var name = nameEl ? nameEl.textContent.trim() : 'Stage';
+
+    _drawerState = {
+        type: 'stage',
+        element: detail,
+        originalParent: detail.parentElement,
+        originalNext: detail.nextElementSibling,
+        node: node
+    };
+
+    document.getElementById('stage-drawer-title').textContent = 'Editing: ' + name;
+    document.getElementById('stage-drawer-body').appendChild(detail);
+    detail.style.display = 'block';
+    node.classList.add('workflow-node-selected');
+
+    document.getElementById('stage-drawer').classList.add('stage-drawer-open');
+    document.getElementById('stage-drawer-overlay').classList.add('stage-drawer-overlay-visible');
+}
+
+function openLoopDrawer(loopId, diamondEl) {
+    var editor = document.getElementById('loop-editor-' + loopId);
+    if (!editor) return;
+
+    if (_drawerState && _drawerState.element === editor) {
+        closeDrawer();
+        return;
+    }
+    if (_drawerState) _closeDrawerSilent();
+
+    _drawerState = {
+        type: 'loop',
+        element: editor,
+        originalParent: editor.parentElement,
+        originalNext: editor.nextElementSibling,
+        node: diamondEl
+    };
+
+    document.getElementById('stage-drawer-title').textContent = 'Edit Loop';
+    document.getElementById('stage-drawer-body').appendChild(editor);
+    editor.style.display = 'block';
+    if (diamondEl) diamondEl.classList.add('workflow-decision-selected');
+
+    document.getElementById('stage-drawer').classList.add('stage-drawer-open');
+    document.getElementById('stage-drawer-overlay').classList.add('stage-drawer-overlay-visible');
+}
+
+// Close drawer on Escape key
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape' && _drawerState) closeDrawer();
+});
+// Close drawer on overlay click
+document.getElementById('stage-drawer-overlay').addEventListener('click', closeDrawer);
 
 /* ── Stage properties editor functions ── */
 
@@ -1234,19 +1330,15 @@ function saveStageProperties(stageId) {
             feedbackEl.appendChild(successDiv);
             // Update the node badge if executor type or identity changed
             var data = result.data.data;
-            var detail = feedbackEl.closest('.workflow-detail');
-            var node = detail.previousElementSibling;
-            while (node && !node.classList.contains('workflow-node')) {
-                node = node.previousElementSibling;
-            }
+            var node = (_drawerState && _drawerState.type === 'stage') ? _drawerState.node : null;
             if (node) {
-                // Update executor type class (preserve loop flag before stripping)
+                // Update executor type class (preserve loop and selected flags)
                 var isLoop = node.classList.contains('workflow-node-loop');
+                var isSelected = node.classList.contains('workflow-node-selected');
                 node.className = node.className.replace(/workflow-node-\w+/g, '');
                 node.classList.add('workflow-node', 'workflow-node-' + data.executor_type);
-                if (isLoop) {
-                    node.classList.add('workflow-node-loop');
-                }
+                if (isLoop) node.classList.add('workflow-node-loop');
+                if (isSelected) node.classList.add('workflow-node-selected');
                 // Update identity badge
                 var badge = node.querySelector('.workflow-identity-badge');
                 if (data.identity) {
@@ -1449,13 +1541,6 @@ function checkUnknownVars(stageId) {
 }
 
 /* ── Loop editor functions ── */
-
-function toggleLoopEditor(loopId) {
-    var editor = document.getElementById('loop-editor-' + loopId);
-    if (editor) {
-        editor.style.display = editor.style.display === 'none' ? 'block' : 'none';
-    }
-}
 
 function saveLoop(loopId) {
     var feedbackEl = document.getElementById('loop-feedback-' + loopId);
