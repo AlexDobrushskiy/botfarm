@@ -905,9 +905,9 @@ class TestMigrationInfrastructure:
         # Running migration 030 must not fail on pre-existing tables
         _run_migrations(c, from_version=29)
 
-        # Verify version advanced to 030
+        # Verify version advanced to latest
         row = c.execute("SELECT version FROM schema_version").fetchone()
-        assert row[0] == 30
+        assert row[0] == SCHEMA_VERSION
 
         # Tables still exist and are intact
         tables = {
@@ -2333,9 +2333,8 @@ class TestWorkflowDefinitionTables:
             (inv_id,),
         ).fetchone()
         prompt = row["prompt_template"]
-        assert "blockedBy" in prompt
-        assert "blocks" in prompt
-        assert "save_issue" in prompt
+        assert "blocking relationships between tickets" in prompt
+        assert "{bugtracker_type} API or MCP tools" in prompt
 
     def test_migration_019_preserves_custom_investigation_prompt(self, conn):
         """Migration 019 must not overwrite a user-customized prompt."""

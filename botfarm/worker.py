@@ -343,6 +343,7 @@ def run_pipeline(
     agent_adapters_config: dict[str, AdapterConfig] | None = None,
     prior_context: str = "",
     merge_main_before_resume: bool = False,
+    bugtracker_type: str = "Linear",
 ) -> PipelineResult:
     """Execute the full implement→review→fix→pr_checks→merge pipeline.
 
@@ -484,6 +485,7 @@ def run_pipeline(
         max_merge_conflict_retries=eff_max_merge_conflict_retries,
         _refreshable_limits=_compute_refreshable_limits(pipeline_tpl),
         prior_context=prior_context,
+        bugtracker_type=bugtracker_type,
     )
 
     # Build main-stage list: skip loop-managed stages (they're handled
@@ -1249,6 +1251,7 @@ class _PipelineContext:
         default_factory=lambda: frozenset({"max_review_iterations", "max_ci_retries", "max_merge_conflict_retries"}),
     )
     prior_context: str = ""
+    bugtracker_type: str = "Linear"
 
     def _refresh_runtime_config(self) -> None:
         """Re-read runtime config from DB and update mutable fields.
@@ -1527,6 +1530,7 @@ class _PipelineContext:
                 registry=self.registry,
                 shared_mem_path=self.shared_mem_path,
                 prior_context=self.prior_context,
+                bugtracker_type=self.bugtracker_type,
                 **codex_kwargs,
             )
         except Exception as exc:

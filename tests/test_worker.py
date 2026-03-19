@@ -3173,16 +3173,24 @@ class TestBuildImplementPrompt:
         prompt = _build_implement_prompt("SMA-42", ["Investigation"])
         assert "SMA-42" in prompt
         assert "investigation ticket" in prompt
-        assert "Linear comment" in prompt
+        assert "comment on the ticket" in prompt
         assert "follow-up" in prompt.lower()
         assert "Do not create a PR" in prompt
         assert "PR creation" not in prompt
 
     def test_investigation_prompt_includes_dependency_instruction(self):
         prompt = _build_implement_prompt("SMA-42", ["Investigation"])
-        assert "blockedBy" in prompt
-        assert "blocks" in prompt
-        assert "save_issue" in prompt
+        assert "blocking relationships" in prompt
+        assert "API or MCP tools" in prompt
+
+    def test_standard_prompt_uses_bugtracker_type(self):
+        prompt = _build_implement_prompt("SMA-42", None, "jira")
+        assert "jira ticket SMA-42" in prompt
+
+    def test_investigation_prompt_uses_bugtracker_type(self):
+        prompt = _build_implement_prompt("SMA-42", ["Investigation"], "jira")
+        assert "jira ticket SMA-42" in prompt
+        assert "jira API or MCP tools" in prompt
 
     def test_investigation_prompt_case_insensitive(self):
         prompt = _build_implement_prompt("SMA-42", ["investigation"])

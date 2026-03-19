@@ -1,7 +1,7 @@
 # AGENTS.md
 
 ## Project Context
-- Botfarm: autonomous Linear ticket dispatcher for AI coding agents
+- Botfarm: autonomous ticket dispatcher for AI coding agents (supports Linear and Jira)
 - Pure Python CLI project — optional web dashboard, no run.sh/stop.sh
 - Database schema has versioned migrations in `db.py` (current: v5)
 - This file primarily covers the implementer workflow. Reviewer and review-addresser agents receive instructions via prompt.
@@ -14,14 +14,15 @@ Modules under `botfarm/`:
 - `worker.py` — Stage pipeline: implement → review → fix → pr_checks → merge (iterates review/CI fix loops)
 - `slots.py` — Slot lifecycle & JSON state persistence (free/busy/paused_limit/failed/completed_pending_cleanup)
 - `db.py` — SQLite (sync, WAL mode) for tasks, stage_runs, usage_snapshots, task_events
-- `bugtracker/` — Abstract bugtracker interfaces, Linear adapter (client, poller, cleanup), and factory
+- `bugtracker/` — Abstract bugtracker interfaces, adapters (Linear, Jira), and factory
 - `usage.py` — Anthropic usage API polling, threshold-based dispatch pausing
 - `credentials.py` — OAuth token retrieval (macOS keychain / Linux ~/.claude/.credentials.json)
 - `notifications.py` — Slack/Discord webhook notifications with rate limiting
 - `dashboard.py` — Optional FastAPI + htmx web dashboard (background thread in supervisor)
 
 Docs under `docs/`:
-- `linear-workflow.md` — Detailed ticket creation, sizing, and workflow guide
+- `linear-workflow.md` — Linear-specific ticket creation, sizing, and workflow guide
+- `jira-workflow.md` — Jira-specific ticket creation, sizing, and workflow guide
 - `linear-archiving.md` — How to archive Done tickets (filtering, sorting, GraphQL API)
 - `configuration.md` — Full config reference with examples
 - `runtime-files.md` — `~/.botfarm/` directory layout, logs, and temporary files
@@ -61,32 +62,32 @@ All runtime data lives under `~/.botfarm/` (see `docs/runtime-files.md` for full
 - `logs/<TICKET-ID>/<stage>[-iter<N>]-<timestamp>.log` — per-stage Claude subprocess output
 - `slots/<project>-<slot_id>/` — temporary sandboxed DB copies (auto-cleaned)
 
-## Workflow: Linear Tickets
-For full details on ticket creation, sizing, and all ticket types see `docs/linear-workflow.md`.
+## Workflow: Tickets
+For tracker-specific details see `docs/linear-workflow.md` or `docs/jira-workflow.md`.
 
 ### Implementation Tickets
 The supervisor handles status transitions (→ In Progress before, → In Review/Done after). Agent focuses on code:
-1. Fetch ticket details via Linear MCP (`get_issue`) — use the `gitBranchName` field for the branch name
-2. `git fetch origin && git checkout -b <gitBranchName> origin/main`
+1. Fetch ticket details via the bugtracker API or MCP tools — use the branch name field for the branch name
+2. `git fetch origin && git checkout -b <branchName> origin/main`
 3. Delete previous working branch if it exists (NEVER delete: main, slot-1-placeholder)
 4. Run baseline tests before starting work
 5. Implement changes
 6. Add/update tests
 7. Run full test suite — fix until green
 8. Commit, push
-9. Create PR via `gh` (Linear-GitHub integration auto-links via branch name)
-10. If you identify out-of-scope issues — create new Linear tickets for them
+9. Create PR via `gh` (branch-name-based integration auto-links via branch name)
+10. If you identify out-of-scope issues — create new tickets for them
 
 ### Investigation Tickets (label: `Investigation`)
-No PR created. Agent researches and posts findings as a Linear comment, then creates follow-up tickets.
-Review/fix loop happens via Linear comments (not GitHub).
+No PR created. Agent researches and posts findings as a comment on the ticket, then creates follow-up tickets.
+Review/fix loop happens via ticket comments (not GitHub).
 
 ### Creating Tickets
 - Use the appropriate team and project for your workspace
 - If a task may consume >60% of 200k context — split into smaller tickets
 - Use parent tickets to group related work; set dependencies (`blocks`/`is blocked by`)
 - Use `Investigation` label for research tasks, `Human` label for tasks requiring human action
-- If blocked by a Human ticket, notify the human via a Linear comment on the blocking ticket
+- If blocked by a Human ticket, notify the human via a comment on the blocking ticket
 
 ## Testing
 - Run tests in a subagent that returns ONLY: pass/fail summary + failing test details
