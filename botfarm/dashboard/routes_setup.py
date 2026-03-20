@@ -268,6 +268,36 @@ def setup_page(request: Request):
     })
 
 
+@router.post("/api/setup/complete")
+def api_setup_complete(request: Request):
+    """Trigger preflight re-run after project creation and return setup status.
+
+    Called by the setup wizard after a project is successfully added.
+    Triggers the preflight callback so the supervisor can re-evaluate
+    whether to exit setup/degraded mode, then returns current status.
+    """
+    app = request.app
+    config = app.state.botfarm_config
+
+    # Trigger preflight re-run if callback is available
+    cb = app.state.on_rerun_preflight
+    if cb is not None:
+        try:
+            cb()
+        except Exception:
+            logger.exception("Failed to trigger preflight re-run from setup complete")
+
+    # Return current setup status
+    if config is None:
+        return JSONResponse({"setup_complete": False, "steps": []})
+
+    steps = get_setup_steps(config)
+    return JSONResponse({
+        "setup_complete": all(s.done for s in steps),
+        "steps": [asdict(s) for s in steps],
+    })
+
+
 @router.get("/partials/setup-preflight", response_class=HTMLResponse)
 def partial_setup_preflight(request: Request):
     """Render preflight check results for the setup wizard."""

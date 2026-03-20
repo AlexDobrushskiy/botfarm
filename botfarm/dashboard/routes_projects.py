@@ -45,16 +45,15 @@ def _get_bugtracker_client(app):
     return create_client(cfg)
 
 
-# --- Linear data endpoints ---
+# --- Bugtracker data endpoints ---
 
 
-@router.get("/api/linear/teams")
-def api_linear_teams(request: Request):
-    """Return Linear teams for the dropdown."""
-    client = _get_bugtracker_client(request.app)
+def _api_teams(app) -> JSONResponse:
+    """Shared logic for fetching bugtracker teams."""
+    client = _get_bugtracker_client(app)
     if client is None:
         return JSONResponse(
-            {"error": "Linear API key not configured"}, status_code=503,
+            {"error": "Bugtracker API key not configured"}, status_code=503,
         )
     try:
         teams = client.list_teams()
@@ -62,21 +61,20 @@ def api_linear_teams(request: Request):
             {"key": t["key"], "name": t["name"]} for t in teams
         ])
     except Exception as exc:
-        logger.warning("Failed to fetch Linear teams: %s", exc)
+        logger.warning("Failed to fetch teams: %s", exc)
         return JSONResponse({"error": str(exc)}, status_code=500)
 
 
-@router.get("/api/linear/projects")
-def api_linear_projects(request: Request, team: str = ""):
-    """Return Linear projects for a team (for the dropdown)."""
+def _api_projects(app, team: str) -> JSONResponse:
+    """Shared logic for fetching bugtracker projects for a team."""
     if not team:
         return JSONResponse(
             {"error": "team query parameter is required"}, status_code=400,
         )
-    client = _get_bugtracker_client(request.app)
+    client = _get_bugtracker_client(app)
     if client is None:
         return JSONResponse(
-            {"error": "Linear API key not configured"}, status_code=503,
+            {"error": "Bugtracker API key not configured"}, status_code=503,
         )
     try:
         team_id = client.get_team_id(team)
@@ -85,8 +83,32 @@ def api_linear_projects(request: Request, team: str = ""):
             {"id": p["id"], "name": p["name"]} for p in projects
         ])
     except Exception as exc:
-        logger.warning("Failed to fetch Linear projects for team %s: %s", team, exc)
+        logger.warning("Failed to fetch projects for team %s: %s", team, exc)
         return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@router.get("/api/linear/teams")
+def api_linear_teams(request: Request):
+    """Return bugtracker teams for the dropdown (legacy alias)."""
+    return _api_teams(request.app)
+
+
+@router.get("/api/linear/projects")
+def api_linear_projects(request: Request, team: str = ""):
+    """Return bugtracker projects for a team (legacy alias)."""
+    return _api_projects(request.app, team)
+
+
+@router.get("/api/bugtracker/teams")
+def api_bugtracker_teams(request: Request):
+    """Return bugtracker teams for the dropdown."""
+    return _api_teams(request.app)
+
+
+@router.get("/api/bugtracker/projects")
+def api_bugtracker_projects(request: Request, team: str = ""):
+    """Return bugtracker projects for a team."""
+    return _api_projects(request.app, team)
 
 
 # --- Project creation ---
