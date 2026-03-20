@@ -254,6 +254,10 @@ def setup_page(request: Request):
     # Credential partial context (shared helper avoids duplication)
     cred_ctx = _build_credentials_context(config)
 
+    bt_type = ""
+    if config is not None:
+        bt_type = config.bugtracker.type or ""
+
     return templates.TemplateResponse("setup.html", {
         "request": request,
         "steps": steps,
@@ -263,6 +267,7 @@ def setup_page(request: Request):
         "project_count": project_count,
         "repos_cloned": repos_cloned,
         "degraded": degraded,
+        "bt_type": bt_type,
         # Credential partial context (for initial include)
         **cred_ctx,
     })
@@ -270,14 +275,16 @@ def setup_page(request: Request):
 
 @router.post("/api/setup/complete")
 def api_setup_complete(request: Request):
-    """Trigger preflight re-run after project creation and return setup status.
+    """Trigger preflight re-run after project creation.
 
     Called by the setup wizard after a project is successfully added.
     Triggers the preflight callback so the supervisor can re-evaluate
-    whether to exit setup/degraded mode, then returns current status.
+    whether to exit setup/degraded mode.  The callback is non-blocking
+    (it only sets a threading event), so this endpoint cannot report
+    actual completion — callers should refresh the page to see the
+    updated state.
     """
     app = request.app
-    config = app.state.botfarm_config
 
     # Trigger preflight re-run if callback is available
     cb = app.state.on_rerun_preflight
@@ -287,15 +294,7 @@ def api_setup_complete(request: Request):
         except Exception:
             logger.exception("Failed to trigger preflight re-run from setup complete")
 
-    # Return current setup status
-    if config is None:
-        return JSONResponse({"setup_complete": False, "steps": []})
-
-    steps = get_setup_steps(config)
-    return JSONResponse({
-        "setup_complete": all(s.done for s in steps),
-        "steps": [asdict(s) for s in steps],
-    })
+    return JSONResponse({"preflight_triggered": True})
 
 
 @router.get("/partials/setup-preflight", response_class=HTMLResponse)
