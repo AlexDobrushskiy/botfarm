@@ -76,6 +76,20 @@ Investigation tickets use a different workflow — no PR, no code changes expect
 
 The pipeline short-circuits after the implement stage — review, PR checks, and merge stages are skipped.
 
+## MCP Tools
+
+When Jira is configured as the bugtracker, agents get access to Jira MCP tools via the [mcp-atlassian](https://github.com/sooperset/mcp-atlassian) community server. This gives agents the ability to search issues, read/write comments, manage labels, and perform other Jira operations directly.
+
+**Prerequisites:** `uvx` must be available on PATH (install via [uv](https://docs.astral.sh/uv/getting-started/installation/)). The preflight check will warn if `uvx` is missing.
+
+The MCP server is launched automatically as a stdio subprocess for each agent invocation. It receives credentials via environment variables derived from your config:
+
+| Config field | MCP env var | Description |
+|---|---|---|
+| `bugtracker.workspace` | `JIRA_URL` | Constructed as `https://{workspace}.atlassian.net` |
+| `identities.coder.jira_email` or `bugtracker.email` | `JIRA_USERNAME` | Email for API authentication |
+| `identities.coder.jira_api_token` or `bugtracker.api_key` | `JIRA_API_TOKEN` | Jira API token |
+
 ## Configuration
 
 ```yaml
@@ -83,6 +97,7 @@ bugtracker:
   type: jira
   api_key: ${JIRA_API_TOKEN}
   workspace: my-org           # Jira Cloud site name (e.g. "acme" for acme.atlassian.net)
+  email: bot@example.com      # Email for Jira API authentication
 
   # Workflow status names — must match your Jira project's workflow
   todo_status: To Do

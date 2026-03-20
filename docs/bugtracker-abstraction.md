@@ -1,6 +1,6 @@
 # Bugtracker Abstraction
 
-Botfarm uses an abstract bugtracker interface so that different issue trackers can be supported. Currently only Linear is implemented, but the architecture supports adding new adapters (e.g. Jira, GitHub Issues).
+Botfarm uses an abstract bugtracker interface so that different issue trackers can be supported. Currently Linear and Jira are implemented, and the architecture supports adding new adapters (e.g. GitHub Issues).
 
 ## Architecture
 
@@ -155,6 +155,8 @@ Stage template prompts use `{bugtracker_type}` to reference the tracker type. Wh
 | Labels | Linear labels | Jira labels |
 | Relations | `isBlockedBy`/`blocks` | Issue links with link types |
 | Branch name | `gitBranchName` field | Derived from key + summary |
+| MCP server | `@tacticlaunch/mcp-linear` via `npx` | `mcp-atlassian` via `uvx` |
+| MCP auth | `LINEAR_API_TOKEN` env var | `JIRA_URL` + `JIRA_USERNAME` + `JIRA_API_TOKEN` env vars |
 
 See `docs/jira-workflow.md` for the agent-facing workflow guide.
 

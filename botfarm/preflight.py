@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import sqlite3
 import stat
 import subprocess
@@ -725,6 +726,34 @@ def check_codex_reviewer(config: BotfarmConfig) -> list[CheckResult]:
     return results
 
 
+def check_jira_mcp_server(config: BotfarmConfig) -> list[CheckResult]:
+    """Warn if Jira is configured but ``uvx`` is not available.
+
+    The Jira MCP server (``mcp-atlassian``) is launched via ``uvx``.
+    """
+    if not isinstance(config.bugtracker, JiraBugtrackerConfig):
+        return []
+
+    if shutil.which("uvx"):
+        return [CheckResult(
+            name="jira_mcp_server",
+            passed=True,
+            message="OK — uvx is available for mcp-atlassian",
+            critical=False,
+        )]
+
+    return [CheckResult(
+        name="jira_mcp_server",
+        passed=False,
+        message=(
+            "'uvx' not found on PATH — Jira MCP tools will not be available to agents. "
+            "Install uv (https://docs.astral.sh/uv/getting-started/installation/) "
+            "to enable Jira MCP support via mcp-atlassian."
+        ),
+        critical=False,
+    )]
+
+
 def check_systemd_unit() -> list[CheckResult]:
     """Warn if the installed systemd unit file has stale flags."""
     is_stale, message = check_installed_unit_stale()
@@ -908,6 +937,7 @@ def run_preflight_checks(
     results.extend(check_project_claude_md(config))
     results.extend(check_project_runtimes(config))
     results.extend(check_codex_reviewer(config))
+    results.extend(check_jira_mcp_server(config))
     results.extend(check_systemd_unit())
     return results
 

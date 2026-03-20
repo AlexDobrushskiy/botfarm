@@ -207,11 +207,18 @@ def build_reviewer_env(
 def build_bugtracker_mcp_config(
     bugtracker_type: str,
     api_key: str,
+    *,
+    workspace: str = "",
+    jira_username: str = "",
 ) -> str:
     """Generate MCP config JSON for the bugtracker.
 
     Returns inline JSON string suitable for ``--mcp-config``.
-    Currently supports Linear; other trackers return an empty string.
+    Supports Linear and Jira; other trackers return an empty string.
+
+    For Jira, *workspace* is the Atlassian site name (e.g. ``"acme"``
+    for ``acme.atlassian.net``) and *jira_username* is the email used
+    for API authentication.
     """
 
     bt = bugtracker_type.lower()
@@ -222,6 +229,23 @@ def build_bugtracker_mcp_config(
                     "command": "npx",
                     "args": ["-y", "@tacticlaunch/mcp-linear"],
                     "env": {"LINEAR_API_TOKEN": api_key},
+                }
+            }
+        }
+        return json.dumps(config)
+    if bt == "jira":
+        if not workspace or not jira_username:
+            return ""
+        config = {
+            "mcpServers": {
+                "jira": {
+                    "command": "uvx",
+                    "args": ["mcp-atlassian"],
+                    "env": {
+                        "JIRA_URL": f"https://{workspace}.atlassian.net",
+                        "JIRA_USERNAME": jira_username,
+                        "JIRA_API_TOKEN": api_key,
+                    },
                 }
             }
         }
@@ -370,6 +394,8 @@ def run_pipeline(
     merge_main_before_resume: bool = False,
     bugtracker_type: str = "Linear",
     bugtracker_api_key: str = "",
+    bugtracker_workspace: str = "",
+    bugtracker_email: str = "",
 ) -> PipelineResult:
     """Execute the full implement→review→fix→pr_checks→merge pipeline.
 
@@ -420,8 +446,17 @@ def run_pipeline(
     # Build MCP config for bugtracker tools.
     # Prefer the coder identity's tracker key so operations appear under the
     # coder bot; fall back to the shared bugtracker key.
-    effective_tracker_key = ident.coder.tracker_api_key or bugtracker_api_key
-    mcp_config = build_bugtracker_mcp_config(bugtracker_type, effective_tracker_key) if effective_tracker_key else ""
+    # For Jira, the coder identity has separate jira_api_token / jira_email fields.
+    if bugtracker_type.lower() == "jira":
+        effective_tracker_key = ident.coder.jira_api_token or bugtracker_api_key
+        effective_email = ident.coder.jira_email or bugtracker_email
+    else:
+        effective_tracker_key = ident.coder.tracker_api_key or bugtracker_api_key
+        effective_email = ""
+    mcp_config = build_bugtracker_mcp_config(
+        bugtracker_type, effective_tracker_key,
+        workspace=bugtracker_workspace, jira_username=effective_email,
+    ) if effective_tracker_key else ""
 
     # Load pipeline template and derive configuration
     (stages, turns_cfg, eff_max_review_iterations, eff_max_ci_retries,
