@@ -40,6 +40,7 @@ class ClaudeAdapter:
         env: dict[str, str] | None = None,
         timeout: float | None = None,
         on_context_fill: ContextFillCallback | None = None,
+        mcp_config: str | None = None,
     ) -> AgentResult:
         claude_result = run_claude_streaming(
             prompt,
@@ -49,6 +50,7 @@ class ClaudeAdapter:
             env=env,
             on_context_fill=on_context_fill,
             timeout=timeout,
+            mcp_config=mcp_config,
         )
         return _claude_result_to_agent_result(claude_result)
 

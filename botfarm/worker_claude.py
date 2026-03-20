@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -314,6 +315,7 @@ def run_claude_streaming(
     env: dict[str, str] | None = None,
     on_context_fill: ContextFillCallback | None = None,
     timeout: float | None = None,
+    mcp_config: str | None = None,
 ) -> ClaudeResult:
     """Run ``claude`` with streaming output and per-turn context fill callbacks.
 
@@ -349,84 +351,98 @@ def run_claude_streaming(
         "--dangerously-skip-permissions",
         "--max-turns", str(max_turns),
     ]
+    # Write MCP config to a temp file so the API key isn't visible in ps output
+    mcp_config_path: str | None = None
+    if mcp_config:
+        fd, mcp_config_path = tempfile.mkstemp(suffix=".json", prefix="mcp-")
+        with os.fdopen(fd, "w") as f:
+            f.write(mcp_config)
+        cmd.extend(["--mcp-config", mcp_config_path])
     logger.info("Running claude (%s, streaming) with max_turns=%d in %s", claude_bin, max_turns, cwd)
 
     subprocess_env = None
     if env:
         subprocess_env = {**os.environ, **env}
 
-    proc = subprocess.Popen(
-        cmd,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        cwd=str(cwd),
-        env=subprocess_env,
-        start_new_session=True,
-    )
-
-    # Write prompt and close stdin
-    proc.stdin.write(prompt)
-    proc.stdin.close()
-
-    # Drain stderr on a background thread to prevent deadlock
-    stderr_lines: list[str] = []
-
-    def _drain_stderr():
-        for line in proc.stderr:
-            stderr_lines.append(line)
-
-    stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
-    stderr_thread.start()
-
-    # Watchdog: kill the process if it exceeds the timeout.
-    cancel_watchdog = threading.Event()
-    timed_out = threading.Event()
-
-    def _watchdog():
-        if not cancel_watchdog.wait(timeout):
-            timed_out.set()
-            _terminate_process_group(proc)
-
-    watchdog_thread: threading.Thread | None = None
-    if timeout is not None and timeout > 0:
-        watchdog_thread = threading.Thread(target=_watchdog, daemon=True)
-        watchdog_thread.start()
-
-    # Open log file for real-time writing (if configured)
-    log_fh = None
-    if log_file is not None:
-        try:
-            log_file.parent.mkdir(parents=True, exist_ok=True)
-            log_fh = log_file.open("w")
-        except OSError:
-            logger.warning("Failed to open log file %s for streaming", log_file, exc_info=True)
-
-    # Parse NDJSON stream with context fill tracking
     try:
-        stdout_lines, claude_result = _parse_ndjson_stream(
-            proc.stdout, on_context_fill=on_context_fill, log_fh=log_fh,
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=str(cwd),
+            env=subprocess_env,
+            start_new_session=True,
+        )
+
+        # Write prompt and close stdin
+        proc.stdin.write(prompt)
+        proc.stdin.close()
+
+        # Drain stderr on a background thread to prevent deadlock
+        stderr_lines: list[str] = []
+
+        def _drain_stderr():
+            for line in proc.stderr:
+                stderr_lines.append(line)
+
+        stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
+        stderr_thread.start()
+
+        # Watchdog: kill the process if it exceeds the timeout.
+        cancel_watchdog = threading.Event()
+        timed_out = threading.Event()
+
+        def _watchdog():
+            if not cancel_watchdog.wait(timeout):
+                timed_out.set()
+                _terminate_process_group(proc)
+
+        watchdog_thread: threading.Thread | None = None
+        if timeout is not None and timeout > 0:
+            watchdog_thread = threading.Thread(target=_watchdog, daemon=True)
+            watchdog_thread.start()
+
+        # Open log file for real-time writing (if configured)
+        log_fh = None
+        if log_file is not None:
+            try:
+                log_file.parent.mkdir(parents=True, exist_ok=True)
+                log_fh = log_file.open("w")
+            except OSError:
+                logger.warning("Failed to open log file %s for streaming", log_file, exc_info=True)
+
+        # Parse NDJSON stream with context fill tracking
+        try:
+            stdout_lines, claude_result = _parse_ndjson_stream(
+                proc.stdout, on_context_fill=on_context_fill, log_fh=log_fh,
+            )
+        finally:
+            cancel_watchdog.set()
+            if watchdog_thread is not None:
+                watchdog_thread.join(timeout=2)
+
+        # Terminate the process group (Claude + MCP server children) if still alive
+        _terminate_process_group(proc)
+        proc.wait()
+        stderr_thread.join(timeout=5)
+
+        return _finalize_streaming_result(
+            proc, cmd,
+            stdout_lines=stdout_lines,
+            stderr_lines=stderr_lines,
+            claude_result=claude_result,
+            timed_out=timed_out,
+            log_fh=log_fh,
+            timeout=timeout,
         )
     finally:
-        cancel_watchdog.set()
-        if watchdog_thread is not None:
-            watchdog_thread.join(timeout=2)
-
-    # Terminate the process group (Claude + MCP server children) if still alive
-    _terminate_process_group(proc)
-    proc.wait()
-    stderr_thread.join(timeout=5)
-
-    return _finalize_streaming_result(
-        proc, cmd,
-        stdout_lines=stdout_lines,
-        stderr_lines=stderr_lines,
-        claude_result=claude_result,
-        timed_out=timed_out,
-        log_fh=log_fh,
-        timeout=timeout,
-    )
+        if mcp_config_path:
+            try:
+                os.unlink(mcp_config_path)
+            except OSError:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -514,6 +530,7 @@ def _invoke_claude(
     env: dict[str, str] | None = None,
     on_context_fill: ContextFillCallback | None = None,
     timeout: float | None = None,
+    mcp_config: str | None = None,
 ) -> ClaudeResult:
     """Run Claude via the streaming runner.
 
@@ -525,7 +542,7 @@ def _invoke_claude(
     return run_claude_streaming(
         prompt, cwd=cwd, max_turns=max_turns,
         log_file=log_file, env=env, on_context_fill=on_context_fill,
-        timeout=timeout,
+        timeout=timeout, mcp_config=mcp_config,
     )
 
 _NO_PR_NEEDED_RE = re.compile(r"NO_PR_NEEDED:\s*(.+)", re.IGNORECASE | re.DOTALL)

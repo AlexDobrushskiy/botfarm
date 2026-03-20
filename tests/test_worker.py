@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -25,6 +26,7 @@ from botfarm.worker import (
     _compute_turn_context_fill,
     _detect_no_pr_needed,
     _is_investigation,
+    build_bugtracker_mcp_config,
     build_coder_env,
     build_git_env,
     build_reviewer_env,
@@ -4220,3 +4222,105 @@ class TestPrChecksConflictRouting:
         )
         assert result.success is True
         assert "merge" in result.stages_completed
+
+
+# ---------------------------------------------------------------------------
+# build_bugtracker_mcp_config
+# ---------------------------------------------------------------------------
+
+
+class TestBuildBugtrackerMcpConfig:
+    def test_linear_returns_valid_json(self):
+        result = build_bugtracker_mcp_config("linear", "lin_api_key_123")
+        parsed = json.loads(result)
+        assert "mcpServers" in parsed
+        assert "linear" in parsed["mcpServers"]
+        server = parsed["mcpServers"]["linear"]
+        assert server["command"] == "npx"
+        assert "@tacticlaunch/mcp-linear" in server["args"]
+        assert server["env"]["LINEAR_API_TOKEN"] == "lin_api_key_123"
+
+    def test_linear_case_insensitive(self):
+        result = build_bugtracker_mcp_config("Linear", "key")
+        parsed = json.loads(result)
+        assert "linear" in parsed["mcpServers"]
+
+    def test_unsupported_type_returns_empty(self):
+        assert build_bugtracker_mcp_config("github", "key") == ""
+
+    def test_jira_returns_empty(self):
+        assert build_bugtracker_mcp_config("jira", "key") == ""
+
+
+# ---------------------------------------------------------------------------
+# run_claude_streaming --mcp-config flag
+# ---------------------------------------------------------------------------
+
+
+class TestMcpConfigFlag:
+    @pytest.fixture(autouse=True)
+    def _mock_claude_on_path(self):
+        with patch("botfarm.worker_claude.shutil.which", return_value="/usr/local/bin/claude"):
+            yield
+
+    @patch("botfarm.worker_claude.subprocess.Popen")
+    def test_mcp_config_appended_to_cmd(self, mock_popen, tmp_path):
+        ndjson = _make_stream_ndjson()
+        mock_proc = MagicMock()
+        mock_proc.stdin = MagicMock()
+        mock_proc.stdout = iter(ndjson.splitlines(keepends=True))
+        mock_proc.stderr = iter([])
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = 0
+        # Capture the temp file contents before it's cleaned up
+        captured_config = {}
+
+        def _capture_popen(cmd, **kwargs):
+            idx = cmd.index("--mcp-config")
+            config_path = cmd[idx + 1]
+            with open(config_path) as f:
+                captured_config["content"] = f.read()
+            captured_config["path"] = config_path
+            return mock_proc
+
+        mock_popen.side_effect = _capture_popen
+
+        mcp_json = '{"mcpServers":{"linear":{"command":"npx"}}}'
+        run_claude_streaming("do stuff", cwd=tmp_path, max_turns=10, mcp_config=mcp_json)
+
+        assert captured_config["content"] == mcp_json
+        assert captured_config["path"].endswith(".json")
+        # Temp file should be cleaned up after the call
+        assert not os.path.exists(captured_config["path"])
+
+    @patch("botfarm.worker_claude.subprocess.Popen")
+    def test_no_mcp_config_when_none(self, mock_popen, tmp_path):
+        ndjson = _make_stream_ndjson()
+        mock_proc = MagicMock()
+        mock_proc.stdin = MagicMock()
+        mock_proc.stdout = iter(ndjson.splitlines(keepends=True))
+        mock_proc.stderr = iter([])
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = 0
+        mock_popen.return_value = mock_proc
+
+        run_claude_streaming("do stuff", cwd=tmp_path, max_turns=10)
+
+        cmd = mock_popen.call_args[0][0]
+        assert "--mcp-config" not in cmd
+
+    @patch("botfarm.worker_claude.subprocess.Popen")
+    def test_no_mcp_config_when_empty_string(self, mock_popen, tmp_path):
+        ndjson = _make_stream_ndjson()
+        mock_proc = MagicMock()
+        mock_proc.stdin = MagicMock()
+        mock_proc.stdout = iter(ndjson.splitlines(keepends=True))
+        mock_proc.stderr = iter([])
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = 0
+        mock_popen.return_value = mock_proc
+
+        run_claude_streaming("do stuff", cwd=tmp_path, max_turns=10, mcp_config="")
+
+        cmd = mock_popen.call_args[0][0]
+        assert "--mcp-config" not in cmd

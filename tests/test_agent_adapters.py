@@ -75,6 +75,7 @@ class TestClaudeAdapter:
             env={"KEY": "val"},
             on_context_fill=None,
             timeout=300.0,
+            mcp_config=None,
         )
 
         assert isinstance(result, AgentResult)
