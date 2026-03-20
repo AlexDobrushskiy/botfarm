@@ -445,7 +445,9 @@ var _setupSuggestTimer = null;
 function setupSuggestName() {
     clearTimeout(_setupSuggestTimer);
     _setupSuggestTimer = setTimeout(function() {
-        var url = document.getElementById("setup-repo-url").value.trim();
+        var el = document.getElementById("setup-repo-url");
+        if (!el) return;
+        var url = el.value.trim();
         if (!url) return;
         var nameField = document.getElementById("setup-project-name");
         if (nameField.dataset.userEdited) return;
@@ -461,7 +463,9 @@ function setupSuggestName() {
 }
 
 function setupToggleGithub() {
-    var url = document.getElementById("setup-repo-url").value.trim();
+    var el = document.getElementById("setup-repo-url");
+    if (!el) return;
+    var url = el.value.trim();
     var label = document.getElementById("setup-create-github-label");
     if (label) {
         label.style.display = url ? "none" : "";
