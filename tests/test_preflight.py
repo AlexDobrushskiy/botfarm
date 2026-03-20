@@ -1,6 +1,5 @@
 """Tests for botfarm.preflight module."""
 
-import json
 import os
 import sqlite3
 import subprocess
@@ -29,7 +28,6 @@ from botfarm.preflight import (
     _LANGUAGE_MARKERS,
     _describe_identity,
     _resolve_remote_url,
-    check_claude_plugins,
     check_codex_reviewer,
     check_config_consistency,
     check_core_bare,
@@ -1084,93 +1082,6 @@ class TestCheckIdentityCrossValidation:
 
 
 # ---------------------------------------------------------------------------
-# check_claude_plugins
-# ---------------------------------------------------------------------------
-
-
-class TestCheckClaudePlugins:
-    def test_pass_when_linear_plugin_enabled(self, tmp_path):
-        settings = {"enabledPlugins": {"linear@claude-plugins-official": True}}
-        settings_file = tmp_path / "settings.json"
-        settings_file.write_text(json.dumps(settings))
-        with patch("botfarm.preflight.Path.expanduser", return_value=settings_file):
-            results = check_claude_plugins()
-        assert len(results) == 1
-        assert results[0].passed
-        assert "linear@claude-plugins-official" in results[0].name
-        assert not results[0].critical
-
-    def test_warn_when_linear_plugin_missing(self, tmp_path):
-        settings = {"enabledPlugins": {}}
-        settings_file = tmp_path / "settings.json"
-        settings_file.write_text(json.dumps(settings))
-        with patch("botfarm.preflight.Path.expanduser", return_value=settings_file):
-            results = check_claude_plugins()
-        assert len(results) == 1
-        assert not results[0].passed
-        assert not results[0].critical
-        assert "not enabled" in results[0].message
-
-    def test_warn_when_linear_plugin_disabled(self, tmp_path):
-        settings = {"enabledPlugins": {"linear@claude-plugins-official": False}}
-        settings_file = tmp_path / "settings.json"
-        settings_file.write_text(json.dumps(settings))
-        with patch("botfarm.preflight.Path.expanduser", return_value=settings_file):
-            results = check_claude_plugins()
-        assert len(results) == 1
-        assert not results[0].passed
-        assert not results[0].critical
-
-    def test_warn_when_settings_file_missing(self, tmp_path):
-        missing = tmp_path / "nonexistent" / "settings.json"
-        with patch("botfarm.preflight.Path.expanduser", return_value=missing):
-            results = check_claude_plugins()
-        assert len(results) == 1
-        assert not results[0].passed
-        assert not results[0].critical
-        assert "settings not found" in results[0].message
-
-    def test_warn_when_settings_file_invalid_json(self, tmp_path):
-        settings_file = tmp_path / "settings.json"
-        settings_file.write_text("{invalid json")
-        with patch("botfarm.preflight.Path.expanduser", return_value=settings_file):
-            results = check_claude_plugins()
-        assert len(results) == 1
-        assert not results[0].passed
-        assert not results[0].critical
-        assert "Cannot read" in results[0].message
-
-    def test_warn_when_no_enabled_plugins_key(self, tmp_path):
-        settings_file = tmp_path / "settings.json"
-        settings_file.write_text("{}")
-        with patch("botfarm.preflight.Path.expanduser", return_value=settings_file):
-            results = check_claude_plugins()
-        assert len(results) == 1
-        assert not results[0].passed
-        assert not results[0].critical
-
-    def test_warn_when_settings_not_a_dict(self, tmp_path):
-        settings_file = tmp_path / "settings.json"
-        settings_file.write_text("[]")
-        with patch("botfarm.preflight.Path.expanduser", return_value=settings_file):
-            results = check_claude_plugins()
-        assert len(results) == 1
-        assert not results[0].passed
-        assert not results[0].critical
-        assert "unexpected format" in results[0].message
-
-    def test_warn_when_enabled_plugins_not_a_dict(self, tmp_path):
-        settings_file = tmp_path / "settings.json"
-        settings_file.write_text(json.dumps({"enabledPlugins": ["linear@claude-plugins-official"]}))
-        with patch("botfarm.preflight.Path.expanduser", return_value=settings_file):
-            results = check_claude_plugins()
-        assert len(results) == 1
-        assert not results[0].passed
-        assert not results[0].critical
-        assert "enabledPlugins" in results[0].message
-
-
-# ---------------------------------------------------------------------------
 # log_preflight_summary
 # ---------------------------------------------------------------------------
 
@@ -1221,10 +1132,6 @@ class TestRunPreflightChecks:
         }
         token = OAuthToken(access_token="tok")
 
-        plugin_results = [CheckResult(
-            name="claude_plugins:linear@claude-plugins-official",
-            passed=True, message="OK", critical=False,
-        )]
         with patch("botfarm.preflight.subprocess.run") as mock_run, \
              patch.object(
                  __import__("botfarm.bugtracker.linear.client", fromlist=["LinearClient"]).LinearClient,
@@ -1233,7 +1140,6 @@ class TestRunPreflightChecks:
              ), \
              patch("botfarm.preflight._load_token", return_value=token), \
              patch("botfarm.preflight.check_installed_unit_stale", return_value=(False, "OK")), \
-             patch("botfarm.preflight.check_claude_plugins", return_value=plugin_results), \
              patch("botfarm.preflight.check_claude_available", return_value=(True, "claude 1.0.30")):
             mock_run.return_value.returncode = 0
             mock_run.return_value.stdout = "git@github.com:org/repo.git\n"
@@ -1250,7 +1156,6 @@ class TestRunPreflightChecks:
         assert "linear_team" in names
         assert "claude_credentials" in names
         assert "claude_binary" in names
-        assert "claude_plugins" in names
         assert "project_claude_md" in names
 
         # All should pass
