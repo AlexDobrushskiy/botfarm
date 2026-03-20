@@ -43,7 +43,7 @@ The supervisor handles Jira status transitions automatically. The agent focuses 
 3. Spawns the worker agent
 
 **What the agent does:**
-1. Fetch ticket details via Jira API or MCP tools
+1. Fetch ticket details via Jira API (no MCP tools for Jira currently)
 2. Derive the branch name from the ticket key (e.g. `PROJECT-123-ticket-summary`)
 3. `git fetch origin && git checkout -b <branchName> origin/main`
 4. Delete previous working branch if it exists (NEVER delete: `main`, `slot-1-placeholder`)
@@ -67,7 +67,7 @@ The supervisor handles Jira status transitions automatically. The agent focuses 
 Investigation tickets use a different workflow — no PR, no code changes expected.
 
 **Agent workflow:**
-1. Fetch ticket details via Jira API or MCP tools
+1. Fetch ticket details via Jira API
 2. Research the topic (read code, search docs, analyze architecture)
 3. Post findings as a Jira comment on the ticket
 4. Create follow-up tickets based on findings (implementation or further investigation)

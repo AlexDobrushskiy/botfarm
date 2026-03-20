@@ -17,6 +17,7 @@ Botfarm polls your Linear board for "Todo" tickets, dispatches them to Claude Co
 ### System Requirements
 
 - **Python 3.12+**
+- **Node.js 18+** (Linear MCP tools are launched via `npx`)
 - **git**
 - **4 GB+ RAM** recommended (2 GB is marginal with Claude Code running)
 
@@ -37,16 +38,7 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 source ~/.bashrc
 ```
 
-Node.js is **not** required.
-
-### Claude Code Linear Plugin
-
-The Linear plugin is required for workers to manage tickets via Linear MCP.
-
-1. Open Claude Code: `claude`
-2. Type `/plugins`
-3. Select "Discover" and search for "linear"
-4. Install the Linear plugin
+**Node.js** is required — Linear MCP tools are launched via `npx` at runtime.
 
 ### GitHub CLI
 
@@ -78,11 +70,11 @@ ssh-keyscan github.com >> ~/.ssh/known_hosts
 
 ### Linear API Key
 
-Create a personal API key at [Linear Settings → API](https://linear.app/settings/api). You'll add this during setup.
+Create a personal API key at [Linear Settings → API](https://linear.app/settings/api). You'll add this during setup. This key is used for both the supervisor (polling tickets, updating status) and the agent workers (Linear MCP tools are auto-configured via `--mcp-config`).
 
 ## Headless Server Setup
 
-When running on a headless server (no browser), authentication requires three browser-based steps. Each uses a device/authorization code flow — you'll see a URL and code on the server, then complete auth in any browser.
+When running on a headless server (no browser), authentication requires two browser-based steps. Each uses a device/authorization code flow — you'll see a URL and code on the server, then complete auth in any browser.
 
 ### Step 1: Claude Code Auth
 
@@ -94,24 +86,7 @@ claude
 2. Open the URL in a browser on any machine, enter the code
 3. Authentication completes on the server
 
-### Step 2: Linear Plugin Auth
-
-The Linear plugin uses OAuth which requires a browser callback. **Set up an SSH tunnel first:**
-
-```bash
-# From your laptop/desktop (separate terminal):
-ssh -L 3000:localhost:3000 user@server
-```
-
-Then on the server:
-
-1. Open Claude Code: `claude`
-2. Type `/plugins` → Discover → search "linear" → Install
-3. When the OAuth flow starts, a URL is displayed — open it in your local browser
-4. The callback redirects to `localhost:3000`, which tunnels back to the server
-5. Verify: `/plugins` should show the Linear plugin as installed
-
-### Step 3: GitHub CLI Auth
+### Step 2: GitHub CLI Auth
 
 ```bash
 gh auth login
