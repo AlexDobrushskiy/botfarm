@@ -499,6 +499,48 @@ class TestMaybeSendDailySummary:
         headline = supervisor._notifier.notify_daily_summary.call_args[0][0]
         assert "New feature added" in headline
 
+    def test_strips_markdown_code_fences_from_claude_response(self, supervisor):
+        """Claude sometimes wraps JSON in ```json ... ``` — must strip before parsing."""
+        now = datetime.now(timezone.utc)
+        tid = insert_task(
+            supervisor._conn, ticket_id="TST-MD", title="Markdown fence test",
+            project="test-project", slot=1, status="completed",
+        )
+        update_task(
+            supervisor._conn, tid,
+            status="completed",
+            started_at=(now - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+            completed_at=(now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+            pr_url="https://github.com/org/repo/pull/42",
+        )
+        supervisor._conn.commit()
+
+        inner_json = json.dumps({
+            "headline": "Setup wizard shipped",
+            "summary": "* Wizard UI with progress checklist\nhttps://github.com/org/repo/pull/42",
+        })
+        # Claude wraps the JSON in markdown code fences
+        fenced_result = f"```json\n{inner_json}\n```"
+        claude_response = json.dumps({"result": fenced_result})
+
+        with patch("botfarm.supervisor_ops.datetime") as mock_dt, \
+             patch("botfarm.supervisor_ops.subprocess") as mock_subprocess:
+            mock_dt.now.return_value = datetime(2026, 3, 6, 12, 0, tzinfo=timezone.utc)
+            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+            mock_proc = MagicMock()
+            mock_proc.returncode = 0
+            mock_proc.stdout = claude_response
+            mock_subprocess.run.return_value = mock_proc
+            mock_subprocess.TimeoutExpired = TimeoutError
+
+            supervisor._maybe_send_daily_summary()
+
+        supervisor._notifier.notify_daily_summary.assert_called_once()
+        headline, body = supervisor._notifier.notify_daily_summary.call_args[0]
+        assert headline == "Setup wizard shipped"
+        assert "```" not in body
+        assert "Wizard UI" in body
+
     def test_fallback_on_claude_failure(self, supervisor):
         now = datetime.now(timezone.utc)
         tid = insert_task(
