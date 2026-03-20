@@ -4251,7 +4251,7 @@ class TestBuildBugtrackerMcpConfig:
     def test_jira_returns_valid_json(self):
         result = build_bugtracker_mcp_config(
             "jira", "jira_token_123",
-            workspace="acme", jira_username="bot@acme.com",
+            bugtracker_url="https://acme.atlassian.net", jira_username="bot@acme.com",
         )
         parsed = json.loads(result)
         assert "mcpServers" in parsed
@@ -4265,19 +4265,19 @@ class TestBuildBugtrackerMcpConfig:
 
     def test_jira_case_insensitive(self):
         result = build_bugtracker_mcp_config(
-            "Jira", "tok", workspace="site", jira_username="u@x.com",
+            "Jira", "tok", bugtracker_url="https://site.atlassian.net", jira_username="u@x.com",
         )
         parsed = json.loads(result)
         assert "jira" in parsed["mcpServers"]
 
-    def test_jira_missing_workspace_returns_empty(self):
+    def test_jira_missing_url_returns_empty(self):
         assert build_bugtracker_mcp_config(
-            "jira", "tok", workspace="", jira_username="u@x.com",
+            "jira", "tok", bugtracker_url="", jira_username="u@x.com",
         ) == ""
 
     def test_jira_missing_username_returns_empty(self):
         assert build_bugtracker_mcp_config(
-            "jira", "tok", workspace="acme", jira_username="",
+            "jira", "tok", bugtracker_url="https://acme.atlassian.net", jira_username="",
         ) == ""
 
 

@@ -86,7 +86,7 @@ The MCP server is launched automatically as a stdio subprocess for each agent in
 
 | Config field | MCP env var | Description |
 |---|---|---|
-| `bugtracker.workspace` | `JIRA_URL` | Constructed as `https://{workspace}.atlassian.net` |
+| `bugtracker.url` | `JIRA_URL` | Full Jira instance URL (e.g. `https://acme.atlassian.net`) |
 | `identities.coder.jira_email` or `bugtracker.email` | `JIRA_USERNAME` | Email for API authentication |
 | `identities.coder.jira_api_token` or `bugtracker.api_key` | `JIRA_API_TOKEN` | Jira API token |
 
@@ -96,8 +96,9 @@ The MCP server is launched automatically as a stdio subprocess for each agent in
 bugtracker:
   type: jira
   api_key: ${JIRA_API_TOKEN}
-  workspace: my-org           # Jira Cloud site name (e.g. "acme" for acme.atlassian.net)
-  email: bot@example.com      # Email for Jira API authentication
+  url: https://my-org.atlassian.net  # Jira instance URL
+  workspace: my-org                  # Jira Cloud site name (used for ticket poller)
+  email: bot@example.com             # Email for Jira API authentication
 
   # Workflow status names — must match your Jira project's workflow
   todo_status: To Do

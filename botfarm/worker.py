@@ -208,7 +208,7 @@ def build_bugtracker_mcp_config(
     bugtracker_type: str,
     api_key: str,
     *,
-    workspace: str = "",
+    bugtracker_url: str = "",
     jira_username: str = "",
 ) -> str:
     """Generate MCP config JSON for the bugtracker.
@@ -216,9 +216,9 @@ def build_bugtracker_mcp_config(
     Returns inline JSON string suitable for ``--mcp-config``.
     Supports Linear and Jira; other trackers return an empty string.
 
-    For Jira, *workspace* is the Atlassian site name (e.g. ``"acme"``
-    for ``acme.atlassian.net``) and *jira_username* is the email used
-    for API authentication.
+    For Jira, *bugtracker_url* is the full Jira instance URL (e.g.
+    ``"https://acme.atlassian.net"``) and *jira_username* is the email
+    used for API authentication.
     """
 
     bt = bugtracker_type.lower()
@@ -234,7 +234,11 @@ def build_bugtracker_mcp_config(
         }
         return json.dumps(config)
     if bt == "jira":
-        if not workspace or not jira_username:
+        if not bugtracker_url or not jira_username:
+            logger.warning(
+                "Jira MCP config skipped: missing %s",
+                "bugtracker_url" if not bugtracker_url else "jira_username",
+            )
             return ""
         config = {
             "mcpServers": {
@@ -242,7 +246,7 @@ def build_bugtracker_mcp_config(
                     "command": "uvx",
                     "args": ["mcp-atlassian"],
                     "env": {
-                        "JIRA_URL": f"https://{workspace}.atlassian.net",
+                        "JIRA_URL": bugtracker_url,
                         "JIRA_USERNAME": jira_username,
                         "JIRA_API_TOKEN": api_key,
                     },
@@ -394,7 +398,7 @@ def run_pipeline(
     merge_main_before_resume: bool = False,
     bugtracker_type: str = "Linear",
     bugtracker_api_key: str = "",
-    bugtracker_workspace: str = "",
+    bugtracker_url: str = "",
     bugtracker_email: str = "",
 ) -> PipelineResult:
     """Execute the full implement→review→fix→pr_checks→merge pipeline.
@@ -455,7 +459,7 @@ def run_pipeline(
         effective_email = ""
     mcp_config = build_bugtracker_mcp_config(
         bugtracker_type, effective_tracker_key,
-        workspace=bugtracker_workspace, jira_username=effective_email,
+        bugtracker_url=bugtracker_url, jira_username=effective_email,
     ) if effective_tracker_key else ""
 
     # Load pipeline template and derive configuration
