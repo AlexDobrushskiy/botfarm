@@ -954,6 +954,7 @@ class TestSetupWizardPage:
         # contain "Setup Complete" as a string literal.
         html_before_script = resp.text.split("<script>")[0]
         assert "Setup Complete" not in html_before_script
+        assert "Go to Dashboard" not in html_before_script
 
     def test_shows_project_count(self, db_file, tmp_path, monkeypatch):
         repo = tmp_path / "myrepo"
@@ -1126,7 +1127,7 @@ class TestSetupPreflightPartial:
 # ---------------------------------------------------------------------------
 
 class TestSetupCompleteEndpoint:
-    def test_returns_preflight_triggered(self, db_file):
+    def test_returns_preflight_not_triggered_without_callback(self, db_file):
         config = _make_config(api_key="key123", bt_type="linear")
         app = create_app(db_path=db_file, botfarm_config=config)
         client = TestClient(app)
@@ -1134,7 +1135,7 @@ class TestSetupCompleteEndpoint:
         resp = client.post("/api/setup/complete")
         assert resp.status_code == 200
         data = resp.json()
-        assert data["preflight_triggered"] is True
+        assert data["preflight_triggered"] is False
 
     def test_triggers_preflight_callback(self, db_file):
         called = []
@@ -1172,7 +1173,23 @@ class TestSetupCompleteEndpoint:
 
         resp = client.post("/api/setup/complete")
         assert resp.status_code == 200
-        assert resp.json()["preflight_triggered"] is True
+        assert resp.json()["preflight_triggered"] is False
+
+    def test_callback_exception_returns_not_triggered(self, db_file):
+        def _boom():
+            raise RuntimeError("preflight exploded")
+
+        config = _make_config(api_key="key123", bt_type="linear")
+        app = create_app(
+            db_path=db_file,
+            botfarm_config=config,
+            on_rerun_preflight=_boom,
+        )
+        client = TestClient(app)
+
+        resp = client.post("/api/setup/complete")
+        assert resp.status_code == 200
+        assert resp.json()["preflight_triggered"] is False
 
 
 # ---------------------------------------------------------------------------

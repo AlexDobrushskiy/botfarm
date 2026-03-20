@@ -288,13 +288,15 @@ def api_setup_complete(request: Request):
 
     # Trigger preflight re-run if callback is available
     cb = app.state.on_rerun_preflight
+    triggered = False
     if cb is not None:
         try:
             cb()
+            triggered = True
         except Exception:
             logger.exception("Failed to trigger preflight re-run from setup complete")
 
-    return JSONResponse({"preflight_triggered": True})
+    return JSONResponse({"preflight_triggered": triggered})
 
 
 @router.get("/partials/setup-preflight", response_class=HTMLResponse)
