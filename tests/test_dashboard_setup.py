@@ -312,7 +312,7 @@ class TestValidateBugtrackerApiKey:
             "botfarm.bugtracker.create_client",
             lambda **kwargs: FakeClient(),
         )
-        result = _validate_bugtracker_api_key("linear", "lin_api_test", "my-ws")
+        result = _validate_bugtracker_api_key("linear", "lin_api_test")
         assert result is None
 
     def test_invalid_linear_key(self, monkeypatch):
@@ -326,12 +326,12 @@ class TestValidateBugtrackerApiKey:
             "botfarm.bugtracker.create_client",
             lambda **kwargs: FailClient(),
         )
-        result = _validate_bugtracker_api_key("linear", "bad_key", "my-ws")
+        result = _validate_bugtracker_api_key("linear", "bad_key")
         assert result is not None
         assert "Invalid API key" in result
 
     def test_unknown_type(self):
-        result = _validate_bugtracker_api_key("unknown", "key", "ws")
+        result = _validate_bugtracker_api_key("unknown", "key")
         assert result is not None
         assert "Unknown bugtracker type" in result
 

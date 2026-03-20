@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import html
 import logging
 import os
@@ -173,7 +174,6 @@ def _feedback(msg: str, level: str = "success", status: int = 200) -> HTMLRespon
 def _validate_bugtracker_api_key(
     bt_type: str,
     api_key: str,
-    workspace: str,
     *,
     jira_url: str = "",
     jira_email: str = "",
@@ -182,7 +182,7 @@ def _validate_bugtracker_api_key(
 
     Returns ``None`` on success, or an error message string on failure.
     """
-    from botfarm.bugtracker import BugtrackerError, create_client
+    from botfarm.bugtracker import create_client
 
     try:
         if bt_type == "linear":
@@ -195,8 +195,6 @@ def _validate_bugtracker_api_key(
             return f"Unknown bugtracker type: {bt_type!r}"
 
         client.get_viewer_id()
-    except BugtrackerError as exc:
-        return f"API key validation failed: {exc}"
     except Exception as exc:
         return f"API key validation failed: {exc}"
     return None
@@ -247,8 +245,9 @@ async def setup_bugtracker(request: Request):
         )
 
     # --- Validate API key by calling the bugtracker ---
-    validation_error = _validate_bugtracker_api_key(
-        bt_type, api_key, workspace,
+    validation_error = await asyncio.to_thread(
+        _validate_bugtracker_api_key,
+        bt_type, api_key,
         jira_url=jira_url, jira_email=jira_email,
     )
     if validation_error:
@@ -267,38 +266,47 @@ async def setup_bugtracker(request: Request):
             f"Failed to write .env file: {html.escape(str(exc))}", "error", 500,
         )
 
-    # Write bugtracker section to config.yaml
-    if config_path and config_path.exists():
-        try:
-            raw = config_path.read_text()
-            data = yaml.safe_load(raw)
-            if not isinstance(data, dict):
-                data = {}
-            bt_data: dict = data.setdefault("bugtracker", {})
-            bt_data["type"] = bt_type
-            bt_data["workspace"] = workspace
-            bt_data["api_key"] = f"${{{env_var}}}"
-            if bt_type == "jira":
-                bt_data["url"] = jira_url
-                bt_data["email"] = jira_email
-            write_yaml_atomic(config_path, data)
-        except Exception:
-            logger.exception("Failed to write bugtracker config to YAML")
-            return _feedback(
-                "API key saved to .env but failed to update config.yaml.",
-                "warning", 200,
-            )
-
     # --- Update in-memory config ---
-    cfg.bugtracker.type = bt_type
-    cfg.bugtracker.workspace = workspace
-    cfg.bugtracker.api_key = api_key
-    if bt_type == "jira":
-        from botfarm.config import JiraBugtrackerConfig
+    from botfarm.config import JiraBugtrackerConfig, LinearBugtrackerConfig
 
-        if isinstance(cfg.bugtracker, JiraBugtrackerConfig):
-            cfg.bugtracker.url = jira_url
-            cfg.bugtracker.email = jira_email
+    if bt_type == "jira":
+        cfg.bugtracker = JiraBugtrackerConfig(
+            type=bt_type, workspace=workspace, api_key=api_key,
+            url=jira_url, email=jira_email,
+        )
+    else:
+        cfg.bugtracker = LinearBugtrackerConfig(
+            type=bt_type, workspace=workspace, api_key=api_key,
+        )
+
+    # Write bugtracker section to config.yaml
+    if not config_path or not config_path.exists():
+        logger.warning("No config.yaml found at %s — skipping YAML write", config_path)
+        return _feedback(
+            "API key saved to .env but config.yaml could not be updated "
+            "(file not found). Bugtracker settings may not persist across restarts.",
+            "warning", 200,
+        )
+
+    try:
+        raw = config_path.read_text()
+        data = yaml.safe_load(raw)
+        if not isinstance(data, dict):
+            data = {}
+        bt_data: dict = data.setdefault("bugtracker", {})
+        bt_data["type"] = bt_type
+        bt_data["workspace"] = workspace
+        bt_data["api_key"] = f"${{{env_var}}}"
+        if bt_type == "jira":
+            bt_data["url"] = jira_url
+            bt_data["email"] = jira_email
+        write_yaml_atomic(config_path, data)
+    except Exception:
+        logger.exception("Failed to write bugtracker config to YAML")
+        return _feedback(
+            "API key saved to .env but failed to update config.yaml.",
+            "warning", 200,
+        )
 
     return _feedback("Bugtracker configured successfully.")
 
@@ -350,7 +358,7 @@ async def setup_github(request: Request):
         return _feedback("GitHub token is required.", "error", 422)
 
     # Validate the token
-    validation_error = _validate_github_token(token)
+    validation_error = await asyncio.to_thread(_validate_github_token, token)
     if validation_error:
         return _feedback(html.escape(validation_error), "error", 422)
 
