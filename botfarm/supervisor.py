@@ -489,6 +489,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
             for sid in project.slots:
                 self._slot_manager.register_slot(project.name, sid)
             self._devserver_mgr.register_project(project)
+        self._slot_manager.load()
 
         self._bugtracker_client = create_client(fresh)
         self._init_coder_client(fresh)
