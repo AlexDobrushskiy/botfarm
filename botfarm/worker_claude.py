@@ -314,6 +314,7 @@ def run_claude_streaming(
     env: dict[str, str] | None = None,
     on_context_fill: ContextFillCallback | None = None,
     timeout: float | None = None,
+    mcp_config: str | None = None,
 ) -> ClaudeResult:
     """Run ``claude`` with streaming output and per-turn context fill callbacks.
 
@@ -349,6 +350,8 @@ def run_claude_streaming(
         "--dangerously-skip-permissions",
         "--max-turns", str(max_turns),
     ]
+    if mcp_config:
+        cmd.extend(["--mcp-config", mcp_config])
     logger.info("Running claude (%s, streaming) with max_turns=%d in %s", claude_bin, max_turns, cwd)
 
     subprocess_env = None
@@ -514,6 +517,7 @@ def _invoke_claude(
     env: dict[str, str] | None = None,
     on_context_fill: ContextFillCallback | None = None,
     timeout: float | None = None,
+    mcp_config: str | None = None,
 ) -> ClaudeResult:
     """Run Claude via the streaming runner.
 
@@ -525,7 +529,7 @@ def _invoke_claude(
     return run_claude_streaming(
         prompt, cwd=cwd, max_turns=max_turns,
         log_file=log_file, env=env, on_context_fill=on_context_fill,
-        timeout=timeout,
+        timeout=timeout, mcp_config=mcp_config,
     )
 
 _NO_PR_NEEDED_RE = re.compile(r"NO_PR_NEEDED:\s*(.+)", re.IGNORECASE | re.DOTALL)

@@ -68,6 +68,7 @@ class AgentAdapter(Protocol):
         env: dict[str, str] | None = None,
         timeout: float | None = None,
         on_context_fill: ContextFillCallback | None = None,
+        mcp_config: str | None = None,
     ) -> AgentResult:
         """Execute the agent with the given prompt and return a unified result."""
         ...

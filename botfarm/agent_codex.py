@@ -60,6 +60,7 @@ class CodexAdapter:
         env: dict[str, str] | None = None,
         timeout: float | None = None,
         on_context_fill: ContextFillCallback | None = None,
+        mcp_config: str | None = None,
     ) -> AgentResult:
         effective_model = model or self._model
         codex_result = run_codex_streaming(

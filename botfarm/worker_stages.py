@@ -101,6 +101,7 @@ def _run_agent_stage(
     timeout: float | None = None,
     on_context_fill: ContextFillCallback | None = None,
     bugtracker_type: str = "Linear",
+    mcp_config: str = "",
 ) -> StageResult:
     """Generic runner for any agent-executor stage using its DB template.
 
@@ -121,6 +122,7 @@ def _run_agent_stage(
         env=env,
         timeout=timeout,
         on_context_fill=on_context_fill if adapter.supports_context_fill else None,
+        mcp_config=mcp_config or None,
     )
 
     if result.is_error:
@@ -165,6 +167,7 @@ def _run_claude_stage(
     log_file: Path | None = None,
     env: dict[str, str] | None = None,
     on_context_fill: ContextFillCallback | None = None,
+    mcp_config: str = "",
 ) -> StageResult:
     """Backward-compat wrapper — runs a Claude stage via :func:`_invoke_claude`.
 
@@ -175,6 +178,7 @@ def _run_claude_stage(
     result = _invoke_claude(
         prompt, cwd=cwd, max_turns=max_turns, log_file=log_file,
         env=env, on_context_fill=on_context_fill,
+        mcp_config=mcp_config or None,
     )
     ar = _claude_result_to_agent_result(result)
 
@@ -223,6 +227,7 @@ def _run_implement(
     shared_mem_path: Path | None = None,
     prior_context: str = "",
     bugtracker_type: str = "Linear",
+    mcp_config: str = "",
 ) -> StageResult:
     """IMPLEMENT stage — Claude Code implements the ticket and creates a PR."""
     if stage_tpl is not None:
@@ -235,6 +240,7 @@ def _run_implement(
             stage_tpl, cwd=cwd, max_turns=max_turns,
             prompt_vars=prompt_vars,
             log_file=log_file, env=env, on_context_fill=on_context_fill,
+            mcp_config=mcp_config,
         )
     # Legacy fallback
     prompt = _build_implement_prompt(ticket_id, ticket_labels, bugtracker_type)
@@ -252,6 +258,7 @@ def _run_implement(
     claude_result = _invoke_claude(
         prompt, cwd=cwd, max_turns=max_turns, log_file=log_file,
         env=env, on_context_fill=on_context_fill,
+        mcp_config=mcp_config or None,
     )
     ar = _claude_result_to_agent_result(claude_result)
 
@@ -479,6 +486,7 @@ def _run_review(
     codex_model: str | None = None,
     codex_reasoning_effort: str | None = None,
     review_iteration: int = 1,
+    mcp_config: str = "",
 ) -> StageResult:
     """REVIEW stage — reviews the PR and posts comments.
 
@@ -511,6 +519,7 @@ def _run_review(
                 stage_tpl, adapter, cwd=cwd, max_turns=max_turns,
                 prompt_vars=prompt_vars,
                 log_file=log_file, env=env, on_context_fill=on_context_fill,
+                mcp_config=mcp_config,
             )
         if stage_tpl is not None:
             prompt_vars = {
@@ -524,6 +533,7 @@ def _run_review(
                 stage_tpl, cwd=cwd, max_turns=max_turns,
                 prompt_vars=prompt_vars,
                 log_file=log_file, env=env, on_context_fill=on_context_fill,
+                mcp_config=mcp_config,
             )
         # Legacy fallback
         prompt = _build_claude_review_prompt(
@@ -532,6 +542,7 @@ def _run_review(
         claude_result = _invoke_claude(
             prompt, cwd=cwd, max_turns=max_turns, log_file=log_file,
             env=env, on_context_fill=on_context_fill,
+            mcp_config=mcp_config or None,
         )
         ar = _claude_result_to_agent_result(claude_result)
         if ar.is_error:
@@ -585,10 +596,12 @@ def _run_review(
                 log_file=log_file,
                 env=env,
                 on_context_fill=on_context_fill if adapter.supports_context_fill else None,
+                mcp_config=mcp_config or None,
             )
         cr = _invoke_claude(
             prompt, cwd=cwd, max_turns=max_turns, log_file=log_file,
             env=env, on_context_fill=on_context_fill,
+            mcp_config=mcp_config or None,
         )
         return _claude_result_to_agent_result(cr)
 
@@ -753,6 +766,7 @@ def _run_fix(
     stage_tpl: StageTemplate | None = None,
     codex_enabled: bool = False,
     shared_mem_path: Path | None = None,
+    mcp_config: str = "",
 ) -> StageResult:
     """FIX stage — Fresh Claude Code addresses review comments and pushes fixes."""
     owner, repo, number = _parse_pr_url(pr_url)
@@ -769,6 +783,7 @@ def _run_fix(
             stage_tpl, cwd=cwd, max_turns=max_turns,
             prompt_vars=prompt_vars,
             log_file=log_file, env=env, on_context_fill=on_context_fill,
+            mcp_config=mcp_config,
         )
     # Legacy fallback
     prompt = (
@@ -803,6 +818,7 @@ def _run_fix(
     claude_result = _invoke_claude(
         prompt, cwd=cwd, max_turns=max_turns, log_file=log_file,
         env=env, on_context_fill=on_context_fill,
+        mcp_config=mcp_config or None,
     )
     ar = _claude_result_to_agent_result(claude_result)
 
@@ -884,6 +900,7 @@ def _run_ci_fix(
     on_context_fill: ContextFillCallback | None = None,
     stage_tpl: StageTemplate | None = None,
     shared_mem_path: Path | None = None,
+    mcp_config: str = "",
 ) -> StageResult:
     """CI FIX stage — Claude Code fixes CI failures using CI output context."""
     if stage_tpl is not None:
@@ -897,6 +914,7 @@ def _run_ci_fix(
             stage_tpl, cwd=cwd, max_turns=max_turns,
             prompt_vars=prompt_vars,
             log_file=log_file, env=env, on_context_fill=on_context_fill,
+            mcp_config=mcp_config,
         )
     # Legacy fallback
     prompt = (
@@ -914,6 +932,7 @@ def _run_ci_fix(
     claude_result = _invoke_claude(
         prompt, cwd=cwd, max_turns=max_turns, log_file=log_file,
         env=env, on_context_fill=on_context_fill,
+        mcp_config=mcp_config or None,
     )
     ar = _claude_result_to_agent_result(claude_result)
 
@@ -1017,12 +1036,14 @@ def _run_resolve_conflict(
     env: dict[str, str] | None = None,
     on_context_fill: ContextFillCallback | None = None,
     stage_tpl: StageTemplate | None = None,
+    mcp_config: str = "",
 ) -> StageResult:
     """RESOLVE_CONFLICT stage — Claude merges main into feature branch."""
     if stage_tpl is not None:
         return _run_claude_stage(
             stage_tpl, cwd=cwd, max_turns=max_turns,
             log_file=log_file, env=env, on_context_fill=on_context_fill,
+            mcp_config=mcp_config,
         )
     # Legacy fallback
     prompt = (
@@ -1039,6 +1060,7 @@ def _run_resolve_conflict(
     claude_result = _invoke_claude(
         prompt, cwd=cwd, max_turns=max_turns, log_file=log_file,
         env=env, on_context_fill=on_context_fill,
+        mcp_config=mcp_config or None,
     )
     ar = _claude_result_to_agent_result(claude_result)
 
@@ -1187,6 +1209,7 @@ def _execute_stage(
     codex_log_file: Path | None = None,
     review_iteration: int = 1,
     bugtracker_type: str = "Linear",
+    mcp_config: str = "",
 ) -> StageResult:
     """Dispatch to the appropriate stage runner.
 
@@ -1240,6 +1263,7 @@ def _execute_stage(
                 codex_model=codex_model,
                 codex_reasoning_effort=codex_reasoning_effort,
                 review_iteration=review_iteration,
+                mcp_config=mcp_config,
             )
 
         # All other agent stages use the generic runner.
@@ -1263,6 +1287,7 @@ def _execute_stage(
             prompt_vars=prompt_vars,
             log_file=log_file, env=env, on_context_fill=on_context_fill,
             bugtracker_type=bugtracker_type,
+            mcp_config=mcp_config,
         )
 
     # --- Legacy name-based routing (no DB template) ---
@@ -1274,6 +1299,7 @@ def _execute_stage(
             shared_mem_path=shared_mem_path,
             prior_context=prior_context,
             bugtracker_type=bugtracker_type,
+            mcp_config=mcp_config,
         )
     elif stage == "review":
         if not pr_url:
@@ -1287,6 +1313,7 @@ def _execute_stage(
             codex_model=codex_model,
             codex_reasoning_effort=codex_reasoning_effort,
             review_iteration=review_iteration,
+            mcp_config=mcp_config,
         )
     elif stage == "fix":
         if not pr_url:
@@ -1296,6 +1323,7 @@ def _execute_stage(
             env=env, on_context_fill=on_context_fill,
             codex_enabled=codex_enabled,
             shared_mem_path=shared_mem_path,
+            mcp_config=mcp_config,
         )
     elif stage == "pr_checks":
         if not pr_url:
@@ -1312,6 +1340,7 @@ def _execute_stage(
         return _run_resolve_conflict(
             pr_url or "", cwd=cwd, max_turns=max_turns, log_file=log_file,
             env=env, on_context_fill=on_context_fill, stage_tpl=stage_tpl,
+            mcp_config=mcp_config,
         )
     else:
         raise ValueError(f"Unknown stage: {stage}")

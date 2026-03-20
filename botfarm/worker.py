@@ -203,6 +203,31 @@ def build_reviewer_env(
     return env
 
 
+def build_bugtracker_mcp_config(
+    bugtracker_type: str,
+    api_key: str,
+) -> str:
+    """Generate MCP config JSON for the bugtracker.
+
+    Returns inline JSON string suitable for ``--mcp-config``.
+    Currently supports Linear; other trackers return an empty string.
+    """
+    import json
+
+    bt = bugtracker_type.lower()
+    if bt == "linear":
+        config = {
+            "mcpServers": {
+                "linear": {
+                    "command": "npx",
+                    "args": ["-y", "@tacticlaunch/mcp-linear"],
+                    "env": {"LINEAR_API_TOKEN": api_key},
+                }
+            }
+        }
+        return json.dumps(config)
+    return ""
+
 
 # ---------------------------------------------------------------------------
 # Pipeline orchestrator
@@ -344,6 +369,7 @@ def run_pipeline(
     prior_context: str = "",
     merge_main_before_resume: bool = False,
     bugtracker_type: str = "Linear",
+    bugtracker_api_key: str = "",
 ) -> PipelineResult:
     """Execute the full implement→review→fix→pr_checks→merge pipeline.
 
@@ -390,6 +416,12 @@ def run_pipeline(
     ident = identities or IdentitiesConfig()
     coder_env = build_coder_env(ident, slot_db_path) or None
     reviewer_env = build_reviewer_env(ident, slot_db_path) or None
+
+    # Build MCP config for bugtracker tools.
+    # Prefer the coder identity's tracker key so operations appear under the
+    # coder bot; fall back to the shared bugtracker key.
+    effective_tracker_key = ident.coder.tracker_api_key or bugtracker_api_key
+    mcp_config = build_bugtracker_mcp_config(bugtracker_type, effective_tracker_key) if effective_tracker_key else ""
 
     # Load pipeline template and derive configuration
     (stages, turns_cfg, eff_max_review_iterations, eff_max_ci_retries,
@@ -472,6 +504,7 @@ def run_pipeline(
         coder_env=coder_env,
         reviewer_env=reviewer_env,
         shared_mem_path=shared_mem_dir,
+        mcp_config=mcp_config or "",
         codex_config=_CodexReviewerConfig(
             enabled=codex_ac.enabled,
             model=codex_ac.model,
@@ -1239,6 +1272,7 @@ class _PipelineContext:
     coder_env: dict[str, str] | None = None
     reviewer_env: dict[str, str] | None = None
     shared_mem_path: Path | None = None
+    mcp_config: str = ""
     codex_config: _CodexReviewerConfig = field(default_factory=_CodexReviewerConfig)
     registry: AdapterRegistry | None = None
     max_review_iterations: int = 3
@@ -1531,6 +1565,7 @@ class _PipelineContext:
                 shared_mem_path=self.shared_mem_path,
                 prior_context=self.prior_context,
                 bugtracker_type=self.bugtracker_type,
+                mcp_config=self.mcp_config,
                 **codex_kwargs,
             )
         except Exception as exc:
@@ -1823,6 +1858,7 @@ def _run_ci_retry_loop(
                 on_context_fill=_ci_fix_on_fill,
                 stage_tpl=ci_fix_tpl,
                 shared_mem_path=ctx.shared_mem_path,
+                mcp_config=ctx.mcp_config,
             )
         except Exception as exc:
             logger.error("CI fix stage raised: %s", exc)
