@@ -1,0 +1,34 @@
+<table>
+    <thead>
+        <tr>
+            <th style="width: 2.5rem;">Status</th>
+            <th>Step</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for step in steps %}
+        <tr>
+            <td style="text-align: center; font-size: 1.1rem;">
+                {% if step.done %}
+                    <span style="color: #22c55e;" title="Complete">&#10003;</span>
+                {% else %}
+                    <span style="color: #ef4444;" title="Incomplete">&#10007;</span>
+                {% endif %}
+            </td>
+            <td>{{ step.label }}</td>
+        </tr>
+    {% endfor %}
+    {% if not steps %}
+        <tr>
+            <td colspan="2" style="text-align: center; color: var(--pico-muted-color);">
+                No configuration loaded.
+            </td>
+        </tr>
+    {% endif %}
+    </tbody>
+</table>
+{% if setup_complete %}
+<p style="color: #22c55e; font-weight: 600; margin-top: 0.5rem;">
+    &#10003; Setup complete &mdash; all steps finished.
+</p>
+{% endif %}
