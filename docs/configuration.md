@@ -309,7 +309,7 @@ How each field is used:
 | `coder.ssh_key_path` | Used in `GIT_SSH_COMMAND` for git push (must be an absolute or `~`-prefixed path) |
 | `coder.git_author_name` | Set as `GIT_AUTHOR_NAME` and `GIT_COMMITTER_NAME` on commits during implement/fix/pr_checks/merge stages |
 | `coder.git_author_email` | Set as `GIT_AUTHOR_EMAIL` and `GIT_COMMITTER_EMAIL` on commits during implement/fix/pr_checks/merge stages |
-| `coder.tracker_api_key` | Optional separate bugtracker API key for the coder — when set, overrides `bugtracker.api_key` for agent MCP tools in coder stages |
+| `coder.tracker_api_key` | Optional separate bugtracker API key for the coder — when set, overrides `bugtracker.api_key` for agent MCP tools |
 | `reviewer.github_token` | Set as `GH_TOKEN` for `gh` CLI during review stages |
 | `reviewer.tracker_api_key` | Optional separate bugtracker API key for the reviewer |
 
