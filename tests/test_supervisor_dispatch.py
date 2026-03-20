@@ -132,6 +132,12 @@ class TestSetupMode:
         mock_poller = MagicMock()
         mock_poller.project_name = "my-project"
 
+        mock_register = MagicMock()
+        sup._devserver_mgr.register_project = mock_register
+
+        # Set a sentinel to verify _git_env gets rebuilt
+        sup._git_env = "stale-sentinel"
+
         with patch("botfarm.config.load_config", return_value=complete_config) as mock_load, \
              patch("botfarm.supervisor.create_pollers", return_value=[mock_poller]), \
              patch("botfarm.supervisor.create_client", return_value=MagicMock()):
@@ -142,6 +148,10 @@ class TestSetupMode:
         assert "my-project" in sup._pollers
         assert sup._bugtracker_client is not None
         assert sup._slot_manager.get_slot("my-project", 1) is not None
+        # Verify git_env was rebuilt from fresh config (no longer the sentinel)
+        assert sup._git_env != "stale-sentinel"
+        # Verify devserver projects were registered
+        mock_register.assert_called_once()
         mock_load.assert_called_once()
 
 

@@ -178,26 +178,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
             # Bugtracker client for capacity monitoring (uses owner API key)
             self._bugtracker_client = create_client(config)
 
-            # Coder bugtracker self-assignment
-            if isinstance(config.bugtracker, JiraBugtrackerConfig):
-                coder_key = config.identities.coder.jira_api_token
-                coder_email: str | None = config.identities.coder.jira_email or config.bugtracker.email
-            else:
-                coder_key = config.identities.coder.tracker_api_key
-                coder_email = None
-            if coder_key:
-                try:
-                    coder_client = create_client(config, api_key=coder_key, email=coder_email)
-                    self._coder_viewer_id: str | None = coder_client.get_viewer_id()
-                    self._coder_tracker: BugtrackerClient | None = coder_client
-                    logger.info("Cached coder bugtracker viewer ID: %s", self._coder_viewer_id)
-                except Exception:
-                    logger.warning("Failed to resolve coder viewer ID — auto-assignment disabled")
-                    self._coder_viewer_id = None
-                    self._coder_tracker: BugtrackerClient | None = None
-            else:
-                self._coder_viewer_id = None
-                self._coder_tracker = None
+            self._init_coder_client(config)
 
         self._slot_manager.load()
 
@@ -453,6 +434,28 @@ class Supervisor(RecoveryMixin, OperationsMixin):
         if manual_rerun or elapsed >= self._PREFLIGHT_RERUN_INTERVAL:
             self._rerun_preflight()
 
+    def _init_coder_client(self, config: BotfarmConfig) -> None:
+        """Initialise coder bugtracker client for self-assignment."""
+        if isinstance(config.bugtracker, JiraBugtrackerConfig):
+            coder_key = config.identities.coder.jira_api_token
+            coder_email: str | None = config.identities.coder.jira_email or config.bugtracker.email
+        else:
+            coder_key = config.identities.coder.tracker_api_key
+            coder_email = None
+        if coder_key:
+            try:
+                coder_client = create_client(config, api_key=coder_key, email=coder_email)
+                self._coder_viewer_id: str | None = coder_client.get_viewer_id()
+                self._coder_tracker: BugtrackerClient | None = coder_client
+                logger.info("Cached coder bugtracker viewer ID: %s", self._coder_viewer_id)
+            except Exception:
+                logger.warning("Failed to resolve coder viewer ID — auto-assignment disabled")
+                self._coder_viewer_id = None
+                self._coder_tracker = None
+        else:
+            self._coder_viewer_id = None
+            self._coder_tracker = None
+
     def _try_exit_setup_mode(self) -> bool:
         """Reload config from disk and initialise runtime components if setup is complete.
 
@@ -477,6 +480,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
         logger.info("Config updated — leaving setup mode")
         self._config = fresh
         self._projects = {p.name: p for p in fresh.projects}
+        self._git_env = build_git_env(fresh.identities)
 
         pollers = create_pollers(fresh)
         self._pollers = {p.project_name: p for p in pollers}
@@ -484,29 +488,10 @@ class Supervisor(RecoveryMixin, OperationsMixin):
         for project in fresh.projects:
             for sid in project.slots:
                 self._slot_manager.register_slot(project.name, sid)
+            self._devserver_mgr.register_project(project)
 
         self._bugtracker_client = create_client(fresh)
-
-        # Coder bugtracker self-assignment
-        if isinstance(fresh.bugtracker, JiraBugtrackerConfig):
-            coder_key = fresh.identities.coder.jira_api_token
-            coder_email: str | None = fresh.identities.coder.jira_email or fresh.bugtracker.email
-        else:
-            coder_key = fresh.identities.coder.tracker_api_key
-            coder_email = None
-        if coder_key:
-            try:
-                coder_client = create_client(fresh, api_key=coder_key, email=coder_email)
-                self._coder_viewer_id = coder_client.get_viewer_id()
-                self._coder_tracker = coder_client
-                logger.info("Cached coder bugtracker viewer ID: %s", self._coder_viewer_id)
-            except Exception:
-                logger.warning("Failed to resolve coder viewer ID — auto-assignment disabled")
-                self._coder_viewer_id = None
-                self._coder_tracker = None
-        else:
-            self._coder_viewer_id = None
-            self._coder_tracker = None
+        self._init_coder_client(fresh)
 
         self._usage_poller.restore_backoff_state(self._conn)
 
