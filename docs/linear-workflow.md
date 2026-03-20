@@ -51,7 +51,7 @@ The supervisor handles Linear status transitions automatically. The agent focuse
 3. Spawns the worker agent
 
 **What the agent does:**
-1. Fetch ticket details via Linear MCP (`get_issue`)
+1. Fetch ticket details via Linear MCP tools (auto-configured from `bugtracker.api_key`)
 2. Get the branch name from the `gitBranchName` field in the issue response
 3. `git fetch origin && git checkout -b <gitBranchName> origin/main`
 4. Delete previous working branch if it exists (NEVER delete: `main`, `slot-1-placeholder`)
@@ -75,7 +75,7 @@ The supervisor handles Linear status transitions automatically. The agent focuse
 Investigation tickets use a different workflow — no PR, no code changes expected.
 
 **Agent workflow:**
-1. Fetch ticket details via Linear MCP
+1. Fetch ticket details via Linear MCP tools
 2. Research the topic (read code, search docs, analyze architecture)
 3. Post findings as a Linear comment on the ticket
 4. Create follow-up tickets based on findings (implementation or further investigation)

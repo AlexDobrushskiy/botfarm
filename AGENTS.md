@@ -41,7 +41,7 @@ Key patterns:
 - Workers run as subprocesses; communicate results via `multiprocessing.Queue`
 - All state persists to SQLite (`~/.botfarm/botfarm.db`) after every mutation — supervisor survives crashes
 - Usage limits pause slots mid-pipeline and resume from interrupted stage
-- Claude invoked via `claude -p --output-format json` subprocess
+- Claude invoked via `claude -p --output-format json --mcp-config <temp-file>` subprocess (MCP config provides bugtracker tools)
 
 Design principle — no-restart operations:
 - Users should never need to restart the supervisor for routine operational changes (adding collaborators, fixing credentials, config tweaks)

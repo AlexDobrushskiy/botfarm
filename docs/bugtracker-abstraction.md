@@ -160,6 +160,18 @@ Stage template prompts use `{bugtracker_type}` to reference the tracker type. Wh
 
 See `docs/jira-workflow.md` for the agent-facing workflow guide.
 
+### Agent MCP Tools
+
+Botfarm auto-configures MCP tools for agent workers. The `build_bugtracker_mcp_config()` function in `worker.py` generates a JSON config that is written to a temp file and passed to the Claude subprocess via `--mcp-config`. This gives agents direct access to bugtracker MCP tools (e.g. fetching ticket details, creating issues, posting comments) without requiring any plugin installation.
+
+The API key used for MCP config follows this priority:
+1. `identities.coder.tracker_api_key` (per-identity key)
+2. `bugtracker.api_key` (shared key)
+
+Supported MCP servers:
+- **Linear:** `@tacticlaunch/mcp-linear` via `npx`, authenticated with `LINEAR_API_TOKEN`
+- **Jira:** `mcp-atlassian` via `uvx`, authenticated with `JIRA_URL` + `JIRA_USERNAME` + `JIRA_API_TOKEN`
+
 ## Shared Types
 
 All adapters use the shared types from `botfarm/bugtracker/types.py`:
