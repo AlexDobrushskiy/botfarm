@@ -1111,3 +1111,11 @@ class TestRunSetupMode:
         config_arg = MockSup.call_args[0][0]
         assert config_arg.dashboard.enabled is True
         assert config_arg.dashboard.host == "127.0.0.1"
+
+    def test_explicit_config_path_errors_when_missing(self, runner, tmp_path):
+        """An explicit --config path that doesn't exist raises an error instead of auto-creating."""
+        missing = tmp_path / "nonexistent" / "conifg.yaml"
+        result = runner.invoke(main, ["run", "--config", str(missing)])
+        assert result.exit_code != 0
+        assert "Config file not found" in result.output
+        assert not missing.exists()

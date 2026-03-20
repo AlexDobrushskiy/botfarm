@@ -85,6 +85,64 @@ class TestSetupMode:
         assert exit_code == 0
         assert sup._degraded is True
 
+    def test_rerun_preflight_skips_when_still_in_setup_mode(self, setup_supervisor, tmp_path):
+        """_rerun_preflight returns early when config is still incomplete."""
+        sup = setup_supervisor
+        # Write a still-incomplete config to disk so reload finds it
+        cfg_path = tmp_path / "config.yaml"
+        cfg_path.write_text("bugtracker:\n  type: linear\n  api_key: ''\n  poll_interval_seconds: 10\n")
+        sup._config.source_path = str(cfg_path)
+        sup._degraded = True
+        sup._last_preflight_rerun = 0
+
+        with patch("botfarm.supervisor.run_preflight_checks") as mock_pf:
+            sup._rerun_preflight()
+            # Preflight should NOT be called — still in setup mode
+            mock_pf.assert_not_called()
+        assert sup._degraded is True
+
+    def test_try_exit_setup_mode_initialises_components(self, tmp_path, monkeypatch):
+        """_try_exit_setup_mode reloads config and backfills pollers/client."""
+        monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "test.db"))
+        monkeypatch.setattr(
+            Supervisor, "_slot_db_path",
+            staticmethod(lambda pn, sid: str(tmp_path / "slots" / f"{pn}-{sid}" / "botfarm.db")),
+        )
+        config = BotfarmConfig(
+            projects=[],
+            bugtracker=LinearConfig(api_key="", poll_interval_seconds=10),
+        )
+        sup = Supervisor(config, log_dir=tmp_path / "logs")
+        sup._config.source_path = "/dummy/config.yaml"
+
+        # Build a complete config that load_config will return
+        complete_config = BotfarmConfig(
+            projects=[
+                ProjectConfig(
+                    name="my-project",
+                    team="TST",
+                    base_dir=str(tmp_path / "repo"),
+                    slots=[1],
+                ),
+            ],
+            bugtracker=LinearConfig(api_key="test-key-123", poll_interval_seconds=10),
+        )
+        assert complete_config.setup_mode is False
+
+        mock_poller = MagicMock()
+        mock_poller.project_name = "my-project"
+
+        with patch("botfarm.config.load_config", return_value=complete_config) as mock_load, \
+             patch("botfarm.supervisor.create_pollers", return_value=[mock_poller]), \
+             patch("botfarm.supervisor.create_client", return_value=MagicMock()):
+            result = sup._try_exit_setup_mode()
+
+        assert result is True
+        assert sup._config is complete_config
+        assert "my-project" in sup._pollers
+        assert sup._bugtracker_client is not None
+        assert sup._slot_manager.get_slot("my-project", 1) is not None
+        mock_load.assert_called_once()
 
 
 

@@ -453,8 +453,81 @@ class Supervisor(RecoveryMixin, OperationsMixin):
         if manual_rerun or elapsed >= self._PREFLIGHT_RERUN_INTERVAL:
             self._rerun_preflight()
 
+    def _try_exit_setup_mode(self) -> bool:
+        """Reload config from disk and initialise runtime components if setup is complete.
+
+        Returns True if setup mode was exited, False otherwise.
+        """
+        from botfarm.config import load_config
+
+        source = self._config.source_path
+        if not source:
+            return False
+
+        try:
+            fresh = load_config(Path(source))
+        except Exception:
+            logger.debug("Config reload failed — remaining in setup mode")
+            return False
+
+        if fresh.setup_mode:
+            return False
+
+        # Config is now complete — initialise components skipped during setup.
+        logger.info("Config updated — leaving setup mode")
+        self._config = fresh
+        self._projects = {p.name: p for p in fresh.projects}
+
+        pollers = create_pollers(fresh)
+        self._pollers = {p.project_name: p for p in pollers}
+
+        for project in fresh.projects:
+            for sid in project.slots:
+                self._slot_manager.register_slot(project.name, sid)
+
+        self._bugtracker_client = create_client(fresh)
+
+        # Coder bugtracker self-assignment
+        if isinstance(fresh.bugtracker, JiraBugtrackerConfig):
+            coder_key = fresh.identities.coder.jira_api_token
+            coder_email: str | None = fresh.identities.coder.jira_email or fresh.bugtracker.email
+        else:
+            coder_key = fresh.identities.coder.tracker_api_key
+            coder_email = None
+        if coder_key:
+            try:
+                coder_client = create_client(fresh, api_key=coder_key, email=coder_email)
+                self._coder_viewer_id = coder_client.get_viewer_id()
+                self._coder_tracker = coder_client
+                logger.info("Cached coder bugtracker viewer ID: %s", self._coder_viewer_id)
+            except Exception:
+                logger.warning("Failed to resolve coder viewer ID — auto-assignment disabled")
+                self._coder_viewer_id = None
+                self._coder_tracker = None
+        else:
+            self._coder_viewer_id = None
+            self._coder_tracker = None
+
+        self._usage_poller.restore_backoff_state(self._conn)
+
+        insert_event(
+            self._conn,
+            event_type="setup_mode_exit",
+            detail="config completed, pollers and slots initialised",
+        )
+        self._conn.commit()
+        return True
+
     def _rerun_preflight(self) -> None:
         """Re-run preflight checks and transition out of degraded mode on success."""
+        # In setup mode, try to reload config first — can't run preflight
+        # without projects/API key.
+        if self._config.setup_mode:
+            if not self._try_exit_setup_mode():
+                self._last_preflight_rerun = time.monotonic()
+                logger.info("Still in setup mode — waiting for config to be completed")
+                return
+
         logger.info("Re-running preflight checks…")
         results = run_preflight_checks(self._config, env=self._git_env)
         ok = log_preflight_summary(results)

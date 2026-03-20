@@ -1406,7 +1406,10 @@ def run(config_path, log_dir, auto_restart):
     cfg_path = config_path or DEFAULT_CONFIG_PATH
 
     # Auto-create minimal config skeleton if no config file exists.
+    # Only for the default path — an explicit --config that doesn't exist is an error.
     if not cfg_path.exists():
+        if config_path is not None:
+            raise click.ClickException(f"Config file not found: {cfg_path}")
         cfg_path.parent.mkdir(parents=True, exist_ok=True)
         cfg_path.write_text(SETUP_MODE_CONFIG_TEMPLATE)
         click.echo(f"Created setup config: {cfg_path}")
