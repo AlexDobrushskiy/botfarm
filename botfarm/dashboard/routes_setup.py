@@ -158,6 +158,130 @@ def partial_setup_status(request: Request):
     })
 
 
+def _section_done_map(steps: list[SetupStep]) -> dict[str, bool]:
+    """Compute per-section done status from the flat step list.
+
+    Sections:
+    - bugtracker: bugtracker_type + bugtracker_api_key
+    - credentials: github_auth + claude_auth
+    - project: project_configured + repos_cloned
+    - verification: all steps done (setup complete)
+    """
+    by_id = {s.id: s.done for s in steps}
+    return {
+        "bugtracker": by_id.get("bugtracker_type", False) and by_id.get("bugtracker_api_key", False),
+        "credentials": by_id.get("github_auth", False) and by_id.get("claude_auth", False),
+        "project": by_id.get("project_configured", False) and by_id.get("repos_cloned", False),
+        "verification": all(s.done for s in steps),
+    }
+
+
+def _build_credentials_context(cfg: BotfarmConfig | None) -> dict:
+    """Build template context dict for the credentials partial.
+
+    Shared by ``setup_page`` (initial render) and ``partial_setup_credentials``
+    (htmx refresh) to avoid duplicating the same assembly logic.
+    """
+    github_done = _check_github_auth().done
+    claude_done = _check_claude_auth().done
+
+    ssh_key_path = ""
+    ssh_key_exists = False
+    if cfg and cfg.identities.coder.ssh_key_path:
+        ssh_key_path = cfg.identities.coder.ssh_key_path
+        try:
+            ssh_key_exists = Path(ssh_key_path).expanduser().exists()
+        except (OSError, ValueError):
+            pass
+
+    bt_type = ""
+    bt_workspace = ""
+    bt_api_key_set = False
+    jira_url = ""
+    jira_email = ""
+    if cfg:
+        bt_type = cfg.bugtracker.type or ""
+        bt_workspace = cfg.bugtracker.workspace or ""
+        bt_api_key_set = bool(cfg.bugtracker.api_key)
+        from botfarm.config import JiraBugtrackerConfig
+        if isinstance(cfg.bugtracker, JiraBugtrackerConfig):
+            jira_url = cfg.bugtracker.url or ""
+            jira_email = cfg.bugtracker.email or ""
+
+    return {
+        "github_done": github_done,
+        "claude_done": claude_done,
+        "ssh_key_path": ssh_key_path,
+        "ssh_key_exists": ssh_key_exists,
+        "bt_type": bt_type,
+        "bt_workspace": bt_workspace,
+        "bt_api_key_set": bt_api_key_set,
+        "jira_url": jira_url,
+        "jira_email": jira_email,
+    }
+
+
+@router.get("/setup", response_class=HTMLResponse)
+def setup_page(request: Request):
+    """Render the setup wizard page."""
+    app = request.app
+    config = app.state.botfarm_config
+    templates = app.state.templates
+
+    steps: list[SetupStep] = []
+    setup_complete = False
+    section_done: dict[str, bool] = {
+        "bugtracker": False, "credentials": False,
+        "project": False, "verification": False,
+    }
+    has_projects = False
+    project_count = 0
+    repos_cloned = False
+
+    degraded_getter = app.state.get_degraded
+    degraded = degraded_getter() if degraded_getter else False
+
+    if config is not None:
+        steps = get_setup_steps(config)
+        all_steps_done = all(s.done for s in steps)
+        setup_complete = all_steps_done and not degraded
+        section_done = _section_done_map(steps)
+        has_projects = bool(config.projects)
+        project_count = len(config.projects)
+        by_id = {s.id: s.done for s in steps}
+        repos_cloned = by_id.get("repos_cloned", False)
+
+    # Credential partial context (shared helper avoids duplication)
+    cred_ctx = _build_credentials_context(config)
+
+    return templates.TemplateResponse("setup.html", {
+        "request": request,
+        "steps": steps,
+        "setup_complete": setup_complete,
+        "section_done": section_done,
+        "has_projects": has_projects,
+        "project_count": project_count,
+        "repos_cloned": repos_cloned,
+        "degraded": degraded,
+        # Credential partial context (for initial include)
+        **cred_ctx,
+    })
+
+
+@router.get("/partials/setup-preflight", response_class=HTMLResponse)
+def partial_setup_preflight(request: Request):
+    """Render preflight check results for the setup wizard."""
+    from .routes_api import _get_preflight_data
+
+    app = request.app
+    templates = app.state.templates
+    data = _get_preflight_data(app)
+    return templates.TemplateResponse("partials/setup_preflight.html", {
+        "request": request,
+        **data,
+    })
+
+
 # ---------------------------------------------------------------------------
 # Bugtracker configuration form
 # ---------------------------------------------------------------------------
@@ -387,48 +511,9 @@ async def setup_github(request: Request):
 @router.get("/partials/setup-credentials", response_class=HTMLResponse)
 def partial_setup_credentials(request: Request):
     """Render credential status cards for the setup wizard."""
-    app = request.app
-    cfg = app.state.botfarm_config
-
-    # GitHub and Claude auth status — reuse the check helpers
-    github_done = _check_github_auth().done
-    claude_done = _check_claude_auth().done
-
-    # SSH key status
-    ssh_key_path = ""
-    ssh_key_exists = False
-    if cfg and cfg.identities.coder.ssh_key_path:
-        ssh_key_path = cfg.identities.coder.ssh_key_path
-        try:
-            ssh_key_exists = Path(ssh_key_path).expanduser().exists()
-        except (OSError, ValueError):
-            pass
-
-    # Bugtracker status for the form
-    bt_type = ""
-    bt_workspace = ""
-    bt_api_key_set = False
-    jira_url = ""
-    jira_email = ""
-    if cfg:
-        bt_type = cfg.bugtracker.type or ""
-        bt_workspace = cfg.bugtracker.workspace or ""
-        bt_api_key_set = bool(cfg.bugtracker.api_key)
-        from botfarm.config import JiraBugtrackerConfig
-        if isinstance(cfg.bugtracker, JiraBugtrackerConfig):
-            jira_url = cfg.bugtracker.url or ""
-            jira_email = cfg.bugtracker.email or ""
-
+    cfg = request.app.state.botfarm_config
     templates = request.app.state.templates
     return templates.TemplateResponse("partials/setup_credentials.html", {
         "request": request,
-        "github_done": github_done,
-        "claude_done": claude_done,
-        "ssh_key_path": ssh_key_path,
-        "ssh_key_exists": ssh_key_exists,
-        "bt_type": bt_type,
-        "bt_workspace": bt_workspace,
-        "bt_api_key_set": bt_api_key_set,
-        "jira_url": jira_url,
-        "jira_email": jira_email,
+        **_build_credentials_context(cfg),
     })

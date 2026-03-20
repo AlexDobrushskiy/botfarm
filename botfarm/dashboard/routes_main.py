@@ -8,7 +8,7 @@ import sqlite3
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 from botfarm.db import (
     count_tasks,
@@ -651,6 +651,10 @@ def _compute_metrics(
 @router.get("/", response_class=HTMLResponse)
 def index(request: Request):
     app = request.app
+    # Redirect to setup wizard when supervisor is in degraded (setup) mode
+    degraded_getter = app.state.get_degraded
+    if degraded_getter and degraded_getter():
+        return RedirectResponse(url="/setup", status_code=302)
     templates = request.app.state.templates
     state = read_state(app)
     slots = _enrich_slots_with_context_fill(app, state.get("slots", []))

@@ -1,0 +1,49 @@
+{% if checks %}
+<table>
+    <thead>
+        <tr>
+            <th style="width: 2.5rem;">Status</th>
+            <th>Check</th>
+            <th>Details</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for check in checks %}
+        <tr>
+            <td style="text-align: center; font-size: 1.1rem;">
+                {% if check.passed %}
+                    <span style="color: #22c55e;" title="Passed">&#10003;</span>
+                {% else %}
+                    <span style="color: #ef4444;" title="Failed">&#10007;</span>
+                {% endif %}
+            </td>
+            <td>
+                {{ check.name }}
+                {% if check.critical and not check.passed %}
+                <span style="color: #ef4444; font-size: 0.75rem; font-weight: 600;">(critical)</span>
+                {% endif %}
+            </td>
+            <td style="font-size: 0.85rem; color: var(--pico-muted-color);">
+                {{ check.message }}
+                {% if check.guidance and not check.passed %}
+                <br><small>{{ check.guidance }}</small>
+                {% endif %}
+            </td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% if failed_critical == 0 %}
+<p style="color: #22c55e; font-weight: 600; margin-top: 0.5rem;">
+    &#10003; All preflight checks passed.
+</p>
+{% else %}
+<p style="color: #ef4444; font-weight: 600; margin-top: 0.5rem;">
+    {{ failed_critical }} critical check{{ "s" if failed_critical != 1 else "" }} failed. Fix the issues above and re-run.
+</p>
+{% endif %}
+{% else %}
+<p style="color: var(--pico-muted-color); font-size: 0.9rem; margin-top: 0.5rem;">
+    No preflight results yet. Click "Run Preflight Checks" to verify your configuration.
+</p>
+{% endif %}
