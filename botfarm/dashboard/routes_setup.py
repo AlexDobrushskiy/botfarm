@@ -300,6 +300,9 @@ async def setup_bugtracker(request: Request):
         if bt_type == "jira":
             bt_data["url"] = jira_url
             bt_data["email"] = jira_email
+        else:
+            bt_data.pop("url", None)
+            bt_data.pop("email", None)
         write_yaml_atomic(config_path, data)
     except Exception:
         logger.exception("Failed to write bugtracker config to YAML")
@@ -387,22 +390,9 @@ def partial_setup_credentials(request: Request):
     app = request.app
     cfg = app.state.botfarm_config
 
-    # GitHub auth status
-    github_done = False
-    if os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN"):
-        github_done = True
-    elif shutil.which("gh"):
-        hosts_path = Path.home() / ".config" / "gh" / "hosts.yml"
-        if hosts_path.is_file() and hosts_path.stat().st_size > 0:
-            github_done = True
-
-    # Claude auth status
-    claude_done = False
-    try:
-        _load_token()
-        claude_done = True
-    except CredentialError:
-        pass
+    # GitHub and Claude auth status — reuse the check helpers
+    github_done = _check_github_auth().done
+    claude_done = _check_claude_auth().done
 
     # SSH key status
     ssh_key_path = ""
