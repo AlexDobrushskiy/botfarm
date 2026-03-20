@@ -7,6 +7,7 @@ The JSON output is parsed for metrics and stored in the ``stage_runs`` table.
 
 from __future__ import annotations
 
+import json
 import logging
 import multiprocessing
 import os
@@ -212,7 +213,6 @@ def build_bugtracker_mcp_config(
     Returns inline JSON string suitable for ``--mcp-config``.
     Currently supports Linear; other trackers return an empty string.
     """
-    import json
 
     bt = bugtracker_type.lower()
     if bt == "linear":

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -4271,15 +4272,27 @@ class TestMcpConfigFlag:
         mock_proc.stderr = iter([])
         mock_proc.returncode = 0
         mock_proc.wait.return_value = 0
-        mock_popen.return_value = mock_proc
+        # Capture the temp file contents before it's cleaned up
+        captured_config = {}
+        original_popen = mock_popen.side_effect
+
+        def _capture_popen(cmd, **kwargs):
+            idx = cmd.index("--mcp-config")
+            config_path = cmd[idx + 1]
+            with open(config_path) as f:
+                captured_config["content"] = f.read()
+            captured_config["path"] = config_path
+            return mock_proc
+
+        mock_popen.side_effect = _capture_popen
 
         mcp_json = '{"mcpServers":{"linear":{"command":"npx"}}}'
         run_claude_streaming("do stuff", cwd=tmp_path, max_turns=10, mcp_config=mcp_json)
 
-        cmd = mock_popen.call_args[0][0]
-        assert "--mcp-config" in cmd
-        idx = cmd.index("--mcp-config")
-        assert cmd[idx + 1] == mcp_json
+        assert captured_config["content"] == mcp_json
+        assert captured_config["path"].endswith(".json")
+        # Temp file should be cleaned up after the call
+        assert not os.path.exists(captured_config["path"])
 
     @patch("botfarm.worker_claude.subprocess.Popen")
     def test_no_mcp_config_when_none(self, mock_popen, tmp_path):
