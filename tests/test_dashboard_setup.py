@@ -140,6 +140,7 @@ class TestGetSetupSteps:
 
     def test_github_auth_via_env_var(self, monkeypatch):
         monkeypatch.setenv("GH_TOKEN", "ghp_abc123")
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
         monkeypatch.setattr("shutil.which", lambda cmd: None)
 
         config = _make_config()
@@ -148,6 +149,7 @@ class TestGetSetupSteps:
 
     def test_github_auth_via_github_token_env(self, monkeypatch):
         monkeypatch.setenv("GITHUB_TOKEN", "ghp_abc123")
+        monkeypatch.delenv("GH_TOKEN", raising=False)
         monkeypatch.setattr("shutil.which", lambda cmd: None)
 
         config = _make_config()

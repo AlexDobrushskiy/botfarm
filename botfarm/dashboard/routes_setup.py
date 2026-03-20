@@ -71,7 +71,7 @@ def _check_claude_auth() -> SetupStep:
     try:
         _load_token()
         done = True
-    except Exception:
+    except CredentialError:
         pass
     return SetupStep(id="claude_auth", label="Claude Code authentication", done=done)
 
