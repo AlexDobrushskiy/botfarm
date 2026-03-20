@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
-import platform
+import os
 import shutil
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse
+
+from botfarm.credentials import CredentialError, _load_token
+
+if TYPE_CHECKING:
+    from botfarm.config import BotfarmConfig
 
 router = APIRouter()
 
@@ -22,14 +28,14 @@ class SetupStep:
     done: bool
 
 
-def _check_bugtracker_type(config) -> SetupStep:
+def _check_bugtracker_type(config: BotfarmConfig) -> SetupStep:
     """Check whether a bugtracker type has been selected."""
     bt = config.bugtracker
     done = bool(bt.type and bt.type in ("linear", "jira"))
     return SetupStep(id="bugtracker_type", label="Bugtracker type selected", done=done)
 
 
-def _check_bugtracker_api_key(config) -> SetupStep:
+def _check_bugtracker_api_key(config: BotfarmConfig) -> SetupStep:
     """Check whether the bugtracker API key is configured."""
     done = bool(config.bugtracker.api_key)
     return SetupStep(
@@ -38,13 +44,15 @@ def _check_bugtracker_api_key(config) -> SetupStep:
 
 
 def _check_github_auth() -> SetupStep:
-    """Check whether GitHub CLI authentication is available (file check only).
+    """Check whether GitHub CLI authentication is available.
 
-    Looks for ``gh`` on PATH and checks the hosts.yml config file exists
-    with content — no API calls.
+    Checks ``GH_TOKEN`` / ``GITHUB_TOKEN`` env vars first, then falls back
+    to looking for ``gh`` on PATH with a ``hosts.yml`` config file.
     """
     done = False
-    if shutil.which("gh"):
+    if os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN"):
+        done = True
+    elif shutil.which("gh"):
         # gh stores auth in ~/.config/gh/hosts.yml (Linux/macOS)
         hosts_path = Path.home() / ".config" / "gh" / "hosts.yml"
         if hosts_path.is_file() and hosts_path.stat().st_size > 0:
@@ -53,25 +61,22 @@ def _check_github_auth() -> SetupStep:
 
 
 def _check_claude_auth() -> SetupStep:
-    """Check whether Claude Code credentials exist on disk (no API call).
+    """Check whether Claude Code credentials are available.
 
-    Linux: ``~/.claude/.credentials.json``
-    macOS: presence of ``claude`` binary (keychain can't be checked cheaply).
+    Uses the credential loading mechanism from ``botfarm.credentials``,
+    which checks ``~/.claude/.credentials.json`` on Linux and the system
+    keychain on macOS.
     """
     done = False
-    system = platform.system()
-    if system == "Linux":
-        creds = Path.home() / ".claude" / ".credentials.json"
-        done = creds.is_file() and creds.stat().st_size > 0
-    elif system == "Darwin":
-        # On macOS credentials live in the system keychain; checking them
-        # requires a subprocess call.  As a lightweight proxy, just verify
-        # the ``claude`` binary is installed.
-        done = shutil.which("claude") is not None
+    try:
+        _load_token()
+        done = True
+    except Exception:
+        pass
     return SetupStep(id="claude_auth", label="Claude Code authentication", done=done)
 
 
-def _check_project_configured(config) -> SetupStep:
+def _check_project_configured(config: BotfarmConfig) -> SetupStep:
     """Check whether at least one project is configured."""
     done = bool(config.projects)
     return SetupStep(
@@ -81,7 +86,7 @@ def _check_project_configured(config) -> SetupStep:
     )
 
 
-def _check_repos_cloned(config) -> SetupStep:
+def _check_repos_cloned(config: BotfarmConfig) -> SetupStep:
     """Check whether all configured project repos have been cloned."""
     if not config.projects:
         return SetupStep(
@@ -95,7 +100,7 @@ def _check_repos_cloned(config) -> SetupStep:
     )
 
 
-def get_setup_steps(config) -> list[SetupStep]:
+def get_setup_steps(config: BotfarmConfig) -> list[SetupStep]:
     """Return the full ordered checklist of setup steps."""
     return [
         _check_bugtracker_type(config),

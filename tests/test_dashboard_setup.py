@@ -1,8 +1,5 @@
 """Tests for setup status API and partial endpoints."""
 
-import json
-import platform
-
 import pytest
 from fastapi.testclient import TestClient
 
@@ -109,42 +106,53 @@ class TestGetSetupSteps:
         assert steps["github_auth"].done is True
 
     def test_github_auth_missing_no_gh(self, monkeypatch):
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
         monkeypatch.setattr("shutil.which", lambda cmd: None)
         config = _make_config()
         steps = {s.id: s for s in get_setup_steps(config)}
         assert steps["github_auth"].done is False
 
-    def test_claude_auth_linux(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("botfarm.dashboard.routes_setup.platform.system", lambda: "Linux")
-        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
-        claude_dir = tmp_path / ".claude"
-        claude_dir.mkdir()
-        creds = claude_dir / ".credentials.json"
-        creds.write_text('{"access_token": "abc"}')
+    def test_claude_auth_available(self, monkeypatch):
+        from botfarm.credentials import OAuthToken
 
+        monkeypatch.setattr(
+            "botfarm.dashboard.routes_setup._load_token",
+            lambda: OAuthToken(access_token="abc"),
+        )
         config = _make_config()
         steps = {s.id: s for s in get_setup_steps(config)}
         assert steps["claude_auth"].done is True
 
-    def test_claude_auth_linux_missing(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("botfarm.dashboard.routes_setup.platform.system", lambda: "Linux")
-        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
-        # No .credentials.json
+    def test_claude_auth_unavailable(self, monkeypatch):
+        from botfarm.credentials import CredentialError
 
+        def _raise():
+            raise CredentialError("no credentials")
+
+        monkeypatch.setattr(
+            "botfarm.dashboard.routes_setup._load_token",
+            _raise,
+        )
         config = _make_config()
         steps = {s.id: s for s in get_setup_steps(config)}
         assert steps["claude_auth"].done is False
 
-    def test_claude_auth_macos_with_binary(self, monkeypatch):
-        monkeypatch.setattr("botfarm.dashboard.routes_setup.platform.system", lambda: "Darwin")
-        monkeypatch.setattr(
-            "botfarm.dashboard.routes_setup.shutil.which",
-            lambda cmd: "/usr/local/bin/claude" if cmd == "claude" else None,
-        )
+    def test_github_auth_via_env_var(self, monkeypatch):
+        monkeypatch.setenv("GH_TOKEN", "ghp_abc123")
+        monkeypatch.setattr("shutil.which", lambda cmd: None)
 
         config = _make_config()
         steps = {s.id: s for s in get_setup_steps(config)}
-        assert steps["claude_auth"].done is True
+        assert steps["github_auth"].done is True
+
+    def test_github_auth_via_github_token_env(self, monkeypatch):
+        monkeypatch.setenv("GITHUB_TOKEN", "ghp_abc123")
+        monkeypatch.setattr("shutil.which", lambda cmd: None)
+
+        config = _make_config()
+        steps = {s.id: s for s in get_setup_steps(config)}
+        assert steps["github_auth"].done is True
 
 
 # ---------------------------------------------------------------------------
@@ -170,6 +178,8 @@ class TestSetupStatusAPI:
         assert "bugtracker_api_key" in step_ids
 
     def test_setup_complete_when_all_done(self, db_file, tmp_path, monkeypatch):
+        from botfarm.credentials import OAuthToken
+
         # Set up a fully configured environment
         repo = tmp_path / "myrepo"
         repo.mkdir()
@@ -177,7 +187,7 @@ class TestSetupStatusAPI:
         proj = ProjectConfig(name="myproj", base_dir=str(repo))
         config = _make_config(api_key="key123", bt_type="linear", projects=[proj])
 
-        # Mock GitHub and Claude auth
+        # Mock GitHub auth via hosts.yml
         gh_dir = tmp_path / ".config" / "gh"
         gh_dir.mkdir(parents=True)
         (gh_dir / "hosts.yml").write_text("github.com:\n  oauth_token: abc\n")
@@ -186,10 +196,11 @@ class TestSetupStatusAPI:
             "botfarm.dashboard.routes_setup.shutil.which",
             lambda cmd: "/usr/bin/" + cmd,
         )
-        monkeypatch.setattr("botfarm.dashboard.routes_setup.platform.system", lambda: "Linux")
-        claude_dir = tmp_path / ".claude"
-        claude_dir.mkdir()
-        (claude_dir / ".credentials.json").write_text('{"access_token": "x"}')
+        # Mock Claude auth via _load_token
+        monkeypatch.setattr(
+            "botfarm.dashboard.routes_setup._load_token",
+            lambda: OAuthToken(access_token="x"),
+        )
 
         app = create_app(db_path=db_file, botfarm_config=config)
         client = TestClient(app)
@@ -244,6 +255,8 @@ class TestSetupStatusPartial:
         assert "No configuration loaded" in resp.text
 
     def test_partial_shows_complete_message(self, db_file, tmp_path, monkeypatch):
+        from botfarm.credentials import OAuthToken
+
         repo = tmp_path / "myrepo"
         repo.mkdir()
         (repo / ".git").mkdir()
@@ -258,10 +271,10 @@ class TestSetupStatusPartial:
             "botfarm.dashboard.routes_setup.shutil.which",
             lambda cmd: "/usr/bin/" + cmd,
         )
-        monkeypatch.setattr("botfarm.dashboard.routes_setup.platform.system", lambda: "Linux")
-        claude_dir = tmp_path / ".claude"
-        claude_dir.mkdir()
-        (claude_dir / ".credentials.json").write_text('{"access_token": "x"}')
+        monkeypatch.setattr(
+            "botfarm.dashboard.routes_setup._load_token",
+            lambda: OAuthToken(access_token="x"),
+        )
 
         app = create_app(db_path=db_file, botfarm_config=config)
         client = TestClient(app)
