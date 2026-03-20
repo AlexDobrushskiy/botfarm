@@ -251,10 +251,6 @@ def setup_page(request: Request):
         by_id = {s.id: s.done for s in steps}
         repos_cloned = by_id.get("repos_cloned", False)
 
-    # Preflight data for the verification section
-    from .routes_api import _get_preflight_data
-    preflight_data = _get_preflight_data(app)
-
     # Credential partial context (shared helper avoids duplication)
     cred_ctx = _build_credentials_context(config)
 
@@ -267,9 +263,6 @@ def setup_page(request: Request):
         "project_count": project_count,
         "repos_cloned": repos_cloned,
         "degraded": degraded,
-        # Preflight data
-        "checks": preflight_data.get("checks", []),
-        "failed_critical": preflight_data.get("failed_critical", 0),
         # Credential partial context (for initial include)
         **cred_ctx,
     })
