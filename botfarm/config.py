@@ -124,6 +124,28 @@ start_paused: true
 """
 
 
+SETUP_MODE_CONFIG_TEMPLATE = """\
+# Botfarm configuration — created automatically.
+# Complete setup via the dashboard or edit this file manually.
+# See documentation for full reference.
+
+# projects: []
+
+bugtracker:
+  type: linear
+  api_key: ""
+  workspace: ""
+  poll_interval_seconds: 30
+
+dashboard:
+  enabled: true
+  host: 127.0.0.1
+  port: 8420
+
+start_paused: true
+"""
+
+
 class ProjectConfig:
     """Project configuration.
 
@@ -411,6 +433,11 @@ class BotfarmConfig:
         self.start_paused = start_paused
         self.source_path = source_path
 
+    @property
+    def setup_mode(self) -> bool:
+        """True when config is incomplete — supervisor runs dashboard only."""
+        return not self.projects or not self.bugtracker.api_key
+
 
 class ConfigError(Exception):
     """Raised when configuration is invalid."""
@@ -591,30 +618,33 @@ def _validate_config(config: BotfarmConfig) -> None:
             f"Supported: {sorted(supported_types)}"
         )
 
-    if not bt.api_key:
-        raise ConfigError("bugtracker.api_key must be set")
+    # In setup mode (no projects or no API key), skip strict checks
+    # so the supervisor can start with dashboard only.
+    if not config.setup_mode:
+        if not bt.api_key:
+            raise ConfigError("bugtracker.api_key must be set")
+
+        if not config.projects:
+            raise ConfigError("At least one project must be configured")
+
+        names = [p.name for p in config.projects]
+        if len(names) != len(set(names)):
+            raise ConfigError("Duplicate project names found")
+
+        # Check for duplicate tracker_project filters (ignoring empty/unset)
+        seen_lp: dict[str, str] = {}  # tracker_project -> project name
+        for p in config.projects:
+            if p.tracker_project:
+                if p.tracker_project in seen_lp:
+                    raise ConfigError(
+                        f"Duplicate tracker_project filter {p.tracker_project!r}: "
+                        f"used by both '{seen_lp[p.tracker_project]}' and '{p.name}'. "
+                        f"Each project must have a unique tracker_project filter"
+                    )
+                seen_lp[p.tracker_project] = p.name
 
     if bt.poll_interval_seconds < 1:
         raise ConfigError("poll_interval_seconds must be at least 1")
-
-    if not config.projects:
-        raise ConfigError("At least one project must be configured")
-
-    names = [p.name for p in config.projects]
-    if len(names) != len(set(names)):
-        raise ConfigError("Duplicate project names found")
-
-    # Check for duplicate tracker_project filters (ignoring empty/unset)
-    seen_lp: dict[str, str] = {}  # tracker_project -> project name
-    for p in config.projects:
-        if p.tracker_project:
-            if p.tracker_project in seen_lp:
-                raise ConfigError(
-                    f"Duplicate tracker_project filter {p.tracker_project!r}: "
-                    f"used by both '{seen_lp[p.tracker_project]}' and '{p.name}'. "
-                    f"Each project must have a unique tracker_project filter"
-                )
-            seen_lp[p.tracker_project] = p.name
 
     if config.usage_limits.poll_interval_seconds < 1:
         raise ConfigError("usage_limits.poll_interval_seconds must be at least 1")
@@ -650,7 +680,7 @@ def _validate_config(config: BotfarmConfig) -> None:
                 "bugtracker.capacity_monitoring.resume_threshold must be less than pause_threshold"
             )
 
-    if isinstance(bt, JiraBugtrackerConfig):
+    if isinstance(bt, JiraBugtrackerConfig) and not config.setup_mode:
         if not bt.url:
             raise ConfigError("bugtracker.url must be set for Jira")
         if not bt.email:
@@ -803,10 +833,11 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
             "Unknown config keys (ignored): %s", ", ".join(sorted(unknown))
         )
 
-    if "projects" not in data or not isinstance(data.get("projects"), list):
-        raise ConfigError("Config must contain a 'projects' list")
+    raw_projects = data.get("projects")
+    if raw_projects is not None and not isinstance(raw_projects, list):
+        raise ConfigError("'projects' must be a list")
 
-    projects = [_parse_project(p) for p in data["projects"]]
+    projects = [_parse_project(p) for p in (raw_projects or [])]
 
     # Support both 'bugtracker:' (new) and 'linear:' (legacy) YAML sections.
     # 'bugtracker:' takes precedence if both are present.

@@ -1375,7 +1375,7 @@ def init_claude_md(project_dir):
 @click.option(
     "--config",
     "config_path",
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    type=click.Path(dir_okay=False, path_type=Path),
     default=None,
     help="Path to config file (default: ~/.botfarm/config.yaml).",
 )
@@ -1394,6 +1394,7 @@ def run(config_path, log_dir, auto_restart):
     """Run the supervisor in foreground mode."""
     import sys
 
+    from botfarm.config import SETUP_MODE_CONFIG_TEMPLATE
     from botfarm.git_update import UPDATE_EXIT_CODE
     from botfarm.supervisor import DEFAULT_LOG_DIR, Supervisor, setup_logging
 
@@ -1403,10 +1404,30 @@ def run(config_path, log_dir, auto_restart):
     _ensure_local_bin_in_path()
 
     cfg_path = config_path or DEFAULT_CONFIG_PATH
+
+    # Auto-create minimal config skeleton if no config file exists.
+    # Only for the default path — an explicit --config that doesn't exist is an error.
+    if not cfg_path.exists():
+        if config_path is not None:
+            raise click.ClickException(f"Config file not found: {cfg_path}")
+        cfg_path.parent.mkdir(parents=True, exist_ok=True)
+        cfg_path.write_text(SETUP_MODE_CONFIG_TEMPLATE)
+        click.echo(f"Created setup config: {cfg_path}")
+        click.echo("Complete setup via the dashboard or edit the config file.")
+
     try:
         config = load_config(cfg_path)
     except ConfigError as exc:
         raise click.ClickException(str(exc)) from exc
+
+    # In setup mode, force dashboard on and bind to localhost for security.
+    if config.setup_mode:
+        config.dashboard.enabled = True
+        if config.dashboard.host == "0.0.0.0":
+            config.dashboard.host = "127.0.0.1"
+        click.echo(
+            f"Setup mode — dashboard at http://{config.dashboard.host}:{config.dashboard.port}"
+        )
 
     setup_logging(
         log_dir=log_dir or DEFAULT_LOG_DIR,

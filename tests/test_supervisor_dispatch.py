@@ -49,6 +49,115 @@ class TestSupervisorInit:
         assert supervisor.shutdown_requested is False
 
 
+class TestSetupMode:
+    """Supervisor starts with minimal config (no projects, no API key)."""
+
+    @pytest.fixture()
+    def setup_supervisor(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "test.db"))
+        monkeypatch.setattr(
+            Supervisor, "_slot_db_path",
+            staticmethod(lambda pn, sid: str(tmp_path / "slots" / f"{pn}-{sid}" / "botfarm.db")),
+        )
+        config = BotfarmConfig(
+            projects=[],
+            bugtracker=LinearConfig(api_key="", poll_interval_seconds=10),
+        )
+        assert config.setup_mode is True
+        sup = Supervisor(config, log_dir=tmp_path / "logs")
+        return sup
+
+    def test_no_slots_registered(self, setup_supervisor):
+        assert setup_supervisor.slot_manager.all_slots() == []
+
+    def test_no_pollers(self, setup_supervisor):
+        assert setup_supervisor._pollers == {}
+
+    def test_no_bugtracker_client(self, setup_supervisor):
+        assert setup_supervisor._bugtracker_client is None
+
+    def test_run_enters_degraded_mode(self, setup_supervisor):
+        """Supervisor.run() enters degraded mode immediately in setup mode."""
+        sup = setup_supervisor
+        # Make it shut down after one tick
+        sup._shutdown_requested = True
+        exit_code = sup.run()
+        assert exit_code == 0
+        assert sup._degraded is True
+
+    def test_rerun_preflight_skips_when_still_in_setup_mode(self, setup_supervisor, tmp_path):
+        """_rerun_preflight returns early when config is still incomplete."""
+        sup = setup_supervisor
+        # Write a still-incomplete config to disk so reload finds it
+        cfg_path = tmp_path / "config.yaml"
+        cfg_path.write_text("bugtracker:\n  type: linear\n  api_key: ''\n  poll_interval_seconds: 10\n")
+        sup._config.source_path = str(cfg_path)
+        sup._degraded = True
+        sup._last_preflight_rerun = 0
+
+        with patch("botfarm.supervisor.run_preflight_checks") as mock_pf:
+            sup._rerun_preflight()
+            # Preflight should NOT be called — still in setup mode
+            mock_pf.assert_not_called()
+        assert sup._degraded is True
+
+    def test_try_exit_setup_mode_initialises_components(self, tmp_path, monkeypatch):
+        """_try_exit_setup_mode reloads config and backfills pollers/client."""
+        monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "test.db"))
+        monkeypatch.setattr(
+            Supervisor, "_slot_db_path",
+            staticmethod(lambda pn, sid: str(tmp_path / "slots" / f"{pn}-{sid}" / "botfarm.db")),
+        )
+        config = BotfarmConfig(
+            projects=[],
+            bugtracker=LinearConfig(api_key="", poll_interval_seconds=10),
+        )
+        sup = Supervisor(config, log_dir=tmp_path / "logs")
+        sup._config.source_path = "/dummy/config.yaml"
+
+        # Build a complete config that load_config will return
+        complete_config = BotfarmConfig(
+            projects=[
+                ProjectConfig(
+                    name="my-project",
+                    team="TST",
+                    base_dir=str(tmp_path / "repo"),
+                    slots=[1],
+                ),
+            ],
+            bugtracker=LinearConfig(api_key="test-key-123", poll_interval_seconds=10),
+        )
+        assert complete_config.setup_mode is False
+
+        mock_poller = MagicMock()
+        mock_poller.project_name = "my-project"
+
+        mock_register = MagicMock()
+        sup._devserver_mgr.register_project = mock_register
+
+        mock_sm_load = MagicMock()
+        sup._slot_manager.load = mock_sm_load
+
+        # Set a sentinel to verify _git_env gets rebuilt
+        sup._git_env = "stale-sentinel"
+
+        with patch("botfarm.config.load_config", return_value=complete_config) as mock_load, \
+             patch("botfarm.supervisor.create_pollers", return_value=[mock_poller]), \
+             patch("botfarm.supervisor.create_client", return_value=MagicMock()):
+            result = sup._try_exit_setup_mode()
+
+        assert result is True
+        assert sup._config is complete_config
+        assert "my-project" in sup._pollers
+        assert sup._bugtracker_client is not None
+        # Verify git_env was rebuilt from fresh config (no longer the sentinel)
+        assert sup._git_env != "stale-sentinel"
+        # Verify devserver projects were registered
+        mock_register.assert_called_once()
+        mock_load.assert_called_once()
+        # Verify slot_manager.load() was called to restore persisted slot states
+        mock_sm_load.assert_called_once()
+
 
 
 # ---------------------------------------------------------------------------

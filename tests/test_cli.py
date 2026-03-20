@@ -1063,3 +1063,59 @@ class TestPreflightCommand:
             assert post_called == []  # POST should NOT have been called
         finally:
             server.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# Setup mode — botfarm run with no/incomplete config
+# ---------------------------------------------------------------------------
+
+
+class TestRunSetupMode:
+    def test_creates_skeleton_config_when_missing(self, runner, tmp_path, monkeypatch):
+        """botfarm run creates a setup config skeleton if no config file exists."""
+        cfg_path = tmp_path / "config.yaml"
+        monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_PATH", cfg_path)
+        monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "test.db"))
+        # Patch Supervisor to avoid running it
+        with patch("botfarm.supervisor.Supervisor") as MockSup:
+            MockSup.return_value.run.return_value = 0
+            result = runner.invoke(main, ["run"])
+
+        assert result.exit_code == 0
+        assert cfg_path.exists()
+        assert "Created setup config" in result.output
+        assert "Setup mode" in result.output
+
+        # Verify the created config is valid YAML with dashboard enabled
+        data = yaml.safe_load(cfg_path.read_text())
+        assert data["dashboard"]["enabled"] is True
+        assert data["dashboard"]["host"] == "127.0.0.1"
+
+    def test_setup_mode_forces_dashboard_on(self, runner, tmp_path, monkeypatch):
+        """Setup mode enables dashboard and binds to localhost."""
+        cfg_path = tmp_path / "config.yaml"
+        cfg_path.write_text(yaml.dump({
+            "bugtracker": {"api_key": ""},
+            "dashboard": {"enabled": False, "host": "0.0.0.0", "port": 9999},
+        }))
+        monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_PATH", cfg_path)
+        monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "test.db"))
+        with patch("botfarm.supervisor.Supervisor") as MockSup:
+            mock_instance = MockSup.return_value
+            mock_instance.run.return_value = 0
+            result = runner.invoke(main, ["run"])
+
+        assert result.exit_code == 0
+        assert "Setup mode" in result.output
+        # Verify the config passed to Supervisor has dashboard enabled + localhost
+        config_arg = MockSup.call_args[0][0]
+        assert config_arg.dashboard.enabled is True
+        assert config_arg.dashboard.host == "127.0.0.1"
+
+    def test_explicit_config_path_errors_when_missing(self, runner, tmp_path):
+        """An explicit --config path that doesn't exist raises an error instead of auto-creating."""
+        missing = tmp_path / "nonexistent" / "conifg.yaml"
+        result = runner.invoke(main, ["run", "--config", str(missing)])
+        assert result.exit_code != 0
+        assert "Config file not found" in result.output
+        assert not missing.exists()
