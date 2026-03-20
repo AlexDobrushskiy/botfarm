@@ -36,7 +36,7 @@
     <input type="hidden" name="sort_dir" value="{{ sort_dir }}">
 </form>
 
-<div id="history-panel" hx-get="/partials/history?project={{ filter_project | urlencode }}&status={{ filter_status | urlencode }}&search={{ filter_search | urlencode }}&sort_by={{ sort_by }}&sort_dir={{ sort_dir }}" hx-trigger="every 10s" hx-swap="innerHTML">
+<div id="history-panel" hx-get="/partials/history?project={{ filter_project | urlencode }}&status={{ filter_status | urlencode }}&search={{ filter_search | urlencode }}&sort_by={{ sort_by }}&sort_dir={{ sort_dir }}&page={{ page }}" hx-trigger="every 10s" hx-swap="innerHTML">
     {% include "partials/history.html" %}
 </div>
 {% endblock %}

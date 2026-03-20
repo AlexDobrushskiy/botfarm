@@ -190,6 +190,28 @@ class TestHistoryPagination:
         assert "page 2 of 2" in body2
         assert "Prev" in body2
 
+    def test_poll_url_includes_current_page(self, tmp_path):
+        """The htmx polling URL on #history-panel must include the current page
+        so that auto-refresh doesn't reset to page 1."""
+        path = tmp_path / "poll.db"
+        conn = init_db(path)
+        for i in range(30):
+            insert_task(
+                conn,
+                ticket_id=f"POLL-{i}",
+                title=f"Task {i}",
+                project="bulk",
+                slot=1,
+            )
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=path)
+        client = TestClient(app)
+        resp = client.get("/history?page=2")
+        body = resp.text
+        assert 'hx-get="/partials/history?' in body
+        assert "page=2" in body.split('id="history-panel"')[1].split(">")[0]
+
 
 class TestPartialHistory:
     def test_returns_200(self, client):
