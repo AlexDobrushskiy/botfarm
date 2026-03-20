@@ -35,7 +35,7 @@ Required (depends on bugtracker type):
 
 | Variable | Purpose |
 |---|---|
-| `LINEAR_API_KEY` | Linear API key for polling tickets and updating status (when `type: linear`) |
+| `LINEAR_API_KEY` | Linear API key — used for both supervisor operations (polling, status updates) and agent MCP tools (auto-configured via `--mcp-config`) |
 | `JIRA_API_TOKEN` | Jira Cloud API token (when `type: jira`) |
 
 Usage limit monitoring reads your Claude Code OAuth token automatically from `~/.claude/.credentials.json` (Linux) or the system keychain (macOS). No extra env var needed.
@@ -71,6 +71,8 @@ projects:
 ### `bugtracker`
 
 Bugtracker API connection and workflow configuration. Supports Linear (`type: linear`) and Jira (`type: jira`).
+
+For Linear, the `api_key` serves double duty: the supervisor uses it for polling and status updates, and it is also passed to agent workers via `--mcp-config` so they have Linear MCP tools available. No separate plugin installation is needed. If `identities.coder.tracker_api_key` is set, it takes priority for agent MCP tools.
 
 #### Linear configuration
 
@@ -239,10 +241,10 @@ identities:
     ssh_key_path: ~/.botfarm/coder_id_ed25519     # Private key for git SSH
     git_author_name: "Coder Bot"                  # Git commit author name
     git_author_email: "coder-bot@example.com"     # Git commit author email
-    linear_api_key: ${CODER_LINEAR_API_KEY}       # Coder's own Linear API key
+    tracker_api_key: ${CODER_LINEAR_API_KEY}      # Coder's own bugtracker API key (overrides bugtracker.api_key for agent MCP tools)
   reviewer:
     github_token: ${REVIEWER_GITHUB_TOKEN}        # PAT for gh CLI (review commands)
-    linear_api_key: ${REVIEWER_LINEAR_API_KEY}    # Reviewer's own Linear API key
+    tracker_api_key: ${REVIEWER_LINEAR_API_KEY}   # Reviewer's own bugtracker API key
 ```
 
 All fields default to empty string. Environment variable expansion (`${VAR}`) works in all string fields.
@@ -307,9 +309,9 @@ How each field is used:
 | `coder.ssh_key_path` | Used in `GIT_SSH_COMMAND` for git push (must be an absolute or `~`-prefixed path) |
 | `coder.git_author_name` | Set as `GIT_AUTHOR_NAME` and `GIT_COMMITTER_NAME` on commits during implement/fix/pr_checks/merge stages |
 | `coder.git_author_email` | Set as `GIT_AUTHOR_EMAIL` and `GIT_COMMITTER_EMAIL` on commits during implement/fix/pr_checks/merge stages |
-| `coder.linear_api_key` | Optional separate Linear key for the coder (rarely needed; not shown in config template) |
+| `coder.tracker_api_key` | Optional separate bugtracker API key for the coder — when set, overrides `bugtracker.api_key` for agent MCP tools in coder stages |
 | `reviewer.github_token` | Set as `GH_TOKEN` for `gh` CLI during review stages |
-| `reviewer.linear_api_key` | Optional separate Linear key for the reviewer (rarely needed; not shown in config template) |
+| `reviewer.tracker_api_key` | Optional separate bugtracker API key for the reviewer |
 
 You can configure identities incrementally — any field left empty falls back to the system-level default (your `gh auth` login, global git config, etc.).
 
