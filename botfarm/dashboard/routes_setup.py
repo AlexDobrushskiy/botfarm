@@ -158,6 +158,123 @@ def partial_setup_status(request: Request):
     })
 
 
+def _section_done_map(steps: list[SetupStep]) -> dict[str, bool]:
+    """Compute per-section done status from the flat step list.
+
+    Sections:
+    - bugtracker: bugtracker_type + bugtracker_api_key
+    - credentials: github_auth + claude_auth
+    - project: project_configured + repos_cloned
+    - verification: all steps done (setup complete)
+    """
+    by_id = {s.id: s.done for s in steps}
+    return {
+        "bugtracker": by_id.get("bugtracker_type", False) and by_id.get("bugtracker_api_key", False),
+        "credentials": by_id.get("github_auth", False) and by_id.get("claude_auth", False),
+        "project": by_id.get("project_configured", False) and by_id.get("repos_cloned", False),
+        "verification": all(s.done for s in steps),
+    }
+
+
+@router.get("/setup", response_class=HTMLResponse)
+def setup_page(request: Request):
+    """Render the setup wizard page."""
+    app = request.app
+    config = app.state.botfarm_config
+    templates = app.state.templates
+
+    steps: list[SetupStep] = []
+    setup_complete = False
+    section_done: dict[str, bool] = {
+        "bugtracker": False, "credentials": False,
+        "project": False, "verification": False,
+    }
+    has_projects = False
+    project_count = 0
+    repos_cloned = False
+
+    if config is not None:
+        steps = get_setup_steps(config)
+        setup_complete = all(s.done for s in steps)
+        section_done = _section_done_map(steps)
+        has_projects = bool(config.projects)
+        project_count = len(config.projects)
+        by_id = {s.id: s.done for s in steps}
+        repos_cloned = by_id.get("repos_cloned", False)
+
+    # Preflight data for the verification section
+    from .routes_api import _get_preflight_data
+    preflight_data = _get_preflight_data(app)
+
+    # Credential partial context
+    github_done = _check_github_auth().done
+    claude_done = _check_claude_auth().done
+
+    ssh_key_path = ""
+    ssh_key_exists = False
+    if config and config.identities.coder.ssh_key_path:
+        ssh_key_path = config.identities.coder.ssh_key_path
+        try:
+            ssh_key_exists = Path(ssh_key_path).expanduser().exists()
+        except (OSError, ValueError):
+            pass
+
+    bt_type = ""
+    bt_workspace = ""
+    bt_api_key_set = False
+    jira_url = ""
+    jira_email = ""
+    if config:
+        bt_type = config.bugtracker.type or ""
+        bt_workspace = config.bugtracker.workspace or ""
+        bt_api_key_set = bool(config.bugtracker.api_key)
+        from botfarm.config import JiraBugtrackerConfig
+        if isinstance(config.bugtracker, JiraBugtrackerConfig):
+            jira_url = config.bugtracker.url or ""
+            jira_email = config.bugtracker.email or ""
+
+    degraded_getter = app.state.get_degraded
+    degraded = degraded_getter() if degraded_getter else False
+
+    return templates.TemplateResponse("setup.html", {
+        "request": request,
+        "steps": steps,
+        "setup_complete": setup_complete,
+        "section_done": section_done,
+        "has_projects": has_projects,
+        "project_count": project_count,
+        "repos_cloned": repos_cloned,
+        "degraded": degraded,
+        # Preflight data
+        "checks": preflight_data.get("checks", []),
+        "failed_critical": preflight_data.get("failed_critical", 0),
+        # Credential partial context (for initial include)
+        "github_done": github_done,
+        "claude_done": claude_done,
+        "ssh_key_path": ssh_key_path,
+        "ssh_key_exists": ssh_key_exists,
+        "bt_type": bt_type,
+        "bt_workspace": bt_workspace,
+        "bt_api_key_set": bt_api_key_set,
+        "jira_url": jira_url,
+        "jira_email": jira_email,
+    })
+
+
+@router.get("/partials/setup-preflight", response_class=HTMLResponse)
+def partial_setup_preflight(request: Request):
+    """Render preflight check results for the setup wizard."""
+    from .routes_api import _get_preflight_data
+
+    app = request.app
+    templates = app.state.templates
+    data = _get_preflight_data(app)
+    return templates.TemplateResponse("partials/setup_preflight.html", {
+        "request": request,
+        **data,
+    })
+
+
 # ---------------------------------------------------------------------------
 # Bugtracker configuration form
 # ---------------------------------------------------------------------------

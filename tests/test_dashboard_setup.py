@@ -10,6 +10,7 @@ from botfarm.config import BotfarmConfig, LinearBugtrackerConfig, ProjectConfig
 from botfarm.dashboard import create_app
 from botfarm.dashboard.routes_setup import (
     SetupStep,
+    _section_done_map,
     _validate_bugtracker_api_key,
     _validate_github_token,
     get_setup_steps,
@@ -716,3 +717,341 @@ class TestSetupCredentialsPartial:
 
         resp = client.get("/partials/setup-credentials")
         assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Section done map unit tests
+# ---------------------------------------------------------------------------
+
+class TestSectionDoneMap:
+    def test_all_done(self):
+        steps = [
+            SetupStep(id="bugtracker_type", label="", done=True),
+            SetupStep(id="bugtracker_api_key", label="", done=True),
+            SetupStep(id="github_auth", label="", done=True),
+            SetupStep(id="claude_auth", label="", done=True),
+            SetupStep(id="project_configured", label="", done=True),
+            SetupStep(id="repos_cloned", label="", done=True),
+        ]
+        result = _section_done_map(steps)
+        assert result["bugtracker"] is True
+        assert result["credentials"] is True
+        assert result["project"] is True
+        assert result["verification"] is True
+
+    def test_none_done(self):
+        steps = [
+            SetupStep(id="bugtracker_type", label="", done=False),
+            SetupStep(id="bugtracker_api_key", label="", done=False),
+            SetupStep(id="github_auth", label="", done=False),
+            SetupStep(id="claude_auth", label="", done=False),
+            SetupStep(id="project_configured", label="", done=False),
+            SetupStep(id="repos_cloned", label="", done=False),
+        ]
+        result = _section_done_map(steps)
+        assert result["bugtracker"] is False
+        assert result["credentials"] is False
+        assert result["project"] is False
+        assert result["verification"] is False
+
+    def test_partial_bugtracker(self):
+        steps = [
+            SetupStep(id="bugtracker_type", label="", done=True),
+            SetupStep(id="bugtracker_api_key", label="", done=False),
+            SetupStep(id="github_auth", label="", done=True),
+            SetupStep(id="claude_auth", label="", done=True),
+            SetupStep(id="project_configured", label="", done=True),
+            SetupStep(id="repos_cloned", label="", done=True),
+        ]
+        result = _section_done_map(steps)
+        assert result["bugtracker"] is False
+        assert result["credentials"] is True
+        assert result["project"] is True
+        # Verification requires ALL steps done
+        assert result["verification"] is False
+
+    def test_partial_credentials(self):
+        steps = [
+            SetupStep(id="bugtracker_type", label="", done=True),
+            SetupStep(id="bugtracker_api_key", label="", done=True),
+            SetupStep(id="github_auth", label="", done=True),
+            SetupStep(id="claude_auth", label="", done=False),
+            SetupStep(id="project_configured", label="", done=True),
+            SetupStep(id="repos_cloned", label="", done=True),
+        ]
+        result = _section_done_map(steps)
+        assert result["bugtracker"] is True
+        assert result["credentials"] is False
+        assert result["project"] is True
+        assert result["verification"] is False
+
+
+# ---------------------------------------------------------------------------
+# Setup wizard page tests
+# ---------------------------------------------------------------------------
+
+def _mock_auth_unavailable(monkeypatch):
+    """Helper to mock both GitHub and Claude auth as unavailable."""
+    from botfarm.credentials import CredentialError
+
+    monkeypatch.setattr(
+        "botfarm.dashboard.routes_setup._load_token",
+        lambda: (_ for _ in ()).throw(CredentialError("no creds")),
+    )
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setattr(
+        "botfarm.dashboard.routes_setup.shutil.which",
+        lambda cmd: None,
+    )
+
+
+class TestSetupWizardPage:
+    def test_renders_setup_page(self, db_file, monkeypatch):
+        config = _make_config(api_key="key123", bt_type="linear")
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+        _mock_auth_unavailable(monkeypatch)
+
+        resp = client.get("/setup")
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers["content-type"]
+        assert "Setup Wizard" in resp.text
+
+    def test_shows_all_sections(self, db_file, monkeypatch):
+        config = _make_config(api_key="key123", bt_type="linear")
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+        _mock_auth_unavailable(monkeypatch)
+
+        resp = client.get("/setup")
+        assert "Bugtracker Configuration" in resp.text
+        assert "Credentials" in resp.text
+        assert "Project Setup" in resp.text
+        assert "Verification" in resp.text
+
+    def test_shows_sidebar_checklist(self, db_file, monkeypatch):
+        config = _make_config(api_key="key123", bt_type="linear")
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+        _mock_auth_unavailable(monkeypatch)
+
+        resp = client.get("/setup")
+        assert "Setup Progress" in resp.text
+        assert "setup-steps-nav" in resp.text
+
+    def test_shows_step_navigation(self, db_file, monkeypatch):
+        config = _make_config(api_key="key123", bt_type="linear")
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+        _mock_auth_unavailable(monkeypatch)
+
+        resp = client.get("/setup")
+        assert 'data-section="bugtracker"' in resp.text
+        assert 'data-section="credentials"' in resp.text
+        assert 'data-section="project"' in resp.text
+        assert 'data-section="verification"' in resp.text
+
+    def test_no_config_renders_empty(self, db_file, monkeypatch):
+        app = create_app(db_path=db_file, botfarm_config=None)
+        client = TestClient(app)
+        _mock_auth_unavailable(monkeypatch)
+
+        resp = client.get("/setup")
+        assert resp.status_code == 200
+        assert "Setup Wizard" in resp.text
+
+    def test_shows_complete_banner_when_all_done(
+        self, db_file, tmp_path, monkeypatch,
+    ):
+        from botfarm.credentials import OAuthToken
+
+        repo = tmp_path / "myrepo"
+        repo.mkdir()
+        (repo / ".git").mkdir()
+        proj = ProjectConfig(name="myproj", base_dir=str(repo))
+        config = _make_config(api_key="key123", bt_type="linear", projects=[proj])
+
+        gh_dir = tmp_path / ".config" / "gh"
+        gh_dir.mkdir(parents=True)
+        (gh_dir / "hosts.yml").write_text("github.com:\n  oauth_token: abc\n")
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "botfarm.dashboard.routes_setup.shutil.which",
+            lambda cmd: "/usr/bin/" + cmd,
+        )
+        monkeypatch.setattr(
+            "botfarm.dashboard.routes_setup._load_token",
+            lambda: OAuthToken(access_token="x"),
+        )
+
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+
+        resp = client.get("/setup")
+        assert "Setup Complete" in resp.text
+        assert "Go to Dashboard" in resp.text
+
+    def test_shows_project_count(self, db_file, tmp_path, monkeypatch):
+        repo = tmp_path / "myrepo"
+        repo.mkdir()
+        (repo / ".git").mkdir()
+        proj = ProjectConfig(name="myproj", base_dir=str(repo))
+        config = _make_config(api_key="key123", bt_type="linear", projects=[proj])
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+        _mock_auth_unavailable(monkeypatch)
+
+        resp = client.get("/setup")
+        assert "1 project configured" in resp.text
+
+    def test_shows_add_project_link(self, db_file, monkeypatch):
+        config = _make_config(api_key="key123", bt_type="linear")
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+        _mock_auth_unavailable(monkeypatch)
+
+        resp = client.get("/setup")
+        assert "/projects/add" in resp.text
+        assert "Add Project" in resp.text
+
+    def test_includes_credentials_forms(self, db_file, monkeypatch):
+        config = _make_config(api_key="key123", bt_type="linear")
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+        _mock_auth_unavailable(monkeypatch)
+
+        resp = client.get("/setup")
+        assert "saveBugtracker" in resp.text
+        assert "saveGithub" in resp.text
+
+    def test_has_preflight_button(self, db_file, monkeypatch):
+        config = _make_config(api_key="key123", bt_type="linear")
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+        _mock_auth_unavailable(monkeypatch)
+
+        resp = client.get("/setup")
+        assert "Run Preflight Checks" in resp.text
+
+    def test_mobile_responsive(self, db_file, monkeypatch):
+        """Verify the template contains mobile responsive styles."""
+        config = _make_config(api_key="key123", bt_type="linear")
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+        _mock_auth_unavailable(monkeypatch)
+
+        resp = client.get("/setup")
+        assert "@media" in resp.text
+        assert "768px" in resp.text
+
+
+# ---------------------------------------------------------------------------
+# Index redirect tests
+# ---------------------------------------------------------------------------
+
+class TestIndexSetupRedirect:
+    def test_redirects_to_setup_when_degraded(self, db_file, monkeypatch):
+        config = _make_config(api_key="key123", bt_type="linear")
+        app = create_app(
+            db_path=db_file,
+            botfarm_config=config,
+            get_degraded=lambda: True,
+        )
+        client = TestClient(app, follow_redirects=False)
+
+        resp = client.get("/")
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "/setup"
+
+    def test_no_redirect_when_not_degraded(self, db_file):
+        config = _make_config(api_key="key123", bt_type="linear")
+        app = create_app(
+            db_path=db_file,
+            botfarm_config=config,
+            get_degraded=lambda: False,
+        )
+        client = TestClient(app, follow_redirects=False)
+
+        resp = client.get("/")
+        assert resp.status_code == 200
+
+    def test_no_redirect_when_no_degraded_getter(self, db_file):
+        config = _make_config(api_key="key123", bt_type="linear")
+        app = create_app(
+            db_path=db_file,
+            botfarm_config=config,
+        )
+        client = TestClient(app, follow_redirects=False)
+
+        resp = client.get("/")
+        assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Setup preflight partial tests
+# ---------------------------------------------------------------------------
+
+class TestSetupPreflightPartial:
+    def test_renders_no_results(self, db_file, monkeypatch):
+        config = _make_config(api_key="key123", bt_type="linear")
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+
+        resp = client.get("/partials/setup-preflight")
+        assert resp.status_code == 200
+        assert "No preflight results yet" in resp.text
+
+    def test_renders_with_results(self, db_file, monkeypatch):
+        from dataclasses import dataclass
+
+        @dataclass
+        class FakeCheck:
+            name: str
+            passed: bool
+            message: str
+            critical: bool
+
+        checks = [
+            FakeCheck("git_repo", True, "OK", True),
+            FakeCheck("database", False, "Schema mismatch", True),
+        ]
+
+        config = _make_config(api_key="key123", bt_type="linear")
+        app = create_app(
+            db_path=db_file,
+            botfarm_config=config,
+            get_preflight_results=lambda: checks,
+            get_degraded=lambda: True,
+        )
+        client = TestClient(app)
+
+        resp = client.get("/partials/setup-preflight")
+        assert resp.status_code == 200
+        assert "git_repo" in resp.text
+        assert "database" in resp.text
+        assert "Schema mismatch" in resp.text
+        assert "critical" in resp.text
+
+    def test_shows_all_passed(self, db_file, monkeypatch):
+        from dataclasses import dataclass
+
+        @dataclass
+        class FakeCheck:
+            name: str
+            passed: bool
+            message: str
+            critical: bool
+
+        checks = [FakeCheck("git_repo", True, "OK", True)]
+
+        config = _make_config(api_key="key123", bt_type="linear")
+        app = create_app(
+            db_path=db_file,
+            botfarm_config=config,
+            get_preflight_results=lambda: checks,
+        )
+        client = TestClient(app)
+
+        resp = client.get("/partials/setup-preflight")
+        assert "All preflight checks passed" in resp.text

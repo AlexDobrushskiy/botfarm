@@ -1,0 +1,316 @@
+{% extends "base.html" %}
+{% set active_page = "setup" %}
+{% block title %}Setup Wizard - Botfarm{% endblock %}
+{% block content %}
+<style>
+    .setup-layout {
+        display: grid;
+        grid-template-columns: 280px 1fr;
+        gap: 2rem;
+        align-items: start;
+    }
+    @media (max-width: 768px) {
+        .setup-layout {
+            grid-template-columns: 1fr;
+        }
+    }
+    .setup-sidebar {
+        position: sticky;
+        top: 1rem;
+    }
+    .setup-sidebar h2 {
+        font-size: 1.1rem;
+        margin-bottom: 0.75rem;
+    }
+    .setup-steps-nav {
+        list-style: none;
+        padding: 0;
+        margin: 0 0 1.5rem 0;
+    }
+    .setup-steps-nav li {
+        padding: 0.5rem 0.75rem;
+        border-left: 3px solid var(--pico-muted-border-color);
+        margin-bottom: 0.25rem;
+        cursor: pointer;
+        font-size: 0.9rem;
+        transition: border-color 0.15s ease, background 0.15s ease;
+        border-radius: 0 var(--pico-border-radius) var(--pico-border-radius) 0;
+    }
+    .setup-steps-nav li:hover {
+        background: var(--pico-form-element-background-color);
+    }
+    .setup-steps-nav li.active {
+        border-left-color: var(--pico-primary);
+        font-weight: 600;
+    }
+    .setup-steps-nav li .step-icon {
+        display: inline-block;
+        width: 1.2rem;
+        text-align: center;
+        margin-right: 0.4rem;
+    }
+    .setup-steps-nav li .step-icon-done { color: #22c55e; }
+    .setup-steps-nav li .step-icon-pending { color: var(--pico-muted-color); }
+    .setup-main h1 { margin-bottom: 0.5rem; }
+    .setup-main > p { color: var(--pico-muted-color); margin-bottom: 1.5rem; }
+    .setup-section {
+        margin-bottom: 2rem;
+        scroll-margin-top: 1rem;
+    }
+    .setup-section-header {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin-bottom: 1rem;
+    }
+    .setup-section-header h2 {
+        margin-bottom: 0;
+        font-size: 1.25rem;
+    }
+    .setup-section-number {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 1.75rem;
+        height: 1.75rem;
+        border-radius: 50%;
+        font-size: 0.85rem;
+        font-weight: 700;
+        flex-shrink: 0;
+    }
+    .setup-section-number-done {
+        background: #22c55e;
+        color: #fff;
+    }
+    .setup-section-number-pending {
+        border: 2px solid var(--pico-muted-color);
+        color: var(--pico-muted-color);
+    }
+    .setup-section-number-active {
+        border: 2px solid var(--pico-primary);
+        color: var(--pico-primary);
+    }
+    .setup-project-card {
+        border: 1px solid var(--pico-muted-border-color);
+        border-radius: var(--pico-border-radius);
+        padding: 1rem 1.5rem;
+    }
+    .setup-project-card p { margin-bottom: 0.75rem; }
+    .setup-complete-banner {
+        background: rgba(34, 197, 94, 0.1);
+        border: 2px solid #22c55e;
+        border-radius: var(--pico-border-radius);
+        padding: 1.5rem;
+        text-align: center;
+    }
+    .setup-complete-banner h3 {
+        color: #22c55e;
+        margin-bottom: 0.5rem;
+    }
+    .setup-complete-banner p {
+        color: var(--pico-muted-color);
+        margin-bottom: 1rem;
+    }
+    .preflight-results {
+        margin-top: 1rem;
+    }
+    .preflight-results table { font-size: 0.9rem; }
+</style>
+
+<div class="setup-layout">
+    {# ==================== Sidebar ==================== #}
+    <aside class="setup-sidebar">
+        <h2>Setup Progress</h2>
+        <ul class="setup-steps-nav" id="setup-steps-nav">
+            <li data-section="bugtracker" class="active" onclick="scrollToSection('bugtracker')">
+                <span class="step-icon {% if section_done.bugtracker %}step-icon-done{% else %}step-icon-pending{% endif %}">
+                    {% if section_done.bugtracker %}&#10003;{% else %}&#9675;{% endif %}
+                </span>
+                Bugtracker
+            </li>
+            <li data-section="credentials" onclick="scrollToSection('credentials')">
+                <span class="step-icon {% if section_done.credentials %}step-icon-done{% else %}step-icon-pending{% endif %}">
+                    {% if section_done.credentials %}&#10003;{% else %}&#9675;{% endif %}
+                </span>
+                Credentials
+            </li>
+            <li data-section="project" onclick="scrollToSection('project')">
+                <span class="step-icon {% if section_done.project %}step-icon-done{% else %}step-icon-pending{% endif %}">
+                    {% if section_done.project %}&#10003;{% else %}&#9675;{% endif %}
+                </span>
+                Project Setup
+            </li>
+            <li data-section="verification" onclick="scrollToSection('verification')">
+                <span class="step-icon {% if section_done.verification %}step-icon-done{% else %}step-icon-pending{% endif %}">
+                    {% if section_done.verification %}&#10003;{% else %}&#9675;{% endif %}
+                </span>
+                Verification
+            </li>
+        </ul>
+
+        <div id="setup-checklist-panel"
+             hx-get="/partials/setup-status"
+             hx-trigger="every 5s"
+             hx-swap="innerHTML">
+            {% include "partials/setup_status.html" %}
+        </div>
+    </aside>
+
+    {# ==================== Main Content ==================== #}
+    <div class="setup-main">
+        <h1>Setup Wizard</h1>
+        <p>Configure your botfarm installation step by step. Complete each section to get started.</p>
+
+        {% if setup_complete %}
+        <div class="setup-complete-banner">
+            <h3>&#10003; Setup Complete</h3>
+            <p>All configuration steps are finished. You're ready to start using botfarm.</p>
+            <a href="/" role="button">Go to Dashboard</a>
+        </div>
+        {% endif %}
+
+        {# ==================== Step 1: Bugtracker ==================== #}
+        <section id="section-bugtracker" class="setup-section">
+            <div class="setup-section-header">
+                <span class="setup-section-number {% if section_done.bugtracker %}setup-section-number-done{% else %}setup-section-number-active{% endif %}">
+                    {% if section_done.bugtracker %}&#10003;{% else %}1{% endif %}
+                </span>
+                <h2>Bugtracker Configuration</h2>
+            </div>
+            <div id="setup-credentials-panel"
+                 hx-get="/partials/setup-credentials"
+                 hx-trigger="setupCredentialsRefresh from:body"
+                 hx-swap="innerHTML">
+                {% include "partials/setup_credentials.html" %}
+            </div>
+        </section>
+
+        {# ==================== Step 2: Credentials ==================== #}
+        <section id="section-credentials" class="setup-section">
+            <div class="setup-section-header">
+                <span class="setup-section-number {% if section_done.credentials %}setup-section-number-done{% elif section_done.bugtracker %}setup-section-number-active{% else %}setup-section-number-pending{% endif %}">
+                    {% if section_done.credentials %}&#10003;{% else %}2{% endif %}
+                </span>
+                <h2>Credentials</h2>
+            </div>
+            <p style="color: var(--pico-muted-color); font-size: 0.9rem;">
+                GitHub and Claude authentication status is shown in the forms above.
+                Claude Code requires interactive authentication via SSH.
+                This section will update automatically as credentials are configured.
+            </p>
+        </section>
+
+        {# ==================== Step 3: Project Setup ==================== #}
+        <section id="section-project" class="setup-section">
+            <div class="setup-section-header">
+                <span class="setup-section-number {% if section_done.project %}setup-section-number-done{% elif section_done.credentials %}setup-section-number-active{% else %}setup-section-number-pending{% endif %}">
+                    {% if section_done.project %}&#10003;{% else %}3{% endif %}
+                </span>
+                <h2>Project Setup</h2>
+            </div>
+            <div class="setup-project-card">
+                {% if has_projects %}
+                <p style="color: #22c55e; font-weight: 600;">
+                    &#10003; {{ project_count }} project{{ "s" if project_count != 1 else "" }} configured
+                    {% if repos_cloned %} and cloned{% endif %}.
+                </p>
+                {% else %}
+                <p>Add your first project to get started. This will configure the repository, bugtracker integration, and worker slots.</p>
+                {% endif %}
+                <a href="/projects/add" role="button" {% if not section_done.bugtracker %}class="secondary"{% endif %}>
+                    {% if has_projects %}Add Another Project{% else %}Add Project{% endif %}
+                </a>
+            </div>
+        </section>
+
+        {# ==================== Step 4: Verification ==================== #}
+        <section id="section-verification" class="setup-section">
+            <div class="setup-section-header">
+                <span class="setup-section-number {% if section_done.verification %}setup-section-number-done{% elif section_done.project %}setup-section-number-active{% else %}setup-section-number-pending{% endif %}">
+                    {% if section_done.verification %}&#10003;{% else %}4{% endif %}
+                </span>
+                <h2>Verification</h2>
+            </div>
+            <div class="setup-project-card">
+                <p>Run preflight checks to verify your configuration is complete and correct.</p>
+                <div style="display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
+                    <button id="run-preflight-btn" onclick="runPreflight()"
+                            {% if not section_done.project %}class="secondary" disabled{% endif %}>
+                        Run Preflight Checks
+                    </button>
+                    {% if setup_complete and not degraded %}
+                    <a href="/" role="button">Finish Setup</a>
+                    {% endif %}
+                </div>
+                <div id="preflight-results" class="preflight-results"
+                     hx-get="/partials/setup-preflight"
+                     hx-trigger="load, preflightRefresh from:body"
+                     hx-swap="innerHTML">
+                </div>
+            </div>
+        </section>
+    </div>
+</div>
+
+<script>
+function scrollToSection(name) {
+    var el = document.getElementById("section-" + name);
+    if (el) {
+        el.scrollIntoView({behavior: "smooth", block: "start"});
+    }
+    /* Update active nav item */
+    var items = document.querySelectorAll("#setup-steps-nav li");
+    items.forEach(function(li) {
+        li.classList.toggle("active", li.dataset.section === name);
+    });
+}
+
+/* Track scroll position to update sidebar active state */
+var _setupSections = ["bugtracker", "credentials", "project", "verification"];
+var _scrollTimer = null;
+window.addEventListener("scroll", function() {
+    clearTimeout(_scrollTimer);
+    _scrollTimer = setTimeout(function() {
+        var current = _setupSections[0];
+        for (var i = 0; i < _setupSections.length; i++) {
+            var el = document.getElementById("section-" + _setupSections[i]);
+            if (el && el.getBoundingClientRect().top <= 100) {
+                current = _setupSections[i];
+            }
+        }
+        var items = document.querySelectorAll("#setup-steps-nav li");
+        items.forEach(function(li) {
+            li.classList.toggle("active", li.dataset.section === current);
+        });
+    }, 50);
+});
+
+function runPreflight() {
+    var btn = document.getElementById("run-preflight-btn");
+    btn.disabled = true;
+    btn.setAttribute("aria-busy", "true");
+    btn.textContent = "Running checks...";
+
+    fetch("/api/rerun-preflight", {method: "POST"})
+        .then(function(resp) {
+            if (!resp.ok) throw new Error("Request failed");
+            /* Wait a moment for checks to run, then refresh results */
+            setTimeout(function() {
+                htmx.trigger(document.body, "preflightRefresh");
+                htmx.trigger(document.body, "setupCredentialsRefresh");
+                btn.disabled = false;
+                btn.removeAttribute("aria-busy");
+                btn.textContent = "Run Preflight Checks";
+            }, 3000);
+        })
+        .catch(function(err) {
+            btn.disabled = false;
+            btn.removeAttribute("aria-busy");
+            btn.textContent = "Run Preflight Checks";
+            if (typeof showToast === "function") {
+                showToast("Failed to trigger preflight: " + err.message, "error");
+            }
+        });
+}
+</script>
+{% endblock %}
