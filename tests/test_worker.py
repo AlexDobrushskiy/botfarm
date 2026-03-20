@@ -4274,7 +4274,6 @@ class TestMcpConfigFlag:
         mock_proc.wait.return_value = 0
         # Capture the temp file contents before it's cleaned up
         captured_config = {}
-        original_popen = mock_popen.side_effect
 
         def _capture_popen(cmd, **kwargs):
             idx = cmd.index("--mcp-config")
