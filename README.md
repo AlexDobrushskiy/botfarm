@@ -18,6 +18,7 @@ Botfarm polls your Linear board for "Todo" tickets, dispatches them to Claude Co
 
 - **Python 3.12+**
 - **git**
+- **4 GB+ RAM** recommended (2 GB is marginal with Claude Code running)
 
 ### Claude Code
 
@@ -29,10 +30,11 @@ curl -fsSL https://claude.ai/install.sh | bash
 
 > **Note:** Use `| bash`, not `| sh` — the latter fails on Ubuntu.
 
-After installation, add `~/.local/bin` to your PATH if it isn't already:
+After installation, add `~/.local/bin` to your PATH:
 
 ```bash
-export PATH="$HOME/.local/bin:$PATH"
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
 ```
 
 Node.js is **not** required.
@@ -48,7 +50,17 @@ The Linear plugin is required for workers to manage tickets via Linear MCP.
 
 ### GitHub CLI
 
-Install the GitHub CLI (`gh`) following the [official instructions](https://github.com/cli/cli#installation), then authenticate:
+**Ubuntu 24.04:** The official apt repository may have GPG key issues. Use a direct `.deb` install instead:
+
+```bash
+GH_VERSION=$(curl -s https://api.github.com/repos/cli/cli/releases/latest | grep '"tag_name"' | sed 's/.*v//' | sed 's/".*//')
+curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.deb" -o /tmp/gh.deb
+sudo dpkg -i /tmp/gh.deb
+```
+
+**Other systems:** Follow the [official instructions](https://github.com/cli/cli#installation).
+
+Then authenticate:
 
 ```bash
 gh auth login
@@ -56,38 +68,50 @@ gh auth login
 
 Select the **SSH** protocol when prompted. This automatically generates and uploads an SSH key — no manual `ssh-keygen` needed.
 
+### GitHub SSH Host Key
+
+On fresh machines, add GitHub's host key before cloning repos:
+
+```bash
+ssh-keyscan github.com >> ~/.ssh/known_hosts
+```
+
 ### Linear API Key
 
-Create a personal API key at [Linear Settings → API](https://linear.app/settings/api). You'll add this to `~/.botfarm/.env` during setup.
+Create a personal API key at [Linear Settings → API](https://linear.app/settings/api). You'll add this during setup.
 
 ## Headless Server Setup
 
-When running on a headless server (no browser), authentication requires extra steps.
+When running on a headless server (no browser), authentication requires three browser-based steps. Each uses a device/authorization code flow — you'll see a URL and code on the server, then complete auth in any browser.
 
-### Claude Code Auth
+### Step 1: Claude Code Auth
 
-Claude Code uses a device code flow that works headless:
+```bash
+claude
+```
 
-1. Run `claude` on the server
-2. It displays a URL and a code
-3. Open the URL in a browser on any machine, paste the code
-4. Authentication completes on the server
+1. A URL and one-time code are displayed
+2. Open the URL in a browser on any machine, enter the code
+3. Authentication completes on the server
 
-### Linear Plugin Auth
+### Step 2: Linear Plugin Auth
 
-The Linear plugin uses OAuth which requires a browser callback. Use an SSH tunnel:
+The Linear plugin uses OAuth which requires a browser callback. **Set up an SSH tunnel first:**
 
-1. Start the SSH tunnel from your local machine to the server:
-   ```bash
-   ssh -L 3000:localhost:3000 user@server
-   ```
-2. On the server, open Claude Code and install the Linear plugin (`/plugins` → discover → "linear")
-3. When the OAuth flow starts, open the authorization URL in your local browser
+```bash
+# From your laptop/desktop (separate terminal):
+ssh -L 3000:localhost:3000 user@server
+```
+
+Then on the server:
+
+1. Open Claude Code: `claude`
+2. Type `/plugins` → Discover → search "linear" → Install
+3. When the OAuth flow starts, a URL is displayed — open it in your local browser
 4. The callback redirects to `localhost:3000`, which tunnels back to the server
+5. Verify: `/plugins` should show the Linear plugin as installed
 
-### GitHub CLI Auth
-
-Use the browser-based device code flow (recommended over token-based auth):
+### Step 3: GitHub CLI Auth
 
 ```bash
 gh auth login
@@ -96,11 +120,13 @@ gh auth login
 1. Select **GitHub.com**
 2. Select **SSH** protocol
 3. Select **Login with a web browser**
-4. It displays a one-time code — open the URL on any machine and enter it
+4. A one-time code is displayed — open the URL on any machine and enter it
 
 ## Setup
 
 ```bash
+git clone https://github.com/AlexDobrushskiy/botfarm.git
+cd botfarm
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -109,17 +135,39 @@ pip install -e .
 
 ## Configuration
 
-Generate a starter config:
+### Quick start (interactive)
 
 ```bash
 botfarm init
 ```
 
-This creates `~/.botfarm/config.yaml`. Add your Linear API key to `~/.botfarm/.env`:
+This connects to the Linear API, discovers your teams and workspace, and generates `~/.botfarm/config.yaml` and `~/.botfarm/.env`.
 
+### Scripted setup (non-interactive)
+
+For automated deployments or when configuring via scripts/CI:
+
+```bash
+botfarm init --linear-api-key $LINEAR_API_KEY --team SMA --workspace my-workspace
 ```
-LINEAR_API_KEY=lin_api_xxxxxxxxxxxxxxxxxxxx
+
+### Adding a project
+
+```bash
+botfarm add-project
 ```
+
+This interactively sets up a project: clones the repo, creates git worktrees, validates the development environment, and updates your config.
+
+### Validation
+
+After configuration, start the supervisor to run automatic preflight checks:
+
+```bash
+botfarm run
+```
+
+The supervisor validates config, database, git repos, Linear API, Claude credentials, and required plugins on startup.
 
 See [docs/configuration.md](docs/configuration.md) for the full config reference.
 
