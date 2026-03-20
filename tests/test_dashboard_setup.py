@@ -949,8 +949,12 @@ class TestSetupWizardPage:
         client = TestClient(app)
 
         resp = client.get("/setup")
-        assert "Setup Complete" not in resp.text
-        assert "Go to Dashboard" not in resp.text
+        # The server-rendered banner (outside <script>) should not appear.
+        # Split on <script> to isolate the HTML body from JS code that may
+        # contain "Setup Complete" as a string literal.
+        html_before_script = resp.text.split("<script>")[0]
+        assert "Setup Complete" not in html_before_script
+        assert "Go to Dashboard" not in html_before_script
 
     def test_shows_project_count(self, db_file, tmp_path, monkeypatch):
         repo = tmp_path / "myrepo"
@@ -965,14 +969,15 @@ class TestSetupWizardPage:
         resp = client.get("/setup")
         assert "1 project configured" in resp.text
 
-    def test_shows_add_project_link(self, db_file, monkeypatch):
+    def test_shows_inline_project_form(self, db_file, monkeypatch):
+        """When no projects exist, setup wizard shows inline form (not a link)."""
         config = _make_config(api_key="key123", bt_type="linear")
         app = create_app(db_path=db_file, botfarm_config=config)
         client = TestClient(app)
         _mock_auth_unavailable(monkeypatch)
 
         resp = client.get("/setup")
-        assert "/projects/add" in resp.text
+        assert "setup-project-form" in resp.text
         assert "Add Project" in resp.text
 
     def test_includes_credentials_forms(self, db_file, monkeypatch):
@@ -1115,3 +1120,212 @@ class TestSetupPreflightPartial:
 
         resp = client.get("/partials/setup-preflight")
         assert "All preflight checks passed" in resp.text
+
+
+# ---------------------------------------------------------------------------
+# Setup complete endpoint tests
+# ---------------------------------------------------------------------------
+
+class TestSetupCompleteEndpoint:
+    def test_returns_preflight_not_triggered_without_callback(self, db_file):
+        config = _make_config(api_key="key123", bt_type="linear")
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+
+        resp = client.post("/api/setup/complete")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["preflight_triggered"] is False
+
+    def test_triggers_preflight_callback(self, db_file):
+        called = []
+        config = _make_config(api_key="key123", bt_type="linear")
+        app = create_app(
+            db_path=db_file,
+            botfarm_config=config,
+            on_rerun_preflight=lambda: called.append(True),
+        )
+        client = TestClient(app)
+
+        resp = client.post("/api/setup/complete")
+        assert resp.status_code == 200
+        assert len(called) == 1
+
+    def test_no_config_still_triggers(self, db_file):
+        called = []
+        app = create_app(
+            db_path=db_file,
+            botfarm_config=None,
+            on_rerun_preflight=lambda: called.append(True),
+        )
+        client = TestClient(app)
+
+        resp = client.post("/api/setup/complete")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["preflight_triggered"] is True
+        assert len(called) == 1
+
+    def test_no_preflight_callback_still_works(self, db_file):
+        config = _make_config(api_key="key123", bt_type="linear")
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+
+        resp = client.post("/api/setup/complete")
+        assert resp.status_code == 200
+        assert resp.json()["preflight_triggered"] is False
+
+    def test_callback_exception_returns_not_triggered(self, db_file):
+        def _boom():
+            raise RuntimeError("preflight exploded")
+
+        config = _make_config(api_key="key123", bt_type="linear")
+        app = create_app(
+            db_path=db_file,
+            botfarm_config=config,
+            on_rerun_preflight=_boom,
+        )
+        client = TestClient(app)
+
+        resp = client.post("/api/setup/complete")
+        assert resp.status_code == 200
+        assert resp.json()["preflight_triggered"] is False
+
+
+# ---------------------------------------------------------------------------
+# Bugtracker-agnostic team/project endpoint tests
+# ---------------------------------------------------------------------------
+
+class TestBugtrackerEndpoints:
+    def test_teams_no_config(self, db_file):
+        app = create_app(db_path=db_file, botfarm_config=None)
+        client = TestClient(app)
+
+        resp = client.get("/api/bugtracker/teams")
+        assert resp.status_code == 503
+
+    def test_teams_returns_list(self, db_file, monkeypatch):
+        config = _make_config(api_key="key123", bt_type="linear")
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+
+        class FakeClient:
+            def list_teams(self):
+                return [{"key": "ENG", "name": "Engineering"}]
+
+        monkeypatch.setattr(
+            "botfarm.dashboard.routes_projects.create_client",
+            lambda *a, **kw: FakeClient(),
+        )
+
+        resp = client.get("/api/bugtracker/teams")
+        assert resp.status_code == 200
+        teams = resp.json()
+        assert len(teams) == 1
+        assert teams[0]["key"] == "ENG"
+
+    def test_projects_missing_team(self, db_file):
+        config = _make_config(api_key="key123", bt_type="linear")
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+
+        resp = client.get("/api/bugtracker/projects")
+        assert resp.status_code == 400
+
+    def test_projects_returns_list(self, db_file, monkeypatch):
+        config = _make_config(api_key="key123", bt_type="linear")
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+
+        class FakeClient:
+            def get_team_id(self, key):
+                return "team-123"
+
+            def list_team_projects(self, team_id):
+                return [{"id": "p1", "name": "My Project"}]
+
+        monkeypatch.setattr(
+            "botfarm.dashboard.routes_projects.create_client",
+            lambda *a, **kw: FakeClient(),
+        )
+
+        resp = client.get("/api/bugtracker/projects?team=ENG")
+        assert resp.status_code == 200
+        projects = resp.json()
+        assert len(projects) == 1
+        assert projects[0]["name"] == "My Project"
+
+
+# ---------------------------------------------------------------------------
+# Setup wizard project form tests
+# ---------------------------------------------------------------------------
+
+class TestSetupProjectForm:
+    def test_shows_inline_form_when_no_projects(self, db_file, monkeypatch):
+        config = _make_config(api_key="key123", bt_type="linear")
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+        _mock_auth_unavailable(monkeypatch)
+
+        resp = client.get("/setup")
+        assert "setup-project-form" in resp.text
+        assert "submitSetupProject" in resp.text
+        assert "setup-repo-url" in resp.text
+
+    def test_shows_project_count_when_has_projects(
+        self, db_file, tmp_path, monkeypatch,
+    ):
+        repo = tmp_path / "myrepo"
+        repo.mkdir()
+        (repo / ".git").mkdir()
+        proj = ProjectConfig(name="myproj", base_dir=str(repo))
+        config = _make_config(api_key="key123", bt_type="linear", projects=[proj])
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+        _mock_auth_unavailable(monkeypatch)
+
+        resp = client.get("/setup")
+        assert "1 project configured" in resp.text
+        # Should link to add-project page instead of inline form
+        assert "Add Another Project" in resp.text
+        # The actual form element (not JS references) should not be present
+        text = resp.text
+        proj_start = text.find('id="section-project"')
+        proj_end = text.find('id="section-verification"')
+        project_section = text[proj_start:proj_end]
+        assert 'id="setup-project-form"' not in project_section
+
+    def test_form_disabled_without_bugtracker(self, db_file, monkeypatch):
+        config = _make_config(api_key="", bt_type="")
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+        _mock_auth_unavailable(monkeypatch)
+
+        resp = client.get("/setup")
+        # Non-linear bt_type → shows link instead of inline form
+        # Extract the project section (between section-project and section-verification)
+        text = resp.text
+        proj_start = text.find('id="section-project"')
+        proj_end = text.find('id="section-verification"')
+        project_section = text[proj_start:proj_end]
+        assert 'id="setup-project-form"' not in project_section
+        assert "/projects/add" in project_section
+
+    def test_jira_shows_link_instead_of_inline_form(self, db_file, monkeypatch):
+        from botfarm.config import JiraBugtrackerConfig
+
+        bt = JiraBugtrackerConfig(
+            type="jira", api_key="tok", url="https://x.atlassian.net", email="a@b.c",
+        )
+        config = BotfarmConfig(projects=[], bugtracker=bt, source_path="")
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+        _mock_auth_unavailable(monkeypatch)
+
+        resp = client.get("/setup")
+        text = resp.text
+        proj_start = text.find('id="section-project"')
+        proj_end = text.find('id="section-verification"')
+        project_section = text[proj_start:proj_end]
+        assert 'id="setup-project-form"' not in project_section
+        assert "/projects/add" in project_section

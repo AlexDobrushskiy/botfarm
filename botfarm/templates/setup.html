@@ -214,12 +214,109 @@
                     &#10003; {{ project_count }} project{{ "s" if project_count != 1 else "" }} configured
                     {% if repos_cloned %} and cloned{% endif %}.
                 </p>
+                <a href="/projects/add" role="button" class="secondary outline" style="margin-bottom: 0;">
+                    Add Another Project
+                </a>
                 {% else %}
                 <p>Add your first project to get started. This will configure the repository, bugtracker integration, and worker slots.</p>
-                {% endif %}
-                <a href="/projects/add" role="button" {% if not section_done.bugtracker %}class="secondary"{% endif %}>
-                    {% if has_projects %}Add Another Project{% else %}Add Project{% endif %}
-                </a>
+
+                {% if bt_type != "linear" %}
+                <a href="/projects/add" role="button">Add Project</a>
+                {% else %}
+                <div id="setup-project-form-container">
+                    <form id="setup-project-form" onsubmit="return submitSetupProject(event)">
+                        <label for="setup-repo-url">
+                            Repository URL <small>(leave empty to create a new repo)</small>
+                            <input type="text" id="setup-repo-url" name="repo_url"
+                                   placeholder="git@github.com:user/repo.git"
+                                   oninput="setupSuggestName(); setupToggleGithub()">
+                        </label>
+
+                        <label for="setup-project-name">
+                            Project name
+                            <input type="text" id="setup-project-name" name="name"
+                                   placeholder="my-project" required>
+                        </label>
+
+                        <label id="setup-create-github-label" style="display:none;">
+                            <input type="checkbox" id="setup-create-github" name="create_github" role="switch">
+                            Create GitHub repository (private, via <code>gh</code> CLI)
+                        </label>
+
+                        <label for="setup-team">
+                            Team
+                            <select id="setup-team" name="team" required onchange="setupLoadProjects()">
+                                <option value="">Loading teams...</option>
+                            </select>
+                        </label>
+
+                        <fieldset>
+                            <label>
+                                <input type="checkbox" id="setup-create-tracker-project"
+                                       name="create_linear_project" checked
+                                       onchange="setupToggleTrackerMode()">
+                                Create new tracker project
+                            </label>
+                        </fieldset>
+
+                        <div id="setup-tracker-project-new">
+                            <label for="setup-new-tracker-project-name">
+                                New tracker project name
+                                <input type="text" id="setup-new-tracker-project-name"
+                                       name="new_linear_project_name"
+                                       placeholder="Will use project name if empty">
+                            </label>
+                        </div>
+
+                        <div id="setup-tracker-project-existing" style="display:none;">
+                            <label for="setup-tracker-project">
+                                Existing tracker project <small>(optional)</small>
+                                <select id="setup-tracker-project" name="tracker_project">
+                                    <option value="">-- None --</option>
+                                </select>
+                            </label>
+                        </div>
+
+                        <label for="setup-slots">
+                            Number of slots
+                            <input type="number" id="setup-slots" name="slots" value="1" min="1" max="20" required>
+                        </label>
+
+                        <label for="setup-project-type">
+                            Project type <small>(optional)</small>
+                            <select id="setup-project-type" name="project_type" onchange="setupUpdateCommands()">
+                                <option value="">-- None --</option>
+                                <option value="python">Python</option>
+                                <option value="node">Node.js</option>
+                                <option value="generic">Generic</option>
+                            </select>
+                        </label>
+
+                        <label for="setup-commands">
+                            Setup commands <small>(optional -- run in each worktree)</small>
+                            <textarea id="setup-commands" name="setup_commands" rows="3"
+                                      placeholder="One command per line, e.g.&#10;python -m venv .venv&#10;.venv/bin/pip install -r requirements.txt"></textarea>
+                        </label>
+
+                        <div id="setup-project-errors" style="display:none; color: var(--pico-del-color); margin-bottom: 1rem;"></div>
+
+                        <button type="submit" id="setup-project-btn"
+                                {% if not section_done.bugtracker %}disabled class="secondary"{% endif %}>
+                            Add Project
+                        </button>
+                        {% if not section_done.bugtracker %}
+                        <small style="color: var(--pico-muted-color);">Complete bugtracker configuration first.</small>
+                        {% endif %}
+                    </form>
+                </div>
+
+                <div id="setup-project-progress" style="display:none;">
+                    <h3>Setting up project...</h3>
+                    <div id="setup-progress-log" style="background: var(--pico-card-background-color); border: 1px solid var(--pico-muted-border-color); border-radius: var(--pico-border-radius); padding: 1rem; font-family: monospace; font-size: 0.85rem; min-height: 6rem; max-height: 16rem; overflow-y: auto; white-space: pre-wrap;"></div>
+                    <div id="setup-progress-result" style="margin-top: 1rem;"></div>
+                </div>
+                {% endif %}{# bt_type == linear #}
+                {% endif %}{# has_projects #}
             </div>
         </section>
 
@@ -340,5 +437,242 @@ function _resetPreflightBtn() {
         btn.textContent = "Run Preflight Checks";
     }
 }
+
+/* ==================== Project Setup Form ==================== */
+
+var _setupSuggestTimer = null;
+
+function setupSuggestName() {
+    clearTimeout(_setupSuggestTimer);
+    _setupSuggestTimer = setTimeout(function() {
+        var el = document.getElementById("setup-repo-url");
+        if (!el) return;
+        var url = el.value.trim();
+        if (!url) return;
+        var nameField = document.getElementById("setup-project-name");
+        if (nameField.dataset.userEdited) return;
+        fetch("/api/project/suggest-name?repo_url=" + encodeURIComponent(url))
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+                if (d.name && !nameField.dataset.userEdited) {
+                    nameField.value = d.name;
+                }
+            })
+            .catch(function() {});
+    }, 300);
+}
+
+function setupToggleGithub() {
+    var el = document.getElementById("setup-repo-url");
+    if (!el) return;
+    var url = el.value.trim();
+    var label = document.getElementById("setup-create-github-label");
+    if (label) {
+        label.style.display = url ? "none" : "";
+        if (url) document.getElementById("setup-create-github").checked = false;
+    }
+}
+
+function setupToggleTrackerMode() {
+    var checked = document.getElementById("setup-create-tracker-project").checked;
+    document.getElementById("setup-tracker-project-new").style.display = checked ? "block" : "none";
+    document.getElementById("setup-tracker-project-existing").style.display = checked ? "none" : "block";
+}
+
+var _setupDefaultCommands = {
+    "python": "python -m venv .venv\n.venv/bin/pip install -r requirements.txt\n.venv/bin/pip install -e .",
+    "node": "npm install"
+};
+
+function setupUpdateCommands() {
+    var sel = document.getElementById("setup-project-type");
+    var textarea = document.getElementById("setup-commands");
+    if (textarea.dataset.userEdited) return;
+    textarea.value = _setupDefaultCommands[sel.value] || "";
+}
+
+function setupLoadTeams() {
+    var sel = document.getElementById("setup-team");
+    if (!sel) return;
+    fetch("/api/bugtracker/teams")
+        .then(function(r) {
+            if (!r.ok) throw new Error("Failed to load teams");
+            return r.json();
+        })
+        .then(function(teams) {
+            sel.innerHTML = '<option value="">-- Select team --</option>';
+            teams.forEach(function(t) {
+                var opt = document.createElement("option");
+                opt.value = t.key;
+                opt.textContent = t.name + " (" + t.key + ")";
+                sel.appendChild(opt);
+            });
+        })
+        .catch(function() {
+            sel.innerHTML = '<option value="">Failed to load teams</option>';
+        });
+}
+
+function setupLoadProjects() {
+    var teamKey = document.getElementById("setup-team").value;
+    var sel = document.getElementById("setup-tracker-project");
+    sel.innerHTML = '<option value="">-- None --</option>';
+    if (!teamKey) return;
+
+    fetch("/api/bugtracker/projects?team=" + encodeURIComponent(teamKey))
+        .then(function(r) {
+            if (!r.ok) throw new Error("Failed to load projects");
+            return r.json();
+        })
+        .then(function(projects) {
+            projects.forEach(function(p) {
+                var opt = document.createElement("option");
+                opt.value = p.name;
+                opt.textContent = p.name;
+                sel.appendChild(opt);
+            });
+        })
+        .catch(function() {});
+}
+
+function submitSetupProject(evt) {
+    evt.preventDefault();
+    var errDiv = document.getElementById("setup-project-errors");
+    errDiv.style.display = "none";
+    errDiv.textContent = "";
+
+    var btn = document.getElementById("setup-project-btn");
+    btn.disabled = true;
+    btn.setAttribute("aria-busy", "true");
+    btn.textContent = "Starting...";
+
+    var createTracker = document.getElementById("setup-create-tracker-project").checked;
+    var trackerProject;
+    if (createTracker) {
+        trackerProject = document.getElementById("setup-new-tracker-project-name").value.trim() ||
+                         document.getElementById("setup-project-name").value.trim();
+    } else {
+        trackerProject = document.getElementById("setup-tracker-project").value;
+    }
+
+    var body = {
+        repo_url: document.getElementById("setup-repo-url").value.trim(),
+        name: document.getElementById("setup-project-name").value.trim(),
+        team: document.getElementById("setup-team").value,
+        tracker_project: trackerProject,
+        create_linear_project: createTracker,
+        slots: parseInt(document.getElementById("setup-slots").value, 10) || 1,
+        create_github: document.getElementById("setup-create-github").checked,
+        project_type: document.getElementById("setup-project-type").value,
+        setup_commands: document.getElementById("setup-commands").value.trim()
+    };
+
+    fetch("/api/project/create", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(body)
+    }).then(function(resp) {
+        return resp.json().then(function(data) { return {ok: resp.ok, data: data}; });
+    }).then(function(result) {
+        if (!result.ok) {
+            var errors = result.data.errors || [result.data.error || "Request failed"];
+            errDiv.textContent = "";
+            errors.forEach(function(e, i) {
+                if (i > 0) errDiv.appendChild(document.createElement("br"));
+                errDiv.appendChild(document.createTextNode("\u2022 " + e));
+            });
+            errDiv.style.display = "block";
+            btn.disabled = false;
+            btn.removeAttribute("aria-busy");
+            btn.textContent = "Add Project";
+            return;
+        }
+        setupStreamProgress(result.data.task_id);
+    }).catch(function(err) {
+        errDiv.textContent = "Request failed: " + err.message;
+        errDiv.style.display = "block";
+        btn.disabled = false;
+        btn.removeAttribute("aria-busy");
+        btn.textContent = "Add Project";
+    });
+
+    return false;
+}
+
+function setupStreamProgress(taskId) {
+    document.getElementById("setup-project-form-container").style.display = "none";
+    var progressDiv = document.getElementById("setup-project-progress");
+    progressDiv.style.display = "block";
+    var logDiv = document.getElementById("setup-progress-log");
+    var resultDiv = document.getElementById("setup-progress-result");
+
+    var source = new EventSource("/api/project/create/progress?task_id=" + encodeURIComponent(taskId));
+
+    source.addEventListener("progress", function(e) {
+        logDiv.textContent += e.data + "\n";
+        logDiv.scrollTop = logDiv.scrollHeight;
+    });
+
+    source.addEventListener("done", function() {
+        source.close();
+        logDiv.textContent += "\nDone!\n";
+        resultDiv.innerHTML = '<p style="color: var(--pico-ins-color); font-weight: 600;">Project added successfully!</p>' +
+            '<p style="color: var(--pico-muted-color);">Running preflight checks...</p>';
+        setupTriggerComplete();
+    });
+
+    source.addEventListener("error", function(e) {
+        if (e.data) {
+            source.close();
+            logDiv.textContent += "\nError: " + e.data + "\n";
+            resultDiv.innerHTML = '<p style="color: var(--pico-del-color); font-weight: 600;">Setup failed</p>' +
+                '<button onclick="setupShowFormAgain()">Try Again</button>';
+        }
+    });
+
+    source.onerror = function() {
+        source.close();
+        logDiv.textContent += "\nConnection lost.\n";
+        resultDiv.innerHTML = '<p style="color: var(--pico-del-color); font-weight: 600;">Connection lost</p>' +
+            '<button onclick="setupShowFormAgain()">Try Again</button>';
+    };
+}
+
+function setupTriggerComplete() {
+    fetch("/api/setup/complete", {method: "POST"}).catch(function() {});
+    var resultDiv = document.getElementById("setup-progress-result");
+    resultDiv.innerHTML =
+        '<p style="color: var(--pico-ins-color); font-weight: 600;">Project added successfully!</p>' +
+        '<p style="color: var(--pico-muted-color);">Preflight checks triggered. ' +
+        'Refresh to see the updated setup status.</p>' +
+        '<a href="/setup" role="button" class="secondary">Refresh Setup Status</a>';
+    /* Refresh sidebar checklist and preflight */
+    htmx.trigger(document.body, "preflightRefresh");
+}
+
+function setupShowFormAgain() {
+    document.getElementById("setup-project-form-container").style.display = "block";
+    document.getElementById("setup-project-progress").style.display = "none";
+    document.getElementById("setup-progress-log").textContent = "";
+    document.getElementById("setup-progress-result").innerHTML = "";
+    var btn = document.getElementById("setup-project-btn");
+    btn.disabled = false;
+    btn.removeAttribute("aria-busy");
+    btn.textContent = "Add Project";
+}
+
+/* Initialize project form if it exists */
+(function() {
+    var nameField = document.getElementById("setup-project-name");
+    if (nameField) {
+        nameField.addEventListener("input", function() { this.dataset.userEdited = "1"; });
+    }
+    var cmdField = document.getElementById("setup-commands");
+    if (cmdField) {
+        cmdField.addEventListener("input", function() { this.dataset.userEdited = "1"; });
+    }
+    setupLoadTeams();
+    setupToggleGithub();
+})();
 </script>
 {% endblock %}
