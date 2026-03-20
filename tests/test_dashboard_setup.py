@@ -93,6 +93,9 @@ class TestGetSetupSteps:
         assert steps["repos_cloned"].done is False
 
     def test_github_auth_detected(self, tmp_path, monkeypatch):
+        # Ensure env vars don't short-circuit the hosts.yml detection path
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
         # Create fake gh hosts.yml
         gh_dir = tmp_path / ".config" / "gh"
         gh_dir.mkdir(parents=True)
