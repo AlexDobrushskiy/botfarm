@@ -1709,11 +1709,19 @@ Note: The supervisor handles status transitions automatically — do not move th
             except (json.JSONDecodeError, TypeError):
                 result_text = proc.stdout
 
-            # Try to parse the inner JSON from Claude's response
+            # Try to parse the inner JSON from Claude's response.
+            # Claude may wrap JSON in markdown code fences (```json ... ```),
+            # so strip those before parsing.
+            cleaned = re.sub(
+                r"^\s*```(?:json)?\s*\n?(.*?)\n?\s*```\s*$",
+                r"\1",
+                result_text.strip(),
+                flags=re.DOTALL,
+            )
             try:
-                parsed = json.loads(result_text)
+                parsed = json.loads(cleaned)
                 headline = parsed.get("headline", "Daily Work Summary")
-                summary = parsed.get("summary", result_text)
+                summary = parsed.get("summary", cleaned)
             except (json.JSONDecodeError, TypeError):
                 headline = "Daily Work Summary"
                 summary = result_text
