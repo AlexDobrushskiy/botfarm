@@ -10,6 +10,7 @@ from botfarm.config import BotfarmConfig, LinearBugtrackerConfig, ProjectConfig
 from botfarm.dashboard import create_app
 from botfarm.dashboard.routes_setup import (
     SetupStep,
+    _build_credentials_context,
     _section_done_map,
     _validate_bugtracker_api_key,
     _validate_github_token,
@@ -806,6 +807,31 @@ def _mock_auth_unavailable(monkeypatch):
     )
 
 
+class TestBuildCredentialsContext:
+    def test_returns_expected_keys(self, monkeypatch):
+        _mock_auth_unavailable(monkeypatch)
+        config = _make_config(api_key="key123", bt_type="linear")
+        ctx = _build_credentials_context(config)
+        expected_keys = {
+            "github_done", "claude_done", "ssh_key_path", "ssh_key_exists",
+            "bt_type", "bt_workspace", "bt_api_key_set", "jira_url", "jira_email",
+        }
+        assert set(ctx.keys()) == expected_keys
+
+    def test_none_config(self, monkeypatch):
+        _mock_auth_unavailable(monkeypatch)
+        ctx = _build_credentials_context(None)
+        assert ctx["bt_type"] == ""
+        assert ctx["bt_api_key_set"] is False
+
+    def test_bugtracker_values(self, monkeypatch):
+        _mock_auth_unavailable(monkeypatch)
+        config = _make_config(api_key="key123", bt_type="linear")
+        ctx = _build_credentials_context(config)
+        assert ctx["bt_type"] == "linear"
+        assert ctx["bt_api_key_set"] is True
+
+
 class TestSetupWizardPage:
     def test_renders_setup_page(self, db_file, monkeypatch):
         config = _make_config(api_key="key123", bt_type="linear")
@@ -891,6 +917,40 @@ class TestSetupWizardPage:
         resp = client.get("/setup")
         assert "Setup Complete" in resp.text
         assert "Go to Dashboard" in resp.text
+
+    def test_no_complete_banner_when_degraded(
+        self, db_file, tmp_path, monkeypatch,
+    ):
+        """All steps done but supervisor still degraded → no banner."""
+        from botfarm.credentials import OAuthToken
+
+        repo = tmp_path / "myrepo"
+        repo.mkdir()
+        (repo / ".git").mkdir()
+        proj = ProjectConfig(name="myproj", base_dir=str(repo))
+        config = _make_config(api_key="key123", bt_type="linear", projects=[proj])
+
+        gh_dir = tmp_path / ".config" / "gh"
+        gh_dir.mkdir(parents=True)
+        (gh_dir / "hosts.yml").write_text("github.com:\n  oauth_token: abc\n")
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "botfarm.dashboard.routes_setup.shutil.which",
+            lambda cmd: "/usr/bin/" + cmd,
+        )
+        monkeypatch.setattr(
+            "botfarm.dashboard.routes_setup._load_token",
+            lambda: OAuthToken(access_token="x"),
+        )
+
+        app = create_app(
+            db_path=db_file, botfarm_config=config, get_degraded=lambda: True,
+        )
+        client = TestClient(app)
+
+        resp = client.get("/setup")
+        assert "Setup Complete" not in resp.text
+        assert "Go to Dashboard" not in resp.text
 
     def test_shows_project_count(self, db_file, tmp_path, monkeypatch):
         repo = tmp_path / "myrepo"

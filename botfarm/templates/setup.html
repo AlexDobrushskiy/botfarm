@@ -161,7 +161,7 @@
         <h1>Setup Wizard</h1>
         <p>Configure your botfarm installation step by step. Complete each section to get started.</p>
 
-        {% if setup_complete %}
+        {% if setup_complete and not degraded %}
         <div class="setup-complete-banner">
             <h3>&#10003; Setup Complete</h3>
             <p>All configuration steps are finished. You're ready to start using botfarm.</p>
@@ -285,6 +285,10 @@ window.addEventListener("scroll", function() {
     }, 50);
 });
 
+var _preflightPollId = null;
+var _preflightPollCount = 0;
+var _preflightMaxPolls = 20; /* stop after ~60s (20 * 3s) */
+
 function runPreflight() {
     var btn = document.getElementById("run-preflight-btn");
     btn.disabled = true;
@@ -294,23 +298,47 @@ function runPreflight() {
     fetch("/api/rerun-preflight", {method: "POST"})
         .then(function(resp) {
             if (!resp.ok) throw new Error("Request failed");
-            /* Wait a moment for checks to run, then refresh results */
-            setTimeout(function() {
-                htmx.trigger(document.body, "preflightRefresh");
-                htmx.trigger(document.body, "setupCredentialsRefresh");
-                btn.disabled = false;
-                btn.removeAttribute("aria-busy");
-                btn.textContent = "Run Preflight Checks";
-            }, 3000);
+            /* Poll for fresh results every 3s until they arrive */
+            _startPreflightPolling();
         })
         .catch(function(err) {
-            btn.disabled = false;
-            btn.removeAttribute("aria-busy");
-            btn.textContent = "Run Preflight Checks";
+            _resetPreflightBtn();
             if (typeof showToast === "function") {
                 showToast("Failed to trigger preflight: " + err.message, "error");
             }
         });
+}
+
+function _startPreflightPolling() {
+    _stopPreflightPolling();
+    _preflightPollCount = 0;
+    _preflightPollId = setInterval(function() {
+        _preflightPollCount++;
+        htmx.trigger(document.body, "preflightRefresh");
+        htmx.trigger(document.body, "setupCredentialsRefresh");
+        /* Stop once results contain a table (checks loaded) or max polls reached */
+        var el = document.getElementById("preflight-results");
+        if (_preflightPollCount >= _preflightMaxPolls || (el && el.querySelector("table"))) {
+            _stopPreflightPolling();
+            _resetPreflightBtn();
+        }
+    }, 3000);
+}
+
+function _stopPreflightPolling() {
+    if (_preflightPollId) {
+        clearInterval(_preflightPollId);
+        _preflightPollId = null;
+    }
+}
+
+function _resetPreflightBtn() {
+    var btn = document.getElementById("run-preflight-btn");
+    if (btn) {
+        btn.disabled = false;
+        btn.removeAttribute("aria-busy");
+        btn.textContent = "Run Preflight Checks";
+    }
 }
 </script>
 {% endblock %}
