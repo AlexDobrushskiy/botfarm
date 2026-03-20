@@ -1,11 +1,19 @@
-"""Tests for setup status API and partial endpoints."""
+"""Tests for setup status API, partial endpoints, and setup form endpoints."""
+
+import os
 
 import pytest
+import yaml
 from fastapi.testclient import TestClient
 
 from botfarm.config import BotfarmConfig, LinearBugtrackerConfig, ProjectConfig
 from botfarm.dashboard import create_app
-from botfarm.dashboard.routes_setup import SetupStep, get_setup_steps
+from botfarm.dashboard.routes_setup import (
+    SetupStep,
+    _validate_bugtracker_api_key,
+    _validate_github_token,
+    get_setup_steps,
+)
 from botfarm.db import init_db
 
 
@@ -17,9 +25,11 @@ def db_file(tmp_path):
     return path
 
 
-def _make_config(*, api_key="", bt_type="linear", projects=None):
+def _make_config(*, api_key="", bt_type="linear", projects=None, source_path=""):
     bt = LinearBugtrackerConfig(type=bt_type, api_key=api_key)
-    return BotfarmConfig(projects=projects or [], bugtracker=bt)
+    return BotfarmConfig(
+        projects=projects or [], bugtracker=bt, source_path=source_path,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -286,3 +296,423 @@ class TestSetupStatusPartial:
 
         resp = client.get("/partials/setup-status")
         assert "Setup complete" in resp.text
+
+
+# ---------------------------------------------------------------------------
+# Bugtracker API key validation unit tests
+# ---------------------------------------------------------------------------
+
+class TestValidateBugtrackerApiKey:
+    def test_valid_linear_key(self, monkeypatch):
+        class FakeClient:
+            def get_viewer_id(self):
+                return "user-123"
+
+        monkeypatch.setattr(
+            "botfarm.bugtracker.create_client",
+            lambda **kwargs: FakeClient(),
+        )
+        result = _validate_bugtracker_api_key("linear", "lin_api_test", "my-ws")
+        assert result is None
+
+    def test_invalid_linear_key(self, monkeypatch):
+        from botfarm.bugtracker import BugtrackerError
+
+        class FailClient:
+            def get_viewer_id(self):
+                raise BugtrackerError("Invalid API key")
+
+        monkeypatch.setattr(
+            "botfarm.bugtracker.create_client",
+            lambda **kwargs: FailClient(),
+        )
+        result = _validate_bugtracker_api_key("linear", "bad_key", "my-ws")
+        assert result is not None
+        assert "Invalid API key" in result
+
+    def test_unknown_type(self):
+        result = _validate_bugtracker_api_key("unknown", "key", "ws")
+        assert result is not None
+        assert "Unknown bugtracker type" in result
+
+
+# ---------------------------------------------------------------------------
+# GitHub token validation unit tests
+# ---------------------------------------------------------------------------
+
+class TestValidateGithubToken:
+    def test_valid_token(self, monkeypatch):
+        import subprocess
+
+        monkeypatch.setattr(
+            "botfarm.dashboard.routes_setup.subprocess.run",
+            lambda *a, **kw: subprocess.CompletedProcess(
+                args=a[0], returncode=0, stdout='{"login":"user"}', stderr="",
+            ),
+        )
+        result = _validate_github_token("ghp_valid")
+        assert result is None
+
+    def test_invalid_token(self, monkeypatch):
+        import subprocess
+
+        monkeypatch.setattr(
+            "botfarm.dashboard.routes_setup.subprocess.run",
+            lambda *a, **kw: subprocess.CompletedProcess(
+                args=a[0], returncode=1, stdout="", stderr="Bad credentials",
+            ),
+        )
+        result = _validate_github_token("ghp_bad")
+        assert result is not None
+        assert "Bad credentials" in result
+
+    def test_gh_not_installed(self, monkeypatch):
+        def _raise(*a, **kw):
+            raise FileNotFoundError("gh not found")
+
+        monkeypatch.setattr(
+            "botfarm.dashboard.routes_setup.subprocess.run", _raise,
+        )
+        result = _validate_github_token("ghp_test")
+        assert result is not None
+        assert "not installed" in result
+
+    def test_timeout(self, monkeypatch):
+        import subprocess
+
+        def _timeout(*a, **kw):
+            raise subprocess.TimeoutExpired(cmd="gh", timeout=15)
+
+        monkeypatch.setattr(
+            "botfarm.dashboard.routes_setup.subprocess.run", _timeout,
+        )
+        result = _validate_github_token("ghp_test")
+        assert result is not None
+        assert "timed out" in result
+
+
+# ---------------------------------------------------------------------------
+# Bugtracker setup endpoint tests
+# ---------------------------------------------------------------------------
+
+class TestSetupBugtrackerEndpoint:
+    def test_no_config_returns_400(self, db_file):
+        app = create_app(db_path=db_file, botfarm_config=None)
+        client = TestClient(app)
+        resp = client.post("/api/setup/bugtracker", json={"type": "linear"})
+        assert resp.status_code == 400
+
+    def test_missing_fields_returns_422(self, db_file, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("bugtracker:\n  type: linear\n")
+        config = _make_config(source_path=str(config_file))
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+
+        resp = client.post("/api/setup/bugtracker", json={
+            "type": "linear",
+            "workspace": "",
+            "api_key": "",
+        })
+        assert resp.status_code == 422
+        assert "Workspace name is required" in resp.text
+        assert "API key is required" in resp.text
+
+    def test_invalid_type_returns_422(self, db_file, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("bugtracker:\n  type: linear\n")
+        config = _make_config(source_path=str(config_file))
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+
+        resp = client.post("/api/setup/bugtracker", json={
+            "type": "github",
+            "workspace": "ws",
+            "api_key": "key",
+        })
+        assert resp.status_code == 422
+        assert "linear" in resp.text or "jira" in resp.text
+
+    def test_jira_missing_fields_returns_422(self, db_file, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("bugtracker:\n  type: jira\n")
+        config = _make_config(source_path=str(config_file))
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+
+        resp = client.post("/api/setup/bugtracker", json={
+            "type": "jira",
+            "workspace": "ws",
+            "api_key": "key",
+        })
+        assert resp.status_code == 422
+        assert "Jira URL" in resp.text
+        assert "Jira email" in resp.text
+
+    def test_api_key_validation_failure_returns_422(self, db_file, tmp_path, monkeypatch):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("bugtracker:\n  type: linear\n")
+        config = _make_config(source_path=str(config_file))
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+
+        from botfarm.bugtracker import BugtrackerError
+
+        class FailClient:
+            def get_viewer_id(self):
+                raise BugtrackerError("Invalid key")
+
+        monkeypatch.setattr(
+            "botfarm.bugtracker.create_client",
+            lambda **kwargs: FailClient(),
+        )
+
+        resp = client.post("/api/setup/bugtracker", json={
+            "type": "linear",
+            "workspace": "my-ws",
+            "api_key": "bad_key",
+        })
+        assert resp.status_code == 422
+        assert "validation failed" in resp.text
+
+    def test_success_writes_env_and_yaml(self, db_file, tmp_path, monkeypatch):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("bugtracker:\n  type: linear\n")
+        env_file = tmp_path / ".env"
+        config = _make_config(source_path=str(config_file))
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+
+        class FakeClient:
+            def get_viewer_id(self):
+                return "user-123"
+
+        monkeypatch.setattr(
+            "botfarm.bugtracker.create_client",
+            lambda **kwargs: FakeClient(),
+        )
+
+        resp = client.post("/api/setup/bugtracker", json={
+            "type": "linear",
+            "workspace": "test-ws",
+            "api_key": "lin_api_test123",
+        })
+        assert resp.status_code == 200
+        assert "success" in resp.text
+
+        # Check .env was written
+        assert env_file.exists()
+        env_content = env_file.read_text()
+        assert "LINEAR_API_KEY" in env_content
+        assert "lin_api_test123" in env_content
+
+        # Check config.yaml was updated
+        data = yaml.safe_load(config_file.read_text())
+        assert data["bugtracker"]["type"] == "linear"
+        assert data["bugtracker"]["workspace"] == "test-ws"
+        assert data["bugtracker"]["api_key"] == "${LINEAR_API_KEY}"
+
+        # Check in-memory config updated
+        assert config.bugtracker.type == "linear"
+        assert config.bugtracker.workspace == "test-ws"
+        assert config.bugtracker.api_key == "lin_api_test123"
+
+    def test_invalid_json_returns_400(self, db_file, tmp_path):
+        config = _make_config(source_path=str(tmp_path / "config.yaml"))
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+
+        resp = client.post(
+            "/api/setup/bugtracker",
+            content="not json",
+            headers={"Content-Type": "application/json"},
+        )
+        assert resp.status_code == 400
+
+    def test_non_dict_body_returns_400(self, db_file, tmp_path):
+        config = _make_config(source_path=str(tmp_path / "config.yaml"))
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+
+        resp = client.post("/api/setup/bugtracker", json=["not", "a", "dict"])
+        assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# GitHub setup endpoint tests
+# ---------------------------------------------------------------------------
+
+class TestSetupGithubEndpoint:
+    def test_no_config_returns_400(self, db_file):
+        app = create_app(db_path=db_file, botfarm_config=None)
+        client = TestClient(app)
+        resp = client.post("/api/setup/github", json={"github_token": "ghp_test"})
+        assert resp.status_code == 400
+
+    def test_missing_token_returns_422(self, db_file, tmp_path):
+        config = _make_config(source_path=str(tmp_path / "config.yaml"))
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+
+        resp = client.post("/api/setup/github", json={"github_token": ""})
+        assert resp.status_code == 422
+        assert "required" in resp.text
+
+    def test_token_validation_failure_returns_422(self, db_file, tmp_path, monkeypatch):
+        import subprocess
+
+        config = _make_config(source_path=str(tmp_path / "config.yaml"))
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+
+        monkeypatch.setattr(
+            "botfarm.dashboard.routes_setup.subprocess.run",
+            lambda *a, **kw: subprocess.CompletedProcess(
+                args=a[0], returncode=1, stdout="", stderr="Bad credentials",
+            ),
+        )
+
+        resp = client.post("/api/setup/github", json={"github_token": "ghp_bad"})
+        assert resp.status_code == 422
+        assert "Bad credentials" in resp.text
+
+    def test_success_writes_env_and_sets_env_var(
+        self, db_file, tmp_path, monkeypatch,
+    ):
+        import subprocess
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("bugtracker:\n  type: linear\n")
+        env_file = tmp_path / ".env"
+        config = _make_config(source_path=str(config_file))
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+
+        monkeypatch.setattr(
+            "botfarm.dashboard.routes_setup.subprocess.run",
+            lambda *a, **kw: subprocess.CompletedProcess(
+                args=a[0], returncode=0, stdout='{"login":"bot"}', stderr="",
+            ),
+        )
+        # Ensure GH_TOKEN starts unset
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+
+        resp = client.post("/api/setup/github", json={"github_token": "ghp_valid123"})
+        assert resp.status_code == 200
+        assert "success" in resp.text
+
+        # Check .env was written
+        assert env_file.exists()
+        env_content = env_file.read_text()
+        assert "GH_TOKEN" in env_content
+        assert "ghp_valid123" in env_content
+
+        # Check os.environ was updated
+        assert os.environ.get("GH_TOKEN") == "ghp_valid123"
+
+    def test_invalid_json_returns_400(self, db_file, tmp_path):
+        config = _make_config(source_path=str(tmp_path / "config.yaml"))
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+
+        resp = client.post(
+            "/api/setup/github",
+            content="not json",
+            headers={"Content-Type": "application/json"},
+        )
+        assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Setup credentials partial tests
+# ---------------------------------------------------------------------------
+
+class TestSetupCredentialsPartial:
+    def test_renders_html(self, db_file, monkeypatch):
+        config = _make_config(api_key="key123", bt_type="linear")
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+
+        # Mock Claude auth as unavailable
+        from botfarm.credentials import CredentialError
+
+        monkeypatch.setattr(
+            "botfarm.dashboard.routes_setup._load_token",
+            lambda: (_ for _ in ()).throw(CredentialError("no creds")),
+        )
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.setattr(
+            "botfarm.dashboard.routes_setup.shutil.which",
+            lambda cmd: None,
+        )
+
+        resp = client.get("/partials/setup-credentials")
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers["content-type"]
+        assert "Bugtracker" in resp.text
+        assert "GitHub" in resp.text
+        assert "Claude Code" in resp.text
+        assert "SSH Key" in resp.text
+
+    def test_shows_configured_status(self, db_file, monkeypatch):
+        from botfarm.credentials import OAuthToken
+
+        config = _make_config(api_key="key123", bt_type="linear")
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+
+        monkeypatch.setenv("GH_TOKEN", "ghp_test")
+        monkeypatch.setattr(
+            "botfarm.dashboard.routes_setup._load_token",
+            lambda: OAuthToken(access_token="x"),
+        )
+
+        resp = client.get("/partials/setup-credentials")
+        assert resp.status_code == 200
+        assert "Configured" in resp.text
+        assert "Authenticated" in resp.text
+
+    def test_shows_claude_instructions_when_not_authenticated(
+        self, db_file, monkeypatch,
+    ):
+        from botfarm.credentials import CredentialError
+
+        config = _make_config(api_key="key123", bt_type="linear")
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+
+        monkeypatch.setattr(
+            "botfarm.dashboard.routes_setup._load_token",
+            lambda: (_ for _ in ()).throw(CredentialError("no creds")),
+        )
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.setattr(
+            "botfarm.dashboard.routes_setup.shutil.which",
+            lambda cmd: None,
+        )
+
+        resp = client.get("/partials/setup-credentials")
+        assert "SSH into the server" in resp.text
+        assert "claude" in resp.text
+
+    def test_without_config(self, db_file, monkeypatch):
+        from botfarm.credentials import CredentialError
+
+        app = create_app(db_path=db_file, botfarm_config=None)
+        client = TestClient(app)
+
+        monkeypatch.setattr(
+            "botfarm.dashboard.routes_setup._load_token",
+            lambda: (_ for _ in ()).throw(CredentialError("no creds")),
+        )
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.setattr(
+            "botfarm.dashboard.routes_setup.shutil.which",
+            lambda cmd: None,
+        )
+
+        resp = client.get("/partials/setup-credentials")
+        assert resp.status_code == 200
