@@ -1,6 +1,6 @@
 # Bugtracker Abstraction
 
-Botfarm uses an abstract bugtracker interface so that different issue trackers can be supported. Currently only Linear is implemented, but the architecture supports adding new adapters (e.g. Jira, GitHub Issues).
+Botfarm uses an abstract bugtracker interface so that different issue trackers can be supported. Currently Linear and Jira are implemented, and the architecture supports adding new adapters (e.g. GitHub Issues).
 
 ## Architecture
 
@@ -155,19 +155,22 @@ Stage template prompts use `{bugtracker_type}` to reference the tracker type. Wh
 | Labels | Linear labels | Jira labels |
 | Relations | `isBlockedBy`/`blocks` | Issue links with link types |
 | Branch name | `gitBranchName` field | Derived from key + summary |
-| Agent MCP tools | Auto-configured via `--mcp-config` (`@tacticlaunch/mcp-linear`) | Not available (uses Jira REST API directly) |
+| MCP server | `@tacticlaunch/mcp-linear` via `npx` | `mcp-atlassian` via `uvx` |
+| MCP auth | `LINEAR_API_TOKEN` env var | `JIRA_URL` + `JIRA_USERNAME` + `JIRA_API_TOKEN` env vars |
 
 See `docs/jira-workflow.md` for the agent-facing workflow guide.
 
 ### Agent MCP Tools
 
-For Linear, botfarm auto-configures MCP tools for agent workers. The `build_bugtracker_mcp_config()` function in `worker.py` generates a JSON config that is written to a temp file and passed to the Claude subprocess via `--mcp-config`. This gives agents direct access to Linear MCP tools (e.g. fetching ticket details, creating issues, posting comments) without requiring any plugin installation.
+Botfarm auto-configures MCP tools for agent workers. The `build_bugtracker_mcp_config()` function in `worker.py` generates a JSON config that is written to a temp file and passed to the Claude subprocess via `--mcp-config`. This gives agents direct access to bugtracker MCP tools (e.g. fetching ticket details, creating issues, posting comments) without requiring any plugin installation.
 
 The API key used for MCP config follows this priority:
 1. `identities.coder.tracker_api_key` (per-identity key)
 2. `bugtracker.api_key` (shared key)
 
-For non-Linear trackers, no MCP config is generated — agents interact with the tracker via REST API calls instead.
+Supported MCP servers:
+- **Linear:** `@tacticlaunch/mcp-linear` via `npx`, authenticated with `LINEAR_API_TOKEN`
+- **Jira:** `mcp-atlassian` via `uvx`, authenticated with `JIRA_URL` + `JIRA_USERNAME` + `JIRA_API_TOKEN`
 
 ## Shared Types
 

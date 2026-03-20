@@ -12,9 +12,11 @@ from botfarm.config import (
     AdapterConfig,
     AgentsConfig,
     BotfarmConfig,
+    BugtrackerConfig,
     CoderIdentity,
     DatabaseConfig,
     IdentitiesConfig,
+    JiraBugtrackerConfig,
     LinearConfig,
     NotificationsConfig,
     ProjectConfig,
@@ -38,6 +40,7 @@ from botfarm.preflight import (
     check_identity_github_tokens,
     check_identity_linear_api_key,
     check_identity_ssh_key,
+    check_jira_mcp_server,
     check_linear_api,
     check_notifications_webhook,
     check_project_claude_md,
@@ -54,7 +57,7 @@ def _make_config(
     tmp_path: Path,
     *,
     projects: list[ProjectConfig] | None = None,
-    bugtracker: LinearConfig | None = None,
+    bugtracker: BugtrackerConfig | LinearConfig | JiraBugtrackerConfig | None = None,
     notifications: NotificationsConfig | None = None,
     identities: IdentitiesConfig | None = None,
     agents: AgentsConfig | None = None,
@@ -1229,6 +1232,40 @@ class TestCheckCodexReviewer:
         auth_results = [r for r in results if r.name == "codex_reviewer:auth"]
         assert len(auth_results) == 1
         assert auth_results[0].passed
+
+
+class TestCheckJiraMcpServer:
+    def test_linear_config_returns_empty(self, tmp_path):
+        config = _make_config(tmp_path)
+        results = check_jira_mcp_server(config)
+        assert results == []
+
+    def test_jira_uvx_available(self, tmp_path):
+        config = _make_config(
+            tmp_path,
+            bugtracker=JiraBugtrackerConfig(
+                api_key="tok", workspace="acme", email="bot@acme.com",
+            ),
+        )
+        with patch("botfarm.preflight.shutil.which", return_value="/usr/local/bin/uvx"):
+            results = check_jira_mcp_server(config)
+        assert len(results) == 1
+        assert results[0].passed
+        assert "uvx" in results[0].message
+
+    def test_jira_uvx_missing(self, tmp_path):
+        config = _make_config(
+            tmp_path,
+            bugtracker=JiraBugtrackerConfig(
+                api_key="tok", workspace="acme", email="bot@acme.com",
+            ),
+        )
+        with patch("botfarm.preflight.shutil.which", return_value=None):
+            results = check_jira_mcp_server(config)
+        assert len(results) == 1
+        assert not results[0].passed
+        assert "uvx" in results[0].message
+        assert not results[0].critical
 
 
 class TestCheckSystemdUnit:

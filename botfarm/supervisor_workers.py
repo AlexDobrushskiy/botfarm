@@ -323,6 +323,8 @@ def _worker_entry(
     merge_main_before_resume: bool = False,
     bugtracker_type: str = "Linear",
     bugtracker_api_key: str = "",
+    bugtracker_url: str = "",
+    bugtracker_email: str = "",
 ) -> None:
     """Entry point for a worker subprocess.
 
@@ -427,6 +429,8 @@ def _worker_entry(
             merge_main_before_resume=merge_main_before_resume,
             bugtracker_type=bugtracker_type,
             bugtracker_api_key=bugtracker_api_key,
+            bugtracker_url=bugtracker_url,
+            bugtracker_email=bugtracker_email,
         )
         if result.paused:
             result_queue.put(_WorkerResult(
@@ -724,6 +728,8 @@ class WorkerLifecycleManager:
                 "merge_main_before_resume": merge_main_before_resume,
                 "bugtracker_type": self._config.bugtracker.type.title(),
                 "bugtracker_api_key": self._config.bugtracker.api_key,
+                "bugtracker_url": getattr(self._config.bugtracker, "url", ""),
+                "bugtracker_email": getattr(self._config.bugtracker, "email", ""),
             },
             daemon=False,
         )
