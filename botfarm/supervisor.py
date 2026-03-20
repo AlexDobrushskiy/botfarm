@@ -144,12 +144,6 @@ class Supervisor(RecoveryMixin, OperationsMixin):
             p.name: p for p in config.projects
         }
 
-        # Bugtracker pollers keyed by project name
-        pollers = create_pollers(config)
-        self._pollers: dict[str, BugtrackerPoller] = {
-            p.project_name: p for p in pollers
-        }
-
         # Database — path comes from BOTFARM_DB_PATH env var (loaded from .env)
         db_path = resolve_db_path()
         self._db_path = str(db_path)
@@ -163,9 +157,48 @@ class Supervisor(RecoveryMixin, OperationsMixin):
             db_path=self._db_path,
             conn=self._conn,
         )
-        for project in config.projects:
-            for sid in project.slots:
-                self._slot_manager.register_slot(project.name, sid)
+
+        if config.setup_mode:
+            # Setup mode: no pollers, no slots, no bugtracker client.
+            # Dashboard will start, supervisor enters degraded mode.
+            self._pollers: dict[str, BugtrackerPoller] = {}
+            self._bugtracker_client: BugtrackerClient | None = None
+            self._coder_viewer_id: str | None = None
+            self._coder_tracker: BugtrackerClient | None = None
+            logger.info("Setup mode — skipping poller/slot/bugtracker initialization")
+        else:
+            # Normal mode: create pollers and register slots.
+            pollers = create_pollers(config)
+            self._pollers = {p.project_name: p for p in pollers}
+
+            for project in config.projects:
+                for sid in project.slots:
+                    self._slot_manager.register_slot(project.name, sid)
+
+            # Bugtracker client for capacity monitoring (uses owner API key)
+            self._bugtracker_client = create_client(config)
+
+            # Coder bugtracker self-assignment
+            if isinstance(config.bugtracker, JiraBugtrackerConfig):
+                coder_key = config.identities.coder.jira_api_token
+                coder_email: str | None = config.identities.coder.jira_email or config.bugtracker.email
+            else:
+                coder_key = config.identities.coder.tracker_api_key
+                coder_email = None
+            if coder_key:
+                try:
+                    coder_client = create_client(config, api_key=coder_key, email=coder_email)
+                    self._coder_viewer_id: str | None = coder_client.get_viewer_id()
+                    self._coder_tracker: BugtrackerClient | None = coder_client
+                    logger.info("Cached coder bugtracker viewer ID: %s", self._coder_viewer_id)
+                except Exception:
+                    logger.warning("Failed to resolve coder viewer ID — auto-assignment disabled")
+                    self._coder_viewer_id = None
+                    self._coder_tracker: BugtrackerClient | None = None
+            else:
+                self._coder_viewer_id = None
+                self._coder_tracker = None
+
         self._slot_manager.load()
 
         # Webhook notifier (initialized early — used by UsagePoller)
@@ -177,13 +210,11 @@ class Supervisor(RecoveryMixin, OperationsMixin):
             poll_interval=config.usage_limits.poll_interval_seconds,
             notifier=self._notifier,
         )
-        self._usage_poller.restore_backoff_state(self._conn)
+        if not config.setup_mode:
+            self._usage_poller.restore_backoff_state(self._conn)
 
         # Codex (OpenAI) usage poller — optional, no-op if not configured
         self._codex_usage_poller = CodexUsagePoller(config=config.codex_usage)
-
-        # Bugtracker client for capacity monitoring (uses owner API key)
-        self._bugtracker_client = create_client(config)
 
         # Capacity monitoring state
         self._capacity_level = "normal"  # normal | warning | critical | blocked
@@ -234,7 +265,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
         # Transient result text from workers
         self._pending_result_texts: dict[tuple[str, int], str] = {}
 
-        # Degraded mode: preflight checks failed
+        # Degraded mode: preflight checks failed (or setup mode)
         self._degraded = False
         self._preflight_results: list[CheckResult] = []
         self._preflight_lock = threading.Lock()
@@ -244,27 +275,6 @@ class Supervisor(RecoveryMixin, OperationsMixin):
         # Environment overrides for supervisor-level git/gh commands
         self._git_env = build_git_env(config.identities)
 
-        # Coder bugtracker self-assignment
-        if isinstance(config.bugtracker, JiraBugtrackerConfig):
-            coder_key = config.identities.coder.jira_api_token
-            coder_email: str | None = config.identities.coder.jira_email or config.bugtracker.email
-        else:
-            coder_key = config.identities.coder.tracker_api_key
-            coder_email = None
-        if coder_key:
-            try:
-                coder_client = create_client(config, api_key=coder_key, email=coder_email)
-                self._coder_viewer_id: str | None = coder_client.get_viewer_id()
-                self._coder_tracker: BugtrackerClient | None = coder_client
-                logger.info("Cached coder bugtracker viewer ID: %s", self._coder_viewer_id)
-            except Exception:
-                logger.warning("Failed to resolve coder viewer ID — auto-assignment disabled")
-                self._coder_viewer_id = None
-                self._coder_tracker: BugtrackerClient | None = None
-        else:
-            self._coder_viewer_id: str | None = None
-            self._coder_tracker: BugtrackerClient | None = None
-
         # Sub-managers
         self._worker_mgr = WorkerLifecycleManager(self)
         self._pause_resume_mgr = PauseResumeManager(self)
@@ -273,8 +283,9 @@ class Supervisor(RecoveryMixin, OperationsMixin):
         self._devserver_mgr = DevServerManager(
             log_dir=self._log_dir / "devserver",
         )
-        for project in config.projects:
-            self._devserver_mgr.register_project(project)
+        if not config.setup_mode:
+            for project in config.projects:
+                self._devserver_mgr.register_project(project)
         self._devserver_tick_count = 0
 
     @property
@@ -353,50 +364,65 @@ class Supervisor(RecoveryMixin, OperationsMixin):
                 devserver_manager=self._devserver_mgr,
             )
 
-        # Auto-repair core.bare=true corruption before preflight
-        repaired = repair_core_bare(self._config)
-        if repaired:
-            insert_event(
-                self._conn,
-                event_type="core_bare_repaired",
-                detail=f"projects={','.join(repaired)}",
-            )
-            self._conn.commit()
-
-        # Run pre-flight health checks
-        preflight_results = run_preflight_checks(self._config, env=self._git_env)
-        preflight_ok = log_preflight_summary(preflight_results)
-
-        with self._preflight_lock:
-            self._preflight_results = preflight_results
-
-        if not preflight_ok:
-            insert_event(
-                self._conn,
-                event_type="preflight_failed",
-                detail="; ".join(
-                    f"{r.name}: {r.message}"
-                    for r in preflight_results
-                    if not r.passed and r.critical
-                ),
-            )
-            self._conn.commit()
+        if self._config.setup_mode:
+            # Setup mode: skip preflight, go straight to degraded mode.
             self._degraded = True
             self._last_preflight_rerun = time.monotonic()
-            logger.warning(
-                "Entering degraded mode — dashboard is running, "
-                "dispatch paused until preflight checks pass"
+            logger.info(
+                "Setup mode — entering degraded mode, dashboard running. "
+                "Complete setup via dashboard or config file."
             )
+            insert_event(
+                self._conn,
+                event_type="setup_mode_start",
+                detail="no projects or no bugtracker API key configured",
+            )
+            self._conn.commit()
         else:
-            self._recover_on_startup()
-            self._apply_start_paused()
+            # Auto-repair core.bare=true corruption before preflight
+            repaired = repair_core_bare(self._config)
+            if repaired:
+                insert_event(
+                    self._conn,
+                    event_type="core_bare_repaired",
+                    detail=f"projects={','.join(repaired)}",
+                )
+                self._conn.commit()
 
-        # Initial usage poll
-        if not self._degraded:
-            try:
-                self._usage_poller.force_poll(self._conn)
-            except Exception:
-                logger.exception("Initial usage poll failed — continuing without usage data")
+            # Run pre-flight health checks
+            preflight_results = run_preflight_checks(self._config, env=self._git_env)
+            preflight_ok = log_preflight_summary(preflight_results)
+
+            with self._preflight_lock:
+                self._preflight_results = preflight_results
+
+            if not preflight_ok:
+                insert_event(
+                    self._conn,
+                    event_type="preflight_failed",
+                    detail="; ".join(
+                        f"{r.name}: {r.message}"
+                        for r in preflight_results
+                        if not r.passed and r.critical
+                    ),
+                )
+                self._conn.commit()
+                self._degraded = True
+                self._last_preflight_rerun = time.monotonic()
+                logger.warning(
+                    "Entering degraded mode — dashboard is running, "
+                    "dispatch paused until preflight checks pass"
+                )
+            else:
+                self._recover_on_startup()
+                self._apply_start_paused()
+
+            # Initial usage poll
+            if not self._degraded:
+                try:
+                    self._usage_poller.force_poll(self._conn)
+                except Exception:
+                    logger.exception("Initial usage poll failed — continuing without usage data")
 
         try:
             while not self._shutdown_requested:

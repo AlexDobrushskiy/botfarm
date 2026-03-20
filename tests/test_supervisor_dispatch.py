@@ -49,6 +49,43 @@ class TestSupervisorInit:
         assert supervisor.shutdown_requested is False
 
 
+class TestSetupMode:
+    """Supervisor starts with minimal config (no projects, no API key)."""
+
+    @pytest.fixture()
+    def setup_supervisor(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "test.db"))
+        monkeypatch.setattr(
+            Supervisor, "_slot_db_path",
+            staticmethod(lambda pn, sid: str(tmp_path / "slots" / f"{pn}-{sid}" / "botfarm.db")),
+        )
+        config = BotfarmConfig(
+            projects=[],
+            bugtracker=LinearConfig(api_key="", poll_interval_seconds=10),
+        )
+        assert config.setup_mode is True
+        sup = Supervisor(config, log_dir=tmp_path / "logs")
+        return sup
+
+    def test_no_slots_registered(self, setup_supervisor):
+        assert setup_supervisor.slot_manager.all_slots() == []
+
+    def test_no_pollers(self, setup_supervisor):
+        assert setup_supervisor._pollers == {}
+
+    def test_no_bugtracker_client(self, setup_supervisor):
+        assert setup_supervisor._bugtracker_client is None
+
+    def test_run_enters_degraded_mode(self, setup_supervisor):
+        """Supervisor.run() enters degraded mode immediately in setup mode."""
+        sup = setup_supervisor
+        # Make it shut down after one tick
+        sup._shutdown_requested = True
+        exit_code = sup.run()
+        assert exit_code == 0
+        assert sup._degraded is True
+
+
 
 
 # ---------------------------------------------------------------------------

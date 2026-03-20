@@ -142,18 +142,20 @@ def test_load_config_yaml_syntax_error_tab(tmp_path):
         load_config(config_path)
 
 
-def test_load_config_missing_projects(tmp_path):
+def test_load_config_missing_projects_enters_setup_mode(tmp_path):
     config_path = _write_config(tmp_path, {"bugtracker": {"api_key": "k"}})
-    with pytest.raises(ConfigError, match="projects"):
-        load_config(config_path)
+    config = load_config(config_path)
+    assert config.setup_mode is True
+    assert config.projects == []
 
 
-def test_load_config_empty_projects(tmp_path):
+def test_load_config_empty_projects_enters_setup_mode(tmp_path):
     config_path = _write_config(
         tmp_path, {"projects": [], "bugtracker": {"api_key": "k"}}
     )
-    with pytest.raises(ConfigError, match="At least one project"):
-        load_config(config_path)
+    config = load_config(config_path)
+    assert config.setup_mode is True
+    assert config.projects == []
 
 
 def test_load_config_project_missing_fields(tmp_path):
@@ -363,18 +365,18 @@ def test_load_config_poll_interval_zero(tmp_path):
         load_config(config_path)
 
 
-def test_load_config_empty_api_key(tmp_path):
+def test_load_config_empty_api_key_enters_setup_mode(tmp_path):
     data = {**MINIMAL_CONFIG, "bugtracker": {"api_key": ""}}
     config_path = _write_config(tmp_path, data)
-    with pytest.raises(ConfigError, match="api_key must be set"):
-        load_config(config_path)
+    config = load_config(config_path)
+    assert config.setup_mode is True
 
 
-def test_load_config_missing_api_key(tmp_path):
+def test_load_config_missing_api_key_enters_setup_mode(tmp_path):
     data = {**MINIMAL_CONFIG, "bugtracker": {}}
     config_path = _write_config(tmp_path, data)
-    with pytest.raises(ConfigError, match="api_key must be set"):
-        load_config(config_path)
+    config = load_config(config_path)
+    assert config.setup_mode is True
 
 
 def test_load_config_cross_project_duplicate_slots_allowed(tmp_path):
@@ -2706,6 +2708,93 @@ def test_start_paused_non_bool_raises(tmp_path):
 def test_default_config_template_includes_start_paused():
     from botfarm.config import DEFAULT_CONFIG_TEMPLATE
     assert "start_paused:" in DEFAULT_CONFIG_TEMPLATE
+
+
+# --- setup_mode ---
+
+
+def test_setup_mode_no_projects_no_api_key(tmp_path):
+    data = {"bugtracker": {"api_key": ""}}
+    config_path = _write_config(tmp_path, data)
+    config = load_config(config_path)
+    assert config.setup_mode is True
+    assert config.projects == []
+
+
+def test_setup_mode_with_projects_and_api_key(tmp_path):
+    """Complete config should NOT be in setup mode."""
+    config_path = _write_config(tmp_path, MINIMAL_CONFIG)
+    config = load_config(config_path)
+    assert config.setup_mode is False
+
+
+def test_setup_mode_projects_but_no_api_key(tmp_path):
+    data = {**MINIMAL_CONFIG, "bugtracker": {"api_key": ""}}
+    config_path = _write_config(tmp_path, data)
+    config = load_config(config_path)
+    assert config.setup_mode is True
+
+
+def test_setup_mode_api_key_but_no_projects(tmp_path):
+    data = {"projects": [], "bugtracker": {"api_key": "test-key"}}
+    config_path = _write_config(tmp_path, data)
+    config = load_config(config_path)
+    assert config.setup_mode is True
+
+
+def test_setup_mode_skeleton_template_loads(tmp_path):
+    """The SETUP_MODE_CONFIG_TEMPLATE should load without errors."""
+    from botfarm.config import SETUP_MODE_CONFIG_TEMPLATE
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(SETUP_MODE_CONFIG_TEMPLATE)
+    config = load_config(config_path)
+    assert config.setup_mode is True
+    assert config.dashboard.enabled is True
+    assert config.dashboard.host == "127.0.0.1"
+
+
+def test_setup_mode_projects_not_a_list_still_errors(tmp_path):
+    """Non-list projects value should still raise ConfigError."""
+    data = {"projects": "invalid", "bugtracker": {"api_key": ""}}
+    config_path = _write_config(tmp_path, data)
+    with pytest.raises(ConfigError, match="'projects' must be a list"):
+        load_config(config_path)
+
+
+def test_setup_mode_jira_no_url_no_email_ok(tmp_path):
+    """Jira without url/email should pass in setup mode (no api_key)."""
+    data = {
+        "bugtracker": {"type": "jira", "api_key": ""},
+    }
+    config_path = _write_config(tmp_path, data)
+    config = load_config(config_path)
+    assert config.setup_mode is True
+
+
+def test_setup_mode_duplicate_projects_skipped(tmp_path):
+    """Duplicate project name check is skipped in setup mode (no api_key)."""
+    data = {
+        "projects": [
+            {
+                "name": "p1",
+                "team": "T",
+                "base_dir": "~/a",
+                "worktree_prefix": "a-",
+                "slots": [1],
+            },
+            {
+                "name": "p1",
+                "team": "T",
+                "base_dir": "~/b",
+                "worktree_prefix": "b-",
+                "slots": [2],
+            },
+        ],
+        "bugtracker": {"api_key": ""},
+    }
+    config_path = _write_config(tmp_path, data)
+    config = load_config(config_path)
+    assert config.setup_mode is True
 
 
 # ---------------------------------------------------------------------------
