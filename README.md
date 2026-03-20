@@ -17,6 +17,7 @@ Botfarm polls your Linear board for "Todo" tickets, dispatches them to Claude Co
 ### System Requirements
 
 - **Python 3.12+**
+- **Node.js 18+** (Linear MCP tools are launched via `npx`)
 - **git**
 - **4 GB+ RAM** recommended (2 GB is marginal with Claude Code running)
 
@@ -37,7 +38,7 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 source ~/.bashrc
 ```
 
-Node.js is **not** required.
+**Node.js** is required — Linear MCP tools are launched via `npx` at runtime.
 
 ### GitHub CLI
 
