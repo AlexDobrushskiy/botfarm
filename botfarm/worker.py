@@ -451,9 +451,14 @@ def run_pipeline(
     # Prefer the coder identity's tracker key so operations appear under the
     # coder bot; fall back to the shared bugtracker key.
     # For Jira, the coder identity has separate jira_api_token / jira_email fields.
+    # Pick credentials as a pair to avoid mismatched email/token combinations.
     if bugtracker_type.lower() == "jira":
-        effective_tracker_key = ident.coder.jira_api_token or bugtracker_api_key
-        effective_email = ident.coder.jira_email or bugtracker_email
+        if ident.coder.jira_api_token:
+            effective_tracker_key = ident.coder.jira_api_token
+            effective_email = ident.coder.jira_email or bugtracker_email
+        else:
+            effective_tracker_key = bugtracker_api_key
+            effective_email = bugtracker_email
     else:
         effective_tracker_key = ident.coder.tracker_api_key or bugtracker_api_key
         effective_email = ""
