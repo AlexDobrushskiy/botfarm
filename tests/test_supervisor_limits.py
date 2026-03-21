@@ -1954,7 +1954,7 @@ class TestStartPaused:
         sm.set_dispatch_paused(True, "update_in_progress")
         supervisor._update_event.set()
 
-        with patch("botfarm.git_update.pull_and_install", return_value=False):
+        with patch("botfarm.git_update.pull_and_install", return_value="git pull failed"):
             supervisor._handle_update_request()
 
         assert sm.dispatch_paused is True

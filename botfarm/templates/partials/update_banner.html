@@ -1,4 +1,20 @@
-{% if update_status == "updating" %}
+{% if update_status == "failed" %}
+<div style="background: var(--pico-color-red-600, #dc2626); color: #fff; padding: 0.5rem 1rem; border-radius: var(--pico-border-radius); margin-bottom: 1rem; display: flex; align-items: center; justify-content: space-between;">
+    <span>
+        <strong>Update failed</strong> &mdash; {{ update_error }}
+    </span>
+    {% if auto_restart %}
+    <button class="pause-btn"
+            style="background: #fff; color: var(--pico-color-red-600, #dc2626);"
+            hx-post="/api/update"
+            hx-swap="none"
+            hx-confirm="This will pause workers, pull the latest code, and restart the supervisor. Continue?"
+            hx-on::after-request="this.closest('[hx-get]') && htmx.trigger(this.closest('[hx-get]'), 'htmx:load')">
+        Retry
+    </button>
+    {% endif %}
+</div>
+{% elif update_status == "updating" %}
 <div style="background: var(--pico-color-yellow-500, #eab308); color: #000; padding: 0.5rem 1rem; border-radius: var(--pico-border-radius); margin-bottom: 1rem; display: flex; align-items: center; justify-content: space-between;">
     <span><strong>Updating&hellip;</strong> Pulling latest code and restarting.</span>
 </div>

@@ -214,6 +214,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
         # Update-and-restart signal (set by dashboard thread, read by supervisor)
         self._update_event = threading.Event()
         self._update_failed_event = threading.Event()
+        self._update_failed_message: str = ""
         self._exit_code = 0
 
         # Wake event — set by interactive requests to break out of _sleep() early
@@ -340,6 +341,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
                 get_preflight_results=self.get_preflight_results,
                 get_degraded=lambda: self.degraded,
                 update_failed_event=self._update_failed_event,
+                get_update_failed_message=lambda: self._update_failed_message,
                 git_env=self._git_env,
                 auto_restart=self._auto_restart,
                 devserver_manager=self._devserver_mgr,
@@ -672,15 +674,17 @@ class Supervisor(RecoveryMixin, OperationsMixin):
         )
         self._conn.commit()
 
-        if not pull_and_install(env=self._git_env):
-            logger.error("Update failed — aborting restart")
+        error = pull_and_install(env=self._git_env)
+        if error:
+            logger.error("Update failed — aborting restart: %s", error)
             insert_event(
                 self._conn,
                 event_type="update_failed",
-                detail="git pull or pip install failed",
+                detail=error,
             )
             self._conn.commit()
             self._update_event.clear()
+            self._update_failed_message = error
             self._update_failed_event.set()
             if self._startup_paused:
                 self._slot_manager.set_dispatch_paused(True, "start_paused")
