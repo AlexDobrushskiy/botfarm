@@ -474,6 +474,21 @@ class UsagePoller:
                             self._attempt_records = []
                             try:
                                 data = self._fetch(refreshed_token)
+                            except httpx.HTTPStatusError as retry_exc:
+                                self._flush_audit_records(conn, fp)
+                                if retry_exc.response.status_code == 401:
+                                    logger.warning(
+                                        "Usage API returned 401 after 429-triggered token refresh",
+                                    )
+                                    self._handle_401(conn)
+                                else:
+                                    logger.warning(
+                                        "Usage API returned %d after 429-triggered token refresh — "
+                                        "falling back to backoff",
+                                        retry_exc.response.status_code,
+                                    )
+                                    self._handle_429(conn, retry_after_header)
+                                return
                             except Exception:
                                 self._flush_audit_records(conn, fp)
                                 logger.warning(

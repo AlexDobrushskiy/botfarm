@@ -672,8 +672,7 @@ class Test429TokenRefresh:
 
     def test_429_retry_after_zero_refresh_succeeds(self, poller, conn):
         """429 with retry_after=0 → refresh → new token → retry succeeds."""
-        response = _make_429_response(retry_after="0")
-        error = httpx.HTTPStatusError("", request=response.request, response=response)
+        error = _make_429_error(retry_after="0")
 
         call_count = 0
 
@@ -696,8 +695,7 @@ class Test429TokenRefresh:
 
     def test_429_absent_retry_after_refresh_succeeds(self, poller, conn):
         """429 with no Retry-After header → refresh → new token → retry succeeds."""
-        response = _make_429_response(retry_after=None)
-        error = httpx.HTTPStatusError("", request=response.request, response=response)
+        error = _make_429_error(retry_after=None)
 
         call_count = 0
 
@@ -719,8 +717,7 @@ class Test429TokenRefresh:
 
     def test_429_retry_after_zero_same_fingerprint_falls_through(self, poller, conn):
         """429 with retry_after=0 → refresh → same fingerprint → normal backoff."""
-        response = _make_429_response(retry_after="0")
-        error = httpx.HTTPStatusError("", request=response.request, response=response)
+        error = _make_429_error(retry_after="0")
 
         # Return same token (same fingerprint) — indicates not a token expiry issue
         poller.credential_manager.refresh_token.return_value = "test-token"
@@ -735,8 +732,7 @@ class Test429TokenRefresh:
 
     def test_429_retry_after_zero_refresh_fails_falls_through(self, poller, conn):
         """429 with retry_after=0 → refresh returns None → normal backoff."""
-        response = _make_429_response(retry_after="0")
-        error = httpx.HTTPStatusError("", request=response.request, response=response)
+        error = _make_429_error(retry_after="0")
 
         poller.credential_manager.refresh_token.return_value = None
 
@@ -748,8 +744,7 @@ class Test429TokenRefresh:
 
     def test_429_nonzero_retry_after_no_refresh_attempted(self, poller, conn):
         """429 with retry_after>0 → no refresh attempted → normal backoff."""
-        response = _make_429_response(retry_after="120")
-        error = httpx.HTTPStatusError("", request=response.request, response=response)
+        error = _make_429_error(retry_after="120")
 
         with patch.object(poller, "_fetch", side_effect=error):
             poller.force_poll(conn)
@@ -759,8 +754,7 @@ class Test429TokenRefresh:
 
     def test_429_refresh_retry_also_fails_applies_backoff(self, poller, conn):
         """429 with retry_after=0 → refresh → new token → retry also fails → backoff."""
-        response = _make_429_response(retry_after="0")
-        error = httpx.HTTPStatusError("", request=response.request, response=response)
+        error = _make_429_error(retry_after="0")
 
         # Both calls fail
         poller.credential_manager.refresh_token.return_value = "new-token"
@@ -771,6 +765,29 @@ class Test429TokenRefresh:
         # Backoff should be applied since retry also failed
         assert poller._consecutive_429s == 1
         assert poller._active_poll_interval is not None
+
+    def test_429_refresh_retry_returns_401_routes_to_auth_handler(self, poller, conn):
+        """429 → refresh → new token → retry returns 401 → _handle_401, not _handle_429."""
+        error_429 = _make_429_error(retry_after="0")
+        error_401 = _make_401_error()
+
+        call_count = 0
+
+        def fetch_side_effect(token):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise error_429
+            raise error_401
+
+        poller.credential_manager.refresh_token.return_value = "new-token"
+
+        with patch.object(poller, "_fetch", side_effect=fetch_side_effect):
+            poller.force_poll(conn)
+
+        # Should route to auth handler, not rate-limit handler
+        assert poller._consecutive_401s == 1
+        assert poller._consecutive_429s == 0
 
 
 # ---------------------------------------------------------------------------
