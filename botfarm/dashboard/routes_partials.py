@@ -188,10 +188,24 @@ def partial_update_banner(request: Request):
     app = request.app
     templates = request.app.state.templates
     # Check if supervisor signalled that update failed
+    update_error = ""
     failed_evt = app.state.update_failed_event
     if failed_evt is not None and failed_evt.is_set():
         failed_evt.clear()
         app.state.update_in_progress = False
+        getter = app.state.get_update_failed_message
+        if getter is not None:
+            update_error = getter()
+
+    if update_error:
+        count = check_commits_behind(app)
+        return templates.TemplateResponse("partials/update_banner.html", {
+            "request": request,
+            "update_status": "failed",
+            "update_error": update_error,
+            "commits_behind": count,
+            "auto_restart": app.state.auto_restart,
+        })
 
     if app.state.update_in_progress:
         return templates.TemplateResponse("partials/update_banner.html", {

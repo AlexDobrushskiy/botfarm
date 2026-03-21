@@ -44,6 +44,7 @@ def create_app(
     get_preflight_results: Callable[[], list] | None = None,
     get_degraded: Callable[[], bool] | None = None,
     update_failed_event: threading.Event | None = None,
+    get_update_failed_message: Callable[[], str] | None = None,
     git_env: dict[str, str] | None = None,
     auto_restart: bool = True,
     devserver_manager: DevServerManager | None = None,
@@ -95,6 +96,9 @@ def create_app(
     update_failed_event:
         Threading event set by the supervisor when an update fails.
         The banner endpoint checks this to reset the "Updating..." state.
+    get_update_failed_message:
+        Callable returning the error description when an update fails.
+        Read by the banner endpoint after ``update_failed_event`` fires.
     devserver_manager:
         DevServerManager instance for controlling dev server processes.
     """
@@ -118,6 +122,7 @@ def create_app(
     app.state.resume_requested_at = 0.0
     app.state.update_in_progress = False
     app.state.update_failed_event = update_failed_event
+    app.state.get_update_failed_message = get_update_failed_message
     app.state.auto_restart = auto_restart
     app.state.logs_dir = Path(logs_dir).expanduser() if logs_dir else None
     app.state.git_env = git_env
@@ -158,6 +163,7 @@ def start_dashboard(
     get_preflight_results: Callable[[], list] | None = None,
     get_degraded: Callable[[], bool] | None = None,
     update_failed_event: threading.Event | None = None,
+    get_update_failed_message: Callable[[], str] | None = None,
     git_env: dict[str, str] | None = None,
     auto_restart: bool = True,
     devserver_manager: DevServerManager | None = None,
@@ -184,6 +190,7 @@ def start_dashboard(
         get_preflight_results=get_preflight_results,
         get_degraded=get_degraded,
         update_failed_event=update_failed_event,
+        get_update_failed_message=get_update_failed_message,
         git_env=git_env,
         auto_restart=auto_restart,
         devserver_manager=devserver_manager,

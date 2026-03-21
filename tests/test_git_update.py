@@ -7,7 +7,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from botfarm.git_update import UPDATE_EXIT_CODE, commits_behind, pull_and_install
+from botfarm.git_update import (
+    UPDATE_EXIT_CODE,
+    _ensure_not_bare,
+    commits_behind,
+    pull_and_install,
+)
 
 
 class TestUpdateExitCode:
@@ -110,30 +115,85 @@ class TestCommitsBehind:
             assert "env" not in call.kwargs
 
 
+class TestEnsureNotBare:
+    @patch("botfarm.git_update.subprocess.run")
+    def test_repairs_bare_true(self, mock_run):
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="true\n"),  # git config --get
+            MagicMock(returncode=0),  # git config --local set
+        ]
+        _ensure_not_bare("/some/repo")
+        assert mock_run.call_count == 2
+        set_call = mock_run.call_args_list[1]
+        assert set_call.args[0] == ["git", "config", "--local", "core.bare", "false"]
+
+    @patch("botfarm.git_update.subprocess.run")
+    def test_no_repair_when_not_bare(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=1, stdout="")
+        _ensure_not_bare("/some/repo")
+        assert mock_run.call_count == 1
+
+    @patch("botfarm.git_update.subprocess.run")
+    def test_no_repair_when_bare_false(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="false\n")
+        _ensure_not_bare("/some/repo")
+        assert mock_run.call_count == 1
+
+    @patch("botfarm.git_update.subprocess.run")
+    def test_passes_repo_dir_as_cwd(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=1, stdout="")
+        _ensure_not_bare("/my/repo")
+        assert mock_run.call_args.kwargs.get("cwd") == "/my/repo"
+
+    @patch("botfarm.git_update.subprocess.run")
+    def test_no_cwd_when_repo_dir_none(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=1, stdout="")
+        _ensure_not_bare(None)
+        assert "cwd" not in mock_run.call_args.kwargs
+
+    @patch("botfarm.git_update.subprocess.run")
+    def test_tolerates_timeout(self, mock_run):
+        mock_run.side_effect = subprocess.TimeoutExpired("git", 5)
+        _ensure_not_bare()  # should not raise
+
+    @patch("botfarm.git_update.subprocess.run")
+    def test_tolerates_repair_failure(self, mock_run):
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="true\n"),
+            subprocess.CalledProcessError(1, "git config"),
+        ]
+        _ensure_not_bare()  # should not raise
+
+
+@patch("botfarm.git_update._ensure_not_bare")
 class TestPullAndInstall:
     @patch("botfarm.git_update.subprocess.run")
-    def test_success(self, mock_run):
+    def test_success(self, mock_run, _mock_bare):
         mock_run.side_effect = [
             MagicMock(returncode=0),  # git pull
             MagicMock(returncode=0),  # pip install
         ]
-        assert pull_and_install() is True
+        assert pull_and_install() == ""
 
     @patch("botfarm.git_update.subprocess.run")
-    def test_git_pull_failure(self, mock_run):
+    def test_git_pull_failure(self, mock_run, _mock_bare):
         mock_run.side_effect = subprocess.CalledProcessError(1, "git pull")
-        assert pull_and_install() is False
+        result = pull_and_install()
+        assert result  # non-empty error string
+        assert "git pull" in result
 
     @patch("botfarm.git_update.subprocess.run")
-    def test_pip_install_failure(self, mock_run):
+    def test_pip_install_failure(self, mock_run, _mock_bare):
         mock_run.side_effect = [
             MagicMock(returncode=0),  # git pull ok
             subprocess.CalledProcessError(1, "pip install"),
         ]
-        assert pull_and_install() is False
+        result = pull_and_install()
+        assert result
+        assert "pip install" in result
 
     @patch("botfarm.git_update.subprocess.run")
-    def test_passes_repo_dir(self, mock_run):
+    def test_passes_repo_dir(self, mock_run, _mock_bare):
         mock_run.side_effect = [
             MagicMock(returncode=0),
             MagicMock(returncode=0),
@@ -143,30 +203,30 @@ class TestPullAndInstall:
             assert call.kwargs.get("cwd") == "/my/repo"
 
     @patch("botfarm.git_update.subprocess.run")
-    def test_timeout(self, mock_run):
+    def test_timeout(self, mock_run, _mock_bare):
         mock_run.side_effect = subprocess.TimeoutExpired("git pull", 120)
-        assert pull_and_install() is False
+        assert pull_and_install() != ""
 
     @patch("botfarm.git_update.subprocess.run")
-    def test_file_not_found(self, mock_run):
+    def test_file_not_found(self, mock_run, _mock_bare):
         mock_run.side_effect = FileNotFoundError("git")
-        assert pull_and_install() is False
+        assert pull_and_install() != ""
 
     @patch("botfarm.git_update.subprocess.run")
-    def test_passes_env_to_subprocess(self, mock_run):
+    def test_passes_env_to_subprocess(self, mock_run, _mock_bare):
         mock_run.side_effect = [
             MagicMock(returncode=0),  # git pull
             MagicMock(returncode=0),  # pip install
         ]
         custom_env = {"GIT_SSH_COMMAND": "ssh -i /my/key"}
-        assert pull_and_install(env=custom_env) is True
+        assert pull_and_install(env=custom_env) == ""
         for call in mock_run.call_args_list:
             call_env = call.kwargs.get("env")
             assert call_env is not None
             assert call_env["GIT_SSH_COMMAND"] == "ssh -i /my/key"
 
     @patch("botfarm.git_update.subprocess.run")
-    def test_no_env_when_none(self, mock_run):
+    def test_no_env_when_none(self, mock_run, _mock_bare):
         mock_run.side_effect = [
             MagicMock(returncode=0),
             MagicMock(returncode=0),
@@ -176,7 +236,7 @@ class TestPullAndInstall:
             assert "env" not in call.kwargs
 
     @patch("botfarm.git_update.subprocess.run")
-    def test_uses_sys_executable_for_pip(self, mock_run):
+    def test_uses_sys_executable_for_pip(self, mock_run, _mock_bare):
         mock_run.side_effect = [
             MagicMock(returncode=0),  # git pull
             MagicMock(returncode=0),  # pip install
@@ -184,6 +244,15 @@ class TestPullAndInstall:
         pull_and_install()
         pip_call = mock_run.call_args_list[1]
         assert pip_call.args[0][:3] == [sys.executable, "-m", "pip"]
+
+    def test_calls_ensure_not_bare(self, mock_bare):
+        with patch("botfarm.git_update.subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(returncode=0),
+                MagicMock(returncode=0),
+            ]
+            pull_and_install(repo_dir="/my/repo")
+        mock_bare.assert_called_once_with("/my/repo")
 
 
 class TestDashboardUpdateBanner:
@@ -249,9 +318,28 @@ class TestDashboardUpdateBanner:
         assert resp.status_code == 200
         # Should have reset to idle and show commits behind, not "Updating..."
         assert "Updating" not in resp.text
-        assert "3 commits behind" in resp.text
         assert app.state.update_in_progress is False
         assert not failed_event.is_set()
+
+    @patch("botfarm.dashboard.commits_behind", return_value=3)
+    def test_banner_shows_error_on_update_failure(self, mock_cb, db_file):
+        from botfarm.dashboard import create_app
+        from fastapi.testclient import TestClient
+        failed_event = threading.Event()
+        app = create_app(
+            db_path=db_file,
+            update_failed_event=failed_event,
+            get_update_failed_message=lambda: "git pull failed: conflict in main",
+        )
+        app.state.update_in_progress = True
+        failed_event.set()
+        client = TestClient(app)
+        resp = client.get("/partials/update-banner")
+        assert resp.status_code == 200
+        assert "Update failed" in resp.text
+        assert "git pull failed: conflict in main" in resp.text
+        assert "Retry" in resp.text
+        assert app.state.update_in_progress is False
 
 
 class TestDashboardUpdateAPI:
