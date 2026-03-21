@@ -3,7 +3,7 @@
     <span>
         <strong>Update failed</strong> &mdash; {{ update_error }}
     </span>
-    {% if auto_restart and commits_behind and commits_behind > 0 %}
+    {% if auto_restart %}
     <button class="pause-btn"
             style="background: #fff; color: var(--pico-color-red-600, #dc2626);"
             hx-post="/api/update"
