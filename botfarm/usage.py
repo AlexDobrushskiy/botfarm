@@ -455,6 +455,56 @@ class UsagePoller:
             self._flush_audit_records(conn, fp)
             if exc.response.status_code == 429:
                 retry_after_header = exc.response.headers.get("retry-after")
+                retry_after = parse_retry_after(retry_after_header)
+                # 429 with retry_after=0 or absent is often an expired OAuth
+                # token masquerading as a rate limit.  Attempt a token refresh
+                # before falling back to normal backoff.
+                if retry_after is None or retry_after == 0:
+                    original_fp = fp
+                    refreshed_token = self.credential_manager.refresh_token()
+                    if refreshed_token is not None:
+                        new_fp = token_fingerprint(refreshed_token)
+                        if new_fp != original_fp:
+                            logger.info(
+                                "429 with retry_after=%s — token refresh produced new fingerprint, retrying",
+                                retry_after_header or "absent",
+                            )
+                            fp = new_fp
+                            self._check_key_rotation(conn, fp)
+                            self._attempt_records = []
+                            try:
+                                data = self._fetch(refreshed_token)
+                            except httpx.HTTPStatusError as retry_exc:
+                                self._flush_audit_records(conn, fp)
+                                if retry_exc.response.status_code == 401:
+                                    logger.warning(
+                                        "Usage API returned 401 after 429-triggered token refresh",
+                                    )
+                                    self._handle_401(conn)
+                                else:
+                                    logger.warning(
+                                        "Usage API returned %d after 429-triggered token refresh — "
+                                        "falling back to backoff",
+                                        retry_exc.response.status_code,
+                                    )
+                                    self._handle_429(conn, retry_after_header)
+                                return
+                            except Exception:
+                                self._flush_audit_records(conn, fp)
+                                logger.warning(
+                                    "Usage API call failed after 429-triggered token refresh — "
+                                    "falling back to backoff",
+                                )
+                                self._handle_429(conn, retry_after_header)
+                                return
+                            self._flush_audit_records(conn, fp)
+                            # Refresh+retry succeeded — skip backoff, proceed to parse
+                            self._reset_rate_limit_state(conn)
+                            self._reset_auth_failure_state(conn)
+                            self._parse_and_store(data, conn)
+                            self._purge_old_snapshots(conn)
+                            conn.commit()
+                            return
                 self._handle_429(conn, retry_after_header)
                 return
             elif exc.response.status_code == 401:
