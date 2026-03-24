@@ -7,6 +7,7 @@ aiosqlite
 fastapi
 uvicorn
 jinja2
+starlette<1.0.0
 sse-starlette
 pytest
 pytest-asyncio
