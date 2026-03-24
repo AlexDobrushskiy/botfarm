@@ -523,7 +523,9 @@ class TestUsagePollerErrors:
         with patch.object(p, "_fetch", side_effect=error):
             for _ in range(20):
                 p._last_force_poll = 0
-                p._last_poll = 0
+                # Must be far enough in the past to exceed effective_poll_interval;
+                # _last_poll=0 fails if system uptime < backoff interval.
+                p._last_poll = max(0, time.monotonic() - MAX_401_BACKOFF_INTERVAL - 1)
                 p.force_poll(conn)
 
         assert p._active_poll_interval == MAX_401_BACKOFF_INTERVAL
