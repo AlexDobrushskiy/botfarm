@@ -106,10 +106,6 @@ async def ws_terminal(ws: WebSocket):
             os.execvpe(shell, [shell, "--login"], os.environ)
             os._exit(1)  # fallback if exec fails
 
-        # Parent — set master fd to non-blocking
-        flags = fcntl.fcntl(master_fd, fcntl.F_GETFL)
-        fcntl.fcntl(master_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
-
         # Set default terminal size
         fcntl.ioctl(
             master_fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0)

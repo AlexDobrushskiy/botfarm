@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -105,7 +104,6 @@ class TestTerminalWebSocket:
         from botfarm.dashboard.routes_terminal import (
             _decrement_sessions,
             _increment_sessions,
-            _sessions_lock,
         )
 
         async def _test():
