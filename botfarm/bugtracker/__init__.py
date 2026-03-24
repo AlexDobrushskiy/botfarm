@@ -141,13 +141,14 @@ def create_poller(
         client = LinearClient(api_key=config.bugtracker.api_key)
         coder_key = config.identities.coder.tracker_api_key
         coder_client = LinearClient(api_key=coder_key) if coder_key else None
+        include_tags = project.include_tags if project.include_tags else config.bugtracker.include_tags
         return LinearPoller(
             client=client,
             project=project,
             exclude_tags=config.bugtracker.exclude_tags,
             todo_status=config.bugtracker.todo_status,
             coder_client=coder_client,
-            include_tags=config.bugtracker.include_tags,
+            include_tags=include_tags,
         )
     if bt_type == "jira":
         from botfarm.bugtracker.jira import create_poller as jira_create_poller
