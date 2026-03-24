@@ -586,7 +586,9 @@ def _classify_failure(failure_reason: str | None) -> str:
     auth_indicators = [
         "authentication_error",
         "invalid authentication",
-        "401",
+        "401 unauthorized",
+        "http 401",
+        "status 401",
     ]
     if any(indicator in reason for indicator in auth_indicators):
         return "auth_failure"

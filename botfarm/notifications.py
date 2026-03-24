@@ -97,7 +97,7 @@ class Notifier:
             lines.append(review_summary)
         self._send("task_completed", "\n".join(lines))
 
-    _ENV_CATEGORY_LABELS: dict[str, str] = {
+    _CATEGORY_LABELS: dict[str, str] = {
         "env_missing_runtime": "Environment: missing runtime binary",
         "env_missing_package": "Environment: missing package/module",
         "env_missing_service": "Environment: service unavailable",
@@ -115,7 +115,7 @@ class Notifier:
         review_summary: str | None = None,
     ) -> None:
         """Notify that a task failed."""
-        env_label = self._ENV_CATEGORY_LABELS.get(failure_category or "")
+        env_label = self._CATEGORY_LABELS.get(failure_category or "")
         if env_label:
             lines = [f"*Task failed ({env_label}):* {ticket_id} — {title}"]
         else:
