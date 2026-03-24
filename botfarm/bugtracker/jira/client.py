@@ -110,6 +110,11 @@ class JiraClient(BugtrackerClient):
         resp = self._request("GET", path, params=params)
         return resp.json()
 
+    def _post_json(self, path: str, *, json: dict) -> dict:
+        """POST request with JSON body returning parsed JSON."""
+        resp = self._request("POST", path, json=json)
+        return resp.json()
+
     def _ensure_rank_field(self) -> None:
         """Discover the Rank custom field ID on first use."""
         if self._rank_field_checked:
@@ -152,20 +157,21 @@ class JiraClient(BugtrackerClient):
             order_by = "ORDER BY priority DESC, created ASC"
         jql = f"{jql} {order_by}"
 
-        fields = "summary,status,labels,assignee,priority,issuelinks,parent,subtasks"
+        fields_list = ["summary", "status", "labels", "assignee", "priority",
+                       "issuelinks", "parent", "subtasks"]
         if self._rank_field_id:
-            fields = f"{fields},{self._rank_field_id}"
+            fields_list.append(self._rank_field_id)
 
         issues: list[Issue] = []
         start_at = 0
         while True:
-            data = self._get_json(
-                "/search",
-                params={
+            data = self._post_json(
+                "/search/jql",
+                json={
                     "jql": jql,
-                    "fields": fields,
-                    "startAt": str(start_at),
-                    "maxResults": str(first),
+                    "fields": fields_list,
+                    "startAt": start_at,
+                    "maxResults": first,
                 },
             )
             for idx, item in enumerate(data.get("issues", [])):

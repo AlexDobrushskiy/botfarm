@@ -185,8 +185,18 @@ class TestFetchTeamIssues:
                 }
             ],
         })
-        with patch("httpx.request", return_value=search_resp):
+        with patch("httpx.request", return_value=search_resp) as mock_req:
             issues = client.fetch_team_issues("PROJ", status_name="Todo")
+
+        # Verify POST /search/jql with JSON body
+        call_args = mock_req.call_args
+        assert call_args[0][0] == "POST"
+        assert call_args[0][1].endswith("/rest/api/2/search/jql")
+        body = call_args[1]["json"]
+        assert isinstance(body["fields"], list)
+        assert "summary" in body["fields"]
+        assert isinstance(body["startAt"], int)
+        assert isinstance(body["maxResults"], int)
 
         assert len(issues) == 1
         issue = issues[0]
