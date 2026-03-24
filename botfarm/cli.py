@@ -1420,11 +1420,15 @@ def run(config_path, log_dir, auto_restart):
     except ConfigError as exc:
         raise click.ClickException(str(exc)) from exc
 
-    # In setup mode, force dashboard on and bind to localhost for security.
+    # In setup mode, force dashboard on so users can complete setup via browser.
     if config.setup_mode:
         config.dashboard.enabled = True
-        if config.dashboard.host == "0.0.0.0":
-            config.dashboard.host = "127.0.0.1"
+        if config.dashboard.host not in ("127.0.0.1", "localhost", "::1"):
+            click.echo(
+                f"Warning: setup mode dashboard bound to {config.dashboard.host} — "
+                "setup endpoints are unauthenticated. "
+                "Use 127.0.0.1 unless you need network access (e.g. Docker)."
+            )
         click.echo(
             f"Setup mode — dashboard at http://{config.dashboard.host}:{config.dashboard.port}"
         )
