@@ -184,7 +184,7 @@ class ProjectConfig:
         self.run_command = run_command
         self.run_env = run_env if run_env is not None else {}
         self.run_port = run_port
-        self.include_tags = include_tags if include_tags is not None else []
+        self.include_tags = include_tags
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, ProjectConfig):

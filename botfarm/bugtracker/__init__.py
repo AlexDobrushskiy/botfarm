@@ -141,7 +141,7 @@ def create_poller(
         client = LinearClient(api_key=config.bugtracker.api_key)
         coder_key = config.identities.coder.tracker_api_key
         coder_client = LinearClient(api_key=coder_key) if coder_key else None
-        include_tags = project.include_tags if project.include_tags else config.bugtracker.include_tags
+        include_tags = project.include_tags if project.include_tags is not None else config.bugtracker.include_tags
         return LinearPoller(
             client=client,
             project=project,

@@ -1235,6 +1235,21 @@ class TestCreatePollers:
         pollers = create_pollers(config)
         assert pollers[0]._include_tags == {"botfarm"}
 
+    def test_project_include_tags_empty_clears_global(self):
+        """Explicit include_tags: [] on project clears the global filter."""
+        project = ProjectConfig(
+            name="proj-a", team="SMA", base_dir="~/proj-a",
+            worktree_prefix="proj-a-slot-", slots=[1],
+            include_tags=[],
+        )
+        config = BotfarmConfig(
+            projects=[project],
+            bugtracker=LinearConfig(api_key="key", include_tags=["botfarm"]),
+            database=DatabaseConfig(),
+        )
+        pollers = create_pollers(config)
+        assert pollers[0]._include_tags == set()
+
     def test_two_projects_different_include_tags(self):
         proj_back = ProjectConfig(
             name="back", team="AIR", base_dir="~/back",

@@ -506,3 +506,26 @@ class TestCreatePoller:
         )
         poller = create_poller(config, project)
         assert poller._include_tags == {"botfarm"}
+
+    def test_linear_project_include_tags_empty_clears_global(self):
+        """Explicit include_tags: [] on project clears the global filter."""
+        from botfarm.bugtracker import create_poller
+        from botfarm.config import BotfarmConfig, LinearBugtrackerConfig, ProjectConfig
+
+        project = ProjectConfig(
+            name="proj",
+            team="TST",
+            base_dir="~/d",
+            worktree_prefix="s-",
+            slots=[1],
+            include_tags=[],
+        )
+        config = BotfarmConfig(
+            projects=[project],
+            bugtracker=LinearBugtrackerConfig(
+                api_key="test-key",
+                include_tags=["botfarm"],
+            ),
+        )
+        poller = create_poller(config, project)
+        assert poller._include_tags == set()

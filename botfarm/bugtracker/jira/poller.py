@@ -78,7 +78,7 @@ def create_poller(
     if not isinstance(bt, JiraBugtrackerConfig):
         raise ValueError("Jira bugtracker requires JiraBugtrackerConfig")
     client, coder_client = _create_jira_clients(config)
-    include_tags = project.include_tags if project.include_tags else bt.include_tags
+    include_tags = project.include_tags if project.include_tags is not None else bt.include_tags
     return JiraPoller(
         client=client,
         project=project,
@@ -109,7 +109,7 @@ def create_pollers(config: BotfarmConfig) -> list[JiraPoller]:
             exclude_tags=bt.exclude_tags,
             todo_status=bt.todo_status,
             coder_client=coder_client,
-            include_tags=project.include_tags if project.include_tags else bt.include_tags,
+            include_tags=project.include_tags if project.include_tags is not None else bt.include_tags,
         )
         for project in config.projects
     ]

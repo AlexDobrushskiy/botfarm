@@ -388,10 +388,10 @@ def test_load_config_project_include_tags(tmp_path):
     assert config.projects[0].include_tags == ["backend", "api"]
 
 
-def test_load_config_project_include_tags_default_empty(tmp_path):
+def test_load_config_project_include_tags_default_none(tmp_path):
     config_path = _write_config(tmp_path, MINIMAL_CONFIG)
     config = load_config(config_path)
-    assert config.projects[0].include_tags == []
+    assert config.projects[0].include_tags is None
 
 
 def test_load_config_project_include_tags_invalid_type(tmp_path):
