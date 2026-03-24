@@ -17,7 +17,7 @@ dashboard:
   enabled: false       # default off
   host: "0.0.0.0"     # bind address
   port: 8420           # HTTP port
-  terminal_enabled: true  # set to false to disable web terminal
+  terminal_enabled: false  # set to true to enable web terminal
 ```
 
 ## Architecture
@@ -151,7 +151,7 @@ Dashboard code lives under `botfarm/dashboard/`:
 - Bridges WebSocket messages to pty I/O via `asyncio.to_thread`
 - Supports terminal resize via JSON messages: `{"type":"resize","cols":N,"rows":N}`
 - Max 2 concurrent sessions; idle timeout after 15 minutes of no input
-- Controlled by `dashboard.terminal_enabled` config flag (default `true`)
+- Controlled by `dashboard.terminal_enabled` config flag (default `false` — opt-in)
 - **Security:** no authentication — when exposing the dashboard externally, use a reverse proxy with auth (e.g. Caddy + basicauth, nginx + oauth2-proxy)
 
 ### Config & Identity API

@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import fcntl
+import json
 import logging
 import os
 import pty
+import select
 import signal
 import struct
 import termios
@@ -46,8 +48,8 @@ def _is_terminal_enabled(app_state) -> bool:
     """Check if the terminal feature is enabled in config."""
     cfg = getattr(app_state, "botfarm_config", None)
     if cfg is None:
-        return True  # Default to enabled when no config
-    return getattr(cfg.dashboard, "terminal_enabled", True)
+        return False  # Default to disabled when no config
+    return getattr(cfg.dashboard, "terminal_enabled", False)
 
 
 def _cleanup_child(child_pid: int, master_fd: int) -> None:
@@ -61,8 +63,13 @@ def _cleanup_child(child_pid: int, master_fd: int) -> None:
     except OSError:
         pass
     try:
-        os.waitpid(child_pid, os.WNOHANG)
-    except ChildProcessError:
+        pid, _ = os.waitpid(child_pid, os.WNOHANG)
+        if pid == 0:
+            # Child still running — give it a moment then force-kill
+            time.sleep(0.1)
+            os.kill(child_pid, signal.SIGKILL)
+            os.waitpid(child_pid, 0)
+    except (OSError, ChildProcessError):
         pass
 
 
@@ -114,11 +121,11 @@ async def ws_terminal(ws: WebSocket):
             while True:
                 try:
                     data = await asyncio.to_thread(_pty_read, master_fd)
-                    if data:
-                        if ws.client_state == WebSocketState.CONNECTED:
+                    if data is not None:
+                        if data and ws.client_state == WebSocketState.CONNECTED:
                             await ws.send_text(data)
                     else:
-                        # Empty read means child exited
+                        # None means child exited
                         break
                 except OSError:
                     break
@@ -157,8 +164,6 @@ async def ws_terminal(ws: WebSocket):
                 # Handle resize messages: JSON {"type":"resize","cols":N,"rows":N}
                 if text.startswith("{"):
                     try:
-                        import json
-
                         payload = json.loads(text)
                         if payload.get("type") == "resize":
                             rows = int(payload.get("rows", 24))
@@ -194,8 +199,6 @@ async def ws_terminal(ws: WebSocket):
 
 def _pty_read(fd: int) -> str | None:
     """Blocking read from pty master fd. Returns None on EOF."""
-    import select
-
     ready, _, _ = select.select([fd], [], [], 0.1)
     if not ready:
         return ""
