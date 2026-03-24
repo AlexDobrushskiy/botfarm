@@ -369,6 +369,50 @@ def test_load_config_include_tags_default_empty(tmp_path):
     assert config.bugtracker.include_tags == []
 
 
+def test_load_config_project_include_tags(tmp_path):
+    data = {
+        "projects": [
+            {
+                "name": "test-project",
+                "team": "TST",
+                "base_dir": "~/test",
+                "worktree_prefix": "test-slot-",
+                "slots": [1],
+                "include_tags": ["backend", "api"],
+            }
+        ],
+        "bugtracker": {"api_key": "test-key"},
+    }
+    config_path = _write_config(tmp_path, data)
+    config = load_config(config_path)
+    assert config.projects[0].include_tags == ["backend", "api"]
+
+
+def test_load_config_project_include_tags_default_none(tmp_path):
+    config_path = _write_config(tmp_path, MINIMAL_CONFIG)
+    config = load_config(config_path)
+    assert config.projects[0].include_tags is None
+
+
+def test_load_config_project_include_tags_invalid_type(tmp_path):
+    data = {
+        "projects": [
+            {
+                "name": "test-project",
+                "team": "TST",
+                "base_dir": "~/test",
+                "worktree_prefix": "test-slot-",
+                "slots": [1],
+                "include_tags": "not-a-list",
+            }
+        ],
+        "bugtracker": {"api_key": "test-key"},
+    }
+    config_path = _write_config(tmp_path, data)
+    with pytest.raises(ConfigError, match="include_tags must be a list of strings"):
+        load_config(config_path)
+
+
 def test_load_config_defaults(tmp_path):
     config_path = _write_config(tmp_path, MINIMAL_CONFIG)
     config = load_config(config_path)

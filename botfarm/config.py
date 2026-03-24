@@ -155,7 +155,8 @@ class ProjectConfig:
 
     __slots__ = ("name", "base_dir", "worktree_prefix", "slots",
                  "team", "tracker_project", "project_type",
-                 "setup_commands", "run_command", "run_env", "run_port")
+                 "setup_commands", "run_command", "run_env", "run_port",
+                 "include_tags")
 
     def __init__(
         self,
@@ -170,6 +171,7 @@ class ProjectConfig:
         run_command: str = "",
         run_env: dict[str, str] | None = None,
         run_port: int = 0,
+        include_tags: list[str] | None = None,
     ) -> None:
         self.name = name
         self.base_dir = base_dir
@@ -182,6 +184,7 @@ class ProjectConfig:
         self.run_command = run_command
         self.run_env = run_env if run_env is not None else {}
         self.run_port = run_port
+        self.include_tags = include_tags
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, ProjectConfig):
@@ -194,7 +197,8 @@ class ProjectConfig:
                 and self.setup_commands == other.setup_commands
                 and self.run_command == other.run_command
                 and self.run_env == other.run_env
-                and self.run_port == other.run_port)
+                and self.run_port == other.run_port
+                and self.include_tags == other.include_tags)
 
     def __repr__(self) -> str:
         return (f"ProjectConfig(name={self.name!r}, team={self.team!r}, "
@@ -203,7 +207,8 @@ class ProjectConfig:
                 f"project_type={self.project_type!r}, "
                 f"setup_commands={self.setup_commands!r}, "
                 f"run_command={self.run_command!r}, "
-                f"run_env={self.run_env!r}, run_port={self.run_port!r})")
+                f"run_env={self.run_env!r}, run_port={self.run_port!r}, "
+                f"include_tags={self.include_tags!r})")
 
 
 @dataclass
@@ -563,6 +568,15 @@ def _parse_project(data: dict) -> ProjectConfig:
             f"Project '{data['name']}': run_port must be a non-negative integer"
         )
 
+    # include_tags
+    include_tags = data.get("include_tags")
+    if include_tags is not None:
+        if (not isinstance(include_tags, list)
+                or not all(isinstance(t, str) for t in include_tags)):
+            raise ConfigError(
+                f"Project '{data['name']}': include_tags must be a list of strings"
+            )
+
     # Derive defaults from project_type when not explicitly set.
     if project_type and project_type in _PROJECT_TYPE_RUN_DEFAULTS:
         defaults = _PROJECT_TYPE_RUN_DEFAULTS[project_type]
@@ -583,6 +597,7 @@ def _parse_project(data: dict) -> ProjectConfig:
         run_command=run_command,
         run_env=run_env,
         run_port=run_port,
+        include_tags=include_tags,
     )
 
 

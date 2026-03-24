@@ -58,6 +58,8 @@ projects:
     worktree_prefix: my-project-slot-  # Prefix for git worktree directories
     slots: [1, 2]                # Slot IDs assigned to this project
     tracker_project: ""          # Optional: filter to a specific project within the team
+    include_tags:                # Optional: project-level label filter (overrides global bugtracker.include_tags)
+      - my-label
 ```
 
 **Rules:**
@@ -65,6 +67,39 @@ projects:
 - `tracker_project` must be unique across all projects (when set). If two projects share the same `tracker_project` filter, tickets may be dispatched to the wrong repo.
 - `slots` must be a list of integers with no duplicates within each project
 - Slot IDs are per-project — different projects can reuse the same IDs
+- `include_tags` on a project overrides the global `bugtracker.include_tags` for that project. If a project does not set `include_tags`, the global value is used as a fallback
+
+#### Multi-project routing with `include_tags`
+
+When multiple projects share the same bugtracker team, use per-project `include_tags` to route tickets to the correct project:
+
+```yaml
+bugtracker:
+  type: jira
+  include_tags:
+    - botfarm          # global fallback (used if a project doesn't set its own)
+projects:
+  - name: air-back
+    team: AIR
+    base_dir: ~/repos/air-back
+    worktree_prefix: air-back-slot-
+    slots: [1, 2]
+    include_tags:       # project-level override
+      - botfarm-backend
+  - name: air-front
+    team: AIR
+    base_dir: ~/repos/air-front
+    worktree_prefix: air-front-slot-
+    slots: [3]
+    include_tags:
+      - botfarm-frontend
+```
+
+With this config:
+- A ticket labeled `botfarm-backend` is picked up by `air-back` only
+- A ticket labeled `botfarm-frontend` is picked up by `air-front` only
+- A ticket labeled `botfarm` only is not picked up by either (doesn't match project-level tags)
+- If a project has no `include_tags`, it falls back to the global `bugtracker.include_tags`
 
 ---
 

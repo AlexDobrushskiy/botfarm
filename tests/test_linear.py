@@ -1212,6 +1212,64 @@ class TestCreatePollers:
         pollers = create_pollers(config)
         assert pollers[0]._include_tags == set()
 
+    def test_project_include_tags_override_global(self):
+        project = ProjectConfig(
+            name="proj-a", team="SMA", base_dir="~/proj-a",
+            worktree_prefix="proj-a-slot-", slots=[1],
+            include_tags=["backend"],
+        )
+        config = BotfarmConfig(
+            projects=[project],
+            bugtracker=LinearConfig(api_key="key", include_tags=["botfarm"]),
+            database=DatabaseConfig(),
+        )
+        pollers = create_pollers(config)
+        assert pollers[0]._include_tags == {"backend"}
+
+    def test_project_include_tags_fallback_to_global(self):
+        config = BotfarmConfig(
+            projects=[_make_project(slots=[1])],
+            bugtracker=LinearConfig(api_key="key", include_tags=["botfarm"]),
+            database=DatabaseConfig(),
+        )
+        pollers = create_pollers(config)
+        assert pollers[0]._include_tags == {"botfarm"}
+
+    def test_project_include_tags_empty_clears_global(self):
+        """Explicit include_tags: [] on project clears the global filter."""
+        project = ProjectConfig(
+            name="proj-a", team="SMA", base_dir="~/proj-a",
+            worktree_prefix="proj-a-slot-", slots=[1],
+            include_tags=[],
+        )
+        config = BotfarmConfig(
+            projects=[project],
+            bugtracker=LinearConfig(api_key="key", include_tags=["botfarm"]),
+            database=DatabaseConfig(),
+        )
+        pollers = create_pollers(config)
+        assert pollers[0]._include_tags == set()
+
+    def test_two_projects_different_include_tags(self):
+        proj_back = ProjectConfig(
+            name="back", team="AIR", base_dir="~/back",
+            worktree_prefix="back-slot-", slots=[1],
+            include_tags=["botfarm-backend"],
+        )
+        proj_front = ProjectConfig(
+            name="front", team="AIR", base_dir="~/front",
+            worktree_prefix="front-slot-", slots=[2],
+            include_tags=["botfarm-frontend"],
+        )
+        config = BotfarmConfig(
+            projects=[proj_back, proj_front],
+            bugtracker=LinearConfig(api_key="key", include_tags=["botfarm"]),
+            database=DatabaseConfig(),
+        )
+        pollers = create_pollers(config)
+        assert pollers[0]._include_tags == {"botfarm-backend"}
+        assert pollers[1]._include_tags == {"botfarm-frontend"}
+
     def test_todo_status_passed(self):
         config = BotfarmConfig(
             projects=[_make_project(slots=[1])],
