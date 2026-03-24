@@ -249,6 +249,26 @@ class TestClassifyFailure:
     def test_empty_reason(self):
         assert _classify_failure("") == "code_failure"
 
+    # -- auth_failure --
+    def test_authentication_error(self):
+        assert _classify_failure("authentication_error: invalid token") == "auth_failure"
+
+    def test_invalid_authentication(self):
+        assert _classify_failure("Error: invalid authentication credentials") == "auth_failure"
+
+    def test_401_unauthorized(self):
+        assert _classify_failure("HTTP 401 Unauthorized") == "auth_failure"
+
+    def test_status_401(self):
+        assert _classify_failure("status 401: token expired") == "auth_failure"
+
+    def test_bare_401_not_matched(self):
+        """Bare '401' without auth context should not classify as auth_failure."""
+        assert _classify_failure("Error on line 401 of parser.py") == "code_failure"
+
+    def test_case_insensitive_authentication_error(self):
+        assert _classify_failure("AUTHENTICATION_ERROR: expired") == "auth_failure"
+
     # -- case insensitivity --
     def test_case_insensitive_module_error(self):
         assert _classify_failure("MODULENOTFOUNDERROR: No module named 'foo'") == "env_missing_package"

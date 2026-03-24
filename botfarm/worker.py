@@ -1591,6 +1591,19 @@ class _PipelineContext:
             )
             self.conn.commit()
 
+        # Pre-stage token freshness check — proactively refresh expired
+        # OAuth tokens before spawning a Claude subprocess to avoid 401s.
+        if uses_agent:
+            try:
+                from botfarm.credentials import CredentialManager
+
+                cm = CredentialManager()
+                if cm.is_token_expired():
+                    logger.info("OAuth token expired/near-expiry — refreshing before stage '%s'", stage)
+                    cm.refresh_token()
+            except Exception:
+                logger.debug("Token freshness check failed — continuing anyway", exc_info=True)
+
         try:
             result = _execute_stage(
                 stage,
