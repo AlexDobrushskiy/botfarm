@@ -433,8 +433,8 @@ class TestUpdateIssueState:
         client = _make_client()
         transitions_resp = _jira_response(json_data={
             "transitions": [
-                {"id": "21", "name": "Start", "to": {"name": "In Progress", "statusCategory": {"key": "indeterminate"}}},
-                {"id": "31", "name": "Done", "to": {"name": "Done", "statusCategory": {"key": "done"}}},
+                {"id": "21", "name": "Start", "to": {"name": "In Progress", "statusCategory": {"key": "indeterminate"}}, "fields": {}},
+                {"id": "31", "name": "Done", "to": {"name": "Done", "statusCategory": {"key": "done"}}, "fields": {}},
             ]
         })
         post_resp = _jira_response(status_code=204, json_data={})
@@ -458,11 +458,21 @@ class TestUpdateIssueState:
         assert body["transition"]["id"] == "21"
         assert "fields" not in body  # Not a done transition
 
-    def test_done_transition_includes_resolution(self):
+    def test_done_transition_includes_resolution_when_on_screen(self):
         client = _make_client()
         transitions_resp = _jira_response(json_data={
             "transitions": [
-                {"id": "31", "name": "Done", "to": {"name": "Done", "statusCategory": {"key": "done"}}},
+                {
+                    "id": "31",
+                    "name": "Done",
+                    "to": {"name": "Done", "statusCategory": {"key": "done"}},
+                    "fields": {
+                        "resolution": {
+                            "required": True,
+                            "name": "Resolution",
+                        },
+                    },
+                },
             ]
         })
         post_resp = _jira_response(status_code=204, json_data={})
@@ -476,11 +486,36 @@ class TestUpdateIssueState:
         assert body["transition"]["id"] == "31"
         assert body["fields"]["resolution"]["name"] == "Done"
 
+    def test_done_transition_omits_resolution_when_not_on_screen(self):
+        """When the resolution field is not on the transition screen, Jira
+        auto-sets it.  Sending it explicitly causes HTTP 400."""
+        client = _make_client()
+        transitions_resp = _jira_response(json_data={
+            "transitions": [
+                {
+                    "id": "31",
+                    "name": "Done",
+                    "to": {"name": "Done", "statusCategory": {"key": "done"}},
+                    "fields": {},
+                },
+            ]
+        })
+        post_resp = _jira_response(status_code=204, json_data={})
+        responses = [transitions_resp, post_resp]
+
+        with patch("httpx.request", side_effect=responses) as mock_req:
+            client.update_issue_state("10001", "Done")
+
+        second_call = mock_req.call_args_list[1]
+        body = second_call[1].get("json")
+        assert body["transition"]["id"] == "31"
+        assert "fields" not in body
+
     def test_missing_transition_raises_error(self):
         client = _make_client()
         transitions_resp = _jira_response(json_data={
             "transitions": [
-                {"id": "21", "name": "Start", "to": {"name": "In Progress", "statusCategory": {"key": "indeterminate"}}},
+                {"id": "21", "name": "Start", "to": {"name": "In Progress", "statusCategory": {"key": "indeterminate"}}, "fields": {}},
             ]
         })
         with patch("httpx.request", return_value=transitions_resp):
@@ -491,7 +526,7 @@ class TestUpdateIssueState:
         client = _make_client()
         transitions_resp = _jira_response(json_data={
             "transitions": [
-                {"id": "31", "name": "Finish", "to": {"name": "DONE", "statusCategory": {"key": "done"}}},
+                {"id": "31", "name": "Finish", "to": {"name": "DONE", "statusCategory": {"key": "done"}}, "fields": {}},
             ]
         })
         post_resp = _jira_response(status_code=204, json_data={})

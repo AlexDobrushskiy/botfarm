@@ -257,8 +257,11 @@ class JiraClient(BugtrackerClient):
         """
         target_status = state_id
 
-        # Discover available transitions
-        data = self._get_json(f"/issue/{issue_id}/transitions")
+        # Discover available transitions (expand fields to check screen config)
+        data = self._get_json(
+            f"/issue/{issue_id}/transitions",
+            params={"expand": "transitions.fields"},
+        )
         transitions = data.get("transitions", [])
 
         matching = None
@@ -279,9 +282,14 @@ class JiraClient(BugtrackerClient):
 
         body: dict = {"transition": {"id": matching["id"]}}
 
-        # Set resolution when transitioning to Done-category status
+        # Set resolution when transitioning to Done-category status, but only
+        # if the resolution field is on the transition screen.  Some Jira
+        # projects (especially team-managed ones) don't expose resolution on
+        # the screen — Jira auto-sets it.  Sending it anyway causes HTTP 400:
+        # "Field 'resolution' cannot be set."
         to_category = matching.get("to", {}).get("statusCategory", {}).get("key", "")
-        if to_category == "done":
+        transition_fields = matching.get("fields", {})
+        if to_category == "done" and "resolution" in transition_fields:
             body["fields"] = {"resolution": {"name": "Done"}}
 
         self._request("POST", f"/issue/{issue_id}/transitions", json=body)
