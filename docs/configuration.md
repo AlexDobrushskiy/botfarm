@@ -82,6 +82,8 @@ bugtracker:
   api_key: ${LINEAR_API_KEY}        # Required. Supports env var expansion
   workspace: my-workspace           # Workspace slug
   poll_interval_seconds: 120        # How often to poll for new tickets (default: 120)
+  include_tags:                     # Only tickets with at least one of these labels are picked up
+    - botfarm                       # (default: [] — all tickets eligible)
   exclude_tags:                     # Tickets with these labels are skipped
     - Human
 

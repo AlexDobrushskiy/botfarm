@@ -420,3 +420,46 @@ class TestCreatePollers:
         )
         with pytest.raises(ValueError, match="Unknown bugtracker type"):
             create_pollers(config)
+
+
+class TestCreatePoller:
+    """Test bugtracker.create_poller single-project factory."""
+
+    def test_linear_passes_include_tags(self):
+        from botfarm.bugtracker import create_poller
+        from botfarm.config import BotfarmConfig, LinearBugtrackerConfig, ProjectConfig
+
+        project = ProjectConfig(
+            name="proj",
+            team="TST",
+            base_dir="~/d",
+            worktree_prefix="s-",
+            slots=[1],
+        )
+        config = BotfarmConfig(
+            projects=[project],
+            bugtracker=LinearBugtrackerConfig(
+                api_key="test-key",
+                include_tags=["botfarm", "Auto"],
+            ),
+        )
+        poller = create_poller(config, project)
+        assert poller._include_tags == {"botfarm", "auto"}
+
+    def test_linear_include_tags_default_empty(self):
+        from botfarm.bugtracker import create_poller
+        from botfarm.config import BotfarmConfig, LinearBugtrackerConfig, ProjectConfig
+
+        project = ProjectConfig(
+            name="proj",
+            team="TST",
+            base_dir="~/d",
+            worktree_prefix="s-",
+            slots=[1],
+        )
+        config = BotfarmConfig(
+            projects=[project],
+            bugtracker=LinearBugtrackerConfig(api_key="test-key"),
+        )
+        poller = create_poller(config, project)
+        assert poller._include_tags == set()

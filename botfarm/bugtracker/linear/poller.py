@@ -51,6 +51,7 @@ def create_pollers(config: BotfarmConfig) -> list[LinearPoller]:
             exclude_tags=config.bugtracker.exclude_tags,
             todo_status=config.bugtracker.todo_status,
             coder_client=coder_client,
+            include_tags=config.bugtracker.include_tags,
         )
         for project in config.projects
     ]

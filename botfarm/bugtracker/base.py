@@ -188,11 +188,13 @@ class BugtrackerPoller(ABC):
         exclude_tags: list[str],
         todo_status: str = "Todo",
         coder_client: BugtrackerClient | None = None,
+        include_tags: list[str] | None = None,
     ) -> None:
         self._client = client
         self._coder_client = coder_client or client
         self._project = project
         self._exclude_tags = set(tag.lower() for tag in exclude_tags)
+        self._include_tags = set(tag.lower() for tag in (include_tags or []))
         self._todo_status = todo_status
         self._state_cache: dict[str, str] | None = None
 
@@ -226,6 +228,13 @@ class BugtrackerPoller(ABC):
             if "failed" in issue_labels:
                 logger.debug(
                     "Skipping %s: has 'Failed' label (defense-in-depth)",
+                    issue.identifier,
+                )
+                continue
+
+            if self._include_tags and not (issue_labels & self._include_tags):
+                logger.debug(
+                    "Skipping %s: no matching include label(s)",
                     issue.identifier,
                 )
                 continue

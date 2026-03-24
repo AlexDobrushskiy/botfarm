@@ -147,6 +147,7 @@ def create_poller(
             exclude_tags=config.bugtracker.exclude_tags,
             todo_status=config.bugtracker.todo_status,
             coder_client=coder_client,
+            include_tags=config.bugtracker.include_tags,
         )
     if bt_type == "jira":
         from botfarm.bugtracker.jira import create_poller as jira_create_poller

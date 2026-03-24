@@ -224,6 +224,7 @@ class BugtrackerConfig:
     workspace: str = ""
     poll_interval_seconds: int = 30
     exclude_tags: list[str] = field(default_factory=lambda: ["Human"])
+    include_tags: list[str] = field(default_factory=list)
     todo_status: str = "Todo"
     in_progress_status: str = "In Progress"
     done_status: str = "Done"
@@ -861,6 +862,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         workspace=bt_data.get("workspace", ""),
         poll_interval_seconds=bt_data.get("poll_interval_seconds", 30),
         exclude_tags=bt_data.get("exclude_tags", ["Human"]),
+        include_tags=bt_data.get("include_tags", []),
         todo_status=str(bt_data.get("todo_status", "Todo")),
         in_progress_status=str(bt_data.get("in_progress_status", "In Progress")),
         done_status=str(bt_data.get("done_status", "Done")),
