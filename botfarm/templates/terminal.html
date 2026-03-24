@@ -1,0 +1,173 @@
+{% extends "base.html" %}
+{% set active_page = "terminal" %}
+{% block title %}Terminal - Botfarm{% endblock %}
+{% block content %}
+
+<h1>Terminal</h1>
+
+<div id="terminal-container"></div>
+<div id="terminal-status" class="terminal-status">Connecting...</div>
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
+<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@0.11.0/lib/addon-web-links.min.js"></script>
+
+<script>
+(function() {
+    var container = document.getElementById("terminal-container");
+    var statusEl = document.getElementById("terminal-status");
+    var term = new Terminal({
+        cursorBlink: true,
+        fontSize: 14,
+        fontFamily: "'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace",
+        theme: {
+            background: "#0d1117",
+            foreground: "#c9d1d9",
+            cursor: "#c9d1d9",
+            selectionBackground: "rgba(56, 139, 253, 0.4)",
+            black: "#484f58",
+            red: "#ff7b72",
+            green: "#3fb950",
+            yellow: "#d29922",
+            blue: "#58a6ff",
+            magenta: "#bc8cff",
+            cyan: "#39c5cf",
+            white: "#b1bac4",
+            brightBlack: "#6e7681",
+            brightRed: "#ffa198",
+            brightGreen: "#56d364",
+            brightYellow: "#e3b341",
+            brightBlue: "#79c0ff",
+            brightMagenta: "#d2a8ff",
+            brightCyan: "#56d4dd",
+            brightWhite: "#f0f6fc"
+        },
+        allowProposedApi: true
+    });
+
+    var fitAddon = new FitAddon.FitAddon();
+    var webLinksAddon = new WebLinksAddon.WebLinksAddon();
+    term.loadAddon(fitAddon);
+    term.loadAddon(webLinksAddon);
+    term.open(container);
+    fitAddon.fit();
+
+    var ws = null;
+    var reconnectDelay = 1000;
+    var maxReconnectDelay = 10000;
+    var reconnectTimer = null;
+    var intentionalClose = false;
+
+    function setStatus(text, cls) {
+        statusEl.textContent = text;
+        statusEl.className = "terminal-status" + (cls ? " terminal-status-" + cls : "");
+    }
+
+    function connect() {
+        var proto = location.protocol === "https:" ? "wss:" : "ws:";
+        ws = new WebSocket(proto + "//" + location.host + "/ws/terminal");
+
+        ws.onopen = function() {
+            setStatus("Connected", "ok");
+            reconnectDelay = 1000;
+            // Send initial size
+            var dims = fitAddon.proposeDimensions();
+            if (dims) {
+                ws.send(JSON.stringify({type: "resize", cols: dims.cols, rows: dims.rows}));
+            }
+        };
+
+        ws.onmessage = function(e) {
+            term.write(e.data);
+        };
+
+        ws.onclose = function(e) {
+            if (intentionalClose) return;
+            if (e.code === 4001) {
+                setStatus("Session timed out (15 min idle)", "error");
+                return;
+            }
+            if (e.code === 4002) {
+                setStatus("Too many terminal sessions — close another tab and retry", "error");
+                return;
+            }
+            if (e.code === 4003) {
+                setStatus("Terminal disabled in configuration", "error");
+                return;
+            }
+            setStatus("Disconnected — reconnecting...", "warn");
+            reconnectTimer = setTimeout(function() {
+                connect();
+            }, reconnectDelay);
+            reconnectDelay = Math.min(reconnectDelay * 2, maxReconnectDelay);
+        };
+
+        ws.onerror = function() {
+            // onclose will handle reconnection
+        };
+    }
+
+    // Send keystrokes to the server
+    term.onData(function(data) {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(data);
+        }
+    });
+
+    // Handle terminal resize
+    var resizeTimeout = null;
+    function sendResize() {
+        fitAddon.fit();
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            var dims = fitAddon.proposeDimensions();
+            if (dims) {
+                ws.send(JSON.stringify({type: "resize", cols: dims.cols, rows: dims.rows}));
+            }
+        }
+    }
+
+    window.addEventListener("resize", function() {
+        clearTimeout(resizeTimeout);
+        resizeTimeout = setTimeout(sendResize, 150);
+    });
+
+    // Clean up on page unload
+    window.addEventListener("beforeunload", function() {
+        intentionalClose = true;
+        if (ws) ws.close();
+    });
+
+    connect();
+})();
+</script>
+
+<style>
+    #terminal-container {
+        background: #0d1117;
+        border: 1px solid #30363d;
+        border-radius: var(--pico-border-radius);
+        padding: 0.5rem;
+        height: calc(100vh - 14rem);
+        min-height: 300px;
+    }
+    #terminal-container .xterm {
+        height: 100%;
+    }
+    .terminal-status {
+        margin-top: 0.5rem;
+        font-size: 0.8rem;
+        color: var(--pico-muted-color);
+    }
+    .terminal-status-ok {
+        color: #3fb950;
+    }
+    .terminal-status-warn {
+        color: #d29922;
+    }
+    .terminal-status-error {
+        color: #ff7b72;
+    }
+</style>
+
+{% endblock %}

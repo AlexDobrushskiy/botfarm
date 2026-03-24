@@ -17,6 +17,7 @@ dashboard:
   enabled: false       # default off
   host: "0.0.0.0"     # bind address
   port: 8420           # HTTP port
+  terminal_enabled: false  # set to true to enable web terminal
 ```
 
 ## Architecture
@@ -51,6 +52,7 @@ Dashboard code lives under `botfarm/dashboard/`:
 | `routes_api.py` | ~700 | Control API + workflow CRUD + cleanup operations |
 | `routes_logs.py` | ~273 | Log viewer pages + SSE streaming |
 | `routes_config.py` | ~554 | Runtime config/identity viewing and editing |
+| `routes_terminal.py` | ~195 | WebSocket terminal (pty fork, resize, idle timeout) |
 | `formatters.py` | ~319 | NDJSON parsing, log line formatting, pipeline state computation |
 
 ## Routes
@@ -72,6 +74,7 @@ Dashboard code lives under `botfarm/dashboard/`:
 | `GET /cleanup` | Bulk ticket archival/deletion interface |
 | `GET /health` | Preflight check results |
 | `GET /task/{id}/logs[/{stage}]` | Log viewer with SSE streaming |
+| `GET /terminal` | Web terminal (xterm.js + WebSocket + pty) |
 
 ### htmx Partials (polled every 5s)
 
@@ -137,6 +140,19 @@ Dashboard code lives under `botfarm/dashboard/`:
 |-------|-------------|
 | `GET /api/logs/{ticket_id}/{stage}/stream` | SSE stream of live log lines |
 | `GET /api/logs/{ticket_id}/{stage}/content` | Download complete log file |
+
+### Web Terminal
+
+| Route | Description |
+|-------|-------------|
+| `WS /ws/terminal` | WebSocket endpoint — spawns a pty-backed shell session |
+
+- Uses `pty.fork()` (Linux only) to create a pseudo-terminal per connection
+- Bridges WebSocket messages to pty I/O via `asyncio.to_thread`
+- Supports terminal resize via JSON messages: `{"type":"resize","cols":N,"rows":N}`
+- Max 2 concurrent sessions; idle timeout after 15 minutes of no input
+- Controlled by `dashboard.terminal_enabled` config flag (default `false` — opt-in)
+- **Security:** no authentication — when exposing the dashboard externally, use a reverse proxy with auth (e.g. Caddy + basicauth, nginx + oauth2-proxy)
 
 ### Config & Identity API
 
@@ -279,10 +295,11 @@ state = read_state(app)     # Loads: slots, dispatch_paused, usage, queue, proje
 
 ## Testing
 
-Dashboard tests are split across 4 files in `tests/`:
+Dashboard tests are split across files in `tests/`:
 - `test_dashboard_index.py` — index page, slots, usage, queue
 - `test_dashboard_history.py` — history/ticket browsing, filtering, pagination
 - `test_dashboard_operations.py` — API endpoints, pause/resume, cleanup, workflow CRUD
 - `test_dashboard_workflow.py` — pipeline editor, stage/loop CRUD, validation
+- `test_dashboard_terminal.py` — terminal page, WebSocket endpoint, session limits, config flag
 
 Tests use FastAPI's `TestClient` with seeded SQLite databases. No Playwright/browser tests.

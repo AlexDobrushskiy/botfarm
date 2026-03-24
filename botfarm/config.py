@@ -62,6 +62,7 @@ dashboard:
   enabled: false
   host: 0.0.0.0
   port: 8420
+  terminal_enabled: false  # set to true to enable web terminal
 
 agents:
   max_review_iterations: 3
@@ -278,6 +279,7 @@ class DashboardConfig:
     enabled: bool = False
     host: str = "0.0.0.0"
     port: int = 8420
+    terminal_enabled: bool = False
 
 
 @dataclass
@@ -930,6 +932,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         enabled=bool(dash_data.get("enabled", False)),
         host=str(dash_data.get("host", "0.0.0.0")),
         port=int(dash_data.get("port", 8420)),
+        terminal_enabled=bool(dash_data.get("terminal_enabled", False)),
     )
 
     agents_data = data.get("agents", {})
