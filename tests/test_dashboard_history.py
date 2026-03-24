@@ -1319,6 +1319,39 @@ class TestConfigViewPage:
         assert "Human" in body
         assert "Manual" in body
 
+    def test_config_view_shows_jira_labels_when_type_is_jira(
+        self, db_file, tmp_path,
+    ):
+        from botfarm.config import JiraBugtrackerConfig
+
+        config = BotfarmConfig(
+            projects=[
+                ProjectConfig(
+                    name="p", team="T",
+                    base_dir="~/p", worktree_prefix="p-", slots=[1],
+                ),
+            ],
+            bugtracker=JiraBugtrackerConfig(
+                api_key="jira-token-abc",
+                url="https://myco.atlassian.net",
+                email="bot@myco.com",
+            ),
+        )
+        config.source_path = str(tmp_path / "config.yaml")
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+        resp = client.get("/config")
+        body = resp.text
+        assert "Jira" in body
+        assert "Jira API Token" in body
+        assert "Jira URL" in body
+        assert "myco.atlassian.net" in body
+        assert "bot@myco.com" in body
+        # Should NOT show "Linear" as a section header
+        assert ">Linear<" not in body
+        # Edit tab button should say "Save Jira Settings"
+        assert "Save Jira Settings" in body
+
     def test_config_view_shows_boolean_values(self, config_client):
         resp = config_client.get("/config")
         body = resp.text

@@ -56,6 +56,7 @@ def _full_config_values(app) -> dict:
             for p in cfg.projects
         ],
         "bugtracker": {
+            "type": cfg.bugtracker.type,
             "api_key": _mask_secret(cfg.bugtracker.api_key),
             "workspace": cfg.bugtracker.workspace,
             "poll_interval_seconds": cfg.bugtracker.poll_interval_seconds,
@@ -67,6 +68,8 @@ def _full_config_values(app) -> dict:
             "comment_on_failure": cfg.bugtracker.comment_on_failure,
             "comment_on_completion": cfg.bugtracker.comment_on_completion,
             "comment_on_limit_pause": cfg.bugtracker.comment_on_limit_pause,
+            "url": getattr(cfg.bugtracker, "url", ""),
+            "email": getattr(cfg.bugtracker, "email", ""),
         },
         "agents": {
             "max_review_iterations": cfg.agents.max_review_iterations,
@@ -117,6 +120,7 @@ def _config_values(app) -> dict:
         return {}
     return {
         "bugtracker": {
+            "type": cfg.bugtracker.type,
             "poll_interval_seconds": cfg.bugtracker.poll_interval_seconds,
             "comment_on_failure": cfg.bugtracker.comment_on_failure,
             "comment_on_completion": cfg.bugtracker.comment_on_completion,
