@@ -151,8 +151,7 @@ def partial_setup_status(request: Request):
         setup_complete = all(s.done for s in steps)
 
     templates = request.app.state.templates
-    return templates.TemplateResponse("partials/setup_status.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "partials/setup_status.html", {
         "steps": steps,
         "setup_complete": setup_complete,
     })
@@ -258,8 +257,7 @@ def setup_page(request: Request):
     if config is not None:
         bt_type = config.bugtracker.type or ""
 
-    return templates.TemplateResponse("setup.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "setup.html", {
         "steps": steps,
         "setup_complete": setup_complete,
         "section_done": section_done,
@@ -307,8 +305,7 @@ def partial_setup_preflight(request: Request):
     app = request.app
     templates = app.state.templates
     data = _get_preflight_data(app)
-    return templates.TemplateResponse("partials/setup_preflight.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "partials/setup_preflight.html", {
         **data,
     })
 
@@ -544,7 +541,6 @@ def partial_setup_credentials(request: Request):
     """Render credential status cards for the setup wizard."""
     cfg = request.app.state.botfarm_config
     templates = request.app.state.templates
-    return templates.TemplateResponse("partials/setup_credentials.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "partials/setup_credentials.html", {
         **_build_credentials_context(cfg),
     })

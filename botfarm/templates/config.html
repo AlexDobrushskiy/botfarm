@@ -176,13 +176,21 @@
     {% endfor %}
 </section>
 
-{# --- Linear --- #}
+{# --- Bugtracker --- #}
 <section class="config-section">
-    <h2>Linear</h2>
+    <h2>{{ full_config_values.bugtracker.type | title }}</h2>
     <figure>
     <table>
         <tbody>
-            <tr><td>API key</td><td><code>{{ full_config_values.bugtracker.api_key }}</code></td></tr>
+            <tr><td>Type</td><td>{{ full_config_values.bugtracker.type }}</td></tr>
+            <tr>
+                <td>{{ "Jira API Token" if full_config_values.bugtracker.type == "jira" else "Linear API Key" }}</td>
+                <td><code>{{ full_config_values.bugtracker.api_key }}</code></td>
+            </tr>
+            {% if full_config_values.bugtracker.type == "jira" %}
+            <tr><td>Jira URL</td><td><code>{{ full_config_values.bugtracker.url }}</code></td></tr>
+            <tr><td>Email</td><td>{{ full_config_values.bugtracker.email }}</td></tr>
+            {% endif %}
             <tr><td>Workspace</td><td>{{ full_config_values.bugtracker.workspace }}</td></tr>
             <tr><td>Poll interval</td><td>{{ full_config_values.bugtracker.poll_interval_seconds }}s</td></tr>
             <tr>
@@ -348,9 +356,9 @@
 
 <p>These settings take effect immediately without restarting the supervisor.</p>
 
-{# --- Linear section --- #}
+{# --- Bugtracker section --- #}
 <section class="config-section">
-    <h2>Linear</h2>
+    <h2>{{ config_values.bugtracker.type | title }}</h2>
     <div id="feedback-bugtracker"></div>
     <form onsubmit="return saveSection(event, 'bugtracker')">
         <label for="bugtracker-poll_interval_seconds">
@@ -375,7 +383,7 @@
                 Comment on limit pause
             </label>
         </fieldset>
-        <button type="submit">Save Linear Settings</button>
+        <button type="submit">Save {{ config_values.bugtracker.type | title }} Settings</button>
     </form>
 </section>
 

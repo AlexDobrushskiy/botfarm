@@ -143,8 +143,7 @@ def log_viewer_page(request: Request, task_id: str):
     available = _available_stages_with_logs(app, ticket_id)
     state = read_state(app)
     if not available:
-        return templates.TemplateResponse("log_viewer.html", {
-            "request": request,
+        return templates.TemplateResponse(request, "log_viewer.html", {
             "task": task,
             "ticket_id": ticket_id,
             "stages_with_logs": [],
@@ -172,8 +171,7 @@ def log_viewer_page(request: Request, task_id: str):
         if log_file:
             log_content = _read_log_file(log_file) or None
 
-    return templates.TemplateResponse("log_viewer.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "log_viewer.html", {
         "task": task,
         "ticket_id": ticket_id,
         "stages_with_logs": available,
@@ -203,8 +201,7 @@ def log_viewer_stage_page(request: Request, task_id: str, stage: str):
             log_content = _read_log_file(log_file) or None
 
     state = read_state(app)
-    return templates.TemplateResponse("log_viewer.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "log_viewer.html", {
         "task": task,
         "ticket_id": ticket_id,
         "stages_with_logs": available,
