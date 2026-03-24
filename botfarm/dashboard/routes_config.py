@@ -175,8 +175,7 @@ def config_page(request: Request):
     cfg = app.state.botfarm_config
     enabled = cfg is not None
     state = read_state(app)
-    return templates.TemplateResponse("config.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "config.html", {
         "config_enabled": enabled,
         "config_values": _config_values(app),
         "full_config_values": _full_config_values(app),
@@ -421,8 +420,7 @@ def identities_page(request: Request):
     app = request.app
     templates = request.app.state.templates
     state = read_state(app)
-    return templates.TemplateResponse("identities.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "identities.html", {
         "identity": _identity_status(app),
         "supervisor": supervisor_status(app, state),
         "pause_state": manual_pause_state(state),

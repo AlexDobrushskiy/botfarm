@@ -58,8 +58,7 @@ def partial_slots(request: Request):
     # Collect project names from config for the "Add Slot" buttons
     cfg = app.state.botfarm_config
     projects = [p.name for p in cfg.projects] if cfg else []
-    return templates.TemplateResponse("partials/slots.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "partials/slots.html", {
         "slots": slots,
         "dispatch_paused": dispatch_paused,
         "dispatch_pause_reason": dispatch_pause_reason,
@@ -77,8 +76,7 @@ def partial_supervisor_badge(request: Request):
     app = request.app
     templates = request.app.state.templates
     state = read_state(app)
-    return templates.TemplateResponse("partials/supervisor_badge.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "partials/supervisor_badge.html", {
         "supervisor": supervisor_status(app, state),
         "pause_state": manual_pause_state(state),
     })
@@ -90,8 +88,7 @@ def partial_start_paused_banner(request: Request):
     templates = app.state.templates
     state = read_state(app)
     pause_state = _apply_resume_transition(app.state, manual_pause_state(state))
-    return templates.TemplateResponse("partials/start_paused_banner.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "partials/start_paused_banner.html", {
         "pause_state": pause_state,
         "has_callbacks": app.state.on_pause is not None,
     })
@@ -108,8 +105,7 @@ def partial_usage(request: Request):
     dispatch_pause_reason = state.get("dispatch_pause_reason")
     last_usage_check = snapshot_at or state.get("last_usage_check")
     stale = usage_is_stale(last_usage_check)
-    return templates.TemplateResponse("partials/usage.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "partials/usage.html", {
         "usage": usage,
         "dispatch_paused": dispatch_paused,
         "dispatch_pause_reason": dispatch_pause_reason,
@@ -123,8 +119,7 @@ def partial_usage(request: Request):
 def partial_tracker_capacity(request: Request):
     app = request.app
     templates = request.app.state.templates
-    return templates.TemplateResponse("partials/tracker_capacity.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "partials/tracker_capacity.html", {
         "capacity": get_capacity_data(app),
         "elapsed": elapsed,
     })
@@ -137,8 +132,7 @@ def partial_queue(request: Request):
     state = read_state(app)
     queue = state.get("queue")
     project_pauses = state.get("project_pauses", {})
-    return templates.TemplateResponse("partials/queue.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "partials/queue.html", {
         "queue": queue,
         "project_pauses": project_pauses,
         "linear_url": lambda tid: linear_url(app, tid),
@@ -152,8 +146,8 @@ def partial_history(request: Request):
     from .routes_main import _history_context
 
     templates = request.app.state.templates
-    ctx = _history_context(request)
-    return templates.TemplateResponse("partials/history.html", ctx)
+    req, ctx = _history_context(request)
+    return templates.TemplateResponse(req, "partials/history.html", ctx)
 
 
 @router.get("/partials/tickets", response_class=HTMLResponse)
@@ -161,8 +155,8 @@ def partial_tickets(request: Request):
     from .routes_main import _tickets_context
 
     templates = request.app.state.templates
-    ctx = _tickets_context(request)
-    return templates.TemplateResponse("partials/tickets.html", ctx)
+    req, ctx = _tickets_context(request)
+    return templates.TemplateResponse(req, "partials/tickets.html", ctx)
 
 
 @router.get("/partials/supervisor-controls", response_class=HTMLResponse)
@@ -174,8 +168,7 @@ def partial_supervisor_controls(request: Request):
     busy_slots = [
         s for s in state.get("slots", []) if s["status"] == "busy"
     ] if pause_state.startswith("pausing") else []
-    return templates.TemplateResponse("partials/supervisor_controls.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "partials/supervisor_controls.html", {
         "pause_state": pause_state,
         "busy_slots": busy_slots,
         "supervisor": supervisor_status(app, state),
@@ -199,8 +192,7 @@ def partial_update_banner(request: Request):
 
     if update_error:
         count = check_commits_behind(app)
-        return templates.TemplateResponse("partials/update_banner.html", {
-            "request": request,
+        return templates.TemplateResponse(request, "partials/update_banner.html", {
             "update_status": "failed",
             "update_error": update_error,
             "commits_behind": count,
@@ -208,15 +200,13 @@ def partial_update_banner(request: Request):
         })
 
     if app.state.update_in_progress:
-        return templates.TemplateResponse("partials/update_banner.html", {
-            "request": request,
+        return templates.TemplateResponse(request, "partials/update_banner.html", {
             "update_status": "updating",
             "commits_behind": 0,
             "auto_restart": app.state.auto_restart,
         })
     count = check_commits_behind(app)
-    return templates.TemplateResponse("partials/update_banner.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "partials/update_banner.html", {
         "update_status": "idle",
         "commits_behind": count,
         "auto_restart": app.state.auto_restart,
@@ -229,8 +219,7 @@ def partial_preflight_banner(request: Request):
 
     templates = request.app.state.templates
     data = _get_preflight_data(request.app)
-    return templates.TemplateResponse("partials/preflight_banner.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "partials/preflight_banner.html", {
         **data,
     })
 
@@ -241,8 +230,7 @@ def partial_health_checks(request: Request):
 
     templates = request.app.state.templates
     data = _get_preflight_data(request.app)
-    return templates.TemplateResponse("partials/health_checks.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "partials/health_checks.html", {
         **data,
     })
 
@@ -253,8 +241,7 @@ def partial_devserver_status(request: Request):
     templates = request.app.state.templates
     mgr = getattr(app.state, "devserver_manager", None)
     devservers = collect_devserver_statuses(mgr) if mgr is not None else []
-    return templates.TemplateResponse("partials/devserver_status.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "partials/devserver_status.html", {
         "devservers": devservers,
     })
 
@@ -265,7 +252,6 @@ def partial_health_badge(request: Request):
 
     templates = request.app.state.templates
     data = _get_preflight_data(request.app)
-    return templates.TemplateResponse("partials/health_badge.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "partials/health_badge.html", {
         **data,
     })

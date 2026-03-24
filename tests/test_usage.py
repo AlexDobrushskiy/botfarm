@@ -523,7 +523,10 @@ class TestUsagePollerErrors:
         with patch.object(p, "_fetch", side_effect=error):
             for _ in range(20):
                 p._last_force_poll = 0
-                p._last_poll = 0
+                # Use a far-past value so the 401 backoff check
+                # (now - _last_poll < effective_poll_interval) never
+                # suppresses the poll, regardless of system uptime.
+                p._last_poll = -MAX_401_BACKOFF_INTERVAL
                 p.force_poll(conn)
 
         assert p._active_poll_interval == MAX_401_BACKOFF_INTERVAL

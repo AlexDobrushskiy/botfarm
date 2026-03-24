@@ -303,8 +303,7 @@ def health_page(request: Request):
     templates = app.state.templates
     data = _get_preflight_data(app)
     state = read_state(app)
-    return templates.TemplateResponse("health.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "health.html", {
         "active_page": "health",
         "supervisor": supervisor_status(app, state),
         "pause_state": manual_pause_state(state),
@@ -928,8 +927,7 @@ def cleanup_page(request: Request):
     if cfg and cfg.bugtracker.api_key:
         has_config = True
     state = read_state(app)
-    return templates.TemplateResponse("cleanup.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "cleanup.html", {
         "batches": batches,
         "cooldown_seconds": cooldown,
         "has_config": has_config,
