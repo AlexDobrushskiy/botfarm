@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -4495,6 +4496,7 @@ class TestAuthFailureRetry:
             on_context_fill=None,
             extra_usage=False,
             codex_kwargs={},
+            wall_start=time.monotonic(),
         )
         # Retry was attempted — _execute_stage was called
         assert mock_exec.call_count == 1
@@ -4526,6 +4528,7 @@ class TestAuthFailureRetry:
             on_context_fill=None,
             extra_usage=False,
             codex_kwargs={},
+            wall_start=time.monotonic(),
         )
         assert result is failed_result
         mock_exec.assert_not_called()
@@ -4553,6 +4556,7 @@ class TestAuthFailureRetry:
             on_context_fill=None,
             extra_usage=False,
             codex_kwargs={},
+            wall_start=time.monotonic(),
         )
         assert result is failed_result
         mock_exec.assert_not_called()
@@ -4580,6 +4584,7 @@ class TestAuthFailureRetry:
             on_context_fill=None,
             extra_usage=False,
             codex_kwargs={},
+            wall_start=time.monotonic(),
         )
         assert result is failed_result
         assert sr_id is None
@@ -4587,10 +4592,10 @@ class TestAuthFailureRetry:
     @patch("botfarm.worker._execute_stage")
     @patch("botfarm.credentials.CredentialManager")
     @patch("botfarm.supervisor_workers._classify_failure", return_value="auth_failure")
-    def test_old_stage_run_deleted_on_retry(
+    def test_old_stage_run_preserved_on_retry(
         self, mock_classify, mock_cm_cls, mock_exec, conn, task_id, tmp_path,
     ):
-        """The placeholder stage_run from the first attempt is deleted."""
+        """The original stage_run is finalized (not deleted) and a new one created for retry."""
         from botfarm.db import get_stage_runs
         ctx = self._make_ctx(conn, task_id, tmp_path)
         failed_result = self._auth_failure_result()
@@ -4612,13 +4617,15 @@ class TestAuthFailureRetry:
             on_context_fill=None,
             extra_usage=False,
             codex_kwargs={},
+            wall_start=time.monotonic(),
         )
-        # Old row should be gone, new one created
+        # Both old (finalized with failure metrics) and new rows should exist
         runs = get_stage_runs(conn, task_id=task_id)
         run_ids = [r["id"] for r in runs]
-        assert old_sr_id not in run_ids
+        assert old_sr_id in run_ids
         assert new_sr_id is not None
         assert new_sr_id in run_ids
+        assert len(runs) == 2
 
     @patch("botfarm.worker._execute_stage")
     def test_run_and_record_retries_on_auth_failure(

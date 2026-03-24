@@ -1656,6 +1656,7 @@ class _PipelineContext:
                 on_context_fill=on_context_fill,
                 extra_usage=extra_usage,
                 codex_kwargs=codex_kwargs,
+                wall_start=wall_start,
             )
 
         # Record Codex review as a separate stage run + events
@@ -1724,6 +1725,7 @@ class _PipelineContext:
         on_context_fill: ContextFillCallback | None,
         extra_usage: bool,
         codex_kwargs: dict,
+        wall_start: float,
     ) -> tuple[StageResult, int | None]:
         """If *result* is an auth failure, refresh the token and retry once.
 
@@ -1759,20 +1761,30 @@ class _PipelineContext:
 
         logger.info("Token refreshed — retrying stage '%s' for %s", stage, self.ticket_id)
 
-        # Clean up the placeholder stage_run from the failed attempt
+        # Finalize the original stage_run with the auth failure result
+        # so that any turns/tokens/cost from the failed attempt are preserved.
         if stage_run_id is not None:
-            delete_stage_run(self.conn, stage_run_id)
-            self.conn.commit()
+            _record_stage_run(
+                self.conn,
+                task_id=self.task_id,
+                stage=stage,
+                result=result,
+                wall_elapsed=time.monotonic() - wall_start,
+                iteration=iteration,
+                stage_run_id=stage_run_id,
+                log_file_path=str(log_file) if log_file else None,
+                on_extra_usage=extra_usage,
+            )
 
         # Create a fresh placeholder for the retry (always an agent stage
         # since _maybe_retry_on_auth_failure is only called when uses_agent).
-        retry_on_context_fill: ContextFillCallback | None = None
+        retry_log_file = _make_stage_log_path(self.log_dir, f"{stage}_auth_retry", iteration)
         new_stage_run_id = insert_stage_run(
             self.conn,
             task_id=self.task_id,
             stage=stage,
             iteration=iteration,
-            log_file_path=str(log_file) if log_file else None,
+            log_file_path=str(retry_log_file) if retry_log_file else None,
             on_extra_usage=extra_usage,
         )
         self.conn.commit()
@@ -1782,8 +1794,6 @@ class _PipelineContext:
 
         def retry_on_context_fill(turn: int, fill_pct: float) -> None:
             update_stage_run_context_fill(_conn, _sr_id, fill_pct)
-
-        retry_log_file = _make_stage_log_path(self.log_dir, f"{stage}_auth_retry", iteration)
 
         try:
             retry_result = _execute_stage(
@@ -1810,9 +1820,9 @@ class _PipelineContext:
             logger.error("Auth retry for stage '%s' raised: %s", stage, exc)
             if new_stage_run_id is not None:
                 delete_stage_run(self.conn, new_stage_run_id)
-            # Original stage_run was deleted above; return None so
-            # _finish_stage inserts a fresh row for the original failure.
-            return result, None
+            # Original stage_run already finalized above; return it so
+            # _finish_stage updates it (harmless no-op) and records failure.
+            return result, stage_run_id
 
         return retry_result, new_stage_run_id
 
