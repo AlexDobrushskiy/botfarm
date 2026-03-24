@@ -102,6 +102,7 @@ class Notifier:
         "env_missing_package": "Environment: missing package/module",
         "env_missing_service": "Environment: service unavailable",
         "env_missing_config": "Environment: missing configuration",
+        "auth_failure": "Authentication: Claude subprocess auth error",
     }
 
     def notify_task_failed(
@@ -121,7 +122,12 @@ class Notifier:
             lines = [f"*Task failed:* {ticket_id} — {title}"]
         if failure_reason:
             lines.append(f"Reason: {failure_reason[:200]}")
-        if env_label:
+        if failure_category == "auth_failure":
+            lines.append(
+                "_Claude subprocess authentication failed — "
+                "check OAuth token expiry and refresh credentials._"
+            )
+        elif env_label:
             lines.append("_This looks like an environment issue — no auto-retry._")
         if review_summary:
             lines.append(review_summary)

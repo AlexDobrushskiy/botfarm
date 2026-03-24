@@ -533,6 +533,7 @@ def _classify_failure(failure_reason: str | None) -> str:
     - ``env_missing_package``: Missing Python/Node packages
     - ``env_missing_service``: Database or service connection errors
     - ``env_missing_config``: Missing environment variables or config files
+    - ``auth_failure``: Authentication / token errors (401, expired token)
     - ``code_failure``: Default for non-environment failures
     """
     reason = (failure_reason or "").lower()
@@ -581,6 +582,15 @@ def _classify_failure(failure_reason: str | None) -> str:
     if ("environment variable" in reason or "env var" in reason) and "not set" in reason:
         return "env_missing_config"
 
+    # Authentication errors (Claude subprocess 401 / expired token)
+    auth_indicators = [
+        "authentication_error",
+        "invalid authentication",
+        "401",
+    ]
+    if any(indicator in reason for indicator in auth_indicators):
+        return "auth_failure"
+
     return "code_failure"
 
 
@@ -593,6 +603,7 @@ FAILURE_CATEGORIES = (
     "env_missing_config",
     "limit_hit",
     "timeout",
+    "auth_failure",
 )
 
 

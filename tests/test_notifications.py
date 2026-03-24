@@ -549,6 +549,19 @@ class TestNotificationWithoutCodex:
         payload = notifier._client.post.call_args[1]["json"]
         assert "Environment:" not in payload["text"]
 
+    def test_task_failed_auth_failure_label_and_hint(self, notifier):
+        notifier.notify_task_failed(
+            ticket_id="SMA-20",
+            title="Auth issue",
+            failure_reason="HTTP 401 Unauthorized",
+            failure_category="auth_failure",
+        )
+        payload = notifier._client.post.call_args[1]["json"]
+        text = payload["text"]
+        assert "Authentication: Claude subprocess auth error" in text
+        assert "check oauth token" in text.lower()
+        assert "no auto-retry" not in text
+
     def test_task_completed_none_review_summary_unchanged(self, notifier):
         notifier.notify_task_completed(
             ticket_id="SMA-1",

@@ -4353,3 +4353,77 @@ class TestMcpConfigFlag:
 
         cmd = mock_popen.call_args[0][0]
         assert "--mcp-config" not in cmd
+
+
+# ---------------------------------------------------------------------------
+# Pre-stage token freshness check
+# ---------------------------------------------------------------------------
+
+
+class TestPreStageTokenCheck:
+    @patch("botfarm.worker._execute_stage")
+    @patch("botfarm.credentials.CredentialManager")
+    def test_expired_token_triggers_refresh(self, mock_cm_cls, mock_exec, conn, task_id, tmp_path):
+        """When OAuth token is expired, refresh_token() is called before stage."""
+        mock_cm = MagicMock()
+        mock_cm.is_token_expired.return_value = True
+        mock_cm_cls.return_value = mock_cm
+
+        mock_exec.side_effect = [
+            _mock_stage_result("implement", pr_url=PR_URL),
+            _mock_stage_result("review", review_approved=True),
+            _mock_stage_result("pr_checks"),
+            _mock_stage_result("merge"),
+        ]
+        run_pipeline(
+            ticket_id="SMA-99",
+            task_id=task_id,
+            cwd=tmp_path,
+            conn=conn,
+            max_review_iterations=3,
+        )
+        mock_cm.is_token_expired.assert_called()
+        mock_cm.refresh_token.assert_called()
+
+    @patch("botfarm.worker._execute_stage")
+    @patch("botfarm.credentials.CredentialManager")
+    def test_valid_token_skips_refresh(self, mock_cm_cls, mock_exec, conn, task_id, tmp_path):
+        """When OAuth token is valid, refresh_token() is NOT called."""
+        mock_cm = MagicMock()
+        mock_cm.is_token_expired.return_value = False
+        mock_cm_cls.return_value = mock_cm
+
+        mock_exec.side_effect = [
+            _mock_stage_result("implement", pr_url=PR_URL),
+            _mock_stage_result("review", review_approved=True),
+            _mock_stage_result("pr_checks"),
+            _mock_stage_result("merge"),
+        ]
+        run_pipeline(
+            ticket_id="SMA-99",
+            task_id=task_id,
+            cwd=tmp_path,
+            conn=conn,
+            max_review_iterations=3,
+        )
+        mock_cm.is_token_expired.assert_called()
+        mock_cm.refresh_token.assert_not_called()
+
+    @patch("botfarm.worker._execute_stage")
+    @patch("botfarm.credentials.CredentialManager", side_effect=Exception("no credentials"))
+    def test_credential_error_does_not_break_pipeline(self, mock_cm_cls, mock_exec, conn, task_id, tmp_path):
+        """If CredentialManager fails, pipeline continues without error."""
+        mock_exec.side_effect = [
+            _mock_stage_result("implement", pr_url=PR_URL),
+            _mock_stage_result("review", review_approved=True),
+            _mock_stage_result("pr_checks"),
+            _mock_stage_result("merge"),
+        ]
+        result = run_pipeline(
+            ticket_id="SMA-99",
+            task_id=task_id,
+            cwd=tmp_path,
+            conn=conn,
+            max_review_iterations=3,
+        )
+        assert result.success is True
