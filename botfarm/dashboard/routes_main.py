@@ -296,8 +296,7 @@ def _history_context(request: Request) -> dict:
             conn.close()
     page = max(1, min(hp["page"], total_pages))
     state = read_state(app)
-    return {
-        "request": request,
+    return request, {
         "tasks": tasks,
         "total": total,
         "page": page,
@@ -406,8 +405,7 @@ def _tickets_context(request: Request) -> dict:
             conn.close()
     page = max(1, min(tp["page"], total_pages))
     state = read_state(app)
-    return {
-        "request": request,
+    return request, {
         "tickets": tickets,
         "total": total,
         "page": page,
@@ -672,8 +670,7 @@ def index(request: Request):
     # Build dev server status for initial render
     mgr = getattr(app.state, "devserver_manager", None)
     devservers = collect_devserver_statuses(mgr) if mgr is not None else []
-    return templates.TemplateResponse("index.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "index.html", {
         "slots": slots,
         "dispatch_paused": dispatch_paused,
         "dispatch_pause_reason": dispatch_pause_reason,
@@ -697,15 +694,15 @@ def index(request: Request):
 @router.get("/history", response_class=HTMLResponse)
 def history_page(request: Request):
     templates = request.app.state.templates
-    ctx = _history_context(request)
-    return templates.TemplateResponse("history.html", ctx)
+    req, ctx = _history_context(request)
+    return templates.TemplateResponse(req, "history.html", ctx)
 
 
 @router.get("/tickets", response_class=HTMLResponse)
 def tickets_page(request: Request):
     templates = request.app.state.templates
-    ctx = _tickets_context(request)
-    return templates.TemplateResponse("tickets.html", ctx)
+    req, ctx = _tickets_context(request)
+    return templates.TemplateResponse(req, "tickets.html", ctx)
 
 
 @router.get("/tickets/{ticket_id}", response_class=HTMLResponse)
@@ -737,8 +734,7 @@ def ticket_detail_page(request: Request, ticket_id: str):
         finally:
             conn.close()
     state = read_state(app)
-    return templates.TemplateResponse("ticket_detail.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "ticket_detail.html", {
         "ticket": ticket,
         "task": task,
         "linear_url": lambda tid: linear_url(app, tid),
@@ -788,8 +784,7 @@ def task_detail_page(request: Request, task_id: str):
             conn.close()
     task_totals = _compute_task_totals(stages)
     state = read_state(app)
-    return templates.TemplateResponse("task_detail.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "task_detail.html", {
         "task": task,
         "stages": stages,
         "events": events,
@@ -845,8 +840,7 @@ def usage_page(request: Request):
                 pass
         finally:
             conn.close()
-    return templates.TemplateResponse("usage.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "usage.html", {
         "usage": usage,
         "snapshots": snapshots,
         "codex_snapshots": codex_snapshots,
@@ -879,8 +873,7 @@ def metrics_page(request: Request):
         finally:
             conn.close()
     state = read_state(app)
-    return templates.TemplateResponse("metrics.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "metrics.html", {
         "metrics": metrics,
         "projects": projects,
         "filter_project": filter_project,
@@ -1016,8 +1009,7 @@ def workflow_page(request: Request):
         finally:
             conn.close()
     state = read_state(app)
-    return templates.TemplateResponse("workflow.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "workflow.html", {
         "pipelines": pipelines_data,
         "active_page": "workflow",
         "supervisor": supervisor_status(app, state),

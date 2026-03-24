@@ -4,7 +4,7 @@ rich
 pyyaml
 httpx
 aiosqlite
-fastapi
+fastapi>=0.135.0
 uvicorn
 jinja2
 starlette<1.0.0
