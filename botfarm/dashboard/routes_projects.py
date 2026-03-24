@@ -385,8 +385,7 @@ def add_project_page(request: Request):
     app = request.app
     templates = app.state.templates
     state = read_state(app)
-    return templates.TemplateResponse("add_project.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "add_project.html", {
         "active_page": "add_project",
         "supervisor": supervisor_status(app, state),
         "pause_state": manual_pause_state(state),
