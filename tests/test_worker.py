@@ -4427,3 +4427,217 @@ class TestPreStageTokenCheck:
             max_review_iterations=3,
         )
         assert result.success is True
+
+
+# ---------------------------------------------------------------------------
+# Auth-failure retry tests
+# ---------------------------------------------------------------------------
+
+
+class TestAuthFailureRetry:
+    """Tests for _PipelineContext._maybe_retry_on_auth_failure."""
+
+    def _make_ctx(self, conn, task_id, tmp_path):
+        return _PipelineContext(
+            ticket_id="SMA-99",
+            ticket_labels=[],
+            task_id=task_id,
+            cwd=str(tmp_path),
+            conn=conn,
+            turns_cfg={},
+            pr_checks_timeout=600,
+            pipeline=PipelineResult(
+                ticket_id="SMA-99", success=False, stages_completed=[],
+            ),
+            log_dir=tmp_path / "logs",
+        )
+
+    def _auth_failure_result(self, stage="implement"):
+        """Build a failed StageResult with an auth error message."""
+        from botfarm.agent import AgentResult
+        return StageResult(
+            stage=stage,
+            success=False,
+            agent_result=AgentResult(
+                session_id="sess-fail",
+                num_turns=1,
+                duration_seconds=1.0,
+                result_text="",
+                extra={},
+            ),
+            error='Failed to authenticate. API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"Invalid authentication credentials"}}',
+        )
+
+    @patch("botfarm.worker._execute_stage")
+    @patch("botfarm.credentials.CredentialManager")
+    @patch("botfarm.supervisor_workers._classify_failure", return_value="auth_failure")
+    def test_retry_succeeds_after_token_refresh(
+        self, mock_classify, mock_cm_cls, mock_exec, conn, task_id, tmp_path,
+    ):
+        """When auth fails and token refresh works, retry result is used."""
+        from botfarm.db import get_events
+        ctx = self._make_ctx(conn, task_id, tmp_path)
+
+        failed_result = self._auth_failure_result()
+        success_result = _mock_stage_result("implement", pr_url=PR_URL)
+        mock_exec.return_value = success_result
+
+        mock_cm_cls.return_value.refresh_token.return_value = "new-token"
+
+        result, sr_id = ctx._maybe_retry_on_auth_failure(
+            failed_result,
+            stage="implement",
+            pr_url=None,
+            iteration=1,
+            log_file=None,
+            stage_run_id=None,
+            stage_tpl=None,
+            on_context_fill=None,
+            extra_usage=False,
+            codex_kwargs={},
+        )
+        # Retry was attempted — _execute_stage was called
+        assert mock_exec.call_count == 1
+        mock_cm_cls.return_value.refresh_token.assert_called_once()
+        # auth_retry event recorded
+        events = get_events(conn, task_id=task_id, event_type="auth_retry")
+        assert len(events) == 1
+        assert "implement" in events[0]["detail"]
+
+    @patch("botfarm.worker._execute_stage")
+    @patch("botfarm.credentials.CredentialManager")
+    @patch("botfarm.supervisor_workers._classify_failure", return_value="code_failure")
+    def test_no_retry_for_non_auth_failure(
+        self, mock_classify, mock_cm_cls, mock_exec, conn, task_id, tmp_path,
+    ):
+        """Non-auth failures are returned as-is, no retry attempted."""
+        ctx = self._make_ctx(conn, task_id, tmp_path)
+        failed_result = StageResult(
+            stage="implement", success=False, error="some code error",
+        )
+        result, sr_id = ctx._maybe_retry_on_auth_failure(
+            failed_result,
+            stage="implement",
+            pr_url=None,
+            iteration=1,
+            log_file=None,
+            stage_run_id=None,
+            stage_tpl=None,
+            on_context_fill=None,
+            extra_usage=False,
+            codex_kwargs={},
+        )
+        assert result is failed_result
+        mock_exec.assert_not_called()
+        mock_cm_cls.assert_not_called()
+
+    @patch("botfarm.worker._execute_stage")
+    @patch("botfarm.credentials.CredentialManager")
+    @patch("botfarm.supervisor_workers._classify_failure", return_value="auth_failure")
+    def test_no_retry_when_refresh_returns_none(
+        self, mock_classify, mock_cm_cls, mock_exec, conn, task_id, tmp_path,
+    ):
+        """If refresh_token() returns None, no retry is attempted."""
+        ctx = self._make_ctx(conn, task_id, tmp_path)
+        failed_result = self._auth_failure_result()
+        mock_cm_cls.return_value.refresh_token.return_value = None
+
+        result, sr_id = ctx._maybe_retry_on_auth_failure(
+            failed_result,
+            stage="implement",
+            pr_url=None,
+            iteration=1,
+            log_file=None,
+            stage_run_id=None,
+            stage_tpl=None,
+            on_context_fill=None,
+            extra_usage=False,
+            codex_kwargs={},
+        )
+        assert result is failed_result
+        mock_exec.assert_not_called()
+
+    @patch("botfarm.worker._execute_stage")
+    @patch("botfarm.credentials.CredentialManager")
+    @patch("botfarm.supervisor_workers._classify_failure", return_value="auth_failure")
+    def test_retry_exception_returns_original_result(
+        self, mock_classify, mock_cm_cls, mock_exec, conn, task_id, tmp_path,
+    ):
+        """If the retry raises an exception, the original failure is returned."""
+        ctx = self._make_ctx(conn, task_id, tmp_path)
+        failed_result = self._auth_failure_result()
+        mock_cm_cls.return_value.refresh_token.return_value = "new-token"
+        mock_exec.side_effect = RuntimeError("retry boom")
+
+        result, sr_id = ctx._maybe_retry_on_auth_failure(
+            failed_result,
+            stage="implement",
+            pr_url=None,
+            iteration=1,
+            log_file=None,
+            stage_run_id=None,
+            stage_tpl=None,
+            on_context_fill=None,
+            extra_usage=False,
+            codex_kwargs={},
+        )
+        assert result is failed_result
+        assert sr_id is None
+
+    @patch("botfarm.worker._execute_stage")
+    @patch("botfarm.credentials.CredentialManager")
+    @patch("botfarm.supervisor_workers._classify_failure", return_value="auth_failure")
+    def test_old_stage_run_deleted_on_retry(
+        self, mock_classify, mock_cm_cls, mock_exec, conn, task_id, tmp_path,
+    ):
+        """The placeholder stage_run from the first attempt is deleted."""
+        from botfarm.db import get_stage_runs
+        ctx = self._make_ctx(conn, task_id, tmp_path)
+        failed_result = self._auth_failure_result()
+        mock_cm_cls.return_value.refresh_token.return_value = "new-token"
+        mock_exec.return_value = _mock_stage_result("implement", pr_url=PR_URL)
+
+        # Create an initial placeholder stage_run
+        old_sr_id = insert_stage_run(conn, task_id=task_id, stage="implement", iteration=1)
+        conn.commit()
+
+        result, new_sr_id = ctx._maybe_retry_on_auth_failure(
+            failed_result,
+            stage="implement",
+            pr_url=None,
+            iteration=1,
+            log_file=None,
+            stage_run_id=old_sr_id,
+            stage_tpl=None,
+            on_context_fill=None,
+            extra_usage=False,
+            codex_kwargs={},
+        )
+        # Old row should be gone, new one created
+        runs = get_stage_runs(conn, task_id=task_id)
+        run_ids = [r["id"] for r in runs]
+        assert old_sr_id not in run_ids
+        assert new_sr_id is not None
+        assert new_sr_id in run_ids
+
+    @patch("botfarm.worker._execute_stage")
+    def test_run_and_record_retries_on_auth_failure(
+        self, mock_exec, conn, task_id, tmp_path,
+    ):
+        """End-to-end: run_and_record detects auth failure and retries."""
+        ctx = self._make_ctx(conn, task_id, tmp_path)
+        auth_fail = self._auth_failure_result()
+        success = _mock_stage_result("implement", pr_url=PR_URL)
+        mock_exec.side_effect = [auth_fail, success]
+
+        with (
+            patch("botfarm.credentials.CredentialManager") as mock_cm_cls,
+            patch("botfarm.worker.update_slot_stage"),
+        ):
+            mock_cm_cls.return_value.is_token_expired.return_value = False
+            mock_cm_cls.return_value.refresh_token.return_value = "new-token"
+            result = ctx.run_and_record("implement", pr_url=None)
+
+        assert result is not None
+        assert result.success is True
+        assert mock_exec.call_count == 2

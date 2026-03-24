@@ -1642,6 +1642,22 @@ class _PipelineContext:
             _record_failure(self.conn, self.task_id, self.pipeline)
             return None
 
+        # Auth-failure retry: if the stage failed with an authentication
+        # error, refresh the OAuth token and re-run the stage exactly once.
+        if not result.success and uses_agent:
+            result, stage_run_id = self._maybe_retry_on_auth_failure(
+                result,
+                stage=stage,
+                pr_url=pr_url,
+                iteration=iteration,
+                log_file=log_file,
+                stage_run_id=stage_run_id,
+                stage_tpl=stage_tpl,
+                on_context_fill=on_context_fill,
+                extra_usage=extra_usage,
+                codex_kwargs=codex_kwargs,
+            )
+
         # Record Codex review as a separate stage run + events
         if codex_kwargs:
             self._record_codex_review(
@@ -1694,6 +1710,111 @@ class _PipelineContext:
             log_file=log_file,
             on_extra_usage=on_extra_usage,
         )
+
+    def _maybe_retry_on_auth_failure(
+        self,
+        result: StageResult,
+        *,
+        stage: str,
+        pr_url: str | None,
+        iteration: int,
+        log_file: Path | None,
+        stage_run_id: int | None,
+        stage_tpl,
+        on_context_fill: ContextFillCallback | None,
+        extra_usage: bool,
+        codex_kwargs: dict,
+    ) -> tuple[StageResult, int | None]:
+        """If *result* is an auth failure, refresh the token and retry once.
+
+        Returns ``(result, stage_run_id)`` — either the original values
+        (if no retry was needed/possible) or the retry result with a new
+        stage_run_id.
+        """
+        from botfarm.supervisor_workers import _classify_failure
+
+        category = _classify_failure(result.error)
+        if category != "auth_failure":
+            return result, stage_run_id
+
+        logger.warning(
+            "Stage '%s' failed with auth_failure for %s — attempting token refresh and retry",
+            stage, self.ticket_id,
+        )
+        insert_event(
+            self.conn,
+            task_id=self.task_id,
+            event_type="auth_retry",
+            detail=f"stage={stage} iteration={iteration} error={result.error[:200] if result.error else ''}",
+        )
+        self.conn.commit()
+
+        from botfarm.credentials import CredentialManager
+
+        cm = CredentialManager()
+        new_token = cm.refresh_token()
+        if not new_token:
+            logger.warning("Token refresh returned None — skipping retry")
+            return result, stage_run_id
+
+        logger.info("Token refreshed — retrying stage '%s' for %s", stage, self.ticket_id)
+
+        # Clean up the placeholder stage_run from the failed attempt
+        if stage_run_id is not None:
+            delete_stage_run(self.conn, stage_run_id)
+            self.conn.commit()
+
+        # Create a fresh placeholder for the retry (always an agent stage
+        # since _maybe_retry_on_auth_failure is only called when uses_agent).
+        retry_on_context_fill: ContextFillCallback | None = None
+        new_stage_run_id = insert_stage_run(
+            self.conn,
+            task_id=self.task_id,
+            stage=stage,
+            iteration=iteration,
+            log_file_path=str(log_file) if log_file else None,
+            on_extra_usage=extra_usage,
+        )
+        self.conn.commit()
+
+        _conn = self.conn
+        _sr_id = new_stage_run_id
+
+        def retry_on_context_fill(turn: int, fill_pct: float) -> None:
+            update_stage_run_context_fill(_conn, _sr_id, fill_pct)
+
+        retry_log_file = _make_stage_log_path(self.log_dir, f"{stage}_auth_retry", iteration)
+
+        try:
+            retry_result = _execute_stage(
+                stage,
+                ticket_id=self.ticket_id,
+                ticket_labels=self.ticket_labels,
+                pr_url=pr_url,
+                cwd=self.cwd,
+                max_turns=self.turns_cfg.get(stage, DEFAULT_MAX_TURNS.get(stage, DEFAULT_FIX_MAX_TURNS)),
+                pr_checks_timeout=self.pr_checks_timeout,
+                log_file=retry_log_file,
+                placeholder_branch=self.placeholder_branch,
+                env=self._env_for_stage(stage),
+                on_context_fill=retry_on_context_fill,
+                stage_tpl=stage_tpl,
+                registry=self.registry,
+                shared_mem_path=self.shared_mem_path,
+                prior_context=self.prior_context,
+                bugtracker_type=self.bugtracker_type,
+                mcp_config=self.mcp_config,
+                **codex_kwargs,
+            )
+        except Exception as exc:
+            logger.error("Auth retry for stage '%s' raised: %s", stage, exc)
+            if new_stage_run_id is not None:
+                delete_stage_run(self.conn, new_stage_run_id)
+            # Original stage_run was deleted above; return None so
+            # _finish_stage inserts a fresh row for the original failure.
+            return result, None
+
+        return retry_result, new_stage_run_id
 
     def _finish_stage(
         self,
