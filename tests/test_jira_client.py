@@ -165,7 +165,6 @@ class TestFetchTeamIssues:
     def test_basic_fetch(self):
         client = _make_client()
         search_resp = _jira_response(json_data={
-            "total": 1,
             "issues": [
                 {
                     "id": "10001",
@@ -195,7 +194,7 @@ class TestFetchTeamIssues:
         body = call_args[1]["json"]
         assert isinstance(body["fields"], list)
         assert "summary" in body["fields"]
-        assert isinstance(body["startAt"], int)
+        assert "startAt" not in body  # New endpoint uses nextPageToken
         assert isinstance(body["maxResults"], int)
 
         assert len(issues) == 1
@@ -213,7 +212,6 @@ class TestFetchTeamIssues:
     def test_blocked_by_parsing(self):
         client = _make_client()
         search_resp = _jira_response(json_data={
-            "total": 1,
             "issues": [
                 {
                     "id": "10002",
@@ -250,7 +248,6 @@ class TestFetchTeamIssues:
     def test_done_blocker_excluded(self):
         client = _make_client()
         search_resp = _jira_response(json_data={
-            "total": 1,
             "issues": [
                 {
                     "id": "10003",
@@ -287,7 +284,6 @@ class TestFetchTeamIssues:
     def test_subtasks_parsed_as_children_states(self):
         client = _make_client()
         search_resp = _jira_response(json_data={
-            "total": 1,
             "issues": [
                 {
                     "id": "10004",
@@ -334,7 +330,6 @@ class TestFetchTeamIssues:
     def test_subtask_canceled_status_detected(self):
         client = _make_client()
         search_resp = _jira_response(json_data={
-            "total": 1,
             "issues": [
                 {
                     "id": "10004",
@@ -369,7 +364,6 @@ class TestFetchTeamIssues:
     def test_pagination(self):
         client = _make_client()
         page1 = _jira_response(json_data={
-            "total": 2,
             "issues": [
                 {
                     "id": "10001",
@@ -385,9 +379,9 @@ class TestFetchTeamIssues:
                     },
                 }
             ],
+            "nextPageToken": "token-page-2",
         })
         page2 = _jira_response(json_data={
-            "total": 2,
             "issues": [
                 {
                     "id": "10002",
@@ -413,12 +407,20 @@ class TestFetchTeamIssues:
                 return page1
             return page2
 
-        with patch("httpx.request", side_effect=side_effect):
+        with patch("httpx.request", side_effect=side_effect) as mock_req:
             issues = client.fetch_team_issues("PROJ", first=1)
 
         assert len(issues) == 2
         assert issues[0].identifier == "PROJ-1"
         assert issues[1].identifier == "PROJ-2"
+
+        # First request should not include nextPageToken
+        first_body = mock_req.call_args_list[0][1]["json"]
+        assert "nextPageToken" not in first_body
+
+        # Second request should include nextPageToken from first response
+        second_body = mock_req.call_args_list[1][1]["json"]
+        assert second_body["nextPageToken"] == "token-page-2"
 
 
 # ---------------------------------------------------------------------------

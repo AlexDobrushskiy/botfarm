@@ -163,18 +163,18 @@ class JiraClient(BugtrackerClient):
             fields_list.append(self._rank_field_id)
 
         issues: list[Issue] = []
-        start_at = 0
+        next_page_token: str | None = None
         while True:
-            data = self._post_json(
-                "/search/jql",
-                json={
-                    "jql": jql,
-                    "fields": fields_list,
-                    "startAt": start_at,
-                    "maxResults": first,
-                },
-            )
-            for idx, item in enumerate(data.get("issues", [])):
+            body: dict = {
+                "jql": jql,
+                "fields": fields_list,
+                "maxResults": first,
+            }
+            if next_page_token is not None:
+                body["nextPageToken"] = next_page_token
+            data = self._post_json("/search/jql", json=body)
+            page_issues = data.get("issues", [])
+            for idx, item in enumerate(page_issues):
                 fields_data = item.get("fields", {})
 
                 # Parse blocked_by from issuelinks
@@ -212,7 +212,7 @@ class JiraClient(BugtrackerClient):
                             (sub_key, self._map_status_category(sub_cat, sub_name))
                         )
 
-                sort_order = float(start_at + idx)
+                sort_order = float(len(issues) + idx)
 
                 assignee = fields_data.get("assignee") or {}
                 priority_obj = fields_data.get("priority") or {}
@@ -242,9 +242,8 @@ class JiraClient(BugtrackerClient):
                     )
                 )
 
-            total = data.get("total", 0)
-            start_at += len(data.get("issues", []))
-            if start_at >= total or not data.get("issues"):
+            next_page_token = data.get("nextPageToken")
+            if not page_issues or not next_page_token:
                 break
 
         return issues
