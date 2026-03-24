@@ -77,6 +77,7 @@ def _cleanup_child(child_pid: int, master_fd: int) -> None:
 async def ws_terminal(ws: WebSocket):
     """WebSocket endpoint that spawns a pty-backed shell session."""
     if not _is_terminal_enabled(ws.app.state):
+        await ws.accept()
         await ws.close(code=4003, reason="Terminal disabled in configuration")
         return
 
@@ -193,7 +194,7 @@ async def ws_terminal(ws: WebSocket):
         logger.exception("Terminal WebSocket error")
     finally:
         if child_pid > 0:
-            _cleanup_child(child_pid, master_fd)
+            await asyncio.to_thread(_cleanup_child, child_pid, master_fd)
         await _decrement_sessions()
 
 

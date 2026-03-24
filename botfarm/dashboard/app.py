@@ -130,6 +130,12 @@ def create_app(
     app.state.devserver_manager = devserver_manager
     app.state.templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
+    # Expose config flags to all templates via Jinja2 globals
+    terminal_on = False
+    if botfarm_config and hasattr(botfarm_config, "dashboard"):
+        terminal_on = getattr(botfarm_config.dashboard, "terminal_enabled", False)
+    app.state.templates.env.globals["terminal_enabled"] = terminal_on
+
     # Initialise per-app rate-limit caches (isolated per app instance)
     init_caches(app)
 

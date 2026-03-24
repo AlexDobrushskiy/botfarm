@@ -68,11 +68,16 @@ class TestTerminalPage:
 
 
 class TestTerminalNavLink:
-    def test_terminal_link_in_nav(self, client):
-        resp = client.get("/")
+    def test_terminal_link_in_nav_when_enabled(self, client_terminal_enabled):
+        resp = client_terminal_enabled.get("/")
         assert resp.status_code == 200
         assert 'href="/terminal"' in resp.text
         assert "Terminal" in resp.text
+
+    def test_terminal_link_hidden_when_disabled(self, client_terminal_disabled):
+        resp = client_terminal_disabled.get("/")
+        assert resp.status_code == 200
+        assert 'href="/terminal"' not in resp.text
 
 
 class TestTerminalConfigFlag:
@@ -87,9 +92,11 @@ class TestTerminalConfigFlag:
 
 class TestTerminalWebSocket:
     def test_ws_disabled_closes_with_4003(self, client_terminal_disabled):
-        with pytest.raises(Exception):
-            with client_terminal_disabled.websocket_connect("/ws/terminal"):
-                pass  # Should close immediately with 4003
+        with client_terminal_disabled.websocket_connect("/ws/terminal") as ws:
+            # Server accepts then immediately closes with 4003
+            msg = ws.receive()
+            assert msg["type"] == "websocket.close"
+            assert msg.get("code") == 4003
 
     def test_ws_session_limit(self, db_file):
         """Verify the session limit counter logic."""
