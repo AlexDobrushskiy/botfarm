@@ -84,6 +84,7 @@ def create_poller(
         exclude_tags=bt.exclude_tags,
         todo_status=bt.todo_status,
         coder_client=coder_client,
+        include_tags=bt.include_tags,
     )
 
 
@@ -107,6 +108,7 @@ def create_pollers(config: BotfarmConfig) -> list[JiraPoller]:
             exclude_tags=bt.exclude_tags,
             todo_status=bt.todo_status,
             coder_client=coder_client,
+            include_tags=bt.include_tags,
         )
         for project in config.projects
     ]

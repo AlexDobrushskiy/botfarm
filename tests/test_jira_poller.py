@@ -38,6 +38,7 @@ def _make_poller(
     exclude_tags: list[str] | None = None,
     coder_client: BugtrackerClient | None = None,
     todo_status: str = "Todo",
+    include_tags: list[str] | None = None,
 ) -> JiraPoller:
     client = MagicMock(spec=BugtrackerClient)
     project = _make_project()
@@ -47,6 +48,7 @@ def _make_poller(
         exclude_tags=exclude_tags if exclude_tags is not None else ["Human"],
         todo_status=todo_status,
         coder_client=coder_client,
+        include_tags=include_tags,
     )
 
 
@@ -158,6 +160,36 @@ class TestJiraPollerPoll:
         poller = _make_poller()
         assert poller.project_name == "proj-a"
         assert poller.team_key == "PROJ"
+
+    def test_include_tags_empty_allows_all(self):
+        poller = _make_poller(exclude_tags=[], include_tags=[])
+        poller._client.fetch_team_issues.return_value = [
+            make_issue(id="a", identifier="PROJ-1", labels=["Feature"]),
+            make_issue(id="b", identifier="PROJ-2", labels=["Bug"]),
+        ]
+        result = poller.poll()
+        assert len(result.candidates) == 2
+
+    def test_include_tags_filters_non_matching(self):
+        poller = _make_poller(exclude_tags=[], include_tags=["botfarm"])
+        poller._client.fetch_team_issues.return_value = [
+            make_issue(id="a", identifier="PROJ-1", labels=["botfarm"]),
+            make_issue(id="b", identifier="PROJ-2", labels=["Bug"]),
+        ]
+        result = poller.poll()
+        assert len(result.candidates) == 1
+        assert result.candidates[0].identifier == "PROJ-1"
+
+    def test_include_tags_with_exclude_tags(self):
+        poller = _make_poller(exclude_tags=["Human"], include_tags=["botfarm"])
+        poller._client.fetch_team_issues.return_value = [
+            make_issue(id="a", identifier="PROJ-1", labels=["botfarm"]),
+            make_issue(id="b", identifier="PROJ-2", labels=["botfarm", "Human"]),
+            make_issue(id="c", identifier="PROJ-3", labels=["Feature"]),
+        ]
+        result = poller.poll()
+        assert len(result.candidates) == 1
+        assert result.candidates[0].identifier == "PROJ-1"
 
 
 # ---------------------------------------------------------------------------

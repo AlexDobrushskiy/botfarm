@@ -349,6 +349,26 @@ def test_load_config_full(tmp_path, monkeypatch):
     assert config.database.path == "~/.botfarm/custom.db"
 
 
+def test_load_config_include_tags(tmp_path, monkeypatch):
+    monkeypatch.setenv("TEST_KEY", "key123")
+    data = {
+        **MINIMAL_CONFIG,
+        "bugtracker": {
+            "api_key": "${TEST_KEY}",
+            "include_tags": ["botfarm", "Auto"],
+        },
+    }
+    config_path = _write_config(tmp_path, data)
+    config = load_config(config_path)
+    assert config.bugtracker.include_tags == ["botfarm", "Auto"]
+
+
+def test_load_config_include_tags_default_empty(tmp_path):
+    config_path = _write_config(tmp_path, MINIMAL_CONFIG)
+    config = load_config(config_path)
+    assert config.bugtracker.include_tags == []
+
+
 def test_load_config_defaults(tmp_path):
     config_path = _write_config(tmp_path, MINIMAL_CONFIG)
     config = load_config(config_path)
@@ -2899,6 +2919,7 @@ class TestBugtrackerConfigDataclasses:
         assert cfg.api_key == ""
         assert cfg.poll_interval_seconds == 30
         assert cfg.exclude_tags == ["Human"]
+        assert cfg.include_tags == []
         assert cfg.todo_status == "Todo"
         assert cfg.comment_on_failure is True
 

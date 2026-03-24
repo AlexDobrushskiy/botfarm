@@ -785,13 +785,18 @@ class TestLinearClientAddLabels:
 
 
 class TestLinearPollerPoll:
-    def _make_poller(self, exclude_tags: list[str] | None = None) -> LinearPoller:
+    def _make_poller(
+        self,
+        exclude_tags: list[str] | None = None,
+        include_tags: list[str] | None = None,
+    ) -> LinearPoller:
         client = MagicMock(spec=LinearClient)
         project = _make_project()
         return LinearPoller(
             client=client,
             project=project,
             exclude_tags=exclude_tags or ["Human"],
+            include_tags=include_tags,
         )
 
     def test_returns_sorted_by_sort_order(self):
@@ -933,6 +938,61 @@ class TestLinearPollerPoll:
         poller = self._make_poller()
         assert poller.project_name == "proj-a"
         assert poller.team_key == "SMA"
+
+    def test_include_tags_empty_allows_all(self):
+        """Empty include_tags (default) means all tickets are eligible."""
+        poller = self._make_poller(exclude_tags=[], include_tags=[])
+        poller._client.fetch_team_issues.return_value = [
+            make_issue(id="a", identifier="SMA-1", labels=["Feature"]),
+            make_issue(id="b", identifier="SMA-2", labels=["Bug"]),
+        ]
+        result = poller.poll()
+        assert len(result.candidates) == 2
+
+    def test_include_tags_filters_non_matching(self):
+        """Non-empty include_tags means only matching tickets pass."""
+        poller = self._make_poller(exclude_tags=[], include_tags=["botfarm"])
+        poller._client.fetch_team_issues.return_value = [
+            make_issue(id="a", identifier="SMA-1", labels=["botfarm", "Feature"]),
+            make_issue(id="b", identifier="SMA-2", labels=["Bug"]),
+            make_issue(id="c", identifier="SMA-3", labels=["botfarm"]),
+        ]
+        result = poller.poll()
+        assert [c.identifier for c in result.candidates] == ["SMA-1", "SMA-3"]
+
+    def test_include_tags_case_insensitive(self):
+        poller = self._make_poller(exclude_tags=[], include_tags=["Botfarm"])
+        poller._client.fetch_team_issues.return_value = [
+            make_issue(id="a", identifier="SMA-1", labels=["BOTFARM"]),
+            make_issue(id="b", identifier="SMA-2", labels=["other"]),
+        ]
+        result = poller.poll()
+        assert len(result.candidates) == 1
+        assert result.candidates[0].identifier == "SMA-1"
+
+    def test_include_tags_with_exclude_tags(self):
+        """include_tags is checked first (whitelist), then exclude_tags (blacklist)."""
+        poller = self._make_poller(exclude_tags=["Human"], include_tags=["botfarm"])
+        poller._client.fetch_team_issues.return_value = [
+            make_issue(id="a", identifier="SMA-1", labels=["botfarm"]),
+            make_issue(id="b", identifier="SMA-2", labels=["botfarm", "Human"]),
+            make_issue(id="c", identifier="SMA-3", labels=["Feature"]),
+        ]
+        result = poller.poll()
+        # SMA-1: has botfarm (include pass), no Human (exclude pass) → candidate
+        # SMA-2: has botfarm (include pass), has Human (exclude fail) → skipped
+        # SMA-3: no botfarm (include fail) → skipped
+        assert len(result.candidates) == 1
+        assert result.candidates[0].identifier == "SMA-1"
+
+    def test_include_tags_none_labels_handled(self):
+        """Issues with None labels are skipped when include_tags is set."""
+        poller = self._make_poller(exclude_tags=[], include_tags=["botfarm"])
+        poller._client.fetch_team_issues.return_value = [
+            make_issue(id="a", identifier="SMA-1", labels=None),
+        ]
+        result = poller.poll()
+        assert len(result.candidates) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -1133,6 +1193,24 @@ class TestCreatePollers:
         )
         pollers = create_pollers(config)
         assert pollers[0]._exclude_tags == {"human", "bot"}
+
+    def test_include_tags_passed(self):
+        config = BotfarmConfig(
+            projects=[_make_project(slots=[1])],
+            bugtracker=LinearConfig(api_key="key", include_tags=["botfarm", "Auto"]),
+            database=DatabaseConfig(),
+        )
+        pollers = create_pollers(config)
+        assert pollers[0]._include_tags == {"botfarm", "auto"}
+
+    def test_include_tags_default_empty(self):
+        config = BotfarmConfig(
+            projects=[_make_project(slots=[1])],
+            bugtracker=LinearConfig(api_key="key"),
+            database=DatabaseConfig(),
+        )
+        pollers = create_pollers(config)
+        assert pollers[0]._include_tags == set()
 
     def test_todo_status_passed(self):
         config = BotfarmConfig(
