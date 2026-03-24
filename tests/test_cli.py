@@ -1089,10 +1089,10 @@ class TestRunSetupMode:
         # Verify the created config is valid YAML with dashboard enabled
         data = yaml.safe_load(cfg_path.read_text())
         assert data["dashboard"]["enabled"] is True
-        assert data["dashboard"]["host"] == "127.0.0.1"
+        assert data["dashboard"]["host"] == "0.0.0.0"
 
     def test_setup_mode_forces_dashboard_on(self, runner, tmp_path, monkeypatch):
-        """Setup mode enables dashboard and binds to localhost."""
+        """Setup mode enables dashboard and respects configured host."""
         cfg_path = tmp_path / "config.yaml"
         cfg_path.write_text(yaml.dump({
             "bugtracker": {"api_key": ""},
@@ -1107,10 +1107,10 @@ class TestRunSetupMode:
 
         assert result.exit_code == 0
         assert "Setup mode" in result.output
-        # Verify the config passed to Supervisor has dashboard enabled + localhost
+        # Verify the config passed to Supervisor has dashboard enabled + configured host preserved
         config_arg = MockSup.call_args[0][0]
         assert config_arg.dashboard.enabled is True
-        assert config_arg.dashboard.host == "127.0.0.1"
+        assert config_arg.dashboard.host == "0.0.0.0"
 
     def test_explicit_config_path_errors_when_missing(self, runner, tmp_path):
         """An explicit --config path that doesn't exist raises an error instead of auto-creating."""

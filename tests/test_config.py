@@ -2814,7 +2814,7 @@ def test_setup_mode_skeleton_template_loads(tmp_path):
     config = load_config(config_path)
     assert config.setup_mode is True
     assert config.dashboard.enabled is True
-    assert config.dashboard.host == "127.0.0.1"
+    assert config.dashboard.host == "0.0.0.0"
 
 
 def test_setup_mode_projects_not_a_list_still_errors(tmp_path):

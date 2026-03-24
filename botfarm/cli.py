@@ -1420,11 +1420,9 @@ def run(config_path, log_dir, auto_restart):
     except ConfigError as exc:
         raise click.ClickException(str(exc)) from exc
 
-    # In setup mode, force dashboard on and bind to localhost for security.
+    # In setup mode, force dashboard on so users can complete setup via browser.
     if config.setup_mode:
         config.dashboard.enabled = True
-        if config.dashboard.host == "0.0.0.0":
-            config.dashboard.host = "127.0.0.1"
         click.echo(
             f"Setup mode — dashboard at http://{config.dashboard.host}:{config.dashboard.port}"
         )
