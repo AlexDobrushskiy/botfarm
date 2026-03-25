@@ -631,6 +631,265 @@ class TestSetupGithubEndpoint:
 
 
 # ---------------------------------------------------------------------------
+# GitHub device code flow tests
+# ---------------------------------------------------------------------------
+
+
+def _fake_httpx_client(response):
+    """Build a mock ``httpx.AsyncClient`` context manager returning *response*."""
+
+    class FakeResponse:
+        def __init__(self, status_code, data):
+            self.status_code = status_code
+            self._data = data
+            self.text = str(data)
+
+        def json(self):
+            return self._data
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            pass
+
+        async def post(self, *a, **kw):
+            return FakeResponse(*response)
+
+    return lambda **kw: FakeClient()
+
+
+def _fake_httpx_client_error():
+    """Build a mock ``httpx.AsyncClient`` that raises on post."""
+    import httpx
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            pass
+
+        async def post(self, *a, **kw):
+            raise httpx.ConnectError("connection refused")
+
+    return lambda **kw: FakeClient()
+
+
+class TestDeviceCodeFlowStart:
+    def test_returns_user_code_and_url(self, db_file, monkeypatch):
+        config = _make_config(source_path="")
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+
+        monkeypatch.setattr(
+            "botfarm.dashboard.routes_setup.httpx.AsyncClient",
+            _fake_httpx_client((200, {
+                "device_code": "dc_abc123",
+                "user_code": "ABCD-1234",
+                "verification_uri": "https://github.com/login/device",
+                "interval": 5,
+                "expires_in": 900,
+            })),
+        )
+
+        resp = client.post("/api/setup/github/device-code", json={})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["user_code"] == "ABCD-1234"
+        assert data["verification_uri"] == "https://github.com/login/device"
+        assert data["device_code"] == "dc_abc123"
+        assert data["interval"] == 5
+        assert data["expires_in"] == 900
+
+    def test_github_error_returns_502(self, db_file, monkeypatch):
+        config = _make_config(source_path="")
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+
+        monkeypatch.setattr(
+            "botfarm.dashboard.routes_setup.httpx.AsyncClient",
+            _fake_httpx_client((403, {"error": "forbidden"})),
+        )
+
+        resp = client.post("/api/setup/github/device-code", json={})
+        assert resp.status_code == 502
+        assert "error" in resp.json()
+
+    def test_network_error_returns_502(self, db_file, monkeypatch):
+        config = _make_config(source_path="")
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+
+        monkeypatch.setattr(
+            "botfarm.dashboard.routes_setup.httpx.AsyncClient",
+            _fake_httpx_client_error(),
+        )
+
+        resp = client.post("/api/setup/github/device-code", json={})
+        assert resp.status_code == 502
+
+    def test_missing_user_code_returns_502(self, db_file, monkeypatch):
+        config = _make_config(source_path="")
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+
+        monkeypatch.setattr(
+            "botfarm.dashboard.routes_setup.httpx.AsyncClient",
+            _fake_httpx_client((200, {"error": "bad_client_id", "error_description": "bad id"})),
+        )
+
+        resp = client.post("/api/setup/github/device-code", json={})
+        assert resp.status_code == 502
+        assert "bad id" in resp.json()["error"]
+
+
+class TestDeviceCodeFlowPoll:
+    def test_pending_status(self, db_file, monkeypatch):
+        config = _make_config(source_path="")
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+
+        monkeypatch.setattr(
+            "botfarm.dashboard.routes_setup.httpx.AsyncClient",
+            _fake_httpx_client((200, {"error": "authorization_pending"})),
+        )
+
+        resp = client.post(
+            "/api/setup/github/device-code/poll",
+            json={"device_code": "dc_abc"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "pending"
+
+    def test_complete_saves_token(self, db_file, tmp_path, monkeypatch):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("bugtracker:\n  type: linear\n")
+        env_file = tmp_path / ".env"
+        config = _make_config(source_path=str(config_file))
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+
+        monkeypatch.setattr(
+            "botfarm.dashboard.routes_setup.httpx.AsyncClient",
+            _fake_httpx_client((200, {
+                "access_token": "gho_device_token_xyz",
+                "token_type": "bearer",
+                "scope": "repo,read:org",
+            })),
+        )
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+
+        resp = client.post(
+            "/api/setup/github/device-code/poll",
+            json={"device_code": "dc_abc"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "complete"
+
+        # Token saved to .env
+        assert env_file.exists()
+        env_content = env_file.read_text()
+        assert "GH_TOKEN" in env_content
+        assert "gho_device_token_xyz" in env_content
+
+        # Process environment updated
+        assert os.environ.get("GH_TOKEN") == "gho_device_token_xyz"
+
+    def test_slow_down_returns_new_interval(self, db_file, monkeypatch):
+        config = _make_config(source_path="")
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+
+        monkeypatch.setattr(
+            "botfarm.dashboard.routes_setup.httpx.AsyncClient",
+            _fake_httpx_client((200, {"error": "slow_down", "interval": 10})),
+        )
+
+        resp = client.post(
+            "/api/setup/github/device-code/poll",
+            json={"device_code": "dc_abc"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "slow_down"
+        assert data["interval"] == 10
+
+    def test_expired_token(self, db_file, monkeypatch):
+        config = _make_config(source_path="")
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+
+        monkeypatch.setattr(
+            "botfarm.dashboard.routes_setup.httpx.AsyncClient",
+            _fake_httpx_client((200, {"error": "expired_token"})),
+        )
+
+        resp = client.post(
+            "/api/setup/github/device-code/poll",
+            json={"device_code": "dc_abc"},
+        )
+        assert resp.json()["status"] == "expired"
+
+    def test_access_denied(self, db_file, monkeypatch):
+        config = _make_config(source_path="")
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+
+        monkeypatch.setattr(
+            "botfarm.dashboard.routes_setup.httpx.AsyncClient",
+            _fake_httpx_client((200, {"error": "access_denied"})),
+        )
+
+        resp = client.post(
+            "/api/setup/github/device-code/poll",
+            json={"device_code": "dc_abc"},
+        )
+        assert resp.json()["status"] == "denied"
+
+    def test_missing_device_code_returns_400(self, db_file, monkeypatch):
+        config = _make_config(source_path="")
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+
+        resp = client.post(
+            "/api/setup/github/device-code/poll",
+            json={"device_code": ""},
+        )
+        assert resp.status_code == 400
+
+    def test_invalid_json_returns_400(self, db_file, monkeypatch):
+        config = _make_config(source_path="")
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+
+        resp = client.post(
+            "/api/setup/github/device-code/poll",
+            content="not json",
+            headers={"Content-Type": "application/json"},
+        )
+        assert resp.status_code == 400
+
+    def test_network_error_during_poll(self, db_file, monkeypatch):
+        config = _make_config(source_path="")
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+
+        monkeypatch.setattr(
+            "botfarm.dashboard.routes_setup.httpx.AsyncClient",
+            _fake_httpx_client_error(),
+        )
+
+        resp = client.post(
+            "/api/setup/github/device-code/poll",
+            json={"device_code": "dc_abc"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "error"
+
+
+# ---------------------------------------------------------------------------
 # Setup credentials partial tests
 # ---------------------------------------------------------------------------
 
@@ -774,7 +1033,7 @@ class TestSetupCredentialsPartial:
 
         resp = client.get("/partials/setup-credentials")
         assert resp.status_code == 200
-        assert "Or use device code flow" in resp.text
+        assert "Or use terminal" in resp.text
         assert "github-terminal-panel" in resp.text
 
     def test_terminal_panels_hidden_when_authenticated(
@@ -799,6 +1058,37 @@ class TestSetupCredentialsPartial:
         # Terminal button/panel HTML elements should not be rendered when
         # authenticated (JS references to IDs may still exist).
         assert 'id="claude-terminal-toggle"' not in resp.text
+        assert 'id="github-terminal-details"' not in resp.text
+        # Device code flow button should also not appear when authenticated.
+        assert 'id="github-device-flow-btn"' not in resp.text
+
+    def test_device_code_button_visible_without_terminal(
+        self, db_file, monkeypatch,
+    ):
+        """Device code flow button appears even when terminal is disabled."""
+        from botfarm.credentials import CredentialError
+
+        config = _make_config(api_key="key123", bt_type="linear")
+        # terminal_enabled defaults to False
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+
+        monkeypatch.setattr(
+            "botfarm.dashboard.routes_setup._load_token",
+            lambda: (_ for _ in ()).throw(CredentialError("no creds")),
+        )
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.setattr(
+            "botfarm.dashboard.routes_setup.shutil.which",
+            lambda cmd: None,
+        )
+
+        resp = client.get("/partials/setup-credentials")
+        assert resp.status_code == 200
+        assert "Authenticate with GitHub" in resp.text
+        assert 'id="github-device-flow-btn"' in resp.text
+        # Terminal should NOT appear since terminal_enabled is false
         assert 'id="github-terminal-details"' not in resp.text
 
 
