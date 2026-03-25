@@ -450,7 +450,15 @@ class BotfarmConfig:
     @property
     def setup_mode(self) -> bool:
         """True when config is incomplete — supervisor runs dashboard only."""
-        return not self.projects or not self.bugtracker.api_key
+        if not self.projects:
+            return True
+        if self.bugtracker.api_key:
+            return False
+        # No global API key — check if every project has its own
+        return not all(
+            p.bugtracker and p.bugtracker.get("api_key")
+            for p in self.projects
+        )
 
 
 class ConfigError(Exception):
@@ -508,6 +516,46 @@ _PROJECT_TYPE_RUN_DEFAULTS: dict[str, dict[str, object]] = {
     "fastapi": {"run_command": "uvicorn main:app --host 0.0.0.0 --port 8000", "run_port": 8000},
     "rails": {"run_command": "bin/rails server -b 0.0.0.0", "run_port": 3000},
 }
+
+
+_ALLOWED_BT_KEYS = {
+    "type", "api_key", "workspace", "url", "email",
+    "exclude_tags", "include_tags",
+    "todo_status", "in_progress_status", "done_status", "in_review_status",
+    "comment_on_failure", "comment_on_completion", "comment_on_limit_pause",
+    "poll_interval_seconds",
+    # Linear-specific
+    "issue_limit", "capacity_monitoring",
+}
+
+_SUPPORTED_BT_TYPES = {"linear", "jira"}
+
+
+def _validate_bugtracker_override(
+    bt_data: object, project_name: str,
+) -> list[str]:
+    """Validate a per-project bugtracker override dict.
+
+    Returns a list of error strings (empty if valid).
+    """
+    errors: list[str] = []
+    if not isinstance(bt_data, dict):
+        errors.append(
+            f"Project '{project_name}': bugtracker must be a mapping"
+        )
+        return errors
+    unknown = set(bt_data.keys()) - _ALLOWED_BT_KEYS
+    if unknown:
+        errors.append(
+            f"Project '{project_name}': unknown bugtracker fields: {sorted(unknown)}"
+        )
+    bt_type = bt_data.get("type")
+    if bt_type is not None and bt_type not in _SUPPORTED_BT_TYPES:
+        errors.append(
+            f"Project '{project_name}': unsupported bugtracker type: {bt_type!r}. "
+            f"Supported: {sorted(_SUPPORTED_BT_TYPES)}"
+        )
+    return errors
 
 
 def _parse_project(data: dict) -> ProjectConfig:
@@ -588,32 +636,9 @@ def _parse_project(data: dict) -> ProjectConfig:
     # Per-project bugtracker overrides
     bugtracker_data = data.get("bugtracker")
     if bugtracker_data is not None:
-        if not isinstance(bugtracker_data, dict):
-            raise ConfigError(
-                f"Project '{data['name']}': bugtracker must be a mapping"
-            )
-        _ALLOWED_BT_KEYS = {
-            "type", "api_key", "workspace", "url", "email",
-            "exclude_tags", "include_tags",
-            "todo_status", "in_progress_status", "done_status", "in_review_status",
-            "comment_on_failure", "comment_on_completion", "comment_on_limit_pause",
-            "poll_interval_seconds",
-            # Linear-specific
-            "issue_limit", "capacity_monitoring",
-        }
-        unknown_bt = set(bugtracker_data.keys()) - _ALLOWED_BT_KEYS
-        if unknown_bt:
-            raise ConfigError(
-                f"Project '{data['name']}': unknown bugtracker fields: {sorted(unknown_bt)}"
-            )
-        bt_type = bugtracker_data.get("type")
-        if bt_type is not None:
-            supported = {"linear", "jira"}
-            if bt_type not in supported:
-                raise ConfigError(
-                    f"Project '{data['name']}': unsupported bugtracker type: {bt_type!r}. "
-                    f"Supported: {sorted(supported)}"
-                )
+        errors = _validate_bugtracker_override(bugtracker_data, data["name"])
+        if errors:
+            raise ConfigError(errors[0])
 
     # Derive defaults from project_type when not explicitly set.
     if project_type and project_type in _PROJECT_TYPE_RUN_DEFAULTS:
@@ -742,7 +767,12 @@ def _validate_config(config: BotfarmConfig) -> None:
     # In setup mode (no projects or no API key), skip strict checks
     # so the supervisor can start with dashboard only.
     if not config.setup_mode:
-        if not bt.api_key:
+        # Global API key can be omitted when every project provides its own
+        has_all_project_keys = all(
+            p.bugtracker and p.bugtracker.get("api_key")
+            for p in config.projects
+        )
+        if not bt.api_key and not has_all_project_keys:
             raise ConfigError("bugtracker.api_key must be set")
 
         if not config.projects:
@@ -1679,6 +1709,9 @@ def _validate_project_updates(
                 errors.append(
                     f"projects[{i}] '{name}': run_port must be a non-negative integer"
                 )
+
+        if "bugtracker" in proj:
+            errors.extend(_validate_bugtracker_override(proj["bugtracker"], name))
 
         if is_new:
             # New project: validate required fields and allowed keys

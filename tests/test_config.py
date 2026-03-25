@@ -1878,6 +1878,38 @@ class TestValidateStructuralConfigUpdates:
         errors = validate_structural_config_updates(updates, config)
         assert any("run_port must be an integer" in e for e in errors)
 
+    def test_bugtracker_override_valid(self):
+        config = _make_config_for_structural()
+        updates = {
+            "projects": [{"name": "project-a", "bugtracker": {"api_key": "k"}}],
+        }
+        errors = validate_structural_config_updates(updates, config)
+        assert not errors
+
+    def test_bugtracker_override_unknown_keys_rejected(self):
+        config = _make_config_for_structural()
+        updates = {
+            "projects": [{"name": "project-a", "bugtracker": {"type": "github"}}],
+        }
+        errors = validate_structural_config_updates(updates, config)
+        assert any("unsupported bugtracker type" in e for e in errors)
+
+    def test_bugtracker_override_unknown_fields_rejected(self):
+        config = _make_config_for_structural()
+        updates = {
+            "projects": [{"name": "project-a", "bugtracker": {"nonsense": True}}],
+        }
+        errors = validate_structural_config_updates(updates, config)
+        assert any("unknown bugtracker fields" in e for e in errors)
+
+    def test_bugtracker_override_not_a_dict_rejected(self):
+        config = _make_config_for_structural()
+        updates = {
+            "projects": [{"name": "project-a", "bugtracker": "linear"}],
+        }
+        errors = validate_structural_config_updates(updates, config)
+        assert any("bugtracker must be a mapping" in e for e in errors)
+
 
 # --- write_structural_config_updates ---
 
@@ -2888,6 +2920,42 @@ def test_setup_mode_duplicate_projects_skipped(tmp_path):
             },
         ],
         "bugtracker": {"api_key": ""},
+    }
+    config_path = _write_config(tmp_path, data)
+    config = load_config(config_path)
+    assert config.setup_mode is True
+
+
+def test_setup_mode_per_project_api_keys_only(tmp_path):
+    """All projects have per-project API keys but no global key — not setup mode."""
+    data = {
+        "projects": [{
+            "name": "p1", "team": "T", "base_dir": "~/d",
+            "worktree_prefix": "s-", "slots": [1],
+            "bugtracker": {"api_key": "proj-key-1"},
+        }],
+        "bugtracker": {"type": "linear", "api_key": ""},
+    }
+    config_path = _write_config(tmp_path, data)
+    config = load_config(config_path)
+    assert config.setup_mode is False
+
+
+def test_setup_mode_mixed_per_project_api_keys(tmp_path):
+    """Some projects have per-project keys, some don't — setup mode."""
+    data = {
+        "projects": [
+            {
+                "name": "p1", "team": "T", "base_dir": "~/d1",
+                "worktree_prefix": "s1-", "slots": [1],
+                "bugtracker": {"api_key": "proj-key-1"},
+            },
+            {
+                "name": "p2", "team": "T", "base_dir": "~/d2",
+                "worktree_prefix": "s2-", "slots": [2],
+            },
+        ],
+        "bugtracker": {"type": "linear", "api_key": ""},
     }
     config_path = _write_config(tmp_path, data)
     config = load_config(config_path)

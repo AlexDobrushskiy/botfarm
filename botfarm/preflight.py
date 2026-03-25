@@ -198,7 +198,7 @@ def check_linear_api(config: BotfarmConfig) -> list[CheckResult]:
 
     # Check each project's team and statuses using its effective bugtracker config.
     # Cache clients and team states to avoid redundant API calls.
-    client_cache: dict[str, BugtrackerClient] = {}  # api_key -> client
+    client_cache: dict[tuple[str, str], BugtrackerClient] = {}  # (api_key, type) -> client
     checked_teams: dict[tuple[str, str], dict[str, str]] = {}  # (api_key, team) -> states
     for project in config.projects:
         bt = resolve_project_bugtracker(config.bugtracker, project)
@@ -215,9 +215,10 @@ def check_linear_api(config: BotfarmConfig) -> list[CheckResult]:
         if cache_key in checked_teams:
             team_states = checked_teams[cache_key]
         else:
-            if bt.api_key not in client_cache:
+            client_key = (bt.api_key, bt.type)
+            if client_key not in client_cache:
                 try:
-                    client_cache[bt.api_key] = create_client(bt_config=bt)
+                    client_cache[client_key] = create_client(bt_config=bt)
                 except Exception as exc:
                     results.append(CheckResult(
                         name=f"bugtracker:{project.name}",
@@ -225,7 +226,7 @@ def check_linear_api(config: BotfarmConfig) -> list[CheckResult]:
                         message=f"Cannot create client for project '{project.name}': {exc}",
                     ))
                     continue
-            client = client_cache[bt.api_key]
+            client = client_cache[client_key]
             try:
                 team_states = client.get_team_states(team_key)
                 checked_teams[cache_key] = team_states
