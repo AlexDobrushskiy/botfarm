@@ -1302,3 +1302,198 @@ class TestAddProjectCommand:
         assert len(config["projects"]) == 1
         assert config["projects"][0]["name"] == "my-project"
         assert config["projects"][0]["team"] == "SMA"
+
+
+class TestAddProjectFlags:
+    """Tests for --repo-url, --name, --team, --project, --slots, --yes flags."""
+
+    def test_fully_non_interactive(self, runner, config_dir, tmp_path, monkeypatch):
+        """All flags + --yes → no prompts at all."""
+        _, config_path = config_dir
+        monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_DIR", tmp_path / ".botfarm")
+        monkeypatch.delenv("LINEAR_API_KEY", raising=False)
+
+        with patch("botfarm.project_setup.subprocess.run", side_effect=_make_mock_run()):
+            result = runner.invoke(
+                main,
+                [
+                    "add-project",
+                    "--config", str(config_path),
+                    "--repo-url", "git@github.com:user/my-app.git",
+                    "--name", "my-app",
+                    "--team", "SMA",
+                    "--project", "Bot farm",
+                    "--slots", "2",
+                    "--yes",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "added successfully" in result.output
+
+        config = yaml.safe_load(config_path.read_text())
+        added = next(p for p in config["projects"] if p["name"] == "my-app")
+        assert added["team"] == "SMA"
+        assert added["tracker_project"] == "Bot farm"
+        assert added["slots"] == [1, 2]
+
+    def test_flags_skip_prompts_for_provided_values(
+        self, runner, config_dir, tmp_path, monkeypatch
+    ):
+        """When some flags are provided, only missing values are prompted."""
+        _, config_path = config_dir
+        monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_DIR", tmp_path / ".botfarm")
+        monkeypatch.delenv("LINEAR_API_KEY", raising=False)
+
+        with patch("botfarm.project_setup.subprocess.run", side_effect=_make_mock_run()):
+            result = runner.invoke(
+                main,
+                [
+                    "add-project",
+                    "--config", str(config_path),
+                    "--repo-url", "git@github.com:user/my-app.git",
+                    "--team", "SMA",
+                    # name, project, slots not provided → prompted
+                ],
+                # name (accept default), project filter (skip), slots, confirm
+                input="\n\n1\ny\n",
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "added successfully" in result.output
+
+        config = yaml.safe_load(config_path.read_text())
+        added = next(p for p in config["projects"] if p["name"] == "my-app")
+        assert added["team"] == "SMA"
+
+    def test_yes_flag_skips_confirmation(self, runner, config_dir, tmp_path, monkeypatch):
+        """--yes skips the 'Proceed?' confirmation."""
+        _, config_path = config_dir
+        monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_DIR", tmp_path / ".botfarm")
+        monkeypatch.delenv("LINEAR_API_KEY", raising=False)
+
+        with patch("botfarm.project_setup.subprocess.run", side_effect=_make_mock_run()):
+            result = runner.invoke(
+                main,
+                [
+                    "add-project",
+                    "--config", str(config_path),
+                    "--repo-url", "git@github.com:user/my-app.git",
+                    "--name", "my-app",
+                    "--team", "SMA",
+                    "--slots", "1",
+                    "--yes",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "Proceed?" not in result.output
+        assert "added successfully" in result.output
+
+    def test_name_defaults_from_repo_url(self, runner, config_dir, tmp_path, monkeypatch):
+        """--name not provided → extracted from --repo-url without prompting."""
+        _, config_path = config_dir
+        monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_DIR", tmp_path / ".botfarm")
+        monkeypatch.delenv("LINEAR_API_KEY", raising=False)
+
+        with patch("botfarm.project_setup.subprocess.run", side_effect=_make_mock_run()):
+            result = runner.invoke(
+                main,
+                [
+                    "add-project",
+                    "--config", str(config_path),
+                    "--repo-url", "git@github.com:user/cool-repo.git",
+                    "--team", "SMA",
+                    "--slots", "1",
+                    "--yes",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        config = yaml.safe_load(config_path.read_text())
+        project_names = [p["name"] for p in config["projects"]]
+        assert "cool-repo" in project_names
+
+    def test_empty_project_flag_means_no_filter(
+        self, runner, config_dir, tmp_path, monkeypatch
+    ):
+        """--project '' → no tracker_project in config."""
+        _, config_path = config_dir
+        monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_DIR", tmp_path / ".botfarm")
+        monkeypatch.delenv("LINEAR_API_KEY", raising=False)
+
+        with patch("botfarm.project_setup.subprocess.run", side_effect=_make_mock_run()):
+            result = runner.invoke(
+                main,
+                [
+                    "add-project",
+                    "--config", str(config_path),
+                    "--repo-url", "git@github.com:user/my-app.git",
+                    "--name", "my-app",
+                    "--team", "SMA",
+                    "--project", "",
+                    "--slots", "1",
+                    "--yes",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        config = yaml.safe_load(config_path.read_text())
+        added = next(p for p in config["projects"] if p["name"] == "my-app")
+        assert "tracker_project" not in added
+
+    def test_duplicate_name_via_flag(self, runner, config_dir, monkeypatch):
+        """--name with existing project name raises error."""
+        _, config_path = config_dir
+        monkeypatch.delenv("LINEAR_API_KEY", raising=False)
+
+        result = runner.invoke(
+            main,
+            [
+                "add-project",
+                "--config", str(config_path),
+                "--repo-url", "git@github.com:user/existing-proj.git",
+                "--name", "existing-proj",
+                "--team", "SMA",
+                "--slots", "1",
+                "--yes",
+            ],
+        )
+        assert result.exit_code != 0
+        assert "already exists" in result.output
+
+    def test_non_interactive_with_linear_api_team_flag(
+        self, runner, config_dir, tmp_path, monkeypatch
+    ):
+        """--team flag skips Linear API team selection even when API key is set."""
+        _, config_path = config_dir
+        monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_DIR", tmp_path / ".botfarm")
+        monkeypatch.setenv("LINEAR_API_KEY", "test-key")
+
+        mock_client = MagicMock()
+        # list_teams should NOT be called when --team is provided
+        mock_client.list_teams.return_value = [
+            {"id": "t1", "name": "Engineering", "key": "ENG"},
+        ]
+
+        with patch("botfarm.project_setup.subprocess.run", side_effect=_make_mock_run()), \
+             patch("botfarm.cli.create_client", return_value=mock_client):
+            result = runner.invoke(
+                main,
+                [
+                    "add-project",
+                    "--config", str(config_path),
+                    "--repo-url", "git@github.com:user/my-app.git",
+                    "--name", "my-app",
+                    "--team", "SMA",
+                    "--slots", "1",
+                    "--yes",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        mock_client.list_teams.assert_not_called()
+
+        config = yaml.safe_load(config_path.read_text())
+        added = next(p for p in config["projects"] if p["name"] == "my-app")
+        assert added["team"] == "SMA"
