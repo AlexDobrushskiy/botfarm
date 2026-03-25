@@ -150,7 +150,7 @@ def _config_values(app) -> dict:
             "enabled": cfg.daily_summary.enabled,
             "send_hour": cfg.daily_summary.send_hour,
             "min_tasks_for_summary": cfg.daily_summary.min_tasks_for_summary,
-            "webhook_url": _mask_secret(cfg.daily_summary.webhook_url),
+            "webhook_url": cfg.daily_summary.webhook_url,
         },
         "notifications": {
             "webhook_url": cfg.notifications.webhook_url,
@@ -214,7 +214,7 @@ async def config_update(request: Request):
         )
 
     # Split into runtime-editable and structural updates
-    structural_sections = {"notifications", "projects"}
+    structural_sections = {"projects"}
     runtime_updates = {
         k: v for k, v in updates.items() if k not in structural_sections
     }

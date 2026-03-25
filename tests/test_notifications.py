@@ -875,3 +875,63 @@ class TestAuthFailureNotifications:
         n.notify_auth_failure(consecutive_failures=5, minutes_since_success=30)
         n.notify_auth_recovered()
         n.close()
+
+
+# ---------------------------------------------------------------------------
+# Notifier — hot-reload (config changes apply without restart)
+# ---------------------------------------------------------------------------
+
+
+class TestNotifierHotReload:
+    """Notifier reads config dynamically so webhook changes apply immediately."""
+
+    def test_webhook_url_change_takes_effect(self):
+        cfg = NotificationsConfig(
+            webhook_url="https://old.example.com/hook",
+            webhook_format="slack",
+        )
+        n = Notifier(cfg)
+        n._client = MagicMock()
+        n._client.post.return_value = MagicMock()
+
+        # Send with original URL
+        n.notify_limit_cleared()
+        assert n._client.post.call_args[0][0] == "https://old.example.com/hook"
+
+        # Mutate config (simulating apply_config_updates)
+        cfg.webhook_url = "https://new.example.com/hook"
+
+        # Send again — should use new URL
+        n.notify_limit_cleared()
+        assert n._client.post.call_args[0][0] == "https://new.example.com/hook"
+        n.close()
+
+    def test_webhook_format_change_takes_effect(self):
+        cfg = NotificationsConfig(
+            webhook_url="https://example.com/hook",
+            webhook_format="slack",
+        )
+        n = Notifier(cfg)
+        n._client = MagicMock()
+        n._client.post.return_value = MagicMock()
+
+        # Slack format
+        n.notify_limit_cleared()
+        payload = n._client.post.call_args[1]["json"]
+        assert "text" in payload
+
+        # Switch to discord
+        cfg.webhook_format = "discord"
+        n.notify_limit_cleared()
+        payload = n._client.post.call_args[1]["json"]
+        assert "content" in payload
+        n.close()
+
+    def test_enabled_becomes_true_after_url_set(self):
+        cfg = NotificationsConfig(webhook_url="")
+        n = Notifier(cfg)
+        assert not n.enabled
+
+        cfg.webhook_url = "https://example.com/hook"
+        assert n.enabled
+        n.close()

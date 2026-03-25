@@ -1177,16 +1177,15 @@ EDITABLE_FIELDS: dict[tuple[str, str], dict] = {
     ("daily_summary", "enabled"): {"type": "bool"},
     ("daily_summary", "send_hour"): {"type": "int", "min": 0, "max": 23},
     ("daily_summary", "min_tasks_for_summary"): {"type": "int", "min": 0},
+    ("daily_summary", "webhook_url"): {"type": "str"},
+    ("notifications", "webhook_url"): {"type": "str"},
+    ("notifications", "webhook_format"): {"type": "choice", "choices": ["slack", "discord"]},
+    ("notifications", "rate_limit_seconds"): {"type": "int", "min": 0},
 }
 
 # Fields that require a supervisor restart to take effect.
 # Changes are written to YAML only — NOT applied to in-memory config.
-STRUCTURAL_FIELDS: dict[tuple[str, str], dict] = {
-    ("notifications", "webhook_url"): {"type": "str"},
-    ("notifications", "webhook_format"): {"type": "choice", "choices": ["slack", "discord"]},
-    ("notifications", "rate_limit_seconds"): {"type": "int", "min": 0},
-    ("daily_summary", "webhook_url"): {"type": "str"},
-}
+STRUCTURAL_FIELDS: dict[tuple[str, str], dict] = {}
 
 # Maps legacy codex_reviewer_* field names → AdapterConfig attribute names.
 _CODEX_LEGACY_FIELD_MAP: dict[str, str] = {
@@ -1336,6 +1335,7 @@ def apply_config_updates(config: BotfarmConfig, updates: dict) -> None:
         "usage_limits": config.usage_limits,
         "agents": config.agents,
         "daily_summary": config.daily_summary,
+        "notifications": config.notifications,
     }
     if isinstance(config.bugtracker, LinearBugtrackerConfig):
         section_map["bugtracker.capacity_monitoring"] = config.bugtracker.capacity_monitoring
@@ -1437,29 +1437,12 @@ def write_yaml_atomic(config_path: Path, data: dict) -> None:
 def validate_structural_config_updates(
     updates: dict, config: BotfarmConfig,
 ) -> list[str]:
-    """Validate structural config updates (projects and notifications).
+    """Validate structural config updates (projects).
 
-    ``updates`` may contain a ``"notifications"`` dict and/or a
-    ``"projects"`` list.  Returns a list of error messages (empty = valid).
+    ``updates`` may contain a ``"projects"`` list.
+    Returns a list of error messages (empty = valid).
     """
     errors: list[str] = []
-
-    if "notifications" in updates:
-        notif = updates["notifications"]
-        if not isinstance(notif, dict):
-            errors.append("'notifications' must be a mapping")
-        else:
-            for key, value in notif.items():
-                path = ("notifications", key)
-                spec = STRUCTURAL_FIELDS.get(path)
-                if spec is None:
-                    errors.append(
-                        f"'notifications.{key}' is not an editable field"
-                    )
-                    continue
-                errors.extend(
-                    _validate_field("notifications", key, value, spec)
-                )
 
     if "projects" in updates:
         errors.extend(_validate_project_updates(updates["projects"], config))
@@ -1635,19 +1618,13 @@ def _validate_project_updates(
 def write_structural_config_updates(config_path: Path, updates: dict) -> None:
     """Write structural config changes to YAML without mutating in-memory config.
 
-    Handles ``"notifications"`` (simple key-value merge) and ``"projects"``
-    (merge editable fields into existing project entries matched by name).
+    Handles ``"projects"`` (merge editable fields into existing project
+    entries matched by name).
     """
     raw = config_path.read_text()
     data = yaml.safe_load(raw)
     if not isinstance(data, dict):
         raise ConfigError("Config file must contain a YAML mapping")
-
-    if "notifications" in updates:
-        if "notifications" not in data:
-            data["notifications"] = {}
-        if isinstance(data["notifications"], dict):
-            data["notifications"].update(updates["notifications"])
 
     if "projects" in updates:
         existing_projects = data.get("projects", [])

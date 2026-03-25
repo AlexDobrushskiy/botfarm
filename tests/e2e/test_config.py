@@ -227,8 +227,8 @@ class TestConfigSave:
         # Restore valid value
         poll.fill("30")
 
-    def test_structural_change_shows_restart_banner(self, live_server, page):
-        """P0: Saving a structural change (notifications) shows restart banner."""
+    def test_notifications_save_without_restart_banner(self, live_server, page):
+        """P0: Saving notification settings applies immediately (no restart banner)."""
         page.goto(f"{live_server}/config")
         page.locator(".config-tab").nth(1).click()
 
@@ -243,10 +243,14 @@ class TestConfigSave:
         ).locator("button[type='submit']").click()
 
         try:
-            # Wait for response and check for restart banner
+            # Wait for success feedback
+            feedback = page.locator("#feedback-notifications .config-feedback")
+            feedback.wait_for(state="visible", timeout=5000)
+            assert "success" in feedback.get_attribute("class")
+
+            # Restart banner should NOT appear
             banner = page.locator("#restart-banner")
-            banner.wait_for(state="visible", timeout=5000)
-            assert "restart required" in banner.inner_text().lower()
+            assert not banner.is_visible()
         finally:
             # Restore original value and submit the form
             rate_input.fill(original)
