@@ -648,6 +648,16 @@ def test_load_config_pr_checks_timeout_custom(tmp_path):
     assert config.agents.pr_checks_timeout_seconds == 300
 
 
+def test_load_config_pr_checks_timeout_zero_rejected(tmp_path):
+    data = {
+        **MINIMAL_CONFIG,
+        "agents": {"pr_checks_timeout_seconds": 0},
+    }
+    config_path = _write_config(tmp_path, data)
+    with pytest.raises(ConfigError, match="pr_checks_timeout_seconds must be at least 1"):
+        load_config(config_path)
+
+
 # --- Timeout config ---
 
 

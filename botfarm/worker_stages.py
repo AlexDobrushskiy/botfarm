@@ -943,7 +943,7 @@ def _run_pr_checks(
         return StageResult(stage="pr_checks", success=True)
 
     # Phase 2: Checks exist — wait for them to complete.
-    remaining_timeout = max(timeout - phase1_elapsed, 30)
+    remaining_timeout = max(timeout - phase1_elapsed, 1)
     start = time.monotonic()
     try:
         proc = subprocess.run(
