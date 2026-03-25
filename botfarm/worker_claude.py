@@ -629,7 +629,7 @@ def _find_open_pr_url(
     # Fallback: gh pr view filtered by open state
     try:
         proc = subprocess.run(
-            ["gh", "pr", "view", "--json", "url,state"],
+            ["gh", "pr", "view", branch, "--json", "url,state"],
             capture_output=True, text=True, cwd=str(cwd), timeout=15,
             env=subprocess_env,
         )
@@ -803,7 +803,7 @@ def _check_pr_merged(pr_url: str, cwd: str | Path, *, env: dict[str, str] | None
 
 
 def _recover_pr_url(
-    conn, task_id: int, cwd: str | Path,
+    cwd: str | Path,
     *, env: dict[str, str] | None = None,
 ) -> str | None:
     """Recover the PR URL for a resumed pipeline.

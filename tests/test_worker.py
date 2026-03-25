@@ -2164,7 +2164,7 @@ class TestRunPipelinePauseEvent:
 
 class TestRecoverPrUrl:
     @patch("botfarm.worker_claude.subprocess.run")
-    def test_recovers_url_from_gh(self, mock_run, conn, task_id, tmp_path):
+    def test_recovers_url_from_gh(self, mock_run, tmp_path):
         mock_run.side_effect = [
             # git rev-parse
             subprocess.CompletedProcess(args=["git"], returncode=0, stdout="my-branch\n", stderr=""),
@@ -2175,11 +2175,11 @@ class TestRecoverPrUrl:
                 stderr="",
             ),
         ]
-        url = _recover_pr_url(conn, task_id, tmp_path)
+        url = _recover_pr_url(tmp_path)
         assert url == "https://github.com/owner/repo/pull/42"
 
     @patch("botfarm.worker_claude.subprocess.run")
-    def test_returns_none_on_gh_failure(self, mock_run, conn, task_id, tmp_path):
+    def test_returns_none_on_gh_failure(self, mock_run, tmp_path):
         mock_run.side_effect = [
             # git rev-parse
             subprocess.CompletedProcess(args=["git"], returncode=0, stdout="my-branch\n", stderr=""),
@@ -2188,13 +2188,13 @@ class TestRecoverPrUrl:
             # gh pr view fallback also fails
             subprocess.CompletedProcess(args=["gh"], returncode=1, stdout="", stderr="no PR found"),
         ]
-        url = _recover_pr_url(conn, task_id, tmp_path)
+        url = _recover_pr_url(tmp_path)
         assert url is None
 
     @patch("botfarm.worker_claude.subprocess.run")
-    def test_returns_none_on_exception(self, mock_run, conn, task_id, tmp_path):
+    def test_returns_none_on_exception(self, mock_run, tmp_path):
         mock_run.side_effect = FileNotFoundError("git not found")
-        url = _recover_pr_url(conn, task_id, tmp_path)
+        url = _recover_pr_url(tmp_path)
         assert url is None
 
 
