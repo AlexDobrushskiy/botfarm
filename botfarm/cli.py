@@ -1023,8 +1023,34 @@ from botfarm.project_setup import (
     default=None,
     help="Path to config file (default: ~/.botfarm/config.yaml).",
 )
-def add_project(config_path):
-    """Interactively add a new project with repo clone, worktrees, and config."""
+@click.option("--repo-url", default=None, help="Git repository URL (SSH or HTTPS).")
+@click.option("--name", default=None, help="Project name (default: extracted from repo URL).")
+@click.option("--team", default=None, help="Bugtracker team key (e.g. SMA).")
+@click.option(
+    "--project",
+    "tracker_project_flag",
+    default=None,
+    help="Bugtracker project filter (optional).",
+)
+@click.option(
+    "--slots",
+    "num_slots",
+    type=click.IntRange(1, 20),
+    default=None,
+    help="Number of concurrent slots (1-20).",
+)
+@click.option("--yes", "-y", is_flag=True, default=False, help="Skip confirmation prompt.")
+def add_project(config_path, repo_url, name, team, tracker_project_flag, num_slots, yes):
+    """Add a new project with repo clone, worktrees, and config.
+
+    When all required flags are provided with --yes, runs fully non-interactive:
+
+    \b
+        botfarm add-project --repo-url git@github.com:user/repo.git \\
+            --team SMA --slots 2 --yes
+
+    When some flags are missing, prompts only for the missing ones.
+    """
     cfg_path = config_path or DEFAULT_CONFIG_PATH
     console = Console()
 
@@ -1061,11 +1087,16 @@ def add_project(config_path):
     console.print("\n[bold]Add a new project to botfarm[/bold]\n")
 
     # --- 1. Repo URL ---
-    repo_url = click.prompt("GitHub repo URL (SSH or HTTPS)")
+    if not repo_url:
+        repo_url = click.prompt("GitHub repo URL (SSH or HTTPS)")
 
     # --- 2. Project name (auto-suggest from repo URL) ---
-    suggested_name = _extract_repo_name(repo_url)
-    name = click.prompt("Project name", default=suggested_name)
+    if not name:
+        suggested_name = _extract_repo_name(repo_url)
+        if yes:
+            name = suggested_name
+        else:
+            name = click.prompt("Project name", default=suggested_name)
 
     if name in existing_names:
         raise click.ClickException(
@@ -1073,72 +1104,79 @@ def add_project(config_path):
         )
 
     # --- 3. Team selection ---
-    team_key = ""
+    team_key = team or ""
     selected_team = None
     client = None
-    if linear_api_key:
-        try:
-            client = create_client(api_key=linear_api_key)
-            teams = client.list_teams()
-            if teams:
-                console.print("\n[bold]Available teams:[/bold]")
-                for i, t in enumerate(teams, 1):
-                    console.print(f"  {i}. {t['name']} ({t['key']})")
-                choice = click.prompt(
-                    "\nSelect team number",
-                    type=click.IntRange(1, len(teams)),
-                )
-                selected_team = teams[choice - 1]
-                team_key = selected_team["key"]
-            else:
+    if not team_key:
+        if linear_api_key:
+            try:
+                client = create_client(api_key=linear_api_key)
+                teams = client.list_teams()
+                if teams:
+                    console.print("\n[bold]Available teams:[/bold]")
+                    for i, t in enumerate(teams, 1):
+                        console.print(f"  {i}. {t['name']} ({t['key']})")
+                    choice = click.prompt(
+                        "\nSelect team number",
+                        type=click.IntRange(1, len(teams)),
+                    )
+                    selected_team = teams[choice - 1]
+                    team_key = selected_team["key"]
+                else:
+                    team_key = click.prompt("Team key (e.g. SMA)")
+            except BugtrackerError as exc:
+                click.echo(f"Warning: Could not fetch teams: {exc}")
                 team_key = click.prompt("Team key (e.g. SMA)")
-        except BugtrackerError as exc:
-            click.echo(f"Warning: Could not fetch teams: {exc}")
+        else:
+            click.echo("Warning: LINEAR_API_KEY not set. Team selection will be manual.")
             team_key = click.prompt("Team key (e.g. SMA)")
-    else:
-        click.echo("Warning: LINEAR_API_KEY not set. Team selection will be manual.")
-        team_key = click.prompt("Team key (e.g. SMA)")
 
     # --- 4. Project selection (optional) ---
-    tracker_project = ""
+    # tracker_project_flag=None means not provided; "" means explicitly empty
+    tracker_project = tracker_project_flag if tracker_project_flag is not None else ""
     _project_filter_help = (
         "\n[bold]Project filter[/bold] (optional)\n"
         "  Limits which tickets botfarm picks up from this team.\n"
         "  Enter the exact Linear project name (e.g. 'Bot farm').\n"
         "  Leave empty to monitor all tickets in the team."
     )
-    if client and selected_team:
-        try:
-            projects = client.list_team_projects(selected_team["id"])
-            if projects:
-                console.print(
-                    "\n[bold]Project filter[/bold] (optional) — "
-                    "limits which tickets botfarm picks up from this team:"
+    if tracker_project_flag is None and not yes:
+        if client and selected_team:
+            try:
+                projects = client.list_team_projects(selected_team["id"])
+                if projects:
+                    console.print(
+                        "\n[bold]Project filter[/bold] (optional) — "
+                        "limits which tickets botfarm picks up from this team:"
+                    )
+                    console.print("  0. (none — monitor all tickets in team)")
+                    for i, proj in enumerate(projects, 1):
+                        console.print(f"  {i}. {proj['name']}")
+                    choice = click.prompt(
+                        "\nSelect project number (0 to skip)",
+                        type=click.IntRange(0, len(projects)),
+                        default=0,
+                    )
+                    if choice > 0:
+                        tracker_project = projects[choice - 1]["name"]
+            except BugtrackerError as exc:
+                click.echo(f"Warning: Could not fetch projects: {exc}")
+                console.print(_project_filter_help)
+                tracker_project = click.prompt(
+                    "Project name (press Enter to skip)", default=""
                 )
-                console.print("  0. (none — monitor all tickets in team)")
-                for i, proj in enumerate(projects, 1):
-                    console.print(f"  {i}. {proj['name']}")
-                choice = click.prompt(
-                    "\nSelect project number (0 to skip)",
-                    type=click.IntRange(0, len(projects)),
-                    default=0,
-                )
-                if choice > 0:
-                    tracker_project = projects[choice - 1]["name"]
-        except BugtrackerError as exc:
-            click.echo(f"Warning: Could not fetch projects: {exc}")
+        else:
             console.print(_project_filter_help)
             tracker_project = click.prompt(
                 "Project name (press Enter to skip)", default=""
             )
-    else:
-        console.print(_project_filter_help)
-        tracker_project = click.prompt(
-            "Project name (press Enter to skip)", default=""
-        )
 
     # --- 5. Number of slots ---
-    num_slots = click.prompt("Number of slots", type=click.IntRange(1, 20), default=1)
+    if num_slots is None:
+        if yes:
+            num_slots = 1
+        else:
+            num_slots = click.prompt("Number of slots", type=click.IntRange(1, 20), default=1)
     slots = list(range(1, num_slots + 1))
 
     # --- Summary and confirmation ---
@@ -1156,7 +1194,7 @@ def add_project(config_path):
     console.print(f"  Clone to:       {repo_dir}")
     console.print(f"  Worktrees:      {projects_dir}/{worktree_prefix}<N>")
 
-    if not click.confirm("\nProceed?", default=True):
+    if not yes and not click.confirm("\nProceed?", default=True):
         console.print("Aborted.")
         return
 
