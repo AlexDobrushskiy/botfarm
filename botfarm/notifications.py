@@ -133,7 +133,7 @@ class Notifier:
         if review_summary:
             lines.append(review_summary)
         lines.append(
-            f"_To retry: remove 'Failed' and 'Human' labels "
+            "_To retry: remove 'Failed' and 'Human' labels "
             f"and move ticket to {todo_status}. The agent will pick up where it left off._"
         )
         self._send("task_failed", "\n".join(lines))

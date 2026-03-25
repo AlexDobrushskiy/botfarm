@@ -22,6 +22,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from botfarm.config import DailySummaryConfig
 
+from botfarm.config import JiraBugtrackerConfig
+
 from botfarm.db import (
     count_completed_tasks_since,
     get_daily_summary_data,
@@ -503,7 +505,7 @@ class OperationsMixin:
 
         ticket_id = slot.ticket_id or "unknown"
         bt_cfg = self._config.bugtracker
-        if bt_cfg.type == "jira" and hasattr(bt_cfg, "url") and bt_cfg.url:
+        if isinstance(bt_cfg, JiraBugtrackerConfig) and bt_cfg.url:
             ticket_url = f"{bt_cfg.url.rstrip('/')}/browse/{ticket_id}"
         elif bt_cfg.workspace:
             ticket_url = f"https://linear.app/{bt_cfg.workspace}/issue/{ticket_id}"
