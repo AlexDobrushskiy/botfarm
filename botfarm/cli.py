@@ -99,6 +99,30 @@ def _resolve_paths(
     return db_path, config
 
 
+_SUPERVISOR_HEARTBEAT_STALE_SECONDS = 300  # 5 minutes — generous for any poll interval
+
+
+def _is_supervisor_running() -> bool:
+    """Check if the supervisor is running by examining its database heartbeat.
+
+    Returns True if the heartbeat was updated within the last 5 minutes.
+    """
+    try:
+        db_path = resolve_db_path()
+        if not db_path.exists():
+            return False
+        conn = init_db(db_path)
+        _, _, heartbeat = load_dispatch_state(conn)
+        conn.close()
+        if not heartbeat:
+            return False
+        hb_dt = datetime.fromisoformat(heartbeat.replace("Z", "+00:00"))
+        age = (datetime.now(timezone.utc) - hb_dt).total_seconds()
+        return age <= _SUPERVISOR_HEARTBEAT_STALE_SECONDS
+    except Exception:
+        return False
+
+
 def _format_duration(total_seconds: int) -> str:
     """Format a duration in seconds as a human-readable string (e.g. '2h30m', '5m30s', '45s')."""
     if total_seconds < 0:
@@ -1213,6 +1237,15 @@ def add_project(config_path, repo_url, name, team, tracker_project_flag, num_slo
         console.print("Aborted.")
         return
 
+    # Check if the supervisor is currently in setup mode (before we write the
+    # new project to config).  In setup mode the supervisor polls for config
+    # changes every 30 seconds and will pick up the new project automatically.
+    try:
+        pre_config = load_config(cfg_path)
+        was_setup_mode = pre_config.setup_mode
+    except Exception:
+        was_setup_mode = False
+
     # --- 6. Setup: clone, worktrees, config ---
     try:
         project_dict = setup_project(
@@ -1237,7 +1270,30 @@ def add_project(config_path, repo_url, name, team, tracker_project_flag, num_slo
         console.print(
             f"    - Create a CLAUDE.md: botfarm init-claude-md {base_dir}"
         )
-    console.print("    - Start or restart the supervisor: botfarm run")
+    # Show context-aware supervisor message based on whether the supervisor is
+    # running and whether it will auto-detect the config change.
+    supervisor_running = _is_supervisor_running()
+    if supervisor_running and was_setup_mode:
+        # Verify post-write config is actually complete — _try_exit_setup_mode()
+        # only exits when setup_mode becomes False (e.g. API key still missing
+        # means the supervisor stays in setup mode even after adding a project).
+        try:
+            post_config = load_config(cfg_path)
+            config_complete = not post_config.setup_mode
+        except Exception:
+            config_complete = False
+        if config_complete:
+            console.print(
+                "    - Project added — supervisor will pick it up automatically"
+            )
+        else:
+            console.print(
+                "    - Restart the supervisor to apply changes: botfarm run"
+            )
+    elif supervisor_running:
+        console.print("    - Restart the supervisor to apply changes: botfarm run")
+    else:
+        console.print("    - Start the supervisor: botfarm run")
 
 
 # ---------------------------------------------------------------------------

@@ -1,6 +1,7 @@
 """Tests for botfarm add-project CLI command."""
 
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -8,7 +9,7 @@ import pytest
 import yaml
 from click.testing import CliRunner
 
-from botfarm.cli import main
+from botfarm.cli import _is_supervisor_running, main
 from botfarm.bugtracker import BugtrackerError as LinearAPIError
 from botfarm.project_setup import (
     append_project_to_config,
@@ -1597,3 +1598,139 @@ class TestAddProjectJiraBugtracker:
         config = yaml.safe_load(config_path.read_text())
         added = next(p for p in config["projects"] if p["name"] == "my-app")
         assert added["team"] == "AIR"
+
+
+# ---------------------------------------------------------------------------
+# _is_supervisor_running
+# ---------------------------------------------------------------------------
+
+
+class TestIsSupervisorRunning:
+    def test_no_db_file(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("BOTFARM_DB_PATH", str(tmp_path / "nonexistent.db"))
+        assert _is_supervisor_running() is False
+
+    def test_db_exists_no_heartbeat(self, tmp_path, monkeypatch):
+        from botfarm.db import init_db
+
+        db_path = tmp_path / "botfarm.db"
+        monkeypatch.setenv("BOTFARM_DB_PATH", str(db_path))
+        conn = init_db(db_path)
+        conn.close()
+        assert _is_supervisor_running() is False
+
+    def test_recent_heartbeat(self, tmp_path, monkeypatch):
+        from botfarm.db import init_db, save_dispatch_state
+
+        db_path = tmp_path / "botfarm.db"
+        monkeypatch.setenv("BOTFARM_DB_PATH", str(db_path))
+        conn = init_db(db_path)
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        save_dispatch_state(conn, paused=False, supervisor_heartbeat=now)
+        conn.commit()
+        conn.close()
+        assert _is_supervisor_running() is True
+
+    def test_stale_heartbeat(self, tmp_path, monkeypatch):
+        from botfarm.db import init_db, save_dispatch_state
+
+        db_path = tmp_path / "botfarm.db"
+        monkeypatch.setenv("BOTFARM_DB_PATH", str(db_path))
+        conn = init_db(db_path)
+        save_dispatch_state(
+            conn, paused=False, supervisor_heartbeat="2020-01-01T00:00:00.000000Z",
+        )
+        conn.commit()
+        conn.close()
+        assert _is_supervisor_running() is False
+
+
+# ---------------------------------------------------------------------------
+# Supervisor status message in add-project
+# ---------------------------------------------------------------------------
+
+
+class TestAddProjectSupervisorMessage:
+    """Test that add-project shows the right message based on supervisor state."""
+
+    def _run_add_project(self, runner, config_path, tmp_path, monkeypatch,
+                         supervisor_running, was_setup_mode,
+                         config_now_complete=True):
+        monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_DIR", tmp_path / ".botfarm")
+        monkeypatch.delenv("LINEAR_API_KEY", raising=False)
+        monkeypatch.setattr("botfarm.cli._is_supervisor_running", lambda: supervisor_running)
+        # Mock load_config to control setup_mode for both pre-check and
+        # post-write check.  First call → pre-check, second → post-write.
+        if was_setup_mode:
+            call_count = [0]
+            def mock_load_config(p):
+                call_count[0] += 1
+                cfg = MagicMock()
+                if call_count[0] == 1:
+                    cfg.setup_mode = True
+                else:
+                    cfg.setup_mode = not config_now_complete
+                return cfg
+            monkeypatch.setattr(
+                "botfarm.cli.load_config", mock_load_config,
+            )
+        with patch("botfarm.project_setup.subprocess.run", side_effect=_make_mock_run()):
+            return runner.invoke(
+                main,
+                [
+                    "add-project",
+                    "--config", str(config_path),
+                    "--repo-url", "git@github.com:user/my-app.git",
+                    "--name", "my-app",
+                    "--team", "SMA",
+                    "--slots", "1",
+                    "--yes",
+                ],
+            )
+
+    def test_supervisor_not_running(self, runner, config_dir, tmp_path, monkeypatch):
+        _, config_path = config_dir
+        result = self._run_add_project(
+            runner, config_path, tmp_path, monkeypatch,
+            supervisor_running=False, was_setup_mode=False,
+        )
+        assert result.exit_code == 0, result.output
+        assert "Start the supervisor: botfarm run" in result.output
+        assert "picked it up" not in result.output
+        assert "Restart" not in result.output
+
+    def test_supervisor_running_setup_mode(self, runner, config_dir, tmp_path, monkeypatch):
+        _, config_path = config_dir
+        result = self._run_add_project(
+            runner, config_path, tmp_path, monkeypatch,
+            supervisor_running=True, was_setup_mode=True,
+        )
+        assert result.exit_code == 0, result.output
+        assert "supervisor will pick it up automatically" in result.output
+        assert "Start the supervisor" not in result.output
+        assert "Restart" not in result.output
+
+    def test_supervisor_running_setup_mode_config_incomplete(
+        self, runner, config_dir, tmp_path, monkeypatch,
+    ):
+        """Setup mode but config still incomplete (e.g. API key missing)."""
+        _, config_path = config_dir
+        result = self._run_add_project(
+            runner, config_path, tmp_path, monkeypatch,
+            supervisor_running=True, was_setup_mode=True,
+            config_now_complete=False,
+        )
+        assert result.exit_code == 0, result.output
+        assert "Restart the supervisor to apply changes" in result.output
+        assert "picked it up" not in result.output
+
+    def test_supervisor_running_normal_mode(self, runner, config_dir, tmp_path, monkeypatch):
+        _, config_path = config_dir
+        result = self._run_add_project(
+            runner, config_path, tmp_path, monkeypatch,
+            supervisor_running=True, was_setup_mode=False,
+        )
+        assert result.exit_code == 0, result.output
+        assert "Restart the supervisor to apply changes" in result.output
+        assert "Start the supervisor" not in result.output
+        assert "picked it up" not in result.output
