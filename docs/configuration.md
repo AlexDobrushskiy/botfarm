@@ -199,6 +199,7 @@ Controls for the Claude Code agent pipeline (implement → review → fix → pr
 agents:
   max_review_iterations: 3    # Max review→fix cycles before giving up (default: 3)
   max_ci_retries: 2           # Max CI fix attempts (default: 2)
+  pr_checks_timeout_seconds: 600  # Max seconds to wait for CI checks (default: 600)
   timeout_minutes:            # Per-stage timeout
     implement: 120            # default: 120
     review: 30                # default: 30

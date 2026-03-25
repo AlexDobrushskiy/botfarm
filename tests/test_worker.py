@@ -54,7 +54,13 @@ from botfarm.worker import (
     _write_subprocess_log,
 )
 from botfarm.worker_claude import _extract_pr_url_from_log, _gh_pr_view_url
-from botfarm.worker_stages import _check_pr_has_merge_conflict
+from botfarm.worker_stages import (
+    _all_checks_queued,
+    _check_pr_has_merge_conflict,
+    _gh_pr_checks_json,
+    _NO_CI_GRACE_SECONDS,
+    _wait_for_checks_to_appear,
+)
 from botfarm.workflow import get_stage, load_pipeline
 from tests.helpers import make_claude_json
 
@@ -1172,7 +1178,10 @@ class TestRunFix:
 
 class TestRunPrChecks:
     @patch("botfarm.worker_stages.subprocess.run")
-    def test_checks_pass(self, mock_run, tmp_path):
+    @patch("botfarm.worker_stages._wait_for_checks_to_appear",
+           return_value=[{"name": "build", "bucket": "queued"}])
+    @patch("botfarm.worker_stages._check_pr_has_merge_conflict", return_value=False)
+    def test_checks_pass(self, mock_conflict, mock_wait, mock_run, tmp_path):
         mock_run.return_value = subprocess.CompletedProcess(
             args=["gh"], returncode=0, stdout="All checks passed", stderr=""
         )
@@ -1182,7 +1191,10 @@ class TestRunPrChecks:
         assert result.claude_result is None
 
     @patch("botfarm.worker_stages.subprocess.run")
-    def test_checks_fail(self, mock_run, tmp_path):
+    @patch("botfarm.worker_stages._wait_for_checks_to_appear",
+           return_value=[{"name": "build", "bucket": "queued"}])
+    @patch("botfarm.worker_stages._check_pr_has_merge_conflict", return_value=False)
+    def test_checks_fail(self, mock_conflict, mock_wait, mock_run, tmp_path):
         mock_run.return_value = subprocess.CompletedProcess(
             args=["gh"], returncode=1, stdout="Check X failed", stderr=""
         )
@@ -1190,10 +1202,14 @@ class TestRunPrChecks:
         assert result.success is False
         assert "CI checks failed" in result.error
 
+    @patch("botfarm.worker_stages._gh_pr_checks_json", return_value=None)
     @patch("botfarm.worker_stages.subprocess.run")
-    def test_timeout(self, mock_run, tmp_path):
+    @patch("botfarm.worker_stages._wait_for_checks_to_appear",
+           return_value=[{"name": "build", "bucket": "queued"}])
+    @patch("botfarm.worker_stages._check_pr_has_merge_conflict", return_value=False)
+    def test_timeout(self, mock_conflict, mock_wait, mock_run, mock_json, tmp_path):
         mock_run.side_effect = subprocess.TimeoutExpired(cmd="gh", timeout=5)
-        result = _run_pr_checks(PR_URL, cwd=tmp_path, timeout=5)
+        result = _run_pr_checks(PR_URL, cwd=tmp_path, timeout=65)
         assert result.success is False
         assert "timed out" in result.error
 
@@ -3477,7 +3493,10 @@ class TestPipelineContextEnvForStage:
 
 class TestPrChecksEnvPropagation:
     @patch("botfarm.worker_stages.subprocess.run")
-    def test_env_propagated_to_subprocess(self, mock_run, tmp_path):
+    @patch("botfarm.worker_stages._wait_for_checks_to_appear",
+           return_value=[{"name": "build", "bucket": "queued"}])
+    @patch("botfarm.worker_stages._check_pr_has_merge_conflict", return_value=False)
+    def test_env_propagated_to_subprocess(self, mock_conflict, mock_wait, mock_run, tmp_path):
         """_run_pr_checks should pass merged env to subprocess.run."""
         mock_run.return_value = subprocess.CompletedProcess(
             args=["gh"], returncode=0, stdout="OK", stderr=""
@@ -3490,7 +3509,10 @@ class TestPrChecksEnvPropagation:
         assert call_kwargs["env"]["GH_TOKEN"] == "test-token"
 
     @patch("botfarm.worker_stages.subprocess.run")
-    def test_no_env_passes_none(self, mock_run, tmp_path):
+    @patch("botfarm.worker_stages._wait_for_checks_to_appear",
+           return_value=[{"name": "build", "bucket": "queued"}])
+    @patch("botfarm.worker_stages._check_pr_has_merge_conflict", return_value=False)
+    def test_no_env_passes_none(self, mock_conflict, mock_wait, mock_run, tmp_path):
         """When env is None, subprocess_env should be None."""
         mock_run.return_value = subprocess.CompletedProcess(
             args=["gh"], returncode=0, stdout="OK", stderr=""
@@ -4076,15 +4098,177 @@ class TestPrChecksConflictPrecheck:
         assert result.success is False
         assert "merge conflicts" in result.error
 
-    @patch("botfarm.worker_stages._check_pr_has_merge_conflict", return_value=False)
     @patch("botfarm.worker_stages.subprocess.run")
-    def test_no_conflict_proceeds_normally(self, mock_run, mock_check, tmp_path):
+    @patch("botfarm.worker_stages._wait_for_checks_to_appear",
+           return_value=[{"name": "build", "bucket": "queued"}])
+    @patch("botfarm.worker_stages._check_pr_has_merge_conflict", return_value=False)
+    def test_no_conflict_proceeds_normally(self, mock_check, mock_wait, mock_run, tmp_path):
         """When no merge conflict, _run_pr_checks proceeds to gh pr checks."""
         mock_run.return_value = subprocess.CompletedProcess(
             args=["gh"], returncode=0, stdout="All checks passed", stderr=""
         )
         result = _run_pr_checks(PR_URL, cwd=tmp_path)
         assert result.success is True
+
+
+class TestGhPrChecksJson:
+    """Tests for _gh_pr_checks_json helper."""
+
+    @patch("botfarm.worker_stages.subprocess.run")
+    def test_returns_parsed_checks(self, mock_run, tmp_path):
+        checks = [{"name": "build", "state": "SUCCESS", "bucket": "pass"}]
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["gh"], returncode=0,
+            stdout=json.dumps(checks), stderr="",
+        )
+        result = _gh_pr_checks_json(PR_URL, tmp_path)
+        assert result == checks
+
+    @patch("botfarm.worker_stages.subprocess.run")
+    def test_returns_none_on_failure(self, mock_run, tmp_path):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["gh"], returncode=1, stdout="", stderr="error",
+        )
+        assert _gh_pr_checks_json(PR_URL, tmp_path) is None
+
+    @patch("botfarm.worker_stages.subprocess.run")
+    def test_returns_none_on_empty_output(self, mock_run, tmp_path):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["gh"], returncode=0, stdout="", stderr="",
+        )
+        assert _gh_pr_checks_json(PR_URL, tmp_path) is None
+
+    @patch("botfarm.worker_stages.subprocess.run")
+    def test_returns_none_on_timeout(self, mock_run, tmp_path):
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd="gh", timeout=30)
+        assert _gh_pr_checks_json(PR_URL, tmp_path) is None
+
+    @patch("botfarm.worker_stages.subprocess.run")
+    def test_returns_none_on_invalid_json(self, mock_run, tmp_path):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["gh"], returncode=0, stdout="not json", stderr="",
+        )
+        assert _gh_pr_checks_json(PR_URL, tmp_path) is None
+
+
+class TestAllChecksQueued:
+    def test_all_queued(self):
+        checks = [
+            {"name": "build", "bucket": "queued"},
+            {"name": "lint", "bucket": "pending"},
+        ]
+        assert _all_checks_queued(checks) is True
+
+    def test_some_running(self):
+        checks = [
+            {"name": "build", "bucket": "queued"},
+            {"name": "lint", "bucket": "pass"},
+        ]
+        assert _all_checks_queued(checks) is False
+
+    def test_empty_list(self):
+        assert _all_checks_queued([]) is False
+
+    def test_missing_bucket_not_treated_as_queued(self):
+        checks = [{"name": "build"}]
+        assert _all_checks_queued(checks) is False
+
+
+class TestWaitForChecksToAppear:
+    @patch("botfarm.worker_stages._gh_pr_checks_json")
+    def test_returns_checks_immediately(self, mock_json, tmp_path):
+        checks = [{"name": "build", "bucket": "queued"}]
+        mock_json.return_value = checks
+        result = _wait_for_checks_to_appear(
+            PR_URL, tmp_path, grace_seconds=5, poll_interval=1,
+        )
+        assert result == checks
+
+    @patch("botfarm.worker_stages.time.sleep")
+    @patch("botfarm.worker_stages._gh_pr_checks_json")
+    def test_returns_none_when_no_checks(self, mock_json, mock_sleep, tmp_path):
+        mock_json.return_value = None
+        result = _wait_for_checks_to_appear(
+            PR_URL, tmp_path, grace_seconds=0,
+        )
+        assert result is None
+
+    @patch("botfarm.worker_stages.time.sleep")
+    @patch("botfarm.worker_stages._gh_pr_checks_json")
+    def test_polls_until_checks_appear(self, mock_json, mock_sleep, tmp_path):
+        checks = [{"name": "build", "bucket": "queued"}]
+        mock_json.side_effect = [None, None, checks]
+        result = _wait_for_checks_to_appear(
+            PR_URL, tmp_path, grace_seconds=60, poll_interval=1,
+        )
+        assert result == checks
+
+
+class TestPrChecksNoCiDetection:
+    """Tests for no-CI detection in _run_pr_checks."""
+
+    @patch("botfarm.worker_stages._wait_for_checks_to_appear", return_value=None)
+    @patch("botfarm.worker_stages._check_pr_has_merge_conflict", return_value=False)
+    def test_no_ci_returns_success(self, mock_conflict, mock_wait, tmp_path):
+        """When no CI checks appear, _run_pr_checks succeeds with a pass-through."""
+        result = _run_pr_checks(PR_URL, cwd=tmp_path)
+        assert result.success is True
+        assert result.stage == "pr_checks"
+
+    @patch("botfarm.worker_stages.subprocess.run")
+    @patch("botfarm.worker_stages._wait_for_checks_to_appear")
+    @patch("botfarm.worker_stages._check_pr_has_merge_conflict", return_value=False)
+    def test_checks_exist_proceeds_to_watch(
+        self, mock_conflict, mock_wait, mock_run, tmp_path,
+    ):
+        """When checks exist, proceeds to gh pr checks --watch."""
+        mock_wait.return_value = [{"name": "build", "bucket": "queued"}]
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["gh"], returncode=0, stdout="All checks passed", stderr="",
+        )
+        result = _run_pr_checks(PR_URL, cwd=tmp_path)
+        assert result.success is True
+        # Verify --watch was called
+        call_args = mock_run.call_args[0][0]
+        assert "--watch" in call_args
+
+
+class TestPrChecksQueuedDetection:
+    """Tests for stuck-queued detection on timeout."""
+
+    @patch("botfarm.worker_stages._gh_pr_checks_json")
+    @patch("botfarm.worker_stages.subprocess.run")
+    @patch("botfarm.worker_stages._wait_for_checks_to_appear")
+    @patch("botfarm.worker_stages._check_pr_has_merge_conflict", return_value=False)
+    def test_timeout_with_queued_checks_gives_runner_warning(
+        self, mock_conflict, mock_wait, mock_run, mock_json, tmp_path,
+    ):
+        """On timeout, if all checks are still queued, error mentions runners."""
+        mock_wait.return_value = [{"name": "build", "bucket": "queued"}]
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd="gh", timeout=30)
+        mock_json.return_value = [{"name": "build", "bucket": "queued"}]
+
+        result = _run_pr_checks(PR_URL, cwd=tmp_path, timeout=90)
+        assert result.success is False
+        assert "runners may be unavailable" in result.error
+        assert "build" in result.error
+
+    @patch("botfarm.worker_stages._gh_pr_checks_json")
+    @patch("botfarm.worker_stages.subprocess.run")
+    @patch("botfarm.worker_stages._wait_for_checks_to_appear")
+    @patch("botfarm.worker_stages._check_pr_has_merge_conflict", return_value=False)
+    def test_timeout_with_running_checks_gives_generic_message(
+        self, mock_conflict, mock_wait, mock_run, mock_json, tmp_path,
+    ):
+        """On timeout, if checks are running (not queued), give generic timeout error."""
+        mock_wait.return_value = [{"name": "build", "bucket": "queued"}]
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd="gh", timeout=30)
+        mock_json.return_value = [{"name": "build", "bucket": "fail"}]
+
+        result = _run_pr_checks(PR_URL, cwd=tmp_path, timeout=90)
+        assert result.success is False
+        assert "timed out" in result.error
+        assert "runners" not in result.error
 
 
 class TestPrChecksConflictRouting:

@@ -67,6 +67,7 @@ dashboard:
 agents:
   max_review_iterations: 3
   max_ci_retries: 2
+  pr_checks_timeout_seconds: 600  # max seconds to wait for CI checks
   timeout_minutes:
     implement: 120
     review: 30
@@ -308,6 +309,7 @@ class AgentsConfig:
     max_review_iterations: int = 3
     max_ci_retries: int = 2
     max_merge_conflict_retries: int = 2
+    pr_checks_timeout_seconds: int = 600
     timeout_minutes: dict[str, int] = field(default_factory=lambda: {
         "implement": 120,
         "review": 30,
@@ -713,6 +715,9 @@ def _validate_config(config: BotfarmConfig) -> None:
     if config.agents.max_merge_conflict_retries < 0:
         raise ConfigError("agents.max_merge_conflict_retries must be at least 0")
 
+    if config.agents.pr_checks_timeout_seconds < 1:
+        raise ConfigError("agents.pr_checks_timeout_seconds must be at least 1")
+
     for stage, minutes in config.agents.timeout_minutes.items():
         if stage not in _KNOWN_TIMEOUT_STAGES:
             raise ConfigError(
@@ -1018,6 +1023,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         max_review_iterations=int(agents_data.get("max_review_iterations", 3)),
         max_ci_retries=int(agents_data.get("max_ci_retries", 2)),
         max_merge_conflict_retries=int(agents_data.get("max_merge_conflict_retries", 2)),
+        pr_checks_timeout_seconds=int(agents_data.get("pr_checks_timeout_seconds", 600)),
         timeout_minutes=timeout_minutes,
         timeout_overrides=timeout_overrides,
         timeout_grace_seconds=int(agents_data.get("timeout_grace_seconds", 10)),
@@ -1159,6 +1165,7 @@ EDITABLE_FIELDS: dict[tuple[str, str], dict] = {
     ("agents", "max_review_iterations"): {"type": "int", "min": 1},
     ("agents", "max_ci_retries"): {"type": "int", "min": 0},
     ("agents", "max_merge_conflict_retries"): {"type": "int", "min": 0},
+    ("agents", "pr_checks_timeout_seconds"): {"type": "int", "min": 1},
     ("agents", "timeout_minutes"): {"type": "timeout_dict"},
     ("agents", "timeout_grace_seconds"): {"type": "int", "min": 0},
     # Legacy codex_reviewer_* keys kept as aliases for dashboard compat
