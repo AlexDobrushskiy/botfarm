@@ -1654,16 +1654,25 @@ class TestAddProjectSupervisorMessage:
     """Test that add-project shows the right message based on supervisor state."""
 
     def _run_add_project(self, runner, config_path, tmp_path, monkeypatch,
-                         supervisor_running, was_setup_mode):
+                         supervisor_running, was_setup_mode,
+                         config_now_complete=True):
         monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_DIR", tmp_path / ".botfarm")
         monkeypatch.delenv("LINEAR_API_KEY", raising=False)
         monkeypatch.setattr("botfarm.cli._is_supervisor_running", lambda: supervisor_running)
-        # Mock load_config to control setup_mode for the pre-check
+        # Mock load_config to control setup_mode for both pre-check and
+        # post-write check.  First call → pre-check, second → post-write.
         if was_setup_mode:
-            mock_config = MagicMock()
-            mock_config.setup_mode = True
+            call_count = [0]
+            def mock_load_config(p):
+                call_count[0] += 1
+                cfg = MagicMock()
+                if call_count[0] == 1:
+                    cfg.setup_mode = True
+                else:
+                    cfg.setup_mode = not config_now_complete
+                return cfg
             monkeypatch.setattr(
-                "botfarm.cli.load_config", lambda p: mock_config,
+                "botfarm.cli.load_config", mock_load_config,
             )
         with patch("botfarm.project_setup.subprocess.run", side_effect=_make_mock_run()):
             return runner.invoke(
@@ -1700,6 +1709,20 @@ class TestAddProjectSupervisorMessage:
         assert "supervisor will pick it up automatically" in result.output
         assert "Start the supervisor" not in result.output
         assert "Restart" not in result.output
+
+    def test_supervisor_running_setup_mode_config_incomplete(
+        self, runner, config_dir, tmp_path, monkeypatch,
+    ):
+        """Setup mode but config still incomplete (e.g. API key missing)."""
+        _, config_path = config_dir
+        result = self._run_add_project(
+            runner, config_path, tmp_path, monkeypatch,
+            supervisor_running=True, was_setup_mode=True,
+            config_now_complete=False,
+        )
+        assert result.exit_code == 0, result.output
+        assert "Restart the supervisor to apply changes" in result.output
+        assert "picked it up" not in result.output
 
     def test_supervisor_running_normal_mode(self, runner, config_dir, tmp_path, monkeypatch):
         _, config_path = config_dir

@@ -1244,7 +1244,7 @@ def add_project(config_path, repo_url, name, team, tracker_project_flag, num_slo
         pre_config = load_config(cfg_path)
         was_setup_mode = pre_config.setup_mode
     except Exception:
-        was_setup_mode = True
+        was_setup_mode = False
 
     # --- 6. Setup: clone, worktrees, config ---
     try:
@@ -1274,9 +1274,22 @@ def add_project(config_path, repo_url, name, team, tracker_project_flag, num_slo
     # running and whether it will auto-detect the config change.
     supervisor_running = _is_supervisor_running()
     if supervisor_running and was_setup_mode:
-        console.print(
-            "    - Project added — supervisor will pick it up automatically"
-        )
+        # Verify post-write config is actually complete — _try_exit_setup_mode()
+        # only exits when setup_mode becomes False (e.g. API key still missing
+        # means the supervisor stays in setup mode even after adding a project).
+        try:
+            post_config = load_config(cfg_path)
+            config_complete = not post_config.setup_mode
+        except Exception:
+            config_complete = False
+        if config_complete:
+            console.print(
+                "    - Project added — supervisor will pick it up automatically"
+            )
+        else:
+            console.print(
+                "    - Restart the supervisor to apply changes: botfarm run"
+            )
     elif supervisor_running:
         console.print("    - Restart the supervisor to apply changes: botfarm run")
     else:
