@@ -1101,16 +1101,25 @@ def add_project(config_path):
 
     # --- 4. Project selection (optional) ---
     tracker_project = ""
+    _project_filter_help = (
+        "\n[bold]Project filter[/bold] (optional)\n"
+        "  Limits which tickets botfarm picks up from this team.\n"
+        "  Enter the exact Linear project name (e.g. 'Bot farm').\n"
+        "  Leave empty to monitor all tickets in the team."
+    )
     if client and selected_team:
         try:
             projects = client.list_team_projects(selected_team["id"])
             if projects:
-                console.print("\n[bold]Available projects:[/bold]")
-                console.print("  0. (none — use all projects in team)")
+                console.print(
+                    "\n[bold]Project filter[/bold] (optional) — "
+                    "limits which tickets botfarm picks up from this team:"
+                )
+                console.print("  0. (none — monitor all tickets in team)")
                 for i, proj in enumerate(projects, 1):
                     console.print(f"  {i}. {proj['name']}")
                 choice = click.prompt(
-                    "\nSelect project number",
+                    "\nSelect project number (0 to skip)",
                     type=click.IntRange(0, len(projects)),
                     default=0,
                 )
@@ -1118,12 +1127,14 @@ def add_project(config_path):
                     tracker_project = projects[choice - 1]["name"]
         except BugtrackerError as exc:
             click.echo(f"Warning: Could not fetch projects: {exc}")
+            console.print(_project_filter_help)
             tracker_project = click.prompt(
-                "Project filter (optional, press Enter to skip)", default=""
+                "Project name (press Enter to skip)", default=""
             )
     else:
+        console.print(_project_filter_help)
         tracker_project = click.prompt(
-            "Project filter (optional, press Enter to skip)", default=""
+            "Project name (press Enter to skip)", default=""
         )
 
     # --- 5. Number of slots ---
