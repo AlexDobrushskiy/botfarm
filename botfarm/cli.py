@@ -1136,7 +1136,7 @@ def add_project(config_path, repo_url, name, team, tracker_project_flag, num_slo
                 click.echo("Warning: LINEAR_API_KEY not set. Team selection will be manual.")
                 team_key = click.prompt("Team key (e.g. SMA)")
         else:
-            team_key = click.prompt(f"Jira project key (e.g. AIR)")
+            team_key = click.prompt("Jira project key (e.g. AIR)")
 
     # --- 4. Project selection (optional) ---
     # tracker_project_flag=None means not provided; "" means explicitly empty
