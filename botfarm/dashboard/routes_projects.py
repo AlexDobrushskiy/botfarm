@@ -147,6 +147,17 @@ async def api_project_create(request: Request):
         project_type_raw = ""
     project_type = project_type_raw.strip()
     setup_commands_raw = body.get("setup_commands")
+    bugtracker_type = cfg.bugtracker.type
+
+    # Parse include_tags — accept list or comma-separated string
+    include_tags: list[str] = []
+    include_tags_raw = body.get("include_tags")
+    if isinstance(include_tags_raw, list):
+        include_tags = [str(t).strip() for t in include_tags_raw if str(t).strip()]
+    elif isinstance(include_tags_raw, str) and include_tags_raw.strip():
+        include_tags = [
+            t.strip() for t in include_tags_raw.split(",") if t.strip()
+        ]
 
     # Validation
     errors = []
@@ -166,7 +177,8 @@ async def api_project_create(request: Request):
         )
 
     if not team:
-        errors.append("Team is required")
+        errors.append("Team is required" if bugtracker_type == "linear"
+                       else "Jira project key is required")
 
     if not isinstance(slots_count, int) or isinstance(slots_count, bool):
         errors.append("Slots must be an integer")
@@ -204,7 +216,8 @@ async def api_project_create(request: Request):
                 task_state["messages"].append(msg)
 
         try:
-            if create_linear_project and tracker_project:
+            if (bugtracker_type == "linear"
+                    and create_linear_project and tracker_project):
                 _on_progress(f"Creating Linear project '{tracker_project}'...")
                 try:
                     client = _get_bugtracker_client(app)
@@ -235,6 +248,7 @@ async def api_project_create(request: Request):
                 progress_callback=_on_progress,
                 project_type=project_type,
                 setup_commands=setup_commands or None,
+                include_tags=include_tags or None,
             )
             # Notify supervisor to register the new project
             cb = app.state.on_add_project
@@ -389,11 +403,16 @@ def add_project_page(request: Request):
     app = request.app
     templates = app.state.templates
     state = read_state(app)
+    cfg = app.state.botfarm_config
+    bugtracker_type = "linear"
+    if cfg is not None:
+        bugtracker_type = cfg.bugtracker.type
     return templates.TemplateResponse(request, "add_project.html", {
         "active_page": "add_project",
         "supervisor": supervisor_status(app, state),
         "pause_state": manual_pause_state(state),
         "capacity": get_capacity_data(app),
+        "bugtracker_type": bugtracker_type,
     })
 
 

@@ -862,6 +862,19 @@ class TestFormatProjectEntry:
         data = yaml.safe_load("projects:\n" + result)
         assert data["projects"][0]["run_env"] == {"NODE_ENV": "development"}
 
+    def test_entry_with_include_tags(self):
+        project = {
+            "name": "jira-proj",
+            "team": "AIR",
+            "base_dir": "~/jira-proj",
+            "worktree_prefix": "jira-proj-slot-",
+            "slots": [1],
+            "include_tags": ["botfarm", "ready"],
+        }
+        result = format_project_entry(project)
+        data = yaml.safe_load("projects:\n" + result)
+        assert data["projects"][0]["include_tags"] == ["botfarm", "ready"]
+
     def test_entry_without_optional_fields(self):
         project = {
             "name": "my-app",
@@ -877,6 +890,7 @@ class TestFormatProjectEntry:
         assert "run_command" not in data["projects"][0]
         assert "run_port" not in data["projects"][0]
         assert "run_env" not in data["projects"][0]
+        assert "include_tags" not in data["projects"][0]
 
 
 # ---------------------------------------------------------------------------
