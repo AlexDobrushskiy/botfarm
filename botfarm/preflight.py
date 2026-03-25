@@ -264,18 +264,33 @@ def check_credentials() -> list[CheckResult]:
 
 
 def check_claude_binary() -> list[CheckResult]:
-    """Check that the ``claude`` binary is available on PATH."""
+    """Check that the ``claude`` binary is available on PATH.
+
+    When ``claude`` is not found, probes ``~/.local/bin/claude`` (the
+    default install location) to distinguish "not installed" from
+    "installed but PATH not configured".
+    """
     ok, msg = check_claude_available()
     if not ok:
         # Augment the message with recovery guidance when binary is missing.
         # Note: string coupling — relies on "not found" wording from check_claude_available().
         if "not found" in msg:
-            msg = (
-                "'claude' not found on PATH. "
-                "Workers will fail to invoke Claude Code. "
-                "Ensure Claude Code is installed and ~/.local/bin is in PATH. "
-                "For nohup: PATH=$HOME/.local/bin:$PATH nohup botfarm run &"
-            )
+            local_bin = Path("~/.local/bin").expanduser()
+            if (local_bin / "claude").exists():
+                msg = (
+                    "'claude' found at ~/.local/bin/claude but ~/.local/bin "
+                    "is not in PATH. "
+                    "Add it permanently: "
+                    "echo 'export PATH=\"$HOME/.local/bin:$PATH\"' >> ~/.bashrc && source ~/.bashrc — "
+                    "Or for nohup: PATH=$HOME/.local/bin:$PATH nohup botfarm run &"
+                )
+            else:
+                msg = (
+                    "'claude' not found on PATH and not present at "
+                    "~/.local/bin/claude. "
+                    "Install Claude Code: curl -fsSL https://claude.ai/install.sh | bash — "
+                    "Then add ~/.local/bin to PATH if needed."
+                )
         return [CheckResult(name="claude_binary", passed=False, message=msg)]
     return [CheckResult(name="claude_binary", passed=True, message=f"OK — {msg}")]
 
