@@ -65,12 +65,6 @@
                        placeholder="e.g. AIR, PROJ">
             </label>
 
-            <label for="jira_tracker_project">
-                Project filter <small>(optional — limits which tickets botfarm picks up)</small>
-                <input type="text" id="jira_tracker_project" name="jira_tracker_project"
-                       placeholder="Exact Jira project name, or leave empty for all">
-            </label>
-
             <label for="jira_include_tags">
                 Include tags <small>(optional — only pick up tickets with these labels)</small>
                 <input type="text" id="jira_include_tags" name="jira_include_tags"
@@ -230,7 +224,6 @@ function submitAddProject(evt) {
 
     if (_bugtrackerType === "jira") {
         body.team = document.getElementById("jira_project_key").value.trim();
-        body.tracker_project = document.getElementById("jira_tracker_project").value.trim();
         body.create_linear_project = false;
         var tags = document.getElementById("jira_include_tags").value.trim();
         if (tags) {
