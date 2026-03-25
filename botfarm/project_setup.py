@@ -5,6 +5,7 @@ dashboard API can reuse the same helpers for cloning repos, creating
 worktrees, and updating config.yaml.
 """
 
+import logging
 import os
 import re
 import shutil
@@ -509,11 +510,85 @@ def extract_repo_name(repo_url: str) -> str:
     return url.split("/")[-1] or "project"
 
 
+_log = logging.getLogger(__name__)
+
+
+def _ssh_host_from_url(repo_url: str) -> str | None:
+    """Extract hostname from an SSH git URL, or return ``None`` for non-SSH URLs."""
+    # ssh://[user@]host[:port]/path
+    m = re.match(r"ssh://(?:[^@]+@)?([^:/]+)", repo_url)
+    if m:
+        return m.group(1)
+    # SCP-like: [user@]host:path  (colon NOT followed by // to exclude scheme URLs)
+    m = re.match(r"(?:[^@]+@)?([^:/]+):(?!//)", repo_url)
+    if m:
+        return m.group(1)
+    return None
+
+
+def _ensure_ssh_host_key(repo_url: str) -> None:
+    """Add the SSH host key for the repo host to ``known_hosts`` if missing.
+
+    Only acts on SSH URLs.  For HTTPS URLs this is a no-op.
+    Logs warnings on failure but never raises — a missing host key will
+    surface as a clear ``git clone`` error downstream.
+    """
+    host = _ssh_host_from_url(repo_url)
+    if not host:
+        return
+
+    ssh_dir = Path.home() / ".ssh"
+    known_hosts = ssh_dir / "known_hosts"
+
+    # Check if host already present
+    if known_hosts.exists():
+        try:
+            existing = known_hosts.read_text()
+            if host in existing:
+                return
+        except OSError:
+            pass  # unreadable — try keyscan anyway
+
+    # Run ssh-keyscan to fetch the host key
+    try:
+        result = subprocess.run(
+            ["ssh-keyscan", "-T", "5", host],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        _log.warning("ssh-keyscan failed for %s: %s", host, exc)
+        return
+
+    keys = result.stdout.strip()
+    if not keys:
+        _log.warning("ssh-keyscan returned no keys for %s", host)
+        return
+
+    # Ensure ~/.ssh exists with correct permissions
+    try:
+        ssh_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    except OSError as exc:
+        _log.warning("Cannot create %s: %s", ssh_dir, exc)
+        return
+
+    # Append keys
+    try:
+        with known_hosts.open("a") as f:
+            f.write(keys + "\n")
+        _log.info("Added SSH host key for %s to %s", host, known_hosts)
+    except OSError as exc:
+        _log.warning("Cannot write to %s: %s", known_hosts, exc)
+
+
 def clone_repo(repo_url: str, target_dir: Path) -> None:
     """Clone a git repository to the target directory.
 
-    Raises ProjectSetupError on failure.
+    For SSH URLs, ensures the host key is in ``~/.ssh/known_hosts``
+    before cloning.  Raises ProjectSetupError on failure.
     """
+    _ensure_ssh_host_key(repo_url)
     try:
         result = subprocess.run(
             ["git", "clone", repo_url, str(target_dir)],

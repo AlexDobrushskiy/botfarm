@@ -15,6 +15,8 @@ from botfarm.project_setup import (
     setup_project,
     setup_project_git,
     ProjectSetupError,
+    _ssh_host_from_url,
+    _ensure_ssh_host_key,
 )
 
 
@@ -677,3 +679,117 @@ class TestSetupProjectSetupCommands:
         data = yaml.safe_load(config_path.read_text())
         proj = next(p for p in data["projects"] if p["name"] == "notype")
         assert "project_type" not in proj
+
+
+class TestSshHostFromUrl:
+    """Tests for _ssh_host_from_url."""
+
+    def test_scp_style_url(self):
+        assert _ssh_host_from_url("git@github.com:user/repo.git") == "github.com"
+
+    def test_ssh_scheme_url(self):
+        assert _ssh_host_from_url("ssh://git@github.com/user/repo.git") == "github.com"
+
+    def test_ssh_scheme_with_port(self):
+        assert _ssh_host_from_url("ssh://git@example.com:2222/repo.git") == "example.com"
+
+    def test_https_url_returns_none(self):
+        assert _ssh_host_from_url("https://github.com/user/repo.git") is None
+
+    def test_http_url_returns_none(self):
+        assert _ssh_host_from_url("http://github.com/user/repo.git") is None
+
+    def test_custom_host(self):
+        assert _ssh_host_from_url("git@gitlab.example.com:group/repo.git") == "gitlab.example.com"
+
+    def test_empty_string(self):
+        assert _ssh_host_from_url("") is None
+
+
+class TestEnsureSshHostKey:
+    """Tests for _ensure_ssh_host_key."""
+
+    def test_noop_for_https(self, tmp_path, monkeypatch):
+        """HTTPS URLs should not trigger ssh-keyscan."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        with patch("botfarm.project_setup.subprocess.run") as mock_run:
+            _ensure_ssh_host_key("https://github.com/user/repo.git")
+        mock_run.assert_not_called()
+
+    def test_skips_if_host_already_in_known_hosts(self, tmp_path, monkeypatch):
+        """Should not run ssh-keyscan if host is already in known_hosts."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        ssh_dir = tmp_path / ".ssh"
+        ssh_dir.mkdir(mode=0o700)
+        (ssh_dir / "known_hosts").write_text("github.com ssh-ed25519 AAAAC3...\n")
+
+        with patch("botfarm.project_setup.subprocess.run") as mock_run:
+            _ensure_ssh_host_key("git@github.com:user/repo.git")
+        mock_run.assert_not_called()
+
+    def test_runs_keyscan_and_appends(self, tmp_path, monkeypatch):
+        """Should run ssh-keyscan and append keys to known_hosts."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        ssh_dir = tmp_path / ".ssh"
+        ssh_dir.mkdir(mode=0o700)
+        (ssh_dir / "known_hosts").write_text("")
+
+        mock_result = MagicMock()
+        mock_result.stdout = "github.com ssh-ed25519 AAAAC3fakekeyfakekey\n"
+        with patch("botfarm.project_setup.subprocess.run", return_value=mock_result) as mock_run:
+            _ensure_ssh_host_key("git@github.com:user/repo.git")
+
+        mock_run.assert_called_once()
+        call_args = mock_run.call_args[0][0]
+        assert call_args == ["ssh-keyscan", "-T", "5", "github.com"]
+        contents = (ssh_dir / "known_hosts").read_text()
+        assert "github.com ssh-ed25519 AAAAC3fakekeyfakekey" in contents
+
+    def test_creates_ssh_dir_if_missing(self, tmp_path, monkeypatch):
+        """Should create ~/.ssh and known_hosts if they don't exist."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        mock_result = MagicMock()
+        mock_result.stdout = "github.com ssh-ed25519 AAAAC3fakekeyfakekey\n"
+        with patch("botfarm.project_setup.subprocess.run", return_value=mock_result):
+            _ensure_ssh_host_key("git@github.com:user/repo.git")
+
+        ssh_dir = tmp_path / ".ssh"
+        assert ssh_dir.exists()
+        assert (ssh_dir.stat().st_mode & 0o777) == 0o700
+        assert "github.com" in (ssh_dir / "known_hosts").read_text()
+
+    def test_handles_keyscan_failure_gracefully(self, tmp_path, monkeypatch):
+        """ssh-keyscan failure should not raise."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        with patch(
+            "botfarm.project_setup.subprocess.run",
+            side_effect=FileNotFoundError("ssh-keyscan not found"),
+        ):
+            # Should not raise
+            _ensure_ssh_host_key("git@github.com:user/repo.git")
+
+    def test_handles_keyscan_timeout_gracefully(self, tmp_path, monkeypatch):
+        """ssh-keyscan timeout should not raise."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        with patch(
+            "botfarm.project_setup.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="ssh-keyscan", timeout=15),
+        ):
+            _ensure_ssh_host_key("git@github.com:user/repo.git")
+
+    def test_handles_empty_keyscan_output(self, tmp_path, monkeypatch):
+        """Empty ssh-keyscan output should not write to known_hosts."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        ssh_dir = tmp_path / ".ssh"
+        ssh_dir.mkdir(mode=0o700)
+        (ssh_dir / "known_hosts").write_text("")
+
+        mock_result = MagicMock()
+        mock_result.stdout = ""
+        with patch("botfarm.project_setup.subprocess.run", return_value=mock_result):
+            _ensure_ssh_host_key("git@github.com:user/repo.git")
+
+        assert (ssh_dir / "known_hosts").read_text() == ""

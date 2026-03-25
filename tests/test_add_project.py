@@ -1070,9 +1070,11 @@ class TestAddProjectCommand:
             if "clone" in cmd:
                 result.returncode = 128
                 result.stderr = "fatal: repository not found"
+                result.stdout = ""
             else:
                 result.returncode = 0
                 result.stderr = ""
+                result.stdout = ""
             return result
 
         with patch("botfarm.project_setup.subprocess.run", side_effect=fail_clone):
