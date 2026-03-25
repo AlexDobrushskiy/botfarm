@@ -1587,14 +1587,7 @@ Note: The supervisor handles status transitions automatically — do not move th
             self._pause_events.pop(key, None)
 
         # Remove all slots for this project from the slot manager
-        keys_to_remove = [
-            k for k in self._slot_manager._slots
-            if k[0] == project_name
-        ]
-        for key in keys_to_remove:
-            del self._slot_manager._slots[key]
-        if keys_to_remove:
-            self._slot_manager.save()
+        self._slot_manager.remove_project_slots(project_name)
 
         # Remove from config.projects list
         self._config.projects = [

@@ -438,6 +438,7 @@ def api_project_remove_info(request: Request, name: str):
 
     # Gather active slot info from database
     active_slots = []
+    conn = None
     try:
         conn = init_db(app.state.db_path)
         rows = load_all_slots(conn)
@@ -450,9 +451,11 @@ def api_project_remove_info(request: Request, name: str):
                     "status": row["status"],
                     "ticket_id": row["ticket_id"] or None,
                 })
-        conn.close()
     except Exception as exc:
         logger.warning("Failed to read slots for remove-info: %s", exc)
+    finally:
+        if conn:
+            conn.close()
 
     # Determine repo directory and whether it's manageable
     base_dir = getattr(project_cfg, "base_dir", "")
@@ -544,58 +547,59 @@ async def api_project_remove(request: Request):
     except Exception as exc:
         logger.warning("Failed to open database for remove: %s", exc)
 
-    if conn and not force:
-        rows = load_all_slots(conn)
-        active = [
-            r for r in rows
-            if r["project"] == name
-            and r["status"] in ("busy", "paused_limit", "paused_manual")
-        ]
-        if active:
-            details = [
-                f"Slot {r['slot_id']}: {r['status']} ({r['ticket_id'] or 'no ticket'})"
-                for r in active
+    try:
+        if conn and not force:
+            rows = load_all_slots(conn)
+            active = [
+                r for r in rows
+                if r["project"] == name
+                and r["status"] in ("busy", "paused_limit", "paused_manual")
             ]
-            if conn:
-                conn.close()
-            return JSONResponse(
-                {
-                    "ok": False,
-                    "errors": [
-                        f"Project '{name}' has {len(active)} active slot(s): "
-                        + "; ".join(details)
-                        + ". Use force to remove anyway."
-                    ],
-                },
-                status_code=409,
-            )
+            if active:
+                details = [
+                    f"Slot {r['slot_id']}: {r['status']} ({r['ticket_id'] or 'no ticket'})"
+                    for r in active
+                ]
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "errors": [
+                            f"Project '{name}' has {len(active)} active slot(s): "
+                            + "; ".join(details)
+                            + ". Use force to remove anyway."
+                        ],
+                    },
+                    status_code=409,
+                )
 
-    # Determine repo directory for cleanup
-    base_dir = project_entry.get("base_dir", "")
-    repo_path = Path(base_dir).expanduser().resolve() if base_dir else None
-    managed_root = (DEFAULT_CONFIG_DIR / "projects").expanduser().resolve()
-    projects_dir = None
-    if repo_path and repo_path.parent != repo_path:
-        candidate = repo_path.parent
-        try:
-            rel = candidate.relative_to(managed_root)
-            if rel.parts:
-                projects_dir = candidate
-        except ValueError:
-            pass
+        # Determine repo directory for cleanup
+        base_dir = project_entry.get("base_dir", "")
+        repo_path = Path(base_dir).expanduser().resolve() if base_dir else None
+        managed_root = (DEFAULT_CONFIG_DIR / "projects").expanduser().resolve()
+        projects_dir = None
+        if repo_path and repo_path.parent != repo_path:
+            candidate = repo_path.parent
+            try:
+                rel = candidate.relative_to(managed_root)
+                if rel.parts:
+                    projects_dir = candidate
+            except ValueError:
+                pass
 
-    # 1. Remove from config.yaml
-    projects.pop(project_index)
-    data["projects"] = projects
-    write_yaml_atomic(config_path, data)
+        # 1. Remove from config.yaml
+        projects.pop(project_index)
+        data["projects"] = projects
+        write_yaml_atomic(config_path, data)
 
-    # 2. Clean up database
-    db_summary = {}
-    if conn:
-        counts = delete_project_data(conn, name)
-        conn.commit()
-        conn.close()
-        db_summary = counts
+        # 2. Clean up database
+        db_summary = {}
+        if conn:
+            counts = delete_project_data(conn, name)
+            conn.commit()
+            db_summary = counts
+    finally:
+        if conn:
+            conn.close()
 
     # 3. Optionally remove repo directory
     cleaned_dir = False

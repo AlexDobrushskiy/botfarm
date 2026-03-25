@@ -163,6 +163,18 @@ class SlotManager:
         if key not in self._slots:
             self._slots[key] = SlotState(project=project, slot_id=slot_id)
 
+    def remove_project_slots(self, project: str) -> int:
+        """Remove all slots for a project and persist the change.
+
+        Returns the number of slots removed.
+        """
+        keys = [k for k in self._slots if k[0] == project]
+        for key in keys:
+            del self._slots[key]
+        if keys:
+            self._save()
+        return len(keys)
+
     # ------------------------------------------------------------------
     # Queries
     # ------------------------------------------------------------------
