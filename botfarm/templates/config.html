@@ -888,6 +888,8 @@ function confirmRemoveProject() {
 
     var clean = document.getElementById("remove-modal-clean").checked;
 
+    // UI always force-removes (modal already warns about active slots).
+    // The non-force 409 path exists for direct API / CLI consumers.
     fetch("/api/project/remove", {
         method: "POST",
         headers: {"Content-Type": "application/json"},

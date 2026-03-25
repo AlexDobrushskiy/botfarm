@@ -1562,7 +1562,7 @@ Note: The supervisor handles status transitions automatically — do not move th
         dev server manager.  Config YAML and database cleanup are handled
         by the dashboard API endpoint before this callback fires.
 
-        Raises ``ValueError`` if the project is not registered.
+        Logs a warning and returns if the project is not registered.
         """
         if project_name not in self._projects:
             logger.warning(
@@ -1576,6 +1576,15 @@ Note: The supervisor handles status transitions automatically — do not move th
 
         # Unregister from dev server manager
         self._devserver_mgr.unregister_project(project_name)
+
+        # Clean up worker process tracking and pause events for this project.
+        # The worker subprocesses are left running (same as supervisor shutdown)
+        # but we remove them from tracking so _reconcile_workers skips their
+        # results gracefully when the slot no longer exists.
+        worker_keys = [k for k in self._workers if k[0] == project_name]
+        for key in worker_keys:
+            del self._workers[key]
+            self._pause_events.pop(key, None)
 
         # Remove all slots for this project from the slot manager
         keys_to_remove = [
