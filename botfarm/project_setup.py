@@ -513,16 +513,21 @@ def extract_repo_name(repo_url: str) -> str:
 _log = logging.getLogger(__name__)
 
 
-def _ssh_host_from_url(repo_url: str) -> str | None:
-    """Extract hostname from an SSH git URL, or return ``None`` for non-SSH URLs."""
+def _ssh_host_port_from_url(repo_url: str) -> tuple[str, int | None] | None:
+    """Extract hostname and optional port from an SSH git URL.
+
+    Returns ``(host, port)`` for SSH URLs (port is ``None`` when default),
+    or ``None`` for non-SSH URLs.
+    """
     # ssh://[user@]host[:port]/path
-    m = re.match(r"ssh://(?:[^@]+@)?([^:/]+)", repo_url)
+    m = re.match(r"ssh://(?:[^@]+@)?([^:/]+)(?::(\d+))?", repo_url)
     if m:
-        return m.group(1)
+        port = int(m.group(2)) if m.group(2) else None
+        return (m.group(1), port)
     # SCP-like: [user@]host:path  (colon NOT followed by // to exclude scheme URLs)
     m = re.match(r"(?:[^@]+@)?([^:/]+):(?!//)", repo_url)
     if m:
-        return m.group(1)
+        return (m.group(1), None)
     return None
 
 
@@ -533,26 +538,35 @@ def _ensure_ssh_host_key(repo_url: str) -> None:
     Logs warnings on failure but never raises — a missing host key will
     surface as a clear ``git clone`` error downstream.
     """
-    host = _ssh_host_from_url(repo_url)
-    if not host:
+    parsed = _ssh_host_port_from_url(repo_url)
+    if not parsed:
         return
+    host, port = parsed
 
-    ssh_dir = Path.home() / ".ssh"
-    known_hosts = ssh_dir / "known_hosts"
+    # ssh-keygen -F uses [host]:port for non-default ports
+    lookup_key = f"[{host}]:{port}" if port else host
 
-    # Check if host already present
-    if known_hosts.exists():
-        try:
-            existing = known_hosts.read_text()
-            if host in existing:
-                return
-        except OSError:
-            pass  # unreadable — try keyscan anyway
-
-    # Run ssh-keyscan to fetch the host key
+    # Check if host already present via ssh-keygen -F (canonical known_hosts lookup)
     try:
         result = subprocess.run(
-            ["ssh-keyscan", "-T", "5", host],
+            ["ssh-keygen", "-F", lookup_key],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass  # ssh-keygen unavailable or timed out — try keyscan anyway
+
+    # Run ssh-keyscan to fetch the host key
+    cmd = ["ssh-keyscan", "-T", "5"]
+    if port:
+        cmd.extend(["-p", str(port)])
+    cmd.append(host)
+    try:
+        result = subprocess.run(
+            cmd,
             capture_output=True,
             text=True,
             timeout=15,
@@ -567,6 +581,7 @@ def _ensure_ssh_host_key(repo_url: str) -> None:
         return
 
     # Ensure ~/.ssh exists with correct permissions
+    ssh_dir = Path.home() / ".ssh"
     try:
         ssh_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     except OSError as exc:
@@ -574,6 +589,7 @@ def _ensure_ssh_host_key(repo_url: str) -> None:
         return
 
     # Append keys
+    known_hosts = ssh_dir / "known_hosts"
     try:
         with known_hosts.open("a") as f:
             f.write(keys + "\n")
