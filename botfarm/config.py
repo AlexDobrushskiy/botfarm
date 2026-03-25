@@ -158,7 +158,7 @@ class ProjectConfig:
     __slots__ = ("name", "base_dir", "worktree_prefix", "slots",
                  "team", "tracker_project", "project_type",
                  "setup_commands", "run_command", "run_env", "run_port",
-                 "include_tags")
+                 "include_tags", "bugtracker")
 
     def __init__(
         self,
@@ -174,6 +174,7 @@ class ProjectConfig:
         run_env: dict[str, str] | None = None,
         run_port: int = 0,
         include_tags: list[str] | None = None,
+        bugtracker: dict | None = None,
     ) -> None:
         self.name = name
         self.base_dir = base_dir
@@ -187,6 +188,7 @@ class ProjectConfig:
         self.run_env = run_env if run_env is not None else {}
         self.run_port = run_port
         self.include_tags = include_tags
+        self.bugtracker = bugtracker
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, ProjectConfig):
@@ -200,7 +202,8 @@ class ProjectConfig:
                 and self.run_command == other.run_command
                 and self.run_env == other.run_env
                 and self.run_port == other.run_port
-                and self.include_tags == other.include_tags)
+                and self.include_tags == other.include_tags
+                and self.bugtracker == other.bugtracker)
 
     def __repr__(self) -> str:
         return (f"ProjectConfig(name={self.name!r}, team={self.team!r}, "
@@ -210,7 +213,8 @@ class ProjectConfig:
                 f"setup_commands={self.setup_commands!r}, "
                 f"run_command={self.run_command!r}, "
                 f"run_env={self.run_env!r}, run_port={self.run_port!r}, "
-                f"include_tags={self.include_tags!r})")
+                f"include_tags={self.include_tags!r}, "
+                f"bugtracker={self.bugtracker!r})")
 
 
 @dataclass
@@ -446,7 +450,15 @@ class BotfarmConfig:
     @property
     def setup_mode(self) -> bool:
         """True when config is incomplete — supervisor runs dashboard only."""
-        return not self.projects or not self.bugtracker.api_key
+        if not self.projects:
+            return True
+        if self.bugtracker.api_key:
+            return False
+        # No global API key — check if every project has its own
+        return not all(
+            p.bugtracker and p.bugtracker.get("api_key")
+            for p in self.projects
+        )
 
 
 class ConfigError(Exception):
@@ -504,6 +516,46 @@ _PROJECT_TYPE_RUN_DEFAULTS: dict[str, dict[str, object]] = {
     "fastapi": {"run_command": "uvicorn main:app --host 0.0.0.0 --port 8000", "run_port": 8000},
     "rails": {"run_command": "bin/rails server -b 0.0.0.0", "run_port": 3000},
 }
+
+
+_ALLOWED_BT_KEYS = {
+    "type", "api_key", "workspace", "url", "email",
+    "exclude_tags", "include_tags",
+    "todo_status", "in_progress_status", "done_status", "in_review_status",
+    "comment_on_failure", "comment_on_completion", "comment_on_limit_pause",
+    "poll_interval_seconds",
+    # Linear-specific
+    "issue_limit", "capacity_monitoring",
+}
+
+_SUPPORTED_BT_TYPES = {"linear", "jira"}
+
+
+def _validate_bugtracker_override(
+    bt_data: object, project_name: str,
+) -> list[str]:
+    """Validate a per-project bugtracker override dict.
+
+    Returns a list of error strings (empty if valid).
+    """
+    errors: list[str] = []
+    if not isinstance(bt_data, dict):
+        errors.append(
+            f"Project '{project_name}': bugtracker must be a mapping"
+        )
+        return errors
+    unknown = set(bt_data.keys()) - _ALLOWED_BT_KEYS
+    if unknown:
+        errors.append(
+            f"Project '{project_name}': unknown bugtracker fields: {sorted(unknown)}"
+        )
+    bt_type = bt_data.get("type")
+    if bt_type is not None and bt_type not in _SUPPORTED_BT_TYPES:
+        errors.append(
+            f"Project '{project_name}': unsupported bugtracker type: {bt_type!r}. "
+            f"Supported: {sorted(_SUPPORTED_BT_TYPES)}"
+        )
+    return errors
 
 
 def _parse_project(data: dict) -> ProjectConfig:
@@ -581,6 +633,13 @@ def _parse_project(data: dict) -> ProjectConfig:
                 f"Project '{data['name']}': include_tags must be a list of strings"
             )
 
+    # Per-project bugtracker overrides
+    bugtracker_data = data.get("bugtracker")
+    if bugtracker_data is not None:
+        errors = _validate_bugtracker_override(bugtracker_data, data["name"])
+        if errors:
+            raise ConfigError(errors[0])
+
     # Derive defaults from project_type when not explicitly set.
     if project_type and project_type in _PROJECT_TYPE_RUN_DEFAULTS:
         defaults = _PROJECT_TYPE_RUN_DEFAULTS[project_type]
@@ -602,6 +661,73 @@ def _parse_project(data: dict) -> ProjectConfig:
         run_env=run_env,
         run_port=run_port,
         include_tags=include_tags,
+        bugtracker=bugtracker_data,
+    )
+
+
+def resolve_project_bugtracker(
+    global_bt: BugtrackerConfig,
+    project: ProjectConfig,
+) -> BugtrackerConfig:
+    """Return the effective bugtracker config for a project.
+
+    If the project has a ``bugtracker`` dict, its values override the global
+    config.  Unset fields fall back to global defaults.  When the project
+    specifies a different tracker type than the global config, a new config
+    instance of the appropriate subclass is created.
+
+    Returns the global config unchanged when the project has no overrides.
+    """
+    bt_data = project.bugtracker
+    if not bt_data:
+        return global_bt
+
+    bt_type = str(bt_data.get("type", global_bt.type))
+
+    # Build common kwargs, falling back to global for each field.
+    common = dict(
+        type=bt_type,
+        api_key=bt_data.get("api_key", global_bt.api_key),
+        workspace=bt_data.get("workspace", global_bt.workspace),
+        poll_interval_seconds=bt_data.get("poll_interval_seconds", global_bt.poll_interval_seconds),
+        exclude_tags=bt_data.get("exclude_tags", global_bt.exclude_tags),
+        include_tags=bt_data.get("include_tags", global_bt.include_tags),
+        todo_status=str(bt_data.get("todo_status", global_bt.todo_status)),
+        in_progress_status=str(bt_data.get("in_progress_status", global_bt.in_progress_status)),
+        done_status=str(bt_data.get("done_status", global_bt.done_status)),
+        in_review_status=str(bt_data.get("in_review_status", global_bt.in_review_status)),
+        comment_on_failure=bt_data.get("comment_on_failure", global_bt.comment_on_failure),
+        comment_on_completion=bt_data.get("comment_on_completion", global_bt.comment_on_completion),
+        comment_on_limit_pause=bt_data.get("comment_on_limit_pause", global_bt.comment_on_limit_pause),
+    )
+
+    if bt_type == "jira":
+        global_url = getattr(global_bt, "url", "")
+        global_email = getattr(global_bt, "email", "")
+        return JiraBugtrackerConfig(
+            **common,
+            url=str(bt_data.get("url", global_url)),
+            email=str(bt_data.get("email", global_email)),
+        )
+
+    # Default to Linear
+    global_issue_limit = getattr(global_bt, "issue_limit", 250)
+    global_capacity = getattr(global_bt, "capacity_monitoring", CapacityConfig())
+    cap_data = bt_data.get("capacity_monitoring")
+    if isinstance(cap_data, dict):
+        capacity = CapacityConfig(
+            enabled=cap_data.get("enabled", global_capacity.enabled),
+            warning_threshold=float(cap_data.get("warning_threshold", global_capacity.warning_threshold)),
+            critical_threshold=float(cap_data.get("critical_threshold", global_capacity.critical_threshold)),
+            pause_threshold=float(cap_data.get("pause_threshold", global_capacity.pause_threshold)),
+            resume_threshold=float(cap_data.get("resume_threshold", global_capacity.resume_threshold)),
+        )
+    else:
+        capacity = global_capacity
+    return LinearBugtrackerConfig(
+        **common,
+        issue_limit=int(bt_data.get("issue_limit", global_issue_limit)),
+        capacity_monitoring=capacity,
     )
 
 
@@ -641,7 +767,12 @@ def _validate_config(config: BotfarmConfig) -> None:
     # In setup mode (no projects or no API key), skip strict checks
     # so the supervisor can start with dashboard only.
     if not config.setup_mode:
-        if not bt.api_key:
+        # Global API key can be omitted when every project provides its own
+        has_all_project_keys = all(
+            p.bugtracker and p.bugtracker.get("api_key")
+            for p in config.projects
+        )
+        if not bt.api_key and not has_all_project_keys:
             raise ConfigError("bugtracker.api_key must be set")
 
         if not config.projects:
@@ -705,6 +836,27 @@ def _validate_config(config: BotfarmConfig) -> None:
             raise ConfigError("bugtracker.url must be set for Jira")
         if not bt.email:
             raise ConfigError("bugtracker.email must be set for Jira")
+
+    # Validate per-project bugtracker overrides
+    if not config.setup_mode:
+        for p in config.projects:
+            if not p.bugtracker:
+                continue
+            resolved = resolve_project_bugtracker(bt, p)
+            if not resolved.api_key:
+                raise ConfigError(
+                    f"Project '{p.name}': bugtracker.api_key must be set "
+                    f"(either in project or global bugtracker config)"
+                )
+            if isinstance(resolved, JiraBugtrackerConfig):
+                if not resolved.url:
+                    raise ConfigError(
+                        f"Project '{p.name}': bugtracker.url must be set for Jira"
+                    )
+                if not resolved.email:
+                    raise ConfigError(
+                        f"Project '{p.name}': bugtracker.email must be set for Jira"
+                    )
 
     if config.agents.max_review_iterations < 1:
         raise ConfigError("agents.max_review_iterations must be at least 1")
@@ -1486,7 +1638,7 @@ def _validate_project_updates(
 
     _NEW_PROJECT_REQUIRED = {"name", "team", "base_dir", "worktree_prefix", "slots"}
     _NEW_PROJECT_OPTIONAL = {"tracker_project", "project_type", "setup_commands",
-                              "run_command", "run_env", "run_port"}
+                              "run_command", "run_env", "run_port", "bugtracker"}
     _NEW_PROJECT_ALLOWED = _NEW_PROJECT_REQUIRED | _NEW_PROJECT_OPTIONAL
     seen_names: set[str] = set()
 
@@ -1558,6 +1710,9 @@ def _validate_project_updates(
                     f"projects[{i}] '{name}': run_port must be a non-negative integer"
                 )
 
+        if "bugtracker" in proj:
+            errors.extend(_validate_bugtracker_override(proj["bugtracker"], name))
+
         if is_new:
             # New project: validate required fields and allowed keys
             missing = _NEW_PROJECT_REQUIRED - set(proj.keys())
@@ -1586,7 +1741,7 @@ def _validate_project_updates(
         else:
             # Existing project: editable fields
             allowed_keys = {"name", "slots", "tracker_project",
-                            "run_command", "run_env", "run_port"}
+                            "run_command", "run_env", "run_port", "bugtracker"}
             extra = set(proj.keys()) - allowed_keys
             if extra:
                 errors.append(
@@ -1661,7 +1816,7 @@ def write_structural_config_updates(config_path: Path, updates: dict) -> None:
                 # Existing project: merge editable fields
                 target = by_name[name]
                 for fld in ("slots", "tracker_project",
-                            "run_command", "run_env", "run_port"):
+                            "run_command", "run_env", "run_port", "bugtracker"):
                     if fld in proj_update:
                         target[fld] = proj_update[fld]
             else:
@@ -1687,6 +1842,8 @@ def write_structural_config_updates(config_path: Path, updates: dict) -> None:
                         new_proj["run_env"] = proj_update["run_env"]
                     if "run_port" in proj_update:
                         new_proj["run_port"] = proj_update["run_port"]
+                    if proj_update.get("bugtracker"):
+                        new_proj["bugtracker"] = proj_update["bugtracker"]
                     existing_projects.append(new_proj)
 
     write_yaml_atomic(config_path, data)

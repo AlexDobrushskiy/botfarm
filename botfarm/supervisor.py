@@ -918,7 +918,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
                 continue
 
             self._persist_queue_entries(project_name, poll_result)
-            self._auto_close_parent_issues(poller, poll_result)
+            self._auto_close_parent_issues(poller, poll_result, project_name)
 
             candidates = poll_result.candidates
             if not candidates:
@@ -959,9 +959,15 @@ class Supervisor(RecoveryMixin, OperationsMixin):
             self._conn.rollback()
             logger.exception("Failed to persist queue entries for %s", project_name)
 
-    def _auto_close_parent_issues(self, poller: BugtrackerPoller, poll_result) -> None:
+    def _auto_close_parent_issues(self, poller: BugtrackerPoller, poll_result, project_name: str) -> None:
         """Move parent issues to Done when all children are complete."""
-        done_status = self._config.bugtracker.done_status
+        from botfarm.config import resolve_project_bugtracker
+        project_cfg = self._projects.get(project_name)
+        if project_cfg:
+            project_bt = resolve_project_bugtracker(self._config.bugtracker, project_cfg)
+        else:
+            project_bt = self._config.bugtracker
+        done_status = project_bt.done_status
         for parent in poll_result.auto_close_parents:
             try:
                 poller.move_issue(parent.identifier, done_status)

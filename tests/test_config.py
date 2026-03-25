@@ -9,10 +9,13 @@ import yaml
 from botfarm.config import (
     AgentsConfig,
     BotfarmConfig,
+    BugtrackerConfig,
     CapacityConfig,
     CoderIdentity,
     ConfigError,
     IdentitiesConfig,
+    JiraBugtrackerConfig,
+    LinearBugtrackerConfig,
     LinearConfig,
     LoggingConfig,
     NotificationsConfig,
@@ -23,6 +26,7 @@ from botfarm.config import (
     create_default_config,
     expand_env_vars,
     load_config,
+    resolve_project_bugtracker,
     resolve_stage_timeout,
     validate_config_updates,
     validate_structural_config_updates,
@@ -1874,6 +1878,38 @@ class TestValidateStructuralConfigUpdates:
         errors = validate_structural_config_updates(updates, config)
         assert any("run_port must be an integer" in e for e in errors)
 
+    def test_bugtracker_override_valid(self):
+        config = _make_config_for_structural()
+        updates = {
+            "projects": [{"name": "project-a", "bugtracker": {"api_key": "k"}}],
+        }
+        errors = validate_structural_config_updates(updates, config)
+        assert not errors
+
+    def test_bugtracker_override_unknown_keys_rejected(self):
+        config = _make_config_for_structural()
+        updates = {
+            "projects": [{"name": "project-a", "bugtracker": {"type": "github"}}],
+        }
+        errors = validate_structural_config_updates(updates, config)
+        assert any("unsupported bugtracker type" in e for e in errors)
+
+    def test_bugtracker_override_unknown_fields_rejected(self):
+        config = _make_config_for_structural()
+        updates = {
+            "projects": [{"name": "project-a", "bugtracker": {"nonsense": True}}],
+        }
+        errors = validate_structural_config_updates(updates, config)
+        assert any("unknown bugtracker fields" in e for e in errors)
+
+    def test_bugtracker_override_not_a_dict_rejected(self):
+        config = _make_config_for_structural()
+        updates = {
+            "projects": [{"name": "project-a", "bugtracker": "linear"}],
+        }
+        errors = validate_structural_config_updates(updates, config)
+        assert any("bugtracker must be a mapping" in e for e in errors)
+
 
 # --- write_structural_config_updates ---
 
@@ -2890,6 +2926,42 @@ def test_setup_mode_duplicate_projects_skipped(tmp_path):
     assert config.setup_mode is True
 
 
+def test_setup_mode_per_project_api_keys_only(tmp_path):
+    """All projects have per-project API keys but no global key — not setup mode."""
+    data = {
+        "projects": [{
+            "name": "p1", "team": "T", "base_dir": "~/d",
+            "worktree_prefix": "s-", "slots": [1],
+            "bugtracker": {"api_key": "proj-key-1"},
+        }],
+        "bugtracker": {"type": "linear", "api_key": ""},
+    }
+    config_path = _write_config(tmp_path, data)
+    config = load_config(config_path)
+    assert config.setup_mode is False
+
+
+def test_setup_mode_mixed_per_project_api_keys(tmp_path):
+    """Some projects have per-project keys, some don't — setup mode."""
+    data = {
+        "projects": [
+            {
+                "name": "p1", "team": "T", "base_dir": "~/d1",
+                "worktree_prefix": "s1-", "slots": [1],
+                "bugtracker": {"api_key": "proj-key-1"},
+            },
+            {
+                "name": "p2", "team": "T", "base_dir": "~/d2",
+                "worktree_prefix": "s2-", "slots": [2],
+            },
+        ],
+        "bugtracker": {"type": "linear", "api_key": ""},
+    }
+    config_path = _write_config(tmp_path, data)
+    config = load_config(config_path)
+    assert config.setup_mode is True
+
+
 # ---------------------------------------------------------------------------
 # Bugtracker config abstraction (SMA-464)
 # ---------------------------------------------------------------------------
@@ -3551,3 +3623,170 @@ class TestCoderIdentityJiraToken:
         config_path = _write_config(tmp_path, data)
         config = load_config(config_path)
         assert config.identities.coder.jira_api_token == "coder-jira-tok"
+
+
+class TestPerProjectBugtracker:
+    """Test per-project bugtracker config overrides."""
+
+    def test_no_override_returns_global(self):
+        global_bt = LinearBugtrackerConfig(api_key="global-key")
+        project = ProjectConfig(
+            name="p", team="T", base_dir="d", worktree_prefix="s-", slots=[1],
+        )
+        result = resolve_project_bugtracker(global_bt, project)
+        assert result is global_bt
+
+    def test_override_type_to_jira(self):
+        global_bt = LinearBugtrackerConfig(api_key="global-key")
+        project = ProjectConfig(
+            name="p", team="T", base_dir="d", worktree_prefix="s-", slots=[1],
+            bugtracker={"type": "jira", "url": "https://j.example.com", "email": "a@b.com"},
+        )
+        result = resolve_project_bugtracker(global_bt, project)
+        assert isinstance(result, JiraBugtrackerConfig)
+        assert result.type == "jira"
+        assert result.url == "https://j.example.com"
+        assert result.email == "a@b.com"
+        assert result.api_key == "global-key"  # falls back to global
+
+    def test_override_api_key_only(self):
+        global_bt = LinearBugtrackerConfig(api_key="global-key", todo_status="Backlog")
+        project = ProjectConfig(
+            name="p", team="T", base_dir="d", worktree_prefix="s-", slots=[1],
+            bugtracker={"api_key": "project-key"},
+        )
+        result = resolve_project_bugtracker(global_bt, project)
+        assert isinstance(result, LinearBugtrackerConfig)
+        assert result.api_key == "project-key"
+        assert result.todo_status == "Backlog"  # inherited from global
+
+    def test_override_statuses(self):
+        global_bt = LinearBugtrackerConfig(api_key="k", todo_status="Todo")
+        project = ProjectConfig(
+            name="p", team="T", base_dir="d", worktree_prefix="s-", slots=[1],
+            bugtracker={"todo_status": "Backlog", "done_status": "Closed"},
+        )
+        result = resolve_project_bugtracker(global_bt, project)
+        assert result.todo_status == "Backlog"
+        assert result.done_status == "Closed"
+        assert result.in_progress_status == "In Progress"  # global default
+
+    def test_override_jira_fields(self):
+        global_bt = JiraBugtrackerConfig(
+            api_key="k", url="https://old.example.com", email="old@b.com",
+        )
+        project = ProjectConfig(
+            name="p", team="T", base_dir="d", worktree_prefix="s-", slots=[1],
+            bugtracker={"url": "https://new.example.com"},
+        )
+        result = resolve_project_bugtracker(global_bt, project)
+        assert isinstance(result, JiraBugtrackerConfig)
+        assert result.url == "https://new.example.com"
+        assert result.email == "old@b.com"  # inherited
+
+    def test_empty_bugtracker_dict_returns_global(self):
+        global_bt = LinearBugtrackerConfig(api_key="k")
+        project = ProjectConfig(
+            name="p", team="T", base_dir="d", worktree_prefix="s-", slots=[1],
+            bugtracker={},
+        )
+        # Empty dict is falsy, so returns global
+        result = resolve_project_bugtracker(global_bt, project)
+        assert result is global_bt
+
+    def test_yaml_project_bugtracker_loads(self, tmp_path):
+        data = {
+            "projects": [{
+                "name": "p", "team": "TST", "base_dir": "~/d",
+                "worktree_prefix": "s-", "slots": [1],
+                "bugtracker": {"type": "linear", "api_key": "proj-key"},
+            }],
+            "bugtracker": {"type": "linear", "api_key": "global-key"},
+        }
+        config_path = _write_config(tmp_path, data)
+        config = load_config(config_path)
+        assert config.projects[0].bugtracker == {"type": "linear", "api_key": "proj-key"}
+
+    def test_yaml_unknown_bugtracker_field_raises(self, tmp_path):
+        data = {
+            "projects": [{
+                "name": "p", "team": "TST", "base_dir": "~/d",
+                "worktree_prefix": "s-", "slots": [1],
+                "bugtracker": {"type": "linear", "nonsense": True},
+            }],
+            "bugtracker": {"type": "linear", "api_key": "k"},
+        }
+        config_path = _write_config(tmp_path, data)
+        with pytest.raises(ConfigError, match="unknown bugtracker fields"):
+            load_config(config_path)
+
+    def test_yaml_unsupported_bugtracker_type_raises(self, tmp_path):
+        data = {
+            "projects": [{
+                "name": "p", "team": "TST", "base_dir": "~/d",
+                "worktree_prefix": "s-", "slots": [1],
+                "bugtracker": {"type": "github"},
+            }],
+            "bugtracker": {"type": "linear", "api_key": "k"},
+        }
+        config_path = _write_config(tmp_path, data)
+        with pytest.raises(ConfigError, match="unsupported bugtracker type"):
+            load_config(config_path)
+
+    def test_validation_missing_api_key(self):
+        """Per-project Jira override with no api_key anywhere should fail."""
+        global_bt = LinearBugtrackerConfig(api_key="")
+        project = ProjectConfig(
+            name="p", team="T", base_dir="d", worktree_prefix="s-", slots=[1],
+            bugtracker={"type": "jira", "url": "https://j.com", "email": "a@b.com"},
+        )
+        resolved = resolve_project_bugtracker(global_bt, project)
+        assert isinstance(resolved, JiraBugtrackerConfig)
+        assert resolved.api_key == ""  # inherits empty from global
+
+    def test_validation_jira_missing_url(self, tmp_path):
+        data = {
+            "projects": [{
+                "name": "p", "team": "TST", "base_dir": "~/d",
+                "worktree_prefix": "s-", "slots": [1],
+                "bugtracker": {"type": "jira", "api_key": "k", "email": "a@b.com"},
+            }],
+            "bugtracker": {"type": "linear", "api_key": "global-k"},
+        }
+        config_path = _write_config(tmp_path, data)
+        with pytest.raises(ConfigError, match="bugtracker.url must be set for Jira"):
+            load_config(config_path)
+
+    def test_project_config_equality_with_bugtracker(self):
+        p1 = ProjectConfig(
+            name="p", team="T", base_dir="d", worktree_prefix="s-", slots=[1],
+            bugtracker={"type": "jira"},
+        )
+        p2 = ProjectConfig(
+            name="p", team="T", base_dir="d", worktree_prefix="s-", slots=[1],
+            bugtracker={"type": "jira"},
+        )
+        p3 = ProjectConfig(
+            name="p", team="T", base_dir="d", worktree_prefix="s-", slots=[1],
+        )
+        assert p1 == p2
+        assert p1 != p3
+
+    def test_bugtracker_field_default_none(self):
+        p = ProjectConfig(name="p", team="T", base_dir="d", worktree_prefix="s-", slots=[1])
+        assert p.bugtracker is None
+
+    def test_override_linear_capacity_monitoring(self):
+        global_bt = LinearBugtrackerConfig(
+            api_key="k",
+            capacity_monitoring=CapacityConfig(warning_threshold=0.7),
+        )
+        project = ProjectConfig(
+            name="p", team="T", base_dir="d", worktree_prefix="s-", slots=[1],
+            bugtracker={"capacity_monitoring": {"warning_threshold": 0.5}},
+        )
+        result = resolve_project_bugtracker(global_bt, project)
+        assert isinstance(result, LinearBugtrackerConfig)
+        assert result.capacity_monitoring.warning_threshold == 0.5
+        # Other thresholds fall back to the global's values
+        assert result.capacity_monitoring.critical_threshold == global_bt.capacity_monitoring.critical_threshold

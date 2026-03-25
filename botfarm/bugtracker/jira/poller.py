@@ -69,15 +69,41 @@ def _create_jira_clients(config: BotfarmConfig) -> tuple[JiraClient, JiraClient 
     return client, coder_client
 
 
+def _create_jira_clients_from_bt(
+    bt: JiraBugtrackerConfig,
+    identities,
+) -> tuple[JiraClient, JiraClient | None]:
+    """Create Jira clients from an explicit bugtracker config.
+
+    Like :func:`_create_jira_clients` but takes a resolved
+    :class:`JiraBugtrackerConfig` directly — used for per-project overrides.
+    """
+    from botfarm.bugtracker.jira.client import JiraClient
+
+    client = JiraClient(url=bt.url, email=bt.email, api_token=bt.api_key)
+    coder_token = identities.coder.jira_api_token
+    coder_email = identities.coder.jira_email or bt.email
+    coder_client = (
+        JiraClient(url=bt.url, email=coder_email, api_token=coder_token)
+        if coder_token else None
+    )
+    return client, coder_client
+
+
 def create_poller(
     config: BotfarmConfig,
     project: object,
 ) -> JiraPoller:
-    """Create a single JiraPoller for one project."""
-    bt = config.bugtracker
+    """Create a single JiraPoller for one project.
+
+    Uses per-project bugtracker config when available, falling back to
+    the global ``config.bugtracker``.
+    """
+    from botfarm.config import resolve_project_bugtracker
+    bt = resolve_project_bugtracker(config.bugtracker, project)
     if not isinstance(bt, JiraBugtrackerConfig):
         raise ValueError("Jira bugtracker requires JiraBugtrackerConfig")
-    client, coder_client = _create_jira_clients(config)
+    client, coder_client = _create_jira_clients_from_bt(bt, config.identities)
     include_tags = project.include_tags if project.include_tags is not None else bt.include_tags
     return JiraPoller(
         client=client,
