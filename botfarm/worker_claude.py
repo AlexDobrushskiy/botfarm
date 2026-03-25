@@ -806,27 +806,8 @@ def _recover_pr_url(
     cwd: str | Path,
     *, env: dict[str, str] | None = None,
 ) -> str | None:
-    """Recover the PR URL for a resumed pipeline.
-
-    Uses ``gh pr list --head <branch> --state open`` to find the open PR
-    for the current branch, falling back to ``gh pr view`` filtered by
-    open state.
-    """
-    subprocess_env = {**os.environ, **env} if env else None
-    # Get the current branch name
-    try:
-        branch_proc = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True, text=True, cwd=str(cwd), timeout=10,
-            env=subprocess_env,
-        )
-        if branch_proc.returncode != 0 or not branch_proc.stdout.strip():
-            return None
-        branch = branch_proc.stdout.strip()
-    except Exception:
-        return None
-
-    url = _find_open_pr_url(branch, cwd, env=env)
+    """Recover the PR URL for a resumed pipeline."""
+    url = _gh_pr_view_url(cwd, env=env)
     if url:
         logger.info("Recovered PR URL from gh: %s", url)
     return url
