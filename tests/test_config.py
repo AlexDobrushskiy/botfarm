@@ -1402,6 +1402,26 @@ class TestApplyConfigUpdates:
         apply_config_updates(config, {"unknown": {"key": "value"}})
         # No error, config unchanged
 
+    def test_apply_notifications(self):
+        config = self._make_config()
+        apply_config_updates(config, {
+            "notifications": {
+                "webhook_url": "https://new.example.com",
+                "webhook_format": "discord",
+                "rate_limit_seconds": 60,
+            },
+        })
+        assert config.notifications.webhook_url == "https://new.example.com"
+        assert config.notifications.webhook_format == "discord"
+        assert config.notifications.rate_limit_seconds == 60
+
+    def test_apply_daily_summary_webhook_url(self):
+        config = self._make_config()
+        apply_config_updates(config, {
+            "daily_summary": {"webhook_url": "https://summary.example.com"},
+        })
+        assert config.daily_summary.webhook_url == "https://summary.example.com"
+
 
 # --- write_config_updates ---
 
@@ -1492,9 +1512,10 @@ def _make_config_for_structural():
     )
 
 
-class TestValidateStructuralConfigUpdates:
+class TestValidateNotificationsConfigUpdates:
+    """Notification fields are now runtime-editable via validate_config_updates."""
+
     def test_valid_notifications(self):
-        config = _make_config_for_structural()
         updates = {
             "notifications": {
                 "webhook_url": "https://new-url.example.com",
@@ -1502,9 +1523,36 @@ class TestValidateStructuralConfigUpdates:
                 "rate_limit_seconds": 60,
             },
         }
-        errors = validate_structural_config_updates(updates, config)
+        errors = validate_config_updates(updates)
         assert errors == []
 
+    def test_notifications_not_mapping(self):
+        updates = {"notifications": "bad"}
+        errors = validate_config_updates(updates)
+        assert any("must be a mapping" in e for e in errors)
+
+    def test_notifications_unknown_field(self):
+        updates = {"notifications": {"unknown_field": "val"}}
+        errors = validate_config_updates(updates)
+        assert any("not an editable field" in e for e in errors)
+
+    def test_notifications_invalid_format(self):
+        updates = {"notifications": {"webhook_format": "teams"}}
+        errors = validate_config_updates(updates)
+        assert any("must be one of" in e for e in errors)
+
+    def test_notifications_rate_limit_negative(self):
+        updates = {"notifications": {"rate_limit_seconds": -1}}
+        errors = validate_config_updates(updates)
+        assert any("at least 0" in e for e in errors)
+
+    def test_notifications_webhook_url_not_string(self):
+        updates = {"notifications": {"webhook_url": 123}}
+        errors = validate_config_updates(updates)
+        assert any("must be a string" in e for e in errors)
+
+
+class TestValidateStructuralConfigUpdates:
     def test_valid_projects(self):
         config = _make_config_for_structural()
         updates = {
@@ -1524,36 +1572,6 @@ class TestValidateStructuralConfigUpdates:
         }
         errors = validate_structural_config_updates(updates, config)
         assert errors == []
-
-    def test_notifications_not_mapping(self):
-        config = _make_config_for_structural()
-        updates = {"notifications": "bad"}
-        errors = validate_structural_config_updates(updates, config)
-        assert any("must be a mapping" in e for e in errors)
-
-    def test_notifications_unknown_field(self):
-        config = _make_config_for_structural()
-        updates = {"notifications": {"unknown_field": "val"}}
-        errors = validate_structural_config_updates(updates, config)
-        assert any("not an editable field" in e for e in errors)
-
-    def test_notifications_invalid_format(self):
-        config = _make_config_for_structural()
-        updates = {"notifications": {"webhook_format": "teams"}}
-        errors = validate_structural_config_updates(updates, config)
-        assert any("must be one of" in e for e in errors)
-
-    def test_notifications_rate_limit_negative(self):
-        config = _make_config_for_structural()
-        updates = {"notifications": {"rate_limit_seconds": -1}}
-        errors = validate_structural_config_updates(updates, config)
-        assert any("at least 0" in e for e in errors)
-
-    def test_notifications_webhook_url_not_string(self):
-        config = _make_config_for_structural()
-        updates = {"notifications": {"webhook_url": 123}}
-        errors = validate_structural_config_updates(updates, config)
-        assert any("must be a string" in e for e in errors)
 
     def test_projects_not_list(self):
         config = _make_config_for_structural()
@@ -1914,7 +1932,9 @@ class TestValidateStructuralConfigUpdates:
 # --- write_structural_config_updates ---
 
 
-class TestWriteStructuralConfigUpdates:
+class TestWriteNotificationsConfigUpdates:
+    """Notification fields are now written via write_config_updates (runtime)."""
+
     def test_write_notifications(self, tmp_path):
         config_path = _write_config(tmp_path, {
             **MINIMAL_CONFIG,
@@ -1924,7 +1944,7 @@ class TestWriteStructuralConfigUpdates:
                 "rate_limit_seconds": 300,
             },
         })
-        write_structural_config_updates(config_path, {
+        write_config_updates(config_path, {
             "notifications": {
                 "webhook_url": "https://new.example.com",
                 "rate_limit_seconds": 60,
@@ -1938,12 +1958,14 @@ class TestWriteStructuralConfigUpdates:
 
     def test_write_notifications_creates_section(self, tmp_path):
         config_path = _write_config(tmp_path, MINIMAL_CONFIG)
-        write_structural_config_updates(config_path, {
+        write_config_updates(config_path, {
             "notifications": {"webhook_url": "https://new.example.com"},
         })
         data = yaml.safe_load(config_path.read_text())
         assert data["notifications"]["webhook_url"] == "https://new.example.com"
 
+
+class TestWriteStructuralConfigUpdates:
     def test_write_project_slots(self, tmp_path):
         config_path = _write_config(tmp_path, {
             **MINIMAL_CONFIG,

@@ -55,14 +55,12 @@ class Notifier:
 
     def __init__(self, config: NotificationsConfig) -> None:
         self._config = config
-        self._url = config.webhook_url
-        self._format = _detect_format(self._url, config.webhook_format)
         self._last_sent: dict[str, float] = {}
         self._client = httpx.Client(timeout=10)
 
     @property
     def enabled(self) -> bool:
-        return bool(self._url)
+        return bool(self._config.webhook_url)
 
     def close(self) -> None:
         self._client.close()
@@ -297,11 +295,11 @@ class Notifier:
         to a different channel).
         """
         message = f"*{headline}*\n{body}"
-        url = webhook_url or self._url
+        url = webhook_url or self._config.webhook_url
         if not url:
             return
         try:
-            fmt = _detect_format(url, "") if webhook_url else self._format
+            fmt = _detect_format(url, "" if webhook_url else self._config.webhook_format)
             payload = {"content": message} if fmt == "discord" else {"text": message}
             resp = self._client.post(url, json=payload)
             resp.raise_for_status()
@@ -389,8 +387,10 @@ class Notifier:
             return
 
         try:
-            payload = self._format_payload(message)
-            resp = self._client.post(self._url, json=payload)
+            url = self._config.webhook_url
+            fmt = _detect_format(url, self._config.webhook_format)
+            payload = self._format_payload(message, fmt)
+            resp = self._client.post(url, json=payload)
             resp.raise_for_status()
             logger.debug("Sent %s notification", event_type)
         except Exception:
@@ -399,9 +399,9 @@ class Notifier:
             if use_rate_limit:
                 self._last_sent[event_type] = time.monotonic()
 
-    def _format_payload(self, message: str) -> dict:
-        """Build the webhook payload for the configured format."""
-        if self._format == "discord":
+    def _format_payload(self, message: str, fmt: str) -> dict:
+        """Build the webhook payload for the given format."""
+        if fmt == "discord":
             return {"content": message}
         # Slack (default)
         return {"text": message}

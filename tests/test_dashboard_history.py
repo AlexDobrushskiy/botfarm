@@ -1104,31 +1104,34 @@ class TestStructuralConfigUpdate:
         client = TestClient(app)
         return client, config, config_path, app
 
-    def test_update_notifications_writes_yaml_only(self, setup):
-        client, config, config_path, _ = setup
+    def test_update_notifications_applies_immediately(self, setup):
+        """Notification settings are runtime-editable: applied in-memory AND YAML."""
+        client, config, config_path, app = setup
         resp = client.post("/config", json={
             "notifications": {"webhook_url": "https://new.example.com"},
         })
         assert resp.status_code == 200
-        assert "Restart required" in resp.text
+        assert "updated successfully" in resp.text
         # YAML file updated
         data = yaml.safe_load(config_path.read_text())
         assert data["notifications"]["webhook_url"] == "https://new.example.com"
-        # In-memory config NOT updated
-        assert config.notifications.webhook_url == "https://hooks.example.com/old"
+        # In-memory config ALSO updated (runtime-editable)
+        assert config.notifications.webhook_url == "https://new.example.com"
+        # No restart required
+        assert app.state.restart_required is False
 
-    def test_update_notifications_sets_restart_flag(self, setup):
+    def test_notifications_update_no_restart_flag(self, setup):
         client, _, _, app = setup
         assert app.state.restart_required is False
         client.post("/config", json={
             "notifications": {"rate_limit_seconds": 60},
         })
-        assert app.state.restart_required is True
+        assert app.state.restart_required is False
 
     def test_restart_banner_shown_after_structural_update(self, setup):
         client, _, _, _ = setup
         client.post("/config", json={
-            "notifications": {"webhook_url": "https://new.example.com"},
+            "projects": [{"name": "test-project", "slots": [1, 2, 3]}],
         })
         resp = client.get("/config")
         assert 'id="restart-banner"' in resp.text
@@ -1202,15 +1205,15 @@ class TestStructuralConfigUpdate:
         client, config, config_path, app = setup
         resp = client.post("/config", json={
             "bugtracker": {"poll_interval_seconds": 60},
-            "notifications": {"webhook_url": "https://new.example.com"},
+            "projects": [{"name": "test-project", "slots": [1, 2, 3]}],
         })
         assert resp.status_code == 200
         # Runtime applied in-memory
         assert config.bugtracker.poll_interval_seconds == 60
         # Structural written to file only
         data = yaml.safe_load(config_path.read_text())
-        assert data["notifications"]["webhook_url"] == "https://new.example.com"
-        assert config.notifications.webhook_url == "https://hooks.example.com/old"
+        assert data["projects"][0]["slots"] == [1, 2, 3]
+        assert config.projects[0].slots == [1, 2]
         # Restart required because of structural update
         assert app.state.restart_required is True
 
@@ -1223,14 +1226,14 @@ class TestStructuralConfigUpdate:
                 ),
             ],
         )
-        # No source_path set
+        # No source_path set — structural updates (projects) need a file
         app = create_app(
             db_path=db_file,
             botfarm_config=config,
         )
         client = TestClient(app)
         resp = client.post("/config", json={
-            "notifications": {"webhook_url": "https://new.example.com"},
+            "projects": [{"name": "test", "slots": [1, 2]}],
         })
         assert resp.status_code == 400
         assert "config file path" in resp.text.lower() or "Cannot save" in resp.text

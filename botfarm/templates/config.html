@@ -480,11 +480,11 @@
                        value="{{ config_values.daily_summary.min_tasks_for_summary }}" min="0" required>
             </label>
         </div>
-        {% if config_values.daily_summary.webhook_url %}
-        <p class="structural-note">Webhook URL: <code>{{ config_values.daily_summary.webhook_url }}</code></p>
-        {% else %}
-        <p class="structural-note">Webhook URL: not set (falls back to main notifications webhook). Edit in config.yaml.</p>
-        {% endif %}
+        <label for="daily_summary-webhook_url">
+            Webhook URL <small>(optional — falls back to main notifications webhook)</small>
+            <input type="text" id="daily_summary-webhook_url" name="webhook_url"
+                   value="{{ config_values.daily_summary.webhook_url }}" placeholder="https://hooks.slack.com/services/...">
+        </label>
         <button type="submit">Save Daily Summary Settings</button>
     </form>
 </section>
@@ -593,10 +593,9 @@
     <a href="/projects/add" role="button" class="outline">Add New Project</a>
 </section>
 
-{# --- Notifications section (structural — restart required) --- #}
+{# --- Notifications section (runtime — takes effect immediately) --- #}
 <section class="config-section">
     <h2>Notifications</h2>
-    <p class="structural-note">Changes to notifications require a supervisor restart to take effect.</p>
     <div id="feedback-notifications"></div>
     <form onsubmit="return saveSection(event, 'notifications')">
         <label for="notifications-webhook_url">
@@ -727,7 +726,7 @@ function saveSection(event, section) {
 }
 
 function showRestartBannerIfStructural(section) {
-    var structural = ["notifications", "projects"];
+    var structural = ["projects"];
     if (structural.indexOf(section) !== -1) {
         var banner = document.getElementById("restart-banner");
         if (!banner) {
