@@ -2163,6 +2163,32 @@ class TestWriteStructuralConfigUpdates:
         data = yaml.safe_load(config_path.read_text())
         assert data["projects"][0]["run_port"] == 3000
 
+    def test_write_project_include_tags(self, tmp_path):
+        config_path = _write_config(tmp_path, MINIMAL_CONFIG)
+        write_structural_config_updates(config_path, {
+            "projects": [
+                {"name": "test-project", "include_tags": ["botfarm", "urgent"]},
+            ],
+        })
+        data = yaml.safe_load(config_path.read_text())
+        assert data["projects"][0]["include_tags"] == ["botfarm", "urgent"]
+
+    def test_write_project_include_tags_empty_removes_key(self, tmp_path):
+        """Empty include_tags removes key from YAML so project falls back to global."""
+        raw = {**MINIMAL_CONFIG}
+        raw["projects"] = [
+            {**MINIMAL_CONFIG["projects"][0], "include_tags": ["botfarm"]},
+        ]
+        config_path = _write_config(tmp_path, raw)
+        data = yaml.safe_load(config_path.read_text())
+        assert data["projects"][0]["include_tags"] == ["botfarm"]
+
+        write_structural_config_updates(config_path, {
+            "projects": [{"name": "test-project", "include_tags": []}],
+        })
+        data = yaml.safe_load(config_path.read_text())
+        assert "include_tags" not in data["projects"][0]
+
     def test_write_new_project_with_run_fields(self, tmp_path):
         config_path = _write_config(tmp_path, MINIMAL_CONFIG)
         write_structural_config_updates(config_path, {

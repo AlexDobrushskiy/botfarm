@@ -1811,7 +1811,11 @@ def write_structural_config_updates(config_path: Path, updates: dict) -> None:
                 for fld in ("slots", "tracker_project", "include_tags",
                             "run_command", "run_env", "run_port", "bugtracker"):
                     if fld in proj_update:
-                        target[fld] = proj_update[fld]
+                        val = proj_update[fld]
+                        if fld == "include_tags" and val == []:
+                            target.pop("include_tags", None)
+                        else:
+                            target[fld] = val
             else:
                 # New project: append complete dict (only if required keys present)
                 required = {"team", "base_dir", "worktree_prefix", "slots"}
