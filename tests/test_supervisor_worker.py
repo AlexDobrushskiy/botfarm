@@ -1703,7 +1703,7 @@ class TestRefactoringAnalysisNotification:
 
         supervisor._notifier.notify_refactoring_all_clear.assert_called_once()
         kwargs = supervisor._notifier.notify_refactoring_all_clear.call_args[1]
-        assert kwargs["linear_ticket_url"] == "SMA-50"
+        assert kwargs["ticket_url"] == "SMA-50"
         supervisor._notifier.notify_refactoring_action_needed.assert_not_called()
 
     def test_action_needed_when_ticket_creation_detected(self, supervisor):

@@ -63,12 +63,12 @@ class TestNotifierDisabled:
         n.notify_supervisor_shutdown(reason="test")
         n.notify_refactoring_all_clear(
             month="March", year=2026,
-            linear_ticket_url="https://linear.app/test/issue/X-1",
+            ticket_url="https://linear.app/test/issue/X-1",
         )
         n.notify_refactoring_action_needed(
             month="March", year=2026, num_tickets=2,
             parent_ticket_id="X-1", brief_list="test",
-            linear_ticket_url="https://linear.app/test/issue/X-1",
+            ticket_url="https://linear.app/test/issue/X-1",
         )
         n.notify_human_blocker(
             blocker_id="X-1",
@@ -597,7 +597,7 @@ class TestRefactoringAnalysisNotifications:
         notifier.notify_refactoring_all_clear(
             month="March",
             year=2026,
-            linear_ticket_url="https://linear.app/test/issue/SMA-100",
+            ticket_url="https://linear.app/test/issue/SMA-100",
         )
         notifier._client.post.assert_called_once()
         payload = notifier._client.post.call_args[1]["json"]
@@ -613,7 +613,7 @@ class TestRefactoringAnalysisNotifications:
             num_tickets=3,
             parent_ticket_id="SMA-100",
             brief_list="duplicated auth logic, oversized utils module",
-            linear_ticket_url="https://linear.app/test/issue/SMA-100",
+            ticket_url="https://linear.app/test/issue/SMA-100",
         )
         notifier._client.post.assert_called_once()
         payload = notifier._client.post.call_args[1]["json"]
@@ -627,11 +627,11 @@ class TestRefactoringAnalysisNotifications:
     def test_all_clear_not_rate_limited(self, notifier):
         notifier.notify_refactoring_all_clear(
             month="March", year=2026,
-            linear_ticket_url="https://linear.app/test/issue/SMA-100",
+            ticket_url="https://linear.app/test/issue/SMA-100",
         )
         notifier.notify_refactoring_all_clear(
             month="April", year=2026,
-            linear_ticket_url="https://linear.app/test/issue/SMA-101",
+            ticket_url="https://linear.app/test/issue/SMA-101",
         )
         assert notifier._client.post.call_count == 2
 
@@ -639,12 +639,12 @@ class TestRefactoringAnalysisNotifications:
         notifier.notify_refactoring_action_needed(
             month="March", year=2026, num_tickets=2,
             parent_ticket_id="SMA-100", brief_list="test",
-            linear_ticket_url="https://linear.app/test/issue/SMA-100",
+            ticket_url="https://linear.app/test/issue/SMA-100",
         )
         notifier.notify_refactoring_action_needed(
             month="April", year=2026, num_tickets=1,
             parent_ticket_id="SMA-101", brief_list="test2",
-            linear_ticket_url="https://linear.app/test/issue/SMA-101",
+            ticket_url="https://linear.app/test/issue/SMA-101",
         )
         assert notifier._client.post.call_count == 2
 
@@ -660,7 +660,7 @@ class TestRefactoringAnalysisNotifications:
 
         n.notify_refactoring_all_clear(
             month="March", year=2026,
-            linear_ticket_url="https://linear.app/test/issue/SMA-100",
+            ticket_url="https://linear.app/test/issue/SMA-100",
         )
         payload = n._client.post.call_args[1]["json"]
         assert "content" in payload
@@ -674,12 +674,12 @@ class TestRefactoringAnalysisNotifications:
         # Should not raise
         n.notify_refactoring_all_clear(
             month="March", year=2026,
-            linear_ticket_url="https://linear.app/test/issue/SMA-100",
+            ticket_url="https://linear.app/test/issue/SMA-100",
         )
         n.notify_refactoring_action_needed(
             month="March", year=2026, num_tickets=2,
             parent_ticket_id="SMA-100", brief_list="test",
-            linear_ticket_url="https://linear.app/test/issue/SMA-100",
+            ticket_url="https://linear.app/test/issue/SMA-100",
         )
         n.close()
 

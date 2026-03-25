@@ -547,7 +547,7 @@ class OperationsMixin:
                 num_tickets=num_tickets,
                 parent_ticket_id=parent_id,
                 brief_list=brief_list,
-                linear_ticket_url=linear_url,
+                ticket_url=linear_url,
             )
         elif re.search(
             r"no action needed|no refactoring needed|all clear|"
@@ -558,7 +558,7 @@ class OperationsMixin:
             self._notifier.notify_refactoring_all_clear(
                 month=month,
                 year=year,
-                linear_ticket_url=linear_url,
+                ticket_url=linear_url,
             )
         else:
             logger.warning(
