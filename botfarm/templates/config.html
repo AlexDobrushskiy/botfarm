@@ -158,7 +158,7 @@
         <table>
             <tbody>
                 <tr><td>Team</td><td>{{ project.team }}</td></tr>
-                <tr><td>Project filter</td><td>{{ project.tracker_project or "-" }}</td></tr>
+                <tr><td>Project filter <small>(limits which tickets are picked up)</small></td><td>{{ project.tracker_project or "(all tickets in team)" }}</td></tr>
                 <tr><td>Base directory</td><td><code>{{ project.base_dir }}</code></td></tr>
                 <tr><td>Worktree prefix</td><td><code>{{ project.worktree_prefix }}</code></td></tr>
                 <tr>
@@ -528,9 +528,9 @@
         <h3>{{ project.name }}</h3>
 
         <label for="project-{{ loop.index0 }}-tracker_project">
-            Project filter
+            Project filter <small>(optional — exact project name, e.g. "Bot farm")</small>
             <input type="text" id="project-{{ loop.index0 }}-tracker_project"
-                   value="{{ project.tracker_project }}" placeholder="(none)">
+                   value="{{ project.tracker_project }}" placeholder="Leave empty to monitor all tickets in team">
         </label>
 
         <label>Slots</label>

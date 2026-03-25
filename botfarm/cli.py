@@ -1030,7 +1030,7 @@ from botfarm.project_setup import (
     "--project",
     "tracker_project_flag",
     default=None,
-    help="Bugtracker project filter (optional).",
+    help="Bugtracker project filter — exact project name (e.g. 'Bot farm'). Limits which tickets are picked up.",
 )
 @click.option(
     "--slots",
