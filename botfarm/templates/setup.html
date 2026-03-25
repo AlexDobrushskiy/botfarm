@@ -2,6 +2,12 @@
 {% set active_page = "setup" %}
 {% block title %}Setup Wizard - Botfarm{% endblock %}
 {% block content %}
+{% if terminal_enabled %}
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
+<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@0.11.0/lib/addon-web-links.min.js"></script>
+{% endif %}
 <style>
     .setup-layout {
         display: grid;
@@ -195,7 +201,11 @@
             </div>
             <p style="color: var(--pico-muted-color); font-size: 0.9rem;">
                 GitHub and Claude authentication status is shown in the forms above.
+                {% if terminal_enabled %}
+                Use the embedded terminal panels above to complete interactive authentication flows.
+                {% else %}
                 Claude Code requires interactive authentication via SSH.
+                {% endif %}
                 This section will update automatically as credentials are configured.
             </p>
         </section>

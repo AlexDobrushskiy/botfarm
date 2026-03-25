@@ -6,7 +6,12 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 
-from botfarm.config import BotfarmConfig, LinearBugtrackerConfig, ProjectConfig
+from botfarm.config import (
+    BotfarmConfig,
+    DashboardConfig,
+    LinearBugtrackerConfig,
+    ProjectConfig,
+)
 from botfarm.dashboard import create_app
 from botfarm.dashboard.routes_setup import (
     SetupStep,
@@ -718,6 +723,83 @@ class TestSetupCredentialsPartial:
 
         resp = client.get("/partials/setup-credentials")
         assert resp.status_code == 200
+
+    def test_terminal_panel_shown_for_claude_when_enabled(
+        self, db_file, monkeypatch,
+    ):
+        from botfarm.credentials import CredentialError
+
+        config = _make_config(api_key="key123", bt_type="linear")
+        config.dashboard = DashboardConfig(terminal_enabled=True)
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+
+        monkeypatch.setattr(
+            "botfarm.dashboard.routes_setup._load_token",
+            lambda: (_ for _ in ()).throw(CredentialError("no creds")),
+        )
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.setattr(
+            "botfarm.dashboard.routes_setup.shutil.which",
+            lambda cmd: None,
+        )
+
+        resp = client.get("/partials/setup-credentials")
+        assert resp.status_code == 200
+        assert "Open Terminal" in resp.text
+        assert "claude-terminal-panel" in resp.text
+        assert "SSH into the server" not in resp.text
+
+    def test_terminal_panel_shown_for_github_when_enabled(
+        self, db_file, monkeypatch,
+    ):
+        from botfarm.credentials import CredentialError
+
+        config = _make_config(api_key="key123", bt_type="linear")
+        config.dashboard = DashboardConfig(terminal_enabled=True)
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+
+        monkeypatch.setattr(
+            "botfarm.dashboard.routes_setup._load_token",
+            lambda: (_ for _ in ()).throw(CredentialError("no creds")),
+        )
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.setattr(
+            "botfarm.dashboard.routes_setup.shutil.which",
+            lambda cmd: None,
+        )
+
+        resp = client.get("/partials/setup-credentials")
+        assert resp.status_code == 200
+        assert "Or use device code flow" in resp.text
+        assert "github-terminal-panel" in resp.text
+
+    def test_terminal_panels_hidden_when_authenticated(
+        self, db_file, monkeypatch,
+    ):
+        from botfarm.credentials import OAuthToken
+
+        config = _make_config(api_key="key123", bt_type="linear")
+        config.dashboard = DashboardConfig(terminal_enabled=True)
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+
+        monkeypatch.setenv("GH_TOKEN", "ghp_test")
+        monkeypatch.setattr(
+            "botfarm.dashboard.routes_setup._load_token",
+            lambda: OAuthToken(access_token="x"),
+        )
+
+        resp = client.get("/partials/setup-credentials")
+        assert resp.status_code == 200
+        assert "Authenticated" in resp.text
+        # Terminal button/panel HTML elements should not be rendered when
+        # authenticated (JS references to IDs may still exist).
+        assert 'id="claude-terminal-toggle"' not in resp.text
+        assert 'id="github-terminal-details"' not in resp.text
 
 
 # ---------------------------------------------------------------------------
