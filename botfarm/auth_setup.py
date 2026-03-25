@@ -135,7 +135,7 @@ def check_bugtracker_auth(config: BotfarmConfig | None) -> AuthCheck:
         )
 
     # Validate by calling the API
-    from botfarm.bugtracker import BugtrackerError, create_client
+    from botfarm.bugtracker import create_client
 
     try:
         client = create_client(bt_config=bt)
@@ -179,16 +179,17 @@ def display_auth_summary(console: Console, checks: list[AuthCheck]) -> None:
     console.print(table)
 
 
-def _fix_claude_auth(console: Console) -> bool:
+def _fix_claude_auth(console: Console, *, skip_confirm: bool = False) -> bool:
     """Guide the user through Claude Code authentication."""
     console.print("\n[bold]Claude Code Authentication[/bold]")
     console.print("This will launch 'claude' which will open a browser for OAuth login.")
     console.print("Complete the login in your browser, then return here.\n")
 
-    from rich.prompt import Confirm
+    if not skip_confirm:
+        from rich.prompt import Confirm
 
-    if not Confirm.ask("Launch claude login?", default=True):
-        return False
+        if not Confirm.ask("Launch claude login?", default=True):
+            return False
 
     try:
         # Run claude in a way that triggers the login flow
@@ -217,7 +218,7 @@ def _fix_claude_auth(console: Console) -> bool:
         return False
 
 
-def _fix_github_auth(console: Console) -> bool:
+def _fix_github_auth(console: Console, *, skip_confirm: bool = False) -> bool:
     """Guide the user through GitHub CLI authentication."""
     console.print("\n[bold]GitHub Authentication[/bold]")
 
@@ -229,10 +230,11 @@ def _fix_github_auth(console: Console) -> bool:
     console.print("This will run 'gh auth login' to authenticate with GitHub.")
     console.print("You can choose browser-based or token-based auth.\n")
 
-    from rich.prompt import Confirm
+    if not skip_confirm:
+        from rich.prompt import Confirm
 
-    if not Confirm.ask("Run gh auth login?", default=True):
-        return False
+        if not Confirm.ask("Run gh auth login?", default=True):
+            return False
 
     try:
         # gh auth login is interactive — let it use the terminal directly
@@ -290,10 +292,10 @@ def _fix_bugtracker_auth(console: Console, config: BotfarmConfig | None) -> bool
     from rich.prompt import Prompt
 
     if is_jira:
-        console.print(f"Enter your Jira API token.")
+        console.print("Enter your Jira API token.")
         console.print("Generate one at: https://id.atlassian.com/manage-profile/security/api-tokens")
     else:
-        console.print(f"Enter your Linear API key.")
+        console.print("Enter your Linear API key.")
         console.print("Find it at: https://linear.app → Settings → API → Personal API keys")
 
     api_key = Prompt.ask(f"\n{tracker_name} API key", password=True).strip()
@@ -303,7 +305,7 @@ def _fix_bugtracker_auth(console: Console, config: BotfarmConfig | None) -> bool
 
     # Validate the key
     console.print("Validating...", end=" ")
-    from botfarm.bugtracker import BugtrackerError, create_client
+    from botfarm.bugtracker import create_client
 
     try:
         if is_jira:
@@ -392,7 +394,7 @@ def run_interactive_auth(
         if check.name == "bugtracker":
             success = handler(console, config)
         else:
-            success = handler(console)
+            success = handler(console, skip_confirm=fix_all)
 
         if success:
             fixed_count += 1
