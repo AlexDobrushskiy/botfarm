@@ -10,6 +10,7 @@ import pytest
 from botfarm.git_update import (
     UPDATE_EXIT_CODE,
     _ensure_not_bare,
+    _subprocess_env,
     commits_behind,
     pull_and_install,
 )
@@ -18,6 +19,67 @@ from botfarm.git_update import (
 class TestUpdateExitCode:
     def test_exit_code_is_42(self):
         assert UPDATE_EXIT_CODE == 42
+
+
+class TestSubprocessEnv:
+    def test_always_sets_git_terminal_prompt(self, monkeypatch):
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
+        result = _subprocess_env(None)
+        assert result["GIT_TERMINAL_PROMPT"] == "0"
+
+    def test_merges_caller_env(self, monkeypatch):
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
+        result = _subprocess_env({"MY_VAR": "hello"})
+        assert result["MY_VAR"] == "hello"
+        assert result["GIT_TERMINAL_PROMPT"] == "0"
+
+    def test_gh_token_sets_credential_helper(self, monkeypatch):
+        monkeypatch.setenv("GH_TOKEN", "ghp_test123")
+        monkeypatch.delenv("GIT_CONFIG_COUNT", raising=False)
+        monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
+        result = _subprocess_env(None)
+        assert result["GIT_CONFIG_COUNT"] == "2"
+        assert result["GIT_CONFIG_KEY_0"] == "credential.helper"
+        assert result["GIT_CONFIG_VALUE_0"] == ""
+        assert result["GIT_CONFIG_KEY_1"] == "credential.helper"
+        assert "x-access-token" in result["GIT_CONFIG_VALUE_1"]
+        assert "GH_TOKEN" in result["GIT_CONFIG_VALUE_1"]
+
+    def test_gh_token_appends_to_existing_git_config(self, monkeypatch):
+        monkeypatch.setenv("GH_TOKEN", "ghp_test")
+        monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+        monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
+        result = _subprocess_env(None)
+        assert result["GIT_CONFIG_COUNT"] == "3"
+        assert result["GIT_CONFIG_KEY_1"] == "credential.helper"
+        assert result["GIT_CONFIG_KEY_2"] == "credential.helper"
+
+    def test_no_credential_helper_without_gh_token(self, monkeypatch):
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.delenv("GIT_CONFIG_COUNT", raising=False)
+        monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
+        result = _subprocess_env(None)
+        assert "GIT_CONFIG_COUNT" not in result
+
+    def test_ssh_batch_mode_appended(self, monkeypatch):
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.setenv("GIT_SSH_COMMAND", "ssh -i /my/key")
+        result = _subprocess_env(None)
+        assert result["GIT_SSH_COMMAND"] == "ssh -i /my/key -o BatchMode=yes"
+
+    def test_ssh_batch_mode_not_duplicated(self, monkeypatch):
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.setenv("GIT_SSH_COMMAND", "ssh -o BatchMode=yes -i /my/key")
+        result = _subprocess_env(None)
+        assert result["GIT_SSH_COMMAND"] == "ssh -o BatchMode=yes -i /my/key"
+
+    def test_no_ssh_modification_without_ssh_command(self, monkeypatch):
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
+        result = _subprocess_env(None)
+        assert "GIT_SSH_COMMAND" not in result
 
 
 class TestCommitsBehind:
@@ -91,7 +153,9 @@ class TestCommitsBehind:
 
 
     @patch("botfarm.git_update.subprocess.run")
-    def test_passes_env_to_subprocess(self, mock_run):
+    def test_passes_env_to_subprocess(self, mock_run, monkeypatch):
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
         mock_run.side_effect = [
             MagicMock(returncode=0),  # git fetch
             MagicMock(returncode=0, stdout="2\n"),  # git rev-list
@@ -102,17 +166,22 @@ class TestCommitsBehind:
         for call in mock_run.call_args_list:
             call_env = call.kwargs.get("env")
             assert call_env is not None
-            assert call_env["GIT_SSH_COMMAND"] == "ssh -i /my/key"
+            assert "ssh -i /my/key" in call_env["GIT_SSH_COMMAND"]
+            assert call_env["GIT_TERMINAL_PROMPT"] == "0"
 
     @patch("botfarm.git_update.subprocess.run")
-    def test_no_env_when_none(self, mock_run):
+    def test_always_sets_env_even_when_none(self, mock_run, monkeypatch):
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
         mock_run.side_effect = [
             MagicMock(returncode=0),
             MagicMock(returncode=0, stdout="0\n"),
         ]
         commits_behind(env=None)
         for call in mock_run.call_args_list:
-            assert "env" not in call.kwargs
+            call_env = call.kwargs.get("env")
+            assert call_env is not None
+            assert call_env["GIT_TERMINAL_PROMPT"] == "0"
 
 
 class TestEnsureNotBare:
@@ -213,7 +282,9 @@ class TestPullAndInstall:
         assert pull_and_install() != ""
 
     @patch("botfarm.git_update.subprocess.run")
-    def test_passes_env_to_subprocess(self, mock_run, _mock_bare):
+    def test_passes_env_to_subprocess(self, mock_run, _mock_bare, monkeypatch):
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
         mock_run.side_effect = [
             MagicMock(returncode=0),  # git pull
             MagicMock(returncode=0),  # pip install
@@ -223,17 +294,22 @@ class TestPullAndInstall:
         for call in mock_run.call_args_list:
             call_env = call.kwargs.get("env")
             assert call_env is not None
-            assert call_env["GIT_SSH_COMMAND"] == "ssh -i /my/key"
+            assert "ssh -i /my/key" in call_env["GIT_SSH_COMMAND"]
+            assert call_env["GIT_TERMINAL_PROMPT"] == "0"
 
     @patch("botfarm.git_update.subprocess.run")
-    def test_no_env_when_none(self, mock_run, _mock_bare):
+    def test_always_sets_env_even_when_none(self, mock_run, _mock_bare, monkeypatch):
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
         mock_run.side_effect = [
             MagicMock(returncode=0),
             MagicMock(returncode=0),
         ]
         pull_and_install(env=None)
         for call in mock_run.call_args_list:
-            assert "env" not in call.kwargs
+            call_env = call.kwargs.get("env")
+            assert call_env is not None
+            assert call_env["GIT_TERMINAL_PROMPT"] == "0"
 
     @patch("botfarm.git_update.subprocess.run")
     def test_uses_sys_executable_for_pip(self, mock_run, _mock_bare):
