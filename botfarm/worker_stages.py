@@ -11,6 +11,7 @@ on orchestration logic.
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import logging
 import os
 import re
@@ -41,6 +42,10 @@ logger = logging.getLogger(__name__)
 
 # PR checks timeout (seconds)
 DEFAULT_PR_CHECKS_TIMEOUT = 600
+
+# How long to wait for CI checks to appear before assuming no CI (seconds).
+_NO_CI_GRACE_SECONDS = 60
+_NO_CI_POLL_INTERVAL = 10
 
 _NO_PR_LABELS = {"investigation", "refactoring analysis"}
 
@@ -837,6 +842,66 @@ def _run_fix(
     )
 
 
+def _gh_pr_checks_json(
+    pr_url: str,
+    cwd: str | Path,
+    *,
+    env: dict[str, str] | None = None,
+) -> list[dict] | None:
+    """Fetch current CI check status as structured data.
+
+    Returns a list of check dicts (with ``name``, ``state``, ``status``
+    fields) or ``None`` if the query fails.
+    """
+    try:
+        proc = subprocess.run(
+            ["gh", "pr", "checks", pr_url, "--json", "name,state,bucket"],
+            capture_output=True,
+            text=True,
+            cwd=str(cwd),
+            timeout=30,
+            env=env,
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            return json.loads(proc.stdout)
+    except (subprocess.TimeoutExpired, OSError, json.JSONDecodeError):
+        logger.debug("Could not fetch PR checks JSON for %s", pr_url, exc_info=True)
+    return None
+
+
+def _wait_for_checks_to_appear(
+    pr_url: str,
+    cwd: str | Path,
+    *,
+    grace_seconds: int = _NO_CI_GRACE_SECONDS,
+    poll_interval: int = _NO_CI_POLL_INTERVAL,
+    env: dict[str, str] | None = None,
+) -> list[dict] | None:
+    """Wait for CI checks to be registered on the PR.
+
+    GitHub Actions can take a few seconds to register check runs after a
+    push.  This polls ``gh pr checks --json`` for up to *grace_seconds*.
+
+    Returns the checks list once checks appear, or ``None`` if no checks
+    are registered within the grace period (indicating no CI is configured).
+    """
+    deadline = time.monotonic() + grace_seconds
+    while True:
+        checks = _gh_pr_checks_json(pr_url, cwd, env=env)
+        if checks:
+            return checks
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(min(poll_interval, max(0, deadline - time.monotonic())))
+
+
+def _all_checks_queued(checks: list[dict]) -> bool:
+    """Return True if every check is still in a queued/pending state."""
+    if not checks:
+        return False
+    return all(c.get("bucket", "").lower() in ("queued", "pending", "") for c in checks)
+
+
 def _run_pr_checks(
     pr_url: str,
     *,
@@ -860,6 +925,23 @@ def _run_pr_checks(
             error="PR has merge conflicts — CI checks will not run",
         )
 
+    # Phase 1: Wait for checks to appear.  GitHub Actions can take a
+    # few seconds to register check runs after a push.  If no checks
+    # appear within the grace period, assume the repo has no CI and
+    # let the pipeline proceed.
+    grace = min(_NO_CI_GRACE_SECONDS, timeout)
+    checks = _wait_for_checks_to_appear(
+        pr_url, cwd, grace_seconds=grace, env=subprocess_env,
+    )
+    if checks is None:
+        logger.warning(
+            "No CI checks found for %s after %ds — assuming no CI configured, proceeding",
+            pr_url, grace,
+        )
+        return StageResult(stage="pr_checks", success=True)
+
+    # Phase 2: Checks exist — wait for them to complete.
+    remaining_timeout = max(timeout - grace, 30)
     start = time.monotonic()
     try:
         proc = subprocess.run(
@@ -867,21 +949,41 @@ def _run_pr_checks(
             capture_output=True,
             text=True,
             cwd=str(cwd),
-            timeout=timeout,
+            timeout=remaining_timeout,
             env=subprocess_env,
         )
         if log_file is not None:
             _write_subprocess_log(log_file, proc.stdout, proc.stderr)
         success = proc.returncode == 0
         if success:
-            logger.info("CI checks passed in %.1fs", time.monotonic() - start)
+            logger.info("CI checks passed in %.1fs", time.monotonic() - start + grace)
         return StageResult(
             stage="pr_checks",
             success=success,
             error=None if success else f"CI checks failed:\n{proc.stdout[:CI_OUTPUT_TRUNCATE_CHARS]}",
         )
     except subprocess.TimeoutExpired:
-        elapsed = time.monotonic() - start
+        elapsed = time.monotonic() - start + grace
+
+        # Check if all checks are still queued — likely a runner issue.
+        final_checks = _gh_pr_checks_json(pr_url, cwd, env=subprocess_env)
+        if final_checks and _all_checks_queued(final_checks):
+            check_names = ", ".join(c.get("name", "?") for c in final_checks)
+            logger.warning(
+                "All CI checks still queued after %.0fs for %s — "
+                "runners may be unavailable. Checks: %s",
+                elapsed, pr_url, check_names,
+            )
+            return StageResult(
+                stage="pr_checks",
+                success=False,
+                error=(
+                    f"CI checks still queued after {elapsed:.0f}s — "
+                    f"GitHub Actions runners may be unavailable or offline. "
+                    f"Queued checks: {check_names}"
+                ),
+            )
+
         return StageResult(
             stage="pr_checks",
             success=False,

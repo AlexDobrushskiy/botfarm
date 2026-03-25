@@ -67,6 +67,7 @@ dashboard:
 agents:
   max_review_iterations: 3
   max_ci_retries: 2
+  pr_checks_timeout_seconds: 600  # max seconds to wait for CI checks
   timeout_minutes:
     implement: 120
     review: 30
@@ -308,6 +309,7 @@ class AgentsConfig:
     max_review_iterations: int = 3
     max_ci_retries: int = 2
     max_merge_conflict_retries: int = 2
+    pr_checks_timeout_seconds: int = 600
     timeout_minutes: dict[str, int] = field(default_factory=lambda: {
         "implement": 120,
         "review": 30,
@@ -1018,6 +1020,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         max_review_iterations=int(agents_data.get("max_review_iterations", 3)),
         max_ci_retries=int(agents_data.get("max_ci_retries", 2)),
         max_merge_conflict_retries=int(agents_data.get("max_merge_conflict_retries", 2)),
+        pr_checks_timeout_seconds=int(agents_data.get("pr_checks_timeout_seconds", 600)),
         timeout_minutes=timeout_minutes,
         timeout_overrides=timeout_overrides,
         timeout_grace_seconds=int(agents_data.get("timeout_grace_seconds", 10)),

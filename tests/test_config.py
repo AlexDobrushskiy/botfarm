@@ -629,6 +629,25 @@ def test_load_config_agents_max_ci_retries_negative(tmp_path):
         load_config(config_path)
 
 
+# --- pr_checks_timeout_seconds ---
+
+
+def test_load_config_pr_checks_timeout_default(tmp_path):
+    config_path = _write_config(tmp_path, MINIMAL_CONFIG)
+    config = load_config(config_path)
+    assert config.agents.pr_checks_timeout_seconds == 600
+
+
+def test_load_config_pr_checks_timeout_custom(tmp_path):
+    data = {
+        **MINIMAL_CONFIG,
+        "agents": {"pr_checks_timeout_seconds": 300},
+    }
+    config_path = _write_config(tmp_path, data)
+    config = load_config(config_path)
+    assert config.agents.pr_checks_timeout_seconds == 300
+
+
 # --- Timeout config ---
 
 
