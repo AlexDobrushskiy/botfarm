@@ -192,7 +192,7 @@
         <table>
             <tbody>
                 <tr><td>Team</td><td>{{ project.team }}</td></tr>
-                <tr><td>Project filter <small>(limits which tickets are picked up)</small></td><td>{{ project.tracker_project or "(all tickets in team)" }}</td></tr>
+                <tr><td>Project filter <small>(exact {% if full_config_values.bugtracker.type == 'jira' %}Jira component{% else %}Linear project{% endif %} name — limits which tickets are picked up)</small></td><td>{{ project.tracker_project or "(all tickets in team)" }}</td></tr>
                 <tr><td>Base directory</td><td><code>{{ project.base_dir }}</code></td></tr>
                 <tr><td>Worktree prefix</td><td><code>{{ project.worktree_prefix }}</code></td></tr>
                 <tr>
@@ -590,7 +590,12 @@
         </div>
 
         <label for="project-{{ loop.index0 }}-tracker_project">
-            Project filter <small>(optional — exact project name, e.g. "Bot farm")</small>
+            Project filter
+            {% if config_values.bugtracker.type == 'jira' %}
+            <small>(optional — exact Jira project name, case-sensitive; e.g. "My Project")</small>
+            {% else %}
+            <small>(optional — exact Linear project name, case-sensitive; e.g. "Bot farm")</small>
+            {% endif %}
             <input type="text" id="project-{{ loop.index0 }}-tracker_project"
                    value="{{ project.tracker_project }}" placeholder="Leave empty to monitor all tickets in team">
         </label>
