@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -98,46 +97,34 @@ class TestCheckClaudeAuth:
 
 
 class TestCheckGitHubAuth:
-    def test_passes_with_gh_token(self, monkeypatch):
-        monkeypatch.setenv("GH_TOKEN", "ghp_test")
-        result = check_github_auth()
-        assert result.passed is True
-
-    def test_passes_with_github_token(self, monkeypatch):
-        monkeypatch.delenv("GH_TOKEN", raising=False)
-        monkeypatch.setenv("GITHUB_TOKEN", "ghp_test")
-        result = check_github_auth()
-        assert result.passed is True
-
-    def test_passes_with_hosts_yml(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("GH_TOKEN", raising=False)
-        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
-        hosts = tmp_path / ".config" / "gh" / "hosts.yml"
-        hosts.parent.mkdir(parents=True)
-        hosts.write_text("github.com:\n  oauth_token: test\n")
-
+    def test_passes_when_gh_auth_status_succeeds(self):
+        mock_proc = MagicMock(returncode=0)
         with patch("botfarm.auth_setup.shutil.which", return_value="/usr/bin/gh"), \
-             patch("botfarm.auth_setup.Path.home", return_value=tmp_path):
+             patch("botfarm.auth_setup.subprocess.run", return_value=mock_proc):
             result = check_github_auth()
         assert result.passed is True
 
-    def test_fails_when_gh_not_installed(self, monkeypatch):
-        monkeypatch.delenv("GH_TOKEN", raising=False)
-        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    def test_fails_when_gh_not_installed(self):
         with patch("botfarm.auth_setup.shutil.which", return_value=None):
             result = check_github_auth()
         assert result.passed is False
         assert result.fixable is False
         assert "not found" in result.message
 
-    def test_fails_when_not_authenticated(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("GH_TOKEN", raising=False)
-        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    def test_fails_when_gh_auth_status_fails(self):
+        mock_proc = MagicMock(returncode=1)
         with patch("botfarm.auth_setup.shutil.which", return_value="/usr/bin/gh"), \
-             patch("botfarm.auth_setup.Path.home", return_value=tmp_path):
+             patch("botfarm.auth_setup.subprocess.run", return_value=mock_proc):
             result = check_github_auth()
         assert result.passed is False
         assert result.fixable is True
+        assert "Not authenticated" in result.message
+
+    def test_fails_when_gh_auth_status_times_out(self):
+        with patch("botfarm.auth_setup.shutil.which", return_value="/usr/bin/gh"), \
+             patch("botfarm.auth_setup.subprocess.run", side_effect=subprocess.TimeoutExpired("gh", 10)):
+            result = check_github_auth()
+        assert result.passed is False
         assert "Not authenticated" in result.message
 
 
@@ -203,10 +190,11 @@ class TestRunAuthChecks:
         token = OAuthToken(access_token="test")
         mock_client = MagicMock()
         mock_client.get_viewer_id.return_value = "user-123"
+        gh_proc = MagicMock(returncode=0)
 
         with patch("botfarm.auth_setup.shutil.which", return_value="/usr/bin/claude"), \
              patch("botfarm.auth_setup._load_token", return_value=token), \
-             patch("botfarm.auth_setup.os.environ", {"GH_TOKEN": "ghp_test"}), \
+             patch("botfarm.auth_setup.subprocess.run", return_value=gh_proc), \
              patch("botfarm.bugtracker.create_client", return_value=mock_client):
             results = run_auth_checks(config)
 
@@ -289,27 +277,29 @@ class TestAuthCommand:
         assert result.exit_code == 0
         assert "authentication" in result.output.lower()
 
-    def test_auth_runs_without_config(self, tmp_path, monkeypatch):
+    def test_auth_runs_without_config(self, tmp_path):
         from botfarm.cli import main
 
-        monkeypatch.setenv("GH_TOKEN", "ghp_test")
+        gh_proc = MagicMock(returncode=0)
         # Point config to non-existent path
         runner = CliRunner()
-        result = runner.invoke(main, [
-            "auth", "--config", str(tmp_path / "nonexistent.yaml"),
-        ])
+        with patch("botfarm.auth_setup.subprocess.run", return_value=gh_proc):
+            result = runner.invoke(main, [
+                "auth", "--config", str(tmp_path / "nonexistent.yaml"),
+            ])
         # Should still run (config=None case is handled)
         assert result.exit_code == 0
 
-    def test_auth_shows_status_table(self, tmp_path, monkeypatch):
+    def test_auth_shows_status_table(self, tmp_path):
         from botfarm.cli import main
 
-        monkeypatch.setenv("GH_TOKEN", "ghp_test")
         token = OAuthToken(access_token="test")
+        gh_proc = MagicMock(returncode=0)
 
         runner = CliRunner()
         with patch("botfarm.auth_setup.shutil.which", return_value="/usr/bin/claude"), \
-             patch("botfarm.auth_setup._load_token", return_value=token):
+             patch("botfarm.auth_setup._load_token", return_value=token), \
+             patch("botfarm.auth_setup.subprocess.run", return_value=gh_proc):
             result = runner.invoke(main, [
                 "auth", "--config", str(tmp_path / "nonexistent.yaml"),
             ])

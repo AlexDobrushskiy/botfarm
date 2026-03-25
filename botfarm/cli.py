@@ -1968,7 +1968,7 @@ def preflight(config_path):
     "--fix",
     is_flag=True,
     default=False,
-    help="Automatically attempt to fix all auth issues without prompting.",
+    help="Skip confirmation prompts and attempt to fix all auth issues.",
 )
 def auth(config_path, fix):
     """Check and fix authentication for all required services.

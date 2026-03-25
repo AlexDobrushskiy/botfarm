@@ -2,9 +2,6 @@
 
 Detects missing or expired authentication tokens and walks the user
 through each required auth flow interactively.
-
-Reuses detection logic from :mod:`botfarm.preflight` and validation
-helpers from :mod:`botfarm.dashboard.routes_setup`.
 """
 
 from __future__ import annotations
@@ -12,22 +9,14 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
-import httpx
 from rich.console import Console
 from rich.table import Table
 
 from botfarm.config import BotfarmConfig, DEFAULT_CONFIG_DIR, JiraBugtrackerConfig
 from botfarm.credentials import CredentialError, _load_token
-
-
-# GitHub device code flow constants (same as dashboard routes_setup.py)
-_GH_CLIENT_ID = "178c6fc778ccc68e1d6a"
-_GH_DEVICE_CODE_URL = "https://github.com/login/device/code"
-_GH_TOKEN_URL = "https://github.com/login/oauth/access_token"
 
 ENV_FILE_PATH = DEFAULT_CONFIG_DIR / ".env"
 
@@ -86,14 +75,6 @@ def check_claude_auth() -> AuthCheck:
 
 def check_github_auth() -> AuthCheck:
     """Check whether GitHub CLI authentication is available."""
-    if os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN"):
-        return AuthCheck(
-            name="github",
-            label="GitHub CLI",
-            passed=True,
-            message="Authenticated (token in environment)",
-        )
-
     if not shutil.which("gh"):
         return AuthCheck(
             name="github",
@@ -103,15 +84,24 @@ def check_github_auth() -> AuthCheck:
             fixable=False,
         )
 
-    # Check if gh has stored auth
-    hosts_path = Path.home() / ".config" / "gh" / "hosts.yml"
-    if hosts_path.is_file() and hosts_path.stat().st_size > 0:
-        return AuthCheck(
-            name="github",
-            label="GitHub CLI",
-            passed=True,
-            message="Authenticated (gh CLI)",
+    # Use `gh auth status` which handles all credential sources
+    # (GH_TOKEN, GITHUB_TOKEN, hosts.yml, GH_CONFIG_DIR, etc.)
+    try:
+        result = subprocess.run(
+            ["gh", "auth", "status"],
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
+        if result.returncode == 0:
+            return AuthCheck(
+                name="github",
+                label="GitHub CLI",
+                passed=True,
+                message="Authenticated",
+            )
+    except (subprocess.TimeoutExpired, OSError):
+        pass
 
     return AuthCheck(
         name="github",
@@ -150,7 +140,7 @@ def check_bugtracker_auth(config: BotfarmConfig | None) -> AuthCheck:
     try:
         client = create_client(bt_config=bt)
         client.get_viewer_id()
-    except (BugtrackerError, Exception) as exc:
+    except Exception as exc:
         return AuthCheck(
             name="bugtracker",
             label=f"{tracker_name} API",
@@ -325,17 +315,19 @@ def _fix_bugtracker_auth(console: Console, config: BotfarmConfig | None) -> bool
         else:
             client = create_client(api_key=api_key, bugtracker_type="linear")
         client.get_viewer_id()
-    except (BugtrackerError, Exception) as exc:
+    except Exception as exc:
         console.print(f"[red]Failed![/red]\n  {exc}")
         return False
 
     console.print("[green]OK[/green]")
 
-    # Save to .env
+    # Save to .env and update in-memory state so re-check picks up the new key
     env_var = "JIRA_API_TOKEN" if is_jira else "LINEAR_API_KEY"
     env_path = ENV_FILE_PATH
     try:
         _write_env_var(env_path, env_var, api_key)
+        os.environ[env_var] = api_key
+        bt.api_key = api_key
         console.print(f"Saved {env_var} to {env_path}")
     except OSError as exc:
         console.print(f"[red]Failed to write .env: {exc}[/red]")
