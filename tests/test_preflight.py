@@ -30,6 +30,7 @@ from botfarm.preflight import (
     _LANGUAGE_MARKERS,
     _describe_identity,
     _resolve_remote_url,
+    check_claude_binary,
     check_codex_reviewer,
     check_config_consistency,
     check_core_bare,
@@ -1163,6 +1164,55 @@ class TestRunPreflightChecks:
 
         # All should pass
         assert all(r.passed for r in results)
+
+
+# --- check_claude_binary ---
+
+
+class TestCheckClaudeBinary:
+    def test_pass_when_claude_available(self):
+        with patch("botfarm.preflight.check_claude_available",
+                    return_value=(True, "/usr/local/bin/claude (1.0.0)")):
+            results = check_claude_binary()
+        assert len(results) == 1
+        assert results[0].passed
+        assert "OK" in results[0].message
+
+    def test_fail_not_installed(self, tmp_path):
+        """claude not on PATH and not at ~/.local/bin/claude."""
+        with patch("botfarm.preflight.check_claude_available",
+                    return_value=(False, "claude binary not found on PATH")), \
+             patch("botfarm.preflight.Path.expanduser",
+                   return_value=tmp_path / ".local" / "bin"):
+            results = check_claude_binary()
+        assert len(results) == 1
+        assert not results[0].passed
+        assert "not present at" in results[0].message
+        assert "Install Claude Code" in results[0].message
+
+    def test_fail_installed_but_not_in_path(self, tmp_path):
+        """claude exists at ~/.local/bin/claude but ~/.local/bin is not in PATH."""
+        local_bin = tmp_path / ".local" / "bin"
+        local_bin.mkdir(parents=True)
+        (local_bin / "claude").touch()
+        with patch("botfarm.preflight.check_claude_available",
+                    return_value=(False, "claude binary not found on PATH")), \
+             patch("botfarm.preflight.Path.expanduser",
+                   return_value=local_bin):
+            results = check_claude_binary()
+        assert len(results) == 1
+        assert not results[0].passed
+        assert "not in PATH" in results[0].message
+        assert ".bashrc" in results[0].message
+
+    def test_non_not_found_error_unchanged(self):
+        """Errors like timeout should pass through without PATH advice."""
+        with patch("botfarm.preflight.check_claude_available",
+                    return_value=(False, "claude --version timed out")):
+            results = check_claude_binary()
+        assert len(results) == 1
+        assert not results[0].passed
+        assert "timed out" in results[0].message
 
 
 # --- check_codex_reviewer ---

@@ -31,7 +31,7 @@ curl -fsSL https://claude.ai/install.sh | bash
 
 > **Note:** Use `| bash`, not `| sh` — the latter fails on Ubuntu.
 
-After installation, add `~/.local/bin` to your PATH:
+> **Important:** The installer places `claude` in `~/.local/bin`, which may not be in your PATH. Add it now — without this step, `botfarm run` will fail with "claude not found":
 
 ```bash
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
