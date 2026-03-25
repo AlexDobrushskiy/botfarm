@@ -1956,6 +1956,42 @@ def preflight(config_path):
         console.print("\n[bold green]All critical checks passed.[/bold green]")
 
 
+@main.command()
+@click.option(
+    "--config",
+    "config_path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help="Path to config file.",
+)
+@click.option(
+    "--fix",
+    is_flag=True,
+    default=False,
+    help="Automatically attempt to fix all auth issues without prompting.",
+)
+def auth(config_path, fix):
+    """Check and fix authentication for all required services.
+
+    Detects missing or expired tokens for Claude Code, GitHub CLI, and the
+    configured bugtracker (Linear/Jira), then interactively guides you
+    through fixing each one.
+
+    Use --fix to skip confirmation prompts and fix all issues automatically.
+    """
+    from botfarm.auth_setup import run_auth_checks, run_interactive_auth, display_auth_summary
+
+    cfg_path = config_path or DEFAULT_CONFIG_PATH
+    config = None
+    if cfg_path.exists():
+        config = load_config(cfg_path)
+
+    console = Console()
+    console.print("[bold]Botfarm Authentication Setup[/bold]\n")
+
+    run_interactive_auth(config, console, fix_all=fix)
+
+
 def _days_ago(iso_timestamp: str | None) -> int:
     """Return how many days ago an ISO timestamp is, or 0 if unparseable."""
     if not iso_timestamp:
