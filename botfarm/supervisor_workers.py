@@ -326,6 +326,7 @@ def _worker_entry(
     bugtracker_api_key: str = "",
     bugtracker_url: str = "",
     bugtracker_email: str = "",
+    oauth_token: str = "",
 ) -> None:
     """Entry point for a worker subprocess.
 
@@ -433,6 +434,7 @@ def _worker_entry(
             bugtracker_api_key=bugtracker_api_key,
             bugtracker_url=bugtracker_url,
             bugtracker_email=bugtracker_email,
+            oauth_token=oauth_token,
         )
         if result.paused:
             result_queue.put(_WorkerResult(
@@ -668,6 +670,28 @@ class WorkerLifecycleManager:
     def _result_queue(self):
         return self._sup._result_queue
 
+    # -- OAuth token --------------------------------------------------------
+
+    def _get_oauth_token(self) -> str:
+        """Return a fresh OAuth access token for worker subprocesses.
+
+        Refreshes the token first if it is expired or near-expiry.
+        Returns an empty string if credentials are unavailable.
+        """
+        from botfarm.credentials import CredentialManager
+
+        cm = CredentialManager()
+        try:
+            if cm.is_token_expired():
+                logger.info("OAuth token expired/near-expiry — refreshing before dispatch")
+                token = cm.refresh_token()
+            else:
+                token = cm.get_token()
+        except Exception:
+            logger.debug("Failed to obtain OAuth token for worker", exc_info=True)
+            token = None
+        return token or ""
+
     # -- Shared worker spawn -----------------------------------------------
 
     def spawn_worker(
@@ -715,6 +739,10 @@ class WorkerLifecycleManager:
         from botfarm.config import resolve_project_bugtracker
         project_bt = resolve_project_bugtracker(self._config.bugtracker, project_cfg)
 
+        # Obtain a fresh OAuth access token for the worker.  The supervisor
+        # is single-threaded for dispatch, so refresh is serialised — no races.
+        oauth_token = self._get_oauth_token()
+
         proc = multiprocessing.Process(
             target=_worker_entry,
             kwargs={
@@ -750,6 +778,7 @@ class WorkerLifecycleManager:
                 "bugtracker_api_key": project_bt.api_key,
                 "bugtracker_url": getattr(project_bt, "url", ""),
                 "bugtracker_email": getattr(project_bt, "email", ""),
+                "oauth_token": oauth_token,
             },
             daemon=False,
         )

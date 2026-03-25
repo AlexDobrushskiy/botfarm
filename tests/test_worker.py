@@ -4877,6 +4877,39 @@ class TestAuthFailureRetry:
         assert len(runs) == 2
 
     @patch("botfarm.worker._execute_stage")
+    @patch("botfarm.credentials.CredentialManager")
+    @patch("botfarm.supervisor_workers._classify_failure", return_value="auth_failure")
+    def test_retry_updates_oauth_token_in_env_dicts(
+        self, mock_classify, mock_cm_cls, mock_exec, conn, task_id, tmp_path,
+    ):
+        """After token refresh, coder_env and reviewer_env should contain the new token."""
+        ctx = self._make_ctx(conn, task_id, tmp_path)
+        ctx.coder_env = {"CLAUDE_CODE_OAUTH_TOKEN": "old-token", "GH_TOKEN": "gh-abc"}
+        ctx.reviewer_env = {"CLAUDE_CODE_OAUTH_TOKEN": "old-token"}
+
+        failed_result = self._auth_failure_result()
+        mock_cm_cls.return_value.refresh_token.return_value = "fresh-token"
+        mock_exec.return_value = _mock_stage_result("implement", pr_url=PR_URL)
+
+        ctx._maybe_retry_on_auth_failure(
+            failed_result,
+            stage="implement",
+            pr_url=None,
+            iteration=1,
+            log_file=None,
+            stage_run_id=None,
+            stage_tpl=None,
+            on_context_fill=None,
+            extra_usage=False,
+            codex_kwargs={},
+            wall_start=time.monotonic(),
+        )
+        assert ctx.coder_env["CLAUDE_CODE_OAUTH_TOKEN"] == "fresh-token"
+        assert ctx.reviewer_env["CLAUDE_CODE_OAUTH_TOKEN"] == "fresh-token"
+        # Other env vars untouched
+        assert ctx.coder_env["GH_TOKEN"] == "gh-abc"
+
+    @patch("botfarm.worker._execute_stage")
     def test_run_and_record_retries_on_auth_failure(
         self, mock_exec, conn, task_id, tmp_path,
     ):
@@ -4897,3 +4930,117 @@ class TestAuthFailureRetry:
         assert result is not None
         assert result.success is True
         assert mock_exec.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# OAuth token injection into env dicts
+# ---------------------------------------------------------------------------
+
+
+class TestOAuthTokenEnvInjection:
+    """run_pipeline should inject CLAUDE_CODE_OAUTH_TOKEN into both env dicts."""
+
+    @patch("botfarm.worker._load_pipeline_config")
+    @patch("botfarm.worker._execute_stage")
+    def test_oauth_token_injected_into_coder_and_reviewer_env(
+        self, mock_exec, mock_load_cfg, tmp_path, monkeypatch,
+    ):
+        """When oauth_token is provided, both coder_env and reviewer_env
+        should contain CLAUDE_CODE_OAUTH_TOKEN."""
+        db_path = str(tmp_path / "test.db")
+        monkeypatch.setenv("BOTFARM_DB_PATH", db_path)
+        from botfarm.db import init_db, insert_task
+        conn = init_db(db_path, allow_migration=True)
+        task_id = insert_task(conn, ticket_id="TST-OA", title="OAuth test",
+                              project="proj", slot=1, status="in_progress")
+        conn.commit()
+
+        mock_load_cfg.return_value = (
+            ["implement"], {}, 3, 2, 2, set(), None,
+        )
+        mock_exec.return_value = _mock_stage_result("implement", pr_url=PR_URL)
+
+        with patch("botfarm.worker._check_pr_merged", return_value=False):
+            result = run_pipeline(
+                ticket_id="TST-OA",
+                task_id=task_id,
+                cwd=str(tmp_path),
+                conn=conn,
+                oauth_token="test-access-token-123",
+            )
+
+        # The env passed to _execute_stage should include the token
+        call_kwargs = mock_exec.call_args[1]
+        env = call_kwargs["env"]
+        assert env is not None
+        assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "test-access-token-123"
+
+    @patch("botfarm.worker._load_pipeline_config")
+    @patch("botfarm.worker._execute_stage")
+    def test_no_oauth_token_leaves_env_unchanged(
+        self, mock_exec, mock_load_cfg, tmp_path, monkeypatch,
+    ):
+        """When oauth_token is empty, env dicts should not contain the key."""
+        db_path = str(tmp_path / "test.db")
+        monkeypatch.setenv("BOTFARM_DB_PATH", db_path)
+        from botfarm.db import init_db, insert_task
+        conn = init_db(db_path, allow_migration=True)
+        task_id = insert_task(conn, ticket_id="TST-NO", title="No token test",
+                              project="proj", slot=1, status="in_progress")
+        conn.commit()
+
+        mock_load_cfg.return_value = (
+            ["implement"], {}, 3, 2, 2, set(), None,
+        )
+        mock_exec.return_value = _mock_stage_result("implement", pr_url=PR_URL)
+
+        with patch("botfarm.worker._check_pr_merged", return_value=False):
+            result = run_pipeline(
+                ticket_id="TST-NO",
+                task_id=task_id,
+                cwd=str(tmp_path),
+                conn=conn,
+                oauth_token="",
+            )
+
+        call_kwargs = mock_exec.call_args[1]
+        env = call_kwargs.get("env")
+        # env should be None (no identities, no oauth_token)
+        assert env is None or "CLAUDE_CODE_OAUTH_TOKEN" not in env
+
+    @patch("botfarm.worker._load_pipeline_config")
+    @patch("botfarm.worker._execute_stage")
+    def test_oauth_token_merges_with_existing_coder_env(
+        self, mock_exec, mock_load_cfg, tmp_path, monkeypatch,
+    ):
+        """OAuth token should be merged with identity env, not replace it."""
+        db_path = str(tmp_path / "test.db")
+        monkeypatch.setenv("BOTFARM_DB_PATH", db_path)
+        from botfarm.db import init_db, insert_task
+        conn = init_db(db_path, allow_migration=True)
+        task_id = insert_task(conn, ticket_id="TST-MRG", title="Merge test",
+                              project="proj", slot=1, status="in_progress")
+        conn.commit()
+
+        mock_load_cfg.return_value = (
+            ["implement"], {}, 3, 2, 2, set(), None,
+        )
+        mock_exec.return_value = _mock_stage_result("implement", pr_url=PR_URL)
+
+        ident = IdentitiesConfig(
+            coder=CoderIdentity(github_token="gh-tok"),
+        )
+        with patch("botfarm.worker._check_pr_merged", return_value=False):
+            result = run_pipeline(
+                ticket_id="TST-MRG",
+                task_id=task_id,
+                cwd=str(tmp_path),
+                conn=conn,
+                identities=ident,
+                oauth_token="my-oauth-token",
+            )
+
+        call_kwargs = mock_exec.call_args[1]
+        env = call_kwargs["env"]
+        assert env["GH_TOKEN"] == "gh-tok"
+        assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "my-oauth-token"
