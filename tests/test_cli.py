@@ -877,12 +877,12 @@ class TestInitCommand:
 
 
 class TestPreflightCommand:
-    def _make_config(self, dashboard_enabled=True, port=8420):
-        """Build a minimal BotfarmConfig with dashboard settings."""
+    def _make_config(self):
+        """Build a minimal BotfarmConfig."""
         from botfarm.config import BotfarmConfig, DashboardConfig
 
         cfg = BotfarmConfig.__new__(BotfarmConfig)
-        cfg.dashboard = DashboardConfig(enabled=dashboard_enabled, port=port)
+        cfg.dashboard = DashboardConfig(enabled=False, port=8420)
         return cfg
 
     def test_no_config_file(self, runner, db_file, monkeypatch):
@@ -894,175 +894,63 @@ class TestPreflightCommand:
         assert result.exit_code != 0
         assert "Config file not found" in result.output
 
-    def test_dashboard_disabled(self, runner, db_file, monkeypatch):
-        """preflight fails gracefully when dashboard is disabled."""
-        cfg = self._make_config(dashboard_enabled=False)
+    def test_all_checks_pass(self, runner, db_file, monkeypatch):
+        """preflight displays results when all checks pass."""
+        from botfarm.preflight import CheckResult
+
+        cfg = self._make_config()
         monkeypatch.setattr(
             "botfarm.cli._resolve_paths", lambda _: (db_file, cfg)
+        )
+        monkeypatch.setattr(
+            "botfarm.preflight.run_preflight_checks",
+            lambda _cfg, env=None: [
+                CheckResult(name="git_repo:proj", passed=True, message="OK", critical=True),
+                CheckResult(name="credentials", passed=True, message="OK", critical=False),
+            ],
+        )
+        result = runner.invoke(main, ["preflight"])
+        assert result.exit_code == 0
+        assert "git_repo:proj" in result.output
+        assert "All critical checks passed" in result.output
+
+    def test_critical_failure(self, runner, db_file, monkeypatch):
+        """preflight exits with code 1 when a critical check fails."""
+        from botfarm.preflight import CheckResult
+
+        cfg = self._make_config()
+        monkeypatch.setattr(
+            "botfarm.cli._resolve_paths", lambda _: (db_file, cfg)
+        )
+        monkeypatch.setattr(
+            "botfarm.preflight.run_preflight_checks",
+            lambda _cfg, env=None: [
+                CheckResult(name="linear_api", passed=False, message="Unreachable", critical=True),
+            ],
         )
         result = runner.invoke(main, ["preflight"])
         assert result.exit_code != 0
-        assert "Dashboard is not enabled" in result.output
+        assert "1 critical check" in result.output
 
-    def test_supervisor_not_running(self, runner, db_file, monkeypatch):
-        """preflight fails gracefully when supervisor is not reachable."""
-        from http.server import HTTPServer, BaseHTTPRequestHandler
-        # Bind to port 0, read the assigned port, then immediately close —
-        # guarantees no server is listening on that port.
-        tmp_server = HTTPServer(("127.0.0.1", 0), BaseHTTPRequestHandler)
-        unused_port = tmp_server.server_address[1]
-        tmp_server.server_close()
+    def test_warning_only(self, runner, db_file, monkeypatch):
+        """preflight exits 0 when only non-critical (warning) checks fail."""
+        from botfarm.preflight import CheckResult
 
-        cfg = self._make_config(port=unused_port)
+        cfg = self._make_config()
         monkeypatch.setattr(
             "botfarm.cli._resolve_paths", lambda _: (db_file, cfg)
+        )
+        monkeypatch.setattr(
+            "botfarm.preflight.run_preflight_checks",
+            lambda _cfg, env=None: [
+                CheckResult(name="database", passed=True, message="OK", critical=True),
+                CheckResult(name="notifications", passed=False, message="No webhook", critical=False),
+            ],
         )
         result = runner.invoke(main, ["preflight"])
-        assert result.exit_code != 0
-        assert "Cannot reach dashboard" in result.output
-
-    def test_successful_rerun(self, runner, db_file, monkeypatch):
-        """preflight displays results after a successful re-run."""
-        api_results = {
-            "degraded": False,
-            "failed_critical": 0,
-            "checks": [
-                {"name": "git_repo:proj", "passed": True, "message": "OK",
-                 "critical": True, "guidance": ""},
-                {"name": "credentials", "passed": True, "message": "OK",
-                 "critical": False, "guidance": ""},
-            ],
-        }
-
-        import json
-        from http.server import HTTPServer, BaseHTTPRequestHandler
-        import threading
-
-        class Handler(BaseHTTPRequestHandler):
-            def do_POST(self):
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(b'{"status": "ok"}')
-
-            def do_GET(self):
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(json.dumps(api_results).encode())
-
-            def log_message(self, *args):
-                pass  # suppress log noise
-
-        server = HTTPServer(("127.0.0.1", 0), Handler)
-        cfg = self._make_config(port=server.server_address[1])
-        monkeypatch.setattr(
-            "botfarm.cli._resolve_paths", lambda _: (db_file, cfg)
-        )
-        t = threading.Thread(target=server.serve_forever, daemon=True)
-        t.start()
-        try:
-            result = runner.invoke(main, ["preflight"])
-            assert result.exit_code == 0
-            assert "git_repo:proj" in result.output
-            assert "All critical checks passed" in result.output
-        finally:
-            server.shutdown()
-
-    def test_degraded_mode_display(self, runner, db_file, monkeypatch):
-        """preflight shows degraded mode warning when checks fail."""
-        api_results = {
-            "degraded": True,
-            "failed_critical": 1,
-            "checks": [
-                {"name": "linear_api", "passed": False, "message": "Unreachable",
-                 "critical": True, "guidance": "Check key"},
-            ],
-        }
-
-        import json
-        from http.server import HTTPServer, BaseHTTPRequestHandler
-        import threading
-
-        class Handler(BaseHTTPRequestHandler):
-            def do_POST(self):
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(b'{"status": "ok"}')
-
-            def do_GET(self):
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(json.dumps(api_results).encode())
-
-            def log_message(self, *args):
-                pass
-
-        server = HTTPServer(("127.0.0.1", 0), Handler)
-        cfg = self._make_config(port=server.server_address[1])
-        monkeypatch.setattr(
-            "botfarm.cli._resolve_paths", lambda _: (db_file, cfg)
-        )
-        t = threading.Thread(target=server.serve_forever, daemon=True)
-        t.start()
-        try:
-            result = runner.invoke(main, ["preflight"])
-            assert result.exit_code == 0
-            assert "DEGRADED MODE" in result.output
-            assert "1 critical check" in result.output
-        finally:
-            server.shutdown()
-
-    def test_no_rerun_flag(self, runner, db_file, monkeypatch):
-        """preflight --no-rerun skips the POST and only fetches results."""
-        api_results = {
-            "degraded": False,
-            "failed_critical": 0,
-            "checks": [
-                {"name": "database", "passed": True, "message": "OK",
-                 "critical": True, "guidance": ""},
-            ],
-        }
-
-        import json
-        from http.server import HTTPServer, BaseHTTPRequestHandler
-        import threading
-
-        post_called = []
-
-        class Handler(BaseHTTPRequestHandler):
-            def do_POST(self):
-                post_called.append(True)
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(b'{"status": "ok"}')
-
-            def do_GET(self):
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(json.dumps(api_results).encode())
-
-            def log_message(self, *args):
-                pass
-
-        server = HTTPServer(("127.0.0.1", 0), Handler)
-        cfg = self._make_config(port=server.server_address[1])
-        monkeypatch.setattr(
-            "botfarm.cli._resolve_paths", lambda _: (db_file, cfg)
-        )
-        t = threading.Thread(target=server.serve_forever, daemon=True)
-        t.start()
-        try:
-            result = runner.invoke(main, ["preflight", "--no-rerun"])
-            assert result.exit_code == 0
-            assert "database" in result.output
-            assert post_called == []  # POST should NOT have been called
-        finally:
-            server.shutdown()
+        assert result.exit_code == 0
+        assert "notifications" in result.output
+        assert "All critical checks passed" in result.output
 
 
 # ---------------------------------------------------------------------------

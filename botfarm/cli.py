@@ -1694,89 +1694,24 @@ def uninstall_service_cmd():
     default=None,
     help="Path to config file.",
 )
-@click.option(
-    "--no-rerun",
-    is_flag=True,
-    default=False,
-    help="Only show current results without triggering a re-run.",
-)
-def preflight(config_path, no_rerun):
-    """Trigger a preflight check re-run on the running supervisor and show results.
+def preflight(config_path):
+    """Run preflight checks and show results.
 
-    Communicates with the supervisor's dashboard API to request a preflight
-    re-evaluation, then displays the results. Requires the dashboard to be
-    enabled and running.
+    Validates the environment (auth tokens, dependencies, configuration)
+    without requiring the supervisor or dashboard to be running.
     """
-    import time
-    from urllib.error import HTTPError, URLError
-    from urllib.request import Request, urlopen
+    from botfarm.preflight import run_preflight_checks
 
     _, cfg = _resolve_paths(config_path)
     if cfg is None:
         raise click.ClickException(
-            f"Config file not found at {config_path or DEFAULT_CONFIG_PATH}. "
-            "Cannot determine dashboard port."
+            f"Config file not found at {config_path or DEFAULT_CONFIG_PATH}."
         )
 
-    if not cfg.dashboard.enabled:
-        raise click.ClickException(
-            "Dashboard is not enabled in config. "
-            "Enable it to use the preflight command."
-        )
-
-    base_url = f"http://127.0.0.1:{cfg.dashboard.port}"
     console = Console()
+    console.print("Running preflight checks…", style="bold")
 
-    # Trigger re-run unless --no-rerun
-    if not no_rerun:
-        console.print("Requesting preflight re-run…", style="bold")
-        try:
-            req = Request(f"{base_url}/api/rerun-preflight", method="POST", data=b"")
-            with urlopen(req, timeout=5):
-                pass
-        except HTTPError as exc:
-            if exc.code == 503:
-                raise click.ClickException(
-                    "Dashboard is running but preflight re-run is not available "
-                    "(supervisor may not be fully connected)."
-                ) from exc
-            raise click.ClickException(
-                f"Re-run request failed with HTTP {exc.code}"
-            ) from exc
-        except URLError as exc:
-            raise click.ClickException(
-                f"Cannot reach dashboard at {base_url} — is the supervisor running? ({exc.reason})"
-            ) from exc
-
-        # Wait for checks to complete (they're fast — typically <2s)
-        time.sleep(2)
-
-    # Fetch results
-    try:
-        req = Request(f"{base_url}/api/preflight-results")
-        with urlopen(req, timeout=5) as resp:
-            data = json.loads(resp.read())
-    except HTTPError as exc:
-        if exc.code == 503:
-            raise click.ClickException(
-                "Dashboard is running but preflight results are not available "
-                "(supervisor may not be fully connected)."
-            ) from exc
-        raise click.ClickException(
-            f"Failed to fetch preflight results (HTTP {exc.code})"
-        ) from exc
-    except URLError as exc:
-        raise click.ClickException(
-            f"Cannot reach dashboard at {base_url} — is the supervisor running? ({exc.reason})"
-        ) from exc
-
-    checks = data.get("checks", [])
-    degraded = data.get("degraded", False)
-    failed_critical = data.get("failed_critical", 0)
-
-    if not checks:
-        console.print("[yellow]No preflight results available yet.[/yellow]")
-        return
+    results = run_preflight_checks(cfg)
 
     # Display results
     table = Table(title="Preflight Checks")
@@ -1785,27 +1720,29 @@ def preflight(config_path, no_rerun):
     table.add_column("Message")
     table.add_column("Severity", justify="center")
 
-    for check in checks:
-        if check["passed"]:
+    for check in results:
+        if check.passed:
             icon = "[green]✓[/green]"
-        elif check["critical"]:
+        elif check.critical:
             icon = "[red]✗[/red]"
         else:
             icon = "[yellow]⚠[/yellow]"
 
-        severity = "[red]Blocking[/red]" if check["critical"] else "[yellow]Warning[/yellow]"
-        if check["passed"]:
+        severity = "[red]Blocking[/red]" if check.critical else "[yellow]Warning[/yellow]"
+        if check.passed:
             severity = "-"
 
-        table.add_row(icon, check["name"], check["message"], severity)
+        table.add_row(icon, check.name, check.message, severity)
 
     console.print(table)
 
-    if degraded:
+    failed_critical = sum(1 for r in results if not r.passed and r.critical)
+    if failed_critical:
         console.print(
-            f"\n[bold red]DEGRADED MODE:[/bold red] "
-            f"{failed_critical} critical check(s) failed — dispatch is paused."
+            f"\n[bold red]{failed_critical} critical check(s) failed — "
+            f"botfarm will not dispatch until these are resolved.[/bold red]"
         )
+        raise SystemExit(1)
     else:
         console.print("\n[bold green]All critical checks passed.[/bold green]")
 
