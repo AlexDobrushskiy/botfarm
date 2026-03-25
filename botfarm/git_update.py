@@ -18,6 +18,46 @@ logger = logging.getLogger(__name__)
 UPDATE_EXIT_CODE = 42
 
 
+def _subprocess_env(env: dict[str, str] | None) -> dict[str, str]:
+    """Build subprocess environment for git commands in non-interactive contexts.
+
+    Always sets ``GIT_TERMINAL_PROMPT=0`` to prevent git from prompting for
+    HTTPS credentials (which would hang under systemd/cron/nohup).
+
+    When ``GH_TOKEN`` is present, configures a credential helper via
+    ``GIT_CONFIG_*`` env vars that bridges the token to git's HTTPS auth —
+    fixing ``git fetch``/``git pull`` failures when system credential helpers
+    (gnome-keyring, libsecret) are unavailable.
+
+    When ``GIT_SSH_COMMAND`` is present, appends ``-o BatchMode=yes`` to
+    prevent SSH from prompting for a passphrase.
+    """
+    merged = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    if env:
+        merged.update(env)
+
+    # Bridge GH_TOKEN → git credential helper for HTTPS remotes.
+    if merged.get("GH_TOKEN"):
+        base = int(merged.get("GIT_CONFIG_COUNT", "0"))
+        # First: clear system credential helpers that may not work headless.
+        merged[f"GIT_CONFIG_KEY_{base}"] = "credential.helper"
+        merged[f"GIT_CONFIG_VALUE_{base}"] = ""
+        # Second: set a helper that reads GH_TOKEN from the environment.
+        merged[f"GIT_CONFIG_KEY_{base + 1}"] = "credential.helper"
+        merged[f"GIT_CONFIG_VALUE_{base + 1}"] = (
+            '!f() { echo "username=x-access-token"; '
+            'echo "password=${GH_TOKEN}"; }; f'
+        )
+        merged["GIT_CONFIG_COUNT"] = str(base + 2)
+
+    # Prevent SSH passphrase prompts in non-interactive environments.
+    ssh_cmd = merged.get("GIT_SSH_COMMAND")
+    if ssh_cmd and "-o BatchMode=" not in ssh_cmd:
+        merged["GIT_SSH_COMMAND"] = f"{ssh_cmd} -o BatchMode=yes"
+
+    return merged
+
+
 def commits_behind(
     repo_dir: str | Path | None = None,
     *,
@@ -36,8 +76,7 @@ def commits_behind(
     kwargs: dict = {"capture_output": True, "text": True, "timeout": 30}
     if repo_dir is not None:
         kwargs["cwd"] = str(repo_dir)
-    if env:
-        kwargs["env"] = {**os.environ, **env}
+    kwargs["env"] = _subprocess_env(env)
 
     try:
         subprocess.run(
@@ -46,7 +85,7 @@ def commits_behind(
             **kwargs,
         )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
-        logger.warning("git fetch origin failed", exc_info=True)
+        logger.debug("git fetch origin failed (update check is best-effort)", exc_info=True)
         return 0
 
     try:
@@ -58,7 +97,7 @@ def commits_behind(
         return int(result.stdout.strip())
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
             FileNotFoundError, ValueError):
-        logger.warning("git rev-list count failed", exc_info=True)
+        logger.debug("git rev-list count failed", exc_info=True)
         return 0
 
 
@@ -117,8 +156,7 @@ def pull_and_install(
     kwargs: dict = {"capture_output": True, "text": True, "timeout": 120}
     if repo_dir is not None:
         kwargs["cwd"] = str(repo_dir)
-    if env:
-        kwargs["env"] = {**os.environ, **env}
+    kwargs["env"] = _subprocess_env(env)
 
     try:
         subprocess.run(
