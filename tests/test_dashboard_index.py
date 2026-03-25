@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 
 from botfarm.config import BotfarmConfig, ProjectConfig
 from botfarm.dashboard import create_app
-from botfarm.db import init_db, insert_usage_snapshot, save_dispatch_state
+from botfarm.db import init_db, insert_codex_usage_snapshot, insert_usage_snapshot, save_dispatch_state
 from tests.conftest import _seed_queue_entry
 from tests.helpers import seed_slot as _seed_slot
 
@@ -673,6 +673,22 @@ class TestUsagePanelEnhancements:
         resp = client.get("/partials/usage")
         assert "DISPATCH PAUSED" not in resp.text
         assert "Dispatch paused" not in resp.text
+
+    def test_codex_usage_in_partial(self, tmp_path, monkeypatch):
+        """Codex usage stats must persist across htmx partial refreshes (SMA-546)."""
+        db_path = tmp_path / "codex_usage.db"
+        conn = init_db(db_path)
+        _seed_slot(conn, "my-project", 1, status="free")
+        insert_usage_snapshot(conn, utilization_5h=0.45, utilization_7d=0.72)
+        insert_codex_usage_snapshot(conn, primary_used_pct=0.65, plan_type="pro")
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=db_path)
+        client = TestClient(app)
+        resp = client.get("/partials/usage")
+        assert "Codex Usage" in resp.text
+        assert "65%" in resp.text
+        assert "pro" in resp.text
 
 
 # --- Usage freshness & staleness ---

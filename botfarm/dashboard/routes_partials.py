@@ -105,8 +105,10 @@ def partial_usage(request: Request):
     dispatch_pause_reason = state.get("dispatch_pause_reason")
     last_usage_check = snapshot_at or state.get("last_usage_check")
     stale = usage_is_stale(last_usage_check)
+    codex_usage = state.get("codex_usage", {})
     return templates.TemplateResponse(request, "partials/usage.html", {
         "usage": usage,
+        "codex_usage": codex_usage,
         "dispatch_paused": dispatch_paused,
         "dispatch_pause_reason": dispatch_pause_reason,
         "last_usage_check": last_usage_check,
