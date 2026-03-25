@@ -203,6 +203,17 @@
                         {% endfor %}
                     </td>
                 </tr>
+                {% if project.include_tags %}
+                <tr>
+                    <td>Include tags</td>
+                    <td>
+                        Filtered:
+                        {% for tag in project.include_tags %}
+                        <span class="tag">{{ tag }}</span>
+                        {% endfor %}
+                    </td>
+                </tr>
+                {% endif %}
             </tbody>
         </table>
         </figure>
@@ -234,6 +245,15 @@
                     <span class="tag">{{ tag }}</span>
                     {% endfor %}
                     {% if not full_config_values.bugtracker.exclude_tags %}-{% endif %}
+                </td>
+            </tr>
+            <tr>
+                <td>Include tags <small>(only pick up tickets with these labels)</small></td>
+                <td>
+                    {% for tag in full_config_values.bugtracker.include_tags %}
+                    <span class="tag">{{ tag }}</span>
+                    {% endfor %}
+                    {% if not full_config_values.bugtracker.include_tags %}<em>all tickets</em>{% endif %}
                 </td>
             </tr>
             <tr><td>Todo status</td><td>{{ full_config_values.bugtracker.todo_status }}</td></tr>
@@ -399,6 +419,11 @@
             Poll interval (seconds)
             <input type="number" id="bugtracker-poll_interval_seconds" name="poll_interval_seconds"
                    value="{{ config_values.bugtracker.poll_interval_seconds }}" min="1" required>
+        </label>
+        <label for="bugtracker-include_tags">
+            Include tags <small>(comma-separated — only tickets with these labels are picked up; leave empty for all)</small>
+            <input type="text" id="bugtracker-include_tags" name="include_tags"
+                   value="{{ config_values.bugtracker.include_tags | join(', ') }}" placeholder="e.g. botfarm, ready">
         </label>
         <fieldset>
             <label>
@@ -570,6 +595,12 @@
                    value="{{ project.tracker_project }}" placeholder="Leave empty to monitor all tickets in team">
         </label>
 
+        <label for="project-{{ loop.index0 }}-include_tags">
+            Include tags <small>(comma-separated — overrides global setting for this project)</small>
+            <input type="text" id="project-{{ loop.index0 }}-include_tags" class="project-include-tags"
+                   value="{{ project.include_tags | join(', ') }}" placeholder="Leave empty to use global setting">
+        </label>
+
         <label>Slots</label>
         <div class="slot-chips" id="slots-{{ loop.index0 }}">
             {% for slot in project.slots %}
@@ -694,6 +725,10 @@ function saveSection(event, section) {
                 payload[section]["timeout_minutes"] = {};
             }
             payload[section]["timeout_minutes"][stage] = value;
+        } else if (name === "include_tags") {
+            // Convert comma-separated string to list of trimmed, non-empty strings
+            var tags = input.value.split(",").map(function(t) { return t.trim(); }).filter(function(t) { return t !== ""; });
+            payload[section][name] = tags;
         } else {
             payload[section][name] = value;
         }
@@ -786,8 +821,14 @@ function saveProjects() {
     for (var i = 0; i < cards.length; i++) {
         var card = cards[i];
         var name = card.dataset.projectName;
-        var lpInput = card.querySelector("input[type=text]");
+        var lpInput = card.querySelector("input[id$='-tracker_project']");
         var trackerProject = lpInput ? lpInput.value : "";
+
+        var tagsInput = card.querySelector("input.project-include-tags");
+        var includeTags = [];
+        if (tagsInput && tagsInput.value.trim()) {
+            includeTags = tagsInput.value.split(",").map(function(t) { return t.trim(); }).filter(function(t) { return t !== ""; });
+        }
 
         var slotsContainer = document.getElementById("slots-" + i);
         var chips = slotsContainer.querySelectorAll(".slot-chip");
@@ -799,7 +840,8 @@ function saveProjects() {
         projects.push({
             name: name,
             slots: slots,
-            tracker_project: trackerProject
+            tracker_project: trackerProject,
+            include_tags: includeTags
         });
     }
 

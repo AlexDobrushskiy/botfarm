@@ -52,6 +52,7 @@ def _full_config_values(app) -> dict:
                 "base_dir": p.base_dir,
                 "worktree_prefix": p.worktree_prefix,
                 "slots": list(p.slots),
+                "include_tags": list(p.include_tags) if p.include_tags else [],
             }
             for p in cfg.projects
         ],
@@ -61,6 +62,7 @@ def _full_config_values(app) -> dict:
             "workspace": cfg.bugtracker.workspace,
             "poll_interval_seconds": cfg.bugtracker.poll_interval_seconds,
             "exclude_tags": list(cfg.bugtracker.exclude_tags),
+            "include_tags": list(cfg.bugtracker.include_tags),
             "todo_status": cfg.bugtracker.todo_status,
             "in_progress_status": cfg.bugtracker.in_progress_status,
             "done_status": cfg.bugtracker.done_status,
@@ -122,6 +124,7 @@ def _config_values(app) -> dict:
         "bugtracker": {
             "type": cfg.bugtracker.type,
             "poll_interval_seconds": cfg.bugtracker.poll_interval_seconds,
+            "include_tags": list(cfg.bugtracker.include_tags),
             "comment_on_failure": cfg.bugtracker.comment_on_failure,
             "comment_on_completion": cfg.bugtracker.comment_on_completion,
             "comment_on_limit_pause": cfg.bugtracker.comment_on_limit_pause,
@@ -162,6 +165,7 @@ def _config_values(app) -> dict:
                 "name": p.name,
                 "slots": list(p.slots),
                 "tracker_project": p.tracker_project,
+                "include_tags": list(p.include_tags) if p.include_tags else [],
             }
             for p in cfg.projects
         ],
