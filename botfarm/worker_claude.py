@@ -799,8 +799,9 @@ def _recover_pr_url(
 ) -> str | None:
     """Recover the PR URL for a resumed pipeline.
 
-    First checks ``gh pr view`` in the working directory, then falls back
-    to scanning previous stage_run records in the database.
+    Uses ``gh pr list --head <branch> --state open`` to find the open PR
+    for the current branch, then falls back to scanning previous stage_run
+    records in the database.
     """
     subprocess_env = {**os.environ, **env} if env else None
     # Get the current branch name
