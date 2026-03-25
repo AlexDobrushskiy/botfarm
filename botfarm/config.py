@@ -715,6 +715,9 @@ def _validate_config(config: BotfarmConfig) -> None:
     if config.agents.max_merge_conflict_retries < 0:
         raise ConfigError("agents.max_merge_conflict_retries must be at least 0")
 
+    if config.agents.pr_checks_timeout_seconds < 1:
+        raise ConfigError("agents.pr_checks_timeout_seconds must be at least 1")
+
     for stage, minutes in config.agents.timeout_minutes.items():
         if stage not in _KNOWN_TIMEOUT_STAGES:
             raise ConfigError(
@@ -1162,6 +1165,7 @@ EDITABLE_FIELDS: dict[tuple[str, str], dict] = {
     ("agents", "max_review_iterations"): {"type": "int", "min": 1},
     ("agents", "max_ci_retries"): {"type": "int", "min": 0},
     ("agents", "max_merge_conflict_retries"): {"type": "int", "min": 0},
+    ("agents", "pr_checks_timeout_seconds"): {"type": "int", "min": 1},
     ("agents", "timeout_minutes"): {"type": "timeout_dict"},
     ("agents", "timeout_grace_seconds"): {"type": "int", "min": 0},
     # Legacy codex_reviewer_* keys kept as aliases for dashboard compat

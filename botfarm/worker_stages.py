@@ -850,7 +850,7 @@ def _gh_pr_checks_json(
 ) -> list[dict] | None:
     """Fetch current CI check status as structured data.
 
-    Returns a list of check dicts (with ``name``, ``state``, ``status``
+    Returns a list of check dicts (with ``name``, ``state``, ``bucket``
     fields) or ``None`` if the query fails.
     """
     try:
@@ -899,7 +899,7 @@ def _all_checks_queued(checks: list[dict]) -> bool:
     """Return True if every check is still in a queued/pending state."""
     if not checks:
         return False
-    return all(c.get("bucket", "").lower() in ("queued", "pending", "") for c in checks)
+    return all(c.get("bucket", "").lower() in ("queued", "pending") for c in checks)
 
 
 def _run_pr_checks(
@@ -930,9 +930,11 @@ def _run_pr_checks(
     # appear within the grace period, assume the repo has no CI and
     # let the pipeline proceed.
     grace = min(_NO_CI_GRACE_SECONDS, timeout)
+    phase1_start = time.monotonic()
     checks = _wait_for_checks_to_appear(
         pr_url, cwd, grace_seconds=grace, env=subprocess_env,
     )
+    phase1_elapsed = time.monotonic() - phase1_start
     if checks is None:
         logger.warning(
             "No CI checks found for %s after %ds — assuming no CI configured, proceeding",
@@ -941,7 +943,7 @@ def _run_pr_checks(
         return StageResult(stage="pr_checks", success=True)
 
     # Phase 2: Checks exist — wait for them to complete.
-    remaining_timeout = max(timeout - grace, 30)
+    remaining_timeout = max(timeout - phase1_elapsed, 30)
     start = time.monotonic()
     try:
         proc = subprocess.run(
@@ -956,14 +958,14 @@ def _run_pr_checks(
             _write_subprocess_log(log_file, proc.stdout, proc.stderr)
         success = proc.returncode == 0
         if success:
-            logger.info("CI checks passed in %.1fs", time.monotonic() - start + grace)
+            logger.info("CI checks passed in %.1fs", time.monotonic() - start + phase1_elapsed)
         return StageResult(
             stage="pr_checks",
             success=success,
             error=None if success else f"CI checks failed:\n{proc.stdout[:CI_OUTPUT_TRUNCATE_CHARS]}",
         )
     except subprocess.TimeoutExpired:
-        elapsed = time.monotonic() - start + grace
+        elapsed = time.monotonic() - start + phase1_elapsed
 
         # Check if all checks are still queued — likely a runner issue.
         final_checks = _gh_pr_checks_json(pr_url, cwd, env=subprocess_env)

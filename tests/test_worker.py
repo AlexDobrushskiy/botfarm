@@ -4169,9 +4169,9 @@ class TestAllChecksQueued:
     def test_empty_list(self):
         assert _all_checks_queued([]) is False
 
-    def test_missing_bucket_treated_as_queued(self):
+    def test_missing_bucket_not_treated_as_queued(self):
         checks = [{"name": "build"}]
-        assert _all_checks_queued(checks) is True
+        assert _all_checks_queued(checks) is False
 
 
 class TestWaitForChecksToAppear:
