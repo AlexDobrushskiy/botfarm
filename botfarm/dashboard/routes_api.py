@@ -57,7 +57,10 @@ router = APIRouter()
 _PREFLIGHT_GUIDANCE: dict[str, str] = {
     "git_repo": "Verify base_dir path in config and that git remote 'origin' is accessible",
     "linear_api": "Check bugtracker.api_key in config and verify team/status names match your Linear workspace",
+    "linear_team": "Check bugtracker.api_key in config and verify team/status names match your Linear workspace",
     "linear_status": "Check bugtracker.api_key in config and verify team/status names match your Linear workspace",
+    "jira_project": "Check bugtracker.api_key in config and verify project/status names match your Jira instance",
+    "jira_status": "Check bugtracker.api_key in config and verify project/status names match your Jira instance",
     "identity_github_token": "Verify GitHub token is valid and the associated user has collaborator access to the repository",
     "identity_ssh_key": "Check SSH key path in config, verify file exists and has correct permissions (0600)",
     "identity_tracker_key": "Verify the identity's bugtracker API key is valid",
