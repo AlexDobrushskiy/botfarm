@@ -16,6 +16,7 @@ from botfarm.dashboard import create_app
 from botfarm.dashboard.routes_setup import (
     SetupStep,
     _build_credentials_context,
+    _extract_auth_url,
     _section_done_map,
     _validate_bugtracker_api_key,
     _validate_github_token,
@@ -960,8 +961,8 @@ class TestSetupCredentialsPartial:
         )
 
         resp = client.get("/partials/setup-credentials")
-        assert "SSH into the server" in resp.text
-        assert "claude" in resp.text
+        assert "Start Authentication" in resp.text
+        assert "startClaudeAuth" in resp.text
 
     def test_without_config(self, db_file, monkeypatch):
         from botfarm.credentials import CredentialError
@@ -1701,3 +1702,114 @@ class TestSetupProjectForm:
         project_section = text[proj_start:proj_end]
         assert 'id="setup-project-form"' not in project_section
         assert "/projects/add" in project_section
+
+
+# ---------------------------------------------------------------------------
+# _extract_auth_url unit tests
+# ---------------------------------------------------------------------------
+
+class TestExtractAuthUrl:
+    def test_extracts_https_url(self):
+        text = "Open this URL: https://platform.claude.ai/oauth/authorize?client_id=abc"
+        url = _extract_auth_url(text)
+        assert url == "https://platform.claude.ai/oauth/authorize?client_id=abc"
+
+    def test_extracts_url_with_trailing_punctuation(self):
+        text = "Visit https://example.com/auth."
+        url = _extract_auth_url(text)
+        assert url == "https://example.com/auth"
+
+    def test_extracts_url_with_trailing_paren(self):
+        text = "(https://example.com/auth)"
+        url = _extract_auth_url(text)
+        assert url == "https://example.com/auth"
+
+    def test_extracts_url_with_query_params(self):
+        text = "URL: https://auth.example.com/login?code=abc&state=xyz"
+        url = _extract_auth_url(text)
+        assert url == "https://auth.example.com/login?code=abc&state=xyz"
+
+    def test_returns_none_for_no_url(self):
+        text = "No URL here, just plain text."
+        assert _extract_auth_url(text) is None
+
+    def test_returns_none_for_empty_string(self):
+        assert _extract_auth_url("") is None
+
+    def test_extracts_first_url_from_multiline(self):
+        text = "Starting auth...\nhttps://first.example.com/auth\nhttps://second.example.com"
+        url = _extract_auth_url(text)
+        assert url == "https://first.example.com/auth"
+
+    def test_ignores_http_urls(self):
+        text = "http://insecure.example.com then https://secure.example.com/auth"
+        url = _extract_auth_url(text)
+        assert url == "https://secure.example.com/auth"
+
+    def test_handles_ansi_escape_codes_in_url(self):
+        # claude may output ANSI codes — URL should stop at them
+        text = "Visit https://example.com/auth\x1b[0m to continue"
+        url = _extract_auth_url(text)
+        # URL stops at the escape character since \x1b is not a valid URL char
+        assert url is not None
+        assert url.startswith("https://example.com/auth")
+
+
+# ---------------------------------------------------------------------------
+# Claude auth API endpoint tests
+# ---------------------------------------------------------------------------
+
+class TestClaudeAuthEndpoint:
+    def test_returns_already_authenticated(self, db_file, monkeypatch):
+        from botfarm.credentials import OAuthToken
+
+        monkeypatch.setattr(
+            "botfarm.dashboard.routes_setup._load_token",
+            lambda: OAuthToken(access_token="test"),
+        )
+        config = _make_config()
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+
+        resp = client.post("/api/setup/claude/auth", json={})
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "already_authenticated"
+
+    def test_returns_error_when_claude_not_found(self, db_file, monkeypatch):
+        _mock_auth_unavailable(monkeypatch)
+        config = _make_config()
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+
+        resp = client.post("/api/setup/claude/auth", json={})
+        assert resp.status_code == 400
+        data = resp.json()
+        assert "error" in data
+        assert "not installed" in data["error"] or "not on PATH" in data["error"]
+
+
+class TestClaudeAuthStatusEndpoint:
+    def test_returns_not_authenticated(self, db_file, monkeypatch):
+        _mock_auth_unavailable(monkeypatch)
+        config = _make_config()
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+
+        resp = client.get("/api/setup/claude/auth/status")
+        assert resp.status_code == 200
+        assert resp.json()["authenticated"] is False
+
+    def test_returns_authenticated(self, db_file, monkeypatch):
+        from botfarm.credentials import OAuthToken
+
+        monkeypatch.setattr(
+            "botfarm.dashboard.routes_setup._load_token",
+            lambda: OAuthToken(access_token="test"),
+        )
+        config = _make_config()
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+
+        resp = client.get("/api/setup/claude/auth/status")
+        assert resp.status_code == 200
+        assert resp.json()["authenticated"] is True
