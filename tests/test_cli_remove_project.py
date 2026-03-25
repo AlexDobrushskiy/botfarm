@@ -269,6 +269,50 @@ class TestRemoveProjectCommand:
         assert len(rows) == 1
         assert rows[0]["project"] == "proj-b"
 
+    def test_clean_skips_when_candidate_is_managed_root(self, runner, tmp_path, monkeypatch):
+        """--clean must not delete the managed projects root itself.
+
+        If base_dir is a direct child of managed_root (no /repo suffix),
+        candidate == managed_root and rmtree would wipe all projects.
+        """
+        db_path = tmp_path / "botfarm.db"
+        conn = init_db(db_path, allow_migration=True)
+        conn.close()
+
+        managed_root = tmp_path / "projects"
+        project_dir = managed_root / "my-project"
+        project_dir.mkdir(parents=True)
+        (project_dir / "somefile").write_text("data")
+
+        config_path = tmp_path / "config.yaml"
+        config_data = {
+            "projects": [
+                {
+                    "name": "my-project",
+                    # base_dir points directly under managed_root (no /repo suffix)
+                    "base_dir": str(project_dir),
+                    "team": "TST",
+                    "slots": [1],
+                },
+            ],
+            "bugtracker": {"type": "linear", "api_key": "test-key"},
+        }
+        config_path.write_text(yaml.dump(config_data))
+        monkeypatch.setenv("BOTFARM_DB_PATH", str(db_path))
+        monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_DIR", tmp_path)
+
+        result = runner.invoke(
+            main, [
+                "remove-project", "my-project",
+                "--config", str(config_path), "--clean", "--yes",
+            ]
+        )
+        assert result.exit_code == 0, result.output
+        # managed_root must still exist — it should NOT have been deleted
+        assert managed_root.exists()
+        # The project directory should also still exist (not cleaned)
+        assert project_dir.exists()
+
     def test_paused_manual_is_active(self, runner, db_and_config):
         """paused_manual slots should count as active."""
         db_path, config_path = db_and_config

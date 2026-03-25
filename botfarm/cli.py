@@ -1314,8 +1314,9 @@ def remove_project(name, config_path, force, clean, yes):
     if repo_path and repo_path.parent != repo_path:
         candidate = repo_path.parent
         try:
-            candidate.relative_to(managed_root)
-            projects_dir = candidate
+            rel = candidate.relative_to(managed_root)
+            if rel.parts:  # must be a proper subdirectory, not managed_root itself
+                projects_dir = candidate
         except ValueError:
             pass
 
