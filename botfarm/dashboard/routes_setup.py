@@ -677,7 +677,7 @@ def _extract_auth_url(text: str) -> str | None:
     Looks for HTTPS URLs in the text.  Strips common trailing punctuation
     that might have been captured as part of the match.
     """
-    match = re.search(r"https://[^\s<>\"']+", text)
+    match = re.search(r"https://[^\s<>\"'\x00-\x1f]+", text)
     if match:
         return match.group(0).rstrip(".,;:!?)")
     return None

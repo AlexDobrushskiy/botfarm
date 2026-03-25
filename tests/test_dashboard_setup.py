@@ -1750,9 +1750,7 @@ class TestExtractAuthUrl:
         # claude may output ANSI codes — URL should stop at them
         text = "Visit https://example.com/auth\x1b[0m to continue"
         url = _extract_auth_url(text)
-        # URL stops at the escape character since \x1b is not a valid URL char
-        assert url is not None
-        assert url.startswith("https://example.com/auth")
+        assert url == "https://example.com/auth"
 
 
 # ---------------------------------------------------------------------------
