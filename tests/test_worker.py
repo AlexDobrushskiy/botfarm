@@ -4599,6 +4599,76 @@ class TestMcpConfigFlag:
 
 
 # ---------------------------------------------------------------------------
+# --bare mode (api_key auth)
+# ---------------------------------------------------------------------------
+
+
+class TestBareMode:
+    @pytest.fixture(autouse=True)
+    def _mock_claude_on_path(self):
+        with patch("botfarm.worker_claude.shutil.which", return_value="/usr/local/bin/claude"):
+            yield
+
+    @patch("botfarm.worker_claude.subprocess.Popen")
+    def test_bare_flag_added_when_env_set(self, mock_popen, tmp_path, monkeypatch):
+        """BOTFARM_AUTH_MODE=api_key adds --bare and --add-dir to the command."""
+        ndjson = _make_stream_ndjson()
+        mock_proc = MagicMock()
+        mock_proc.stdin = MagicMock()
+        mock_proc.stdout = iter(ndjson.splitlines(keepends=True))
+        mock_proc.stderr = iter([])
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = 0
+        mock_popen.return_value = mock_proc
+
+        env = {"BOTFARM_AUTH_MODE": "api_key"}
+        run_claude_streaming("do stuff", cwd=tmp_path, max_turns=10, env=env)
+
+        cmd = mock_popen.call_args[0][0]
+        assert "--bare" in cmd
+        assert "--add-dir" in cmd
+        add_dir_idx = cmd.index("--add-dir")
+        assert cmd[add_dir_idx + 1] == str(tmp_path)
+
+    @patch("botfarm.worker_claude.subprocess.Popen")
+    def test_bare_flag_absent_in_oauth_mode(self, mock_popen, tmp_path, monkeypatch):
+        """In default oauth mode, --bare and --add-dir are not added."""
+        monkeypatch.delenv("BOTFARM_AUTH_MODE", raising=False)
+        ndjson = _make_stream_ndjson()
+        mock_proc = MagicMock()
+        mock_proc.stdin = MagicMock()
+        mock_proc.stdout = iter(ndjson.splitlines(keepends=True))
+        mock_proc.stderr = iter([])
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = 0
+        mock_popen.return_value = mock_proc
+
+        run_claude_streaming("do stuff", cwd=tmp_path, max_turns=10)
+
+        cmd = mock_popen.call_args[0][0]
+        assert "--bare" not in cmd
+        assert "--add-dir" not in cmd
+
+    @patch("botfarm.worker_claude.subprocess.Popen")
+    def test_bare_flag_from_os_environ(self, mock_popen, tmp_path, monkeypatch):
+        """BOTFARM_AUTH_MODE in os.environ is picked up when env dict doesn't contain it."""
+        monkeypatch.setenv("BOTFARM_AUTH_MODE", "api_key")
+        ndjson = _make_stream_ndjson()
+        mock_proc = MagicMock()
+        mock_proc.stdin = MagicMock()
+        mock_proc.stdout = iter(ndjson.splitlines(keepends=True))
+        mock_proc.stderr = iter([])
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = 0
+        mock_popen.return_value = mock_proc
+
+        run_claude_streaming("do stuff", cwd=tmp_path, max_turns=10)
+
+        cmd = mock_popen.call_args[0][0]
+        assert "--bare" in cmd
+
+
+# ---------------------------------------------------------------------------
 # Pre-stage token freshness check
 # ---------------------------------------------------------------------------
 

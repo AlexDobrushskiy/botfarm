@@ -1,4 +1,6 @@
-{% if usage %}
+{% if auth_mode is defined and auth_mode == "api_key" %}
+<p style="margin-bottom: 0;">N/A — usage tracking unavailable in API key mode</p>
+{% elif usage %}
 <div class="grid">
     <div>
         <strong>5-hour utilization:</strong>

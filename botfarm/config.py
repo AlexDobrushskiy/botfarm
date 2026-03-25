@@ -271,6 +271,9 @@ class DatabaseConfig:
     path: str = ""
 
 
+VALID_AUTH_MODES = ("oauth", "api_key")
+
+
 @dataclass
 class UsageLimitsConfig:
     enabled: bool = True
@@ -431,6 +434,7 @@ class BotfarmConfig:
         daily_summary: DailySummaryConfig | None = None,
         start_paused: bool = True,
         source_path: str = "",
+        auth_mode: str = "oauth",
     ) -> None:
         self.projects = projects
         self.bugtracker = bugtracker or LinearBugtrackerConfig()
@@ -446,6 +450,7 @@ class BotfarmConfig:
         self.daily_summary = daily_summary or DailySummaryConfig()
         self.start_paused = start_paused
         self.source_path = source_path
+        self.auth_mode = auth_mode
 
     @property
     def setup_mode(self) -> bool:
@@ -954,6 +959,12 @@ def _validate_config(config: BotfarmConfig) -> None:
             "codex_usage.pause_secondary_threshold must be between 0.0 and 1.0"
         )
 
+    if config.auth_mode not in VALID_AUTH_MODES:
+        raise ConfigError(
+            f"auth_mode must be one of {sorted(VALID_AUTH_MODES)}, "
+            f"got: {config.auth_mode!r}"
+        )
+
     if config.notifications.webhook_format not in ("slack", "discord"):
         raise ConfigError(
             f"notifications.webhook_format must be 'slack' or 'discord', "
@@ -1000,7 +1011,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         "projects", "bugtracker", "linear", "database", "usage_limits",
         "dashboard", "agents", "logging", "notifications",
         "identities", "refactoring_analysis", "codex_usage",
-        "daily_summary", "start_paused",
+        "daily_summary", "start_paused", "auth_mode",
     }
     unknown = set(data.keys()) - known_keys
     if unknown:
@@ -1272,6 +1283,16 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
 
     start_paused = _parse_bool(data, "start_paused", True, section="top-level")
 
+    # Auth mode: "oauth" (default) or "api_key" (--bare mode with ANTHROPIC_API_KEY).
+    # Auto-detect from environment when not explicitly set in config.
+    raw_auth_mode = data.get("auth_mode")
+    if raw_auth_mode is not None:
+        auth_mode = str(raw_auth_mode)
+    elif os.environ.get("ANTHROPIC_API_KEY"):
+        auth_mode = "api_key"
+    else:
+        auth_mode = "oauth"
+
     config = BotfarmConfig(
         projects=projects,
         bugtracker=bugtracker,
@@ -1286,6 +1307,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         codex_usage=codex_usage,
         daily_summary=daily_summary,
         start_paused=start_paused,
+        auth_mode=auth_mode,
     )
 
     _validate_config(config)

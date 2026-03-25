@@ -351,6 +351,15 @@ def run_claude_streaming(
         "--dangerously-skip-permissions",
         "--max-turns", str(max_turns),
     ]
+    # Detect auth mode from environment — BOTFARM_AUTH_MODE is set by the
+    # supervisor when auth_mode is "api_key".  In --bare mode, Claude Code
+    # skips hooks, auto-memory, and CLAUDE.md auto-discovery; --add-dir
+    # compensates for the last of these.
+    effective_env = env if env else {}
+    auth_mode = effective_env.get("BOTFARM_AUTH_MODE") or os.environ.get("BOTFARM_AUTH_MODE", "oauth")
+    if auth_mode == "api_key":
+        cmd.append("--bare")
+        cmd.extend(["--add-dir", str(cwd)])
     # Write MCP config to a temp file so the API key isn't visible in ps output
     mcp_config_path: str | None = None
     if mcp_config:
