@@ -23,10 +23,12 @@ from botfarm.config import (
     ConfigError,
     create_default_config,
     load_config,
+    write_yaml_atomic,
 )
 from botfarm.db import (
     SchemaVersionError,
     clear_slot_stage,
+    delete_project_data,
     get_codex_review_stats,
     get_stage_run_aggregates,
     get_task_by_ticket,
@@ -1223,6 +1225,145 @@ def add_project(config_path, repo_url, name, team, tracker_project_flag, num_slo
             f"    - Create a CLAUDE.md: botfarm init-claude-md {base_dir}"
         )
     console.print("    - Start or restart the supervisor: botfarm run")
+
+
+# ---------------------------------------------------------------------------
+# remove-project command
+# ---------------------------------------------------------------------------
+
+
+@main.command("remove-project")
+@click.argument("name")
+@click.option(
+    "--config",
+    "config_path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help="Path to config file (default: ~/.botfarm/config.yaml).",
+)
+@click.option("--force", is_flag=True, default=False, help="Skip active job check.")
+@click.option(
+    "--clean", is_flag=True, default=False,
+    help="Remove the cloned repo directory without prompting.",
+)
+@click.option("--yes", "-y", is_flag=True, default=False, help="Skip confirmation prompts.")
+def remove_project(name, config_path, force, clean, yes):
+    """Remove a project from botfarm config and clean up its database state.
+
+    Removes the project entry from config.yaml, deletes associated slots,
+    queue entries, and pause state from the database, and optionally removes
+    the cloned repo directory.
+
+    \b
+        botfarm remove-project my-project --force --clean --yes
+    """
+    cfg_path = config_path or DEFAULT_CONFIG_PATH
+    console = Console()
+
+    if not cfg_path.exists():
+        raise click.ClickException(
+            f"Config file not found: {cfg_path}\n"
+            "Run 'botfarm init' first to create a default config."
+        )
+
+    # Load raw YAML to find the project entry
+    raw = cfg_path.read_text()
+    data = yaml.safe_load(raw) or {}
+    projects = data.get("projects") or []
+
+    # Find the project by name
+    project_entry = None
+    project_index = None
+    for i, p in enumerate(projects):
+        if isinstance(p, dict) and p.get("name") == name:
+            project_entry = p
+            project_index = i
+            break
+
+    if project_entry is None:
+        raise click.ClickException(f"Project '{name}' not found in config.")
+
+    # Check for active/busy slots unless --force
+    db_path = resolve_db_path()
+    conn = None
+    active_slots = []
+    if db_path.expanduser().exists():
+        conn = init_db(db_path)
+        rows = load_all_slots(conn)
+        for row in rows:
+            if row["project"] == name and row["status"] in ("busy", "paused_limit", "paused_manual"):
+                active_slots.append(row)
+
+    if active_slots and not force:
+        console.print(f"[red]Project '{name}' has {len(active_slots)} active slot(s):[/red]")
+        for row in active_slots:
+            ticket = row["ticket_id"] or "no ticket"
+            console.print(f"  - Slot {row['slot_id']}: {row['status']} ({ticket})")
+        console.print("\nUse --force to remove anyway, or stop the slots first.")
+        if conn:
+            conn.close()
+        raise SystemExit(1)
+
+    # Determine repo directory for cleanup
+    base_dir = project_entry.get("base_dir", "")
+    # The project dir is the parent of base_dir (base_dir points to the repo dir,
+    # and worktrees are siblings). For projects created by add-project, the
+    # structure is ~/.botfarm/projects/<name>/{repo, <name>-slot-1, ...}
+    repo_path = Path(base_dir).expanduser() if base_dir else None
+    projects_dir = repo_path.parent if repo_path else None
+
+    # Summary
+    console.print(f"\n[bold]Remove project '{name}'[/bold]\n")
+    console.print(f"  Config:    {cfg_path}")
+    if conn:
+        console.print(f"  Database:  {db_path}")
+    if projects_dir and projects_dir.exists():
+        console.print(f"  Repo dir:  {projects_dir}")
+
+    # Determine whether to clean repo directory
+    should_clean = False
+    if clean:
+        should_clean = True
+    elif projects_dir and projects_dir.exists() and not yes:
+        should_clean = click.confirm(
+            f"\nRemove repo directory {projects_dir}?", default=False,
+        )
+
+    if not yes and not click.confirm("\nProceed with removal?", default=True):
+        console.print("Aborted.")
+        if conn:
+            conn.close()
+        return
+
+    # --- 1. Remove from config.yaml ---
+    projects.pop(project_index)
+    data["projects"] = projects
+    write_yaml_atomic(cfg_path, data)
+    console.print(f"  [green]Removed '{name}' from config[/green]")
+
+    # --- 2. Clean up database ---
+    if conn:
+        counts = delete_project_data(conn, name)
+        conn.commit()
+        conn.close()
+        total = sum(counts.values())
+        if total:
+            console.print(
+                f"  [green]Cleaned up {total} database row(s) "
+                f"(slots: {counts.get('slots', 0)}, "
+                f"queue: {counts.get('queue_entries', 0)}, "
+                f"pause state: {counts.get('project_pause_state', 0)})[/green]"
+            )
+        else:
+            console.print("  No database rows to clean up")
+
+    # --- 3. Remove repo directory ---
+    if should_clean and projects_dir and projects_dir.exists():
+        import shutil
+        shutil.rmtree(projects_dir)
+        console.print(f"  [green]Removed {projects_dir}[/green]")
+
+    console.print(f"\n[bold green]Project '{name}' removed successfully![/bold green]")
 
 
 # ---------------------------------------------------------------------------
