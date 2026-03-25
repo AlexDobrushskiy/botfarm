@@ -22,6 +22,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from botfarm.config import DailySummaryConfig
 
+from botfarm.config import JiraBugtrackerConfig
+
 from botfarm.db import (
     count_completed_tasks_since,
     get_daily_summary_data,
@@ -491,6 +493,7 @@ class OperationsMixin:
             failure_reason=reason,
             failure_category=category,
             review_summary=self._build_review_summary(task_id),
+            todo_status=self._config.bugtracker.todo_status,
         )
 
     def _maybe_send_refactoring_notification(self, slot: SlotState) -> None:
@@ -501,11 +504,13 @@ class OperationsMixin:
             return
 
         ticket_id = slot.ticket_id or "unknown"
-        workspace = self._config.bugtracker.workspace
-        if workspace:
-            linear_url = f"https://linear.app/{workspace}/issue/{ticket_id}"
+        bt_cfg = self._config.bugtracker
+        if isinstance(bt_cfg, JiraBugtrackerConfig) and bt_cfg.url:
+            ticket_url = f"{bt_cfg.url.rstrip('/')}/browse/{ticket_id}"
+        elif bt_cfg.workspace:
+            ticket_url = f"https://linear.app/{bt_cfg.workspace}/issue/{ticket_id}"
         else:
-            linear_url = ticket_id
+            ticket_url = ticket_id
 
         now = datetime.now(timezone.utc)
         month = now.strftime("%B")
@@ -547,7 +552,7 @@ class OperationsMixin:
                 num_tickets=num_tickets,
                 parent_ticket_id=parent_id,
                 brief_list=brief_list,
-                linear_ticket_url=linear_url,
+                ticket_url=ticket_url,
             )
         elif re.search(
             r"no action needed|no refactoring needed|all clear|"
@@ -558,7 +563,7 @@ class OperationsMixin:
             self._notifier.notify_refactoring_all_clear(
                 month=month,
                 year=year,
-                linear_ticket_url=linear_url,
+                ticket_url=ticket_url,
             )
         else:
             logger.warning(

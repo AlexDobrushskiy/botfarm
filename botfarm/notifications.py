@@ -113,6 +113,7 @@ class Notifier:
         failure_reason: str | None = None,
         failure_category: str | None = None,
         review_summary: str | None = None,
+        todo_status: str = "Todo",
     ) -> None:
         """Notify that a task failed."""
         env_label = self._CATEGORY_LABELS.get(failure_category or "")
@@ -132,8 +133,8 @@ class Notifier:
         if review_summary:
             lines.append(review_summary)
         lines.append(
-            "_To retry: remove 'Failed' and 'Human' labels in Linear "
-            "and move ticket to Todo. The agent will pick up where it left off._"
+            "_To retry: remove 'Failed' and 'Human' labels "
+            f"and move ticket to {todo_status}. The agent will pick up where it left off._"
         )
         self._send("task_failed", "\n".join(lines))
 
@@ -161,7 +162,7 @@ class Notifier:
         limit: int,
         percentage: float,
     ) -> None:
-        """Notify that Linear issue count crossed the warning threshold (default 70%)."""
+        """Notify that issue count crossed the warning threshold (default 70%)."""
         lines = [
             f"*Capacity warning* — {percentage:.0f}% used ({count}/{limit})",
             "Archive completed issues to free capacity",
@@ -175,7 +176,7 @@ class Notifier:
         limit: int,
         percentage: float,
     ) -> None:
-        """Notify that Linear issue count crossed the critical threshold (default 85%)."""
+        """Notify that issue count crossed the critical threshold (default 85%)."""
         lines = [
             f"*Capacity critical* — {percentage:.0f}% used ({count}/{limit})",
             "Archive completed issues to free capacity",
@@ -189,7 +190,7 @@ class Notifier:
         limit: int,
         percentage: float,
     ) -> None:
-        """Notify that Linear issue count crossed the pause threshold (default 95%) — dispatch paused."""
+        """Notify that issue count crossed the pause threshold (default 95%) — dispatch paused."""
         lines = [
             f"*Capacity blocked* — {percentage:.0f}% used ({count}/{limit}), dispatch paused",
             "Archive completed issues to free capacity",
@@ -203,7 +204,7 @@ class Notifier:
         limit: int,
         percentage: float,
     ) -> None:
-        """Notify that Linear issue count dropped below resume threshold — dispatch resumed."""
+        """Notify that issue count dropped below resume threshold — dispatch resumed."""
         lines = [
             f"*Capacity cleared* — {percentage:.0f}% used ({count}/{limit}), dispatch resumed",
         ]
@@ -218,13 +219,13 @@ class Notifier:
         *,
         month: str,
         year: int,
-        linear_ticket_url: str,
+        ticket_url: str,
     ) -> None:
         """Notify that a refactoring analysis found no action needed."""
         self._send(
             "refactoring_all_clear",
             f"Refactoring Analysis ({month} {year}): Code quality is good enough "
-            f"— no action needed. Details: {linear_ticket_url}",
+            f"— no action needed. Details: {ticket_url}",
         )
 
     def notify_refactoring_action_needed(
@@ -235,14 +236,14 @@ class Notifier:
         num_tickets: int,
         parent_ticket_id: str,
         brief_list: str,
-        linear_ticket_url: str,
+        ticket_url: str,
     ) -> None:
         """Notify that a refactoring analysis created follow-up tickets."""
         self._send(
             "refactoring_action_needed",
             f"Refactoring Analysis ({month} {year}): {num_tickets} refactoring "
             f"tickets created under {parent_ticket_id}. "
-            f"Top concerns: {brief_list}. Details: {linear_ticket_url}",
+            f"Top concerns: {brief_list}. Details: {ticket_url}",
         )
 
     def notify_refactoring_due(
