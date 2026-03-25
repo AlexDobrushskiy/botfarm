@@ -528,7 +528,7 @@
         <h3>{{ project.name }}</h3>
 
         <label for="project-{{ loop.index0 }}-tracker_project">
-            Project filter <small>(optional — exact Linear project name, e.g. "Bot farm")</small>
+            Project filter <small>(optional — exact project name, e.g. "Bot farm")</small>
             <input type="text" id="project-{{ loop.index0 }}-tracker_project"
                    value="{{ project.tracker_project }}" placeholder="Leave empty to monitor all tickets in team">
         </label>
