@@ -711,6 +711,10 @@ class WorkerLifecycleManager:
         key = (project_name, slot_id)
         self._pause_events[key] = pause_event
 
+        # Resolve per-project bugtracker config (falls back to global)
+        from botfarm.config import resolve_project_bugtracker
+        project_bt = resolve_project_bugtracker(self._config.bugtracker, project_cfg)
+
         proc = multiprocessing.Process(
             target=_worker_entry,
             kwargs={
@@ -742,10 +746,10 @@ class WorkerLifecycleManager:
                 },
                 "prior_context": prior_context,
                 "merge_main_before_resume": merge_main_before_resume,
-                "bugtracker_type": self._config.bugtracker.type.title(),
-                "bugtracker_api_key": self._config.bugtracker.api_key,
-                "bugtracker_url": getattr(self._config.bugtracker, "url", ""),
-                "bugtracker_email": getattr(self._config.bugtracker, "email", ""),
+                "bugtracker_type": project_bt.type.title(),
+                "bugtracker_api_key": project_bt.api_key,
+                "bugtracker_url": getattr(project_bt, "url", ""),
+                "bugtracker_email": getattr(project_bt, "email", ""),
             },
             daemon=False,
         )
@@ -773,8 +777,10 @@ class WorkerLifecycleManager:
         project_cfg = self._projects[project_name]
         branch = f"{project_cfg.worktree_prefix}{slot.slot_id}"
 
-        # Move issue to In Progress on Linear
-        in_progress = self._config.bugtracker.in_progress_status
+        # Move issue to In Progress — use per-project bugtracker config
+        from botfarm.config import resolve_project_bugtracker
+        project_bt = resolve_project_bugtracker(self._config.bugtracker, project_cfg)
+        in_progress = project_bt.in_progress_status
         try:
             poller.move_issue(issue.identifier, in_progress)
         except Exception:

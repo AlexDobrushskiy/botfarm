@@ -178,9 +178,17 @@ def check_worktree_dirs(config: BotfarmConfig) -> list[CheckResult]:
 
 
 def check_linear_api(config: BotfarmConfig) -> list[CheckResult]:
-    """Validate bugtracker API key, team existence, and configured status names."""
+    """Validate bugtracker API key, team existence, and configured status names.
+
+    Supports per-project bugtracker overrides — each project is validated
+    against its effective bugtracker config (project-level merged with global).
+    """
+    from botfarm.config import resolve_project_bugtracker
+
     results: list[CheckResult] = []
-    if not config.bugtracker.api_key:
+    if not config.bugtracker.api_key and not any(
+        p.bugtracker and p.bugtracker.get("api_key") for p in config.projects
+    ):
         results.append(CheckResult(
             name="linear_api",
             passed=False,
@@ -188,37 +196,59 @@ def check_linear_api(config: BotfarmConfig) -> list[CheckResult]:
         ))
         return results
 
-    client = create_client(config)
-
-    # Check each project's team and statuses
-    checked_teams: dict[str, dict[str, str]] = {}
+    # Check each project's team and statuses using its effective bugtracker config.
+    # Cache clients and team states to avoid redundant API calls.
+    client_cache: dict[str, BugtrackerClient] = {}  # api_key -> client
+    checked_teams: dict[tuple[str, str], dict[str, str]] = {}  # (api_key, team) -> states
     for project in config.projects:
-        team_key = project.team
-        if team_key in checked_teams:
-            continue  # Already validated team and statuses
-        try:
-            team_states = client.get_team_states(team_key)
-            checked_teams[team_key] = team_states
-        except BugtrackerError as exc:
+        bt = resolve_project_bugtracker(config.bugtracker, project)
+        if not bt.api_key:
             results.append(CheckResult(
-                name=f"linear_team:{team_key}",
+                name=f"bugtracker:{project.name}",
                 passed=False,
-                message=f"Cannot reach team '{team_key}': {exc}",
+                message=f"No API key for project '{project.name}'",
             ))
             continue
 
-        results.append(CheckResult(
-            name=f"linear_team:{team_key}",
-            passed=True,
-            message=f"OK — team '{team_key}' found with {len(team_states)} states",
-        ))
+        team_key = project.team
+        cache_key = (bt.api_key, team_key)
+        if cache_key in checked_teams:
+            team_states = checked_teams[cache_key]
+        else:
+            if bt.api_key not in client_cache:
+                try:
+                    client_cache[bt.api_key] = create_client(bt_config=bt)
+                except Exception as exc:
+                    results.append(CheckResult(
+                        name=f"bugtracker:{project.name}",
+                        passed=False,
+                        message=f"Cannot create client for project '{project.name}': {exc}",
+                    ))
+                    continue
+            client = client_cache[bt.api_key]
+            try:
+                team_states = client.get_team_states(team_key)
+                checked_teams[cache_key] = team_states
+            except BugtrackerError as exc:
+                results.append(CheckResult(
+                    name=f"linear_team:{team_key}",
+                    passed=False,
+                    message=f"Cannot reach team '{team_key}': {exc}",
+                ))
+                continue
+
+            results.append(CheckResult(
+                name=f"linear_team:{team_key}",
+                passed=True,
+                message=f"OK — team '{team_key}' found with {len(team_states)} states",
+            ))
 
         # Verify configured status names exist in the team's workflow
         configured_statuses = {
-            "todo_status": config.bugtracker.todo_status,
-            "in_progress_status": config.bugtracker.in_progress_status,
-            "done_status": config.bugtracker.done_status,
-            "in_review_status": config.bugtracker.in_review_status,
+            "todo_status": bt.todo_status,
+            "in_progress_status": bt.in_progress_status,
+            "done_status": bt.done_status,
+            "in_review_status": bt.in_review_status,
         }
         for field, status_name in configured_statuses.items():
             if status_name not in team_states:
@@ -226,7 +256,7 @@ def check_linear_api(config: BotfarmConfig) -> list[CheckResult]:
                     name=f"linear_status:{team_key}/{field}",
                     passed=False,
                     message=(
-                        f"Status '{status_name}' (from linear.{field}) "
+                        f"Status '{status_name}' (from bugtracker.{field}) "
                         f"not found in team '{team_key}'. "
                         f"Available: {sorted(team_states.keys())}"
                     ),
@@ -746,7 +776,12 @@ def check_jira_mcp_server(config: BotfarmConfig) -> list[CheckResult]:
 
     The Jira MCP server (``mcp-atlassian``) is launched via ``uvx``.
     """
-    if not isinstance(config.bugtracker, JiraBugtrackerConfig):
+    from botfarm.config import resolve_project_bugtracker
+    has_jira = isinstance(config.bugtracker, JiraBugtrackerConfig) or any(
+        isinstance(resolve_project_bugtracker(config.bugtracker, p), JiraBugtrackerConfig)
+        for p in config.projects
+    )
+    if not has_jira:
         return []
 
     if shutil.which("uvx"):

@@ -52,6 +52,14 @@ logger = logging.getLogger(__name__)
 class OperationsMixin:
     """Slot cleanup, stop-slot, comments, notifications, and limits for Supervisor."""
 
+    def _resolve_project_bt(self, project_name: str):
+        """Return the effective bugtracker config for a project."""
+        from botfarm.config import resolve_project_bugtracker
+        project_cfg = self._projects.get(project_name)
+        if project_cfg:
+            return resolve_project_bugtracker(self._config.bugtracker, project_cfg)
+        return self._config.bugtracker
+
     # ------------------------------------------------------------------
     # Handle finished slots
     # ------------------------------------------------------------------
@@ -69,7 +77,7 @@ class OperationsMixin:
     def _handle_completed_slot(self, slot: SlotState) -> None:
         """Update Linear for a completed slot and free it."""
         project = slot.project
-        bt_cfg = self._config.bugtracker
+        bt_cfg = self._resolve_project_bt(project)
         poller = self._pollers.get(project)
         if poller and slot.ticket_id:
             if poller.is_issue_terminal(slot.ticket_id):
@@ -158,7 +166,7 @@ class OperationsMixin:
             return
 
         project = slot.project
-        bt_cfg = self._config.bugtracker
+        bt_cfg = self._resolve_project_bt(project)
         poller = self._pollers.get(project)
         if poller and slot.ticket_id:
             if poller.is_issue_terminal(slot.ticket_id):
@@ -860,7 +868,8 @@ Note: The supervisor handles status transitions automatically — do not move th
         )
         self._conn.commit()
 
-        if self._config.bugtracker.comment_on_limit_pause and slot and slot.ticket_id:
+        limit_bt_cfg = self._resolve_project_bt(wr.project)
+        if limit_bt_cfg.comment_on_limit_pause and slot and slot.ticket_id:
             poller = self._pollers.get(wr.project)
             if poller:
                 try:
@@ -1207,7 +1216,8 @@ Note: The supervisor handles status transitions automatically — do not move th
         if not poller:
             return
 
-        target_status = self._config.bugtracker.todo_status
+        stop_bt = self._resolve_project_bt(slot.project)
+        target_status = stop_bt.todo_status
         try:
             poller.move_issue(slot.ticket_id, target_status)
             logger.info(
@@ -1239,7 +1249,8 @@ Note: The supervisor handles status transitions automatically — do not move th
         if not poller:
             return
 
-        target_status = self._config.bugtracker.done_status
+        done_bt = self._resolve_project_bt(slot.project)
+        target_status = done_bt.done_status
         try:
             poller.move_issue(slot.ticket_id, target_status)
             logger.info(
