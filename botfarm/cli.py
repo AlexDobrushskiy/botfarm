@@ -1288,7 +1288,12 @@ def remove_project(name, config_path, force, clean, yes):
     conn = None
     active_slots = []
     if db_path.expanduser().exists():
-        conn = init_db(db_path)
+        try:
+            conn = init_db(db_path)
+        except SchemaVersionError as exc:
+            raise click.ClickException(str(exc)) from exc
+        except sqlite3.Error as exc:
+            raise click.ClickException(f"Failed to open database: {exc}") from exc
         rows = load_all_slots(conn)
         for row in rows:
             if row["project"] == name and row["status"] in ("busy", "paused_limit", "paused_manual"):
