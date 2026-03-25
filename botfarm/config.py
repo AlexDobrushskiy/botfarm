@@ -1302,6 +1302,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
 EDITABLE_FIELDS: dict[tuple[str, str], dict] = {
     ("bugtracker", "poll_interval_seconds"): {"type": "int", "min": 1},
     ("bugtracker", "issue_limit"): {"type": "int", "min": 1},
+    ("bugtracker", "include_tags"): {"type": "str_list"},
     ("bugtracker", "comment_on_failure"): {"type": "bool"},
     ("bugtracker", "comment_on_completion"): {"type": "bool"},
     ("bugtracker", "comment_on_limit_pause"): {"type": "bool"},
@@ -1452,6 +1453,12 @@ def _validate_field(
                 f"'{field_name}' must be one of {spec['choices']}, "
                 f"got {value!r}"
             )
+
+    elif spec["type"] == "str_list":
+        if not isinstance(value, list):
+            errors.append(f"'{field_name}' must be a list, got {type(value).__name__}")
+        elif not all(isinstance(item, str) for item in value):
+            errors.append(f"'{field_name}' must be a list of strings")
 
     elif spec["type"] == "timeout_dict":
         if not isinstance(value, dict):
@@ -1621,7 +1628,8 @@ def _validate_project_updates(
 
     _NEW_PROJECT_REQUIRED = {"name", "team", "base_dir", "worktree_prefix", "slots"}
     _NEW_PROJECT_OPTIONAL = {"tracker_project", "project_type", "setup_commands",
-                              "run_command", "run_env", "run_port", "bugtracker"}
+                              "run_command", "run_env", "run_port",
+                              "include_tags", "bugtracker"}
     _NEW_PROJECT_ALLOWED = _NEW_PROJECT_REQUIRED | _NEW_PROJECT_OPTIONAL
     seen_names: set[str] = set()
 
@@ -1664,6 +1672,13 @@ def _validate_project_updates(
             if not isinstance(lp, str):
                 errors.append(
                     f"projects[{i}] '{name}': tracker_project must be a string"
+                )
+
+        if "include_tags" in proj:
+            it = proj["include_tags"]
+            if not isinstance(it, list) or not all(isinstance(t, str) for t in it):
+                errors.append(
+                    f"projects[{i}] '{name}': include_tags must be a list of strings"
                 )
 
         if "run_command" in proj:
@@ -1724,7 +1739,8 @@ def _validate_project_updates(
         else:
             # Existing project: editable fields
             allowed_keys = {"name", "slots", "tracker_project",
-                            "run_command", "run_env", "run_port", "bugtracker"}
+                            "run_command", "run_env", "run_port",
+                            "include_tags", "bugtracker"}
             extra = set(proj.keys()) - allowed_keys
             if extra:
                 errors.append(
@@ -1792,7 +1808,7 @@ def write_structural_config_updates(config_path: Path, updates: dict) -> None:
             if name in by_name:
                 # Existing project: merge editable fields
                 target = by_name[name]
-                for fld in ("slots", "tracker_project",
+                for fld in ("slots", "tracker_project", "include_tags",
                             "run_command", "run_env", "run_port", "bugtracker"):
                     if fld in proj_update:
                         target[fld] = proj_update[fld]
