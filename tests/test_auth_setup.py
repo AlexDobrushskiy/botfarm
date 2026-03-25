@@ -17,20 +17,16 @@ from botfarm.auth_setup import (
     check_github_auth,
     display_auth_summary,
     run_auth_checks,
-    run_interactive_auth,
 )
 from botfarm.config import (
     AgentsConfig,
     BotfarmConfig,
     BugtrackerConfig,
-    CoderIdentity,
     DatabaseConfig,
     IdentitiesConfig,
     JiraBugtrackerConfig,
     LinearConfig,
     NotificationsConfig,
-    ProjectConfig,
-    ReviewerIdentity,
 )
 from botfarm.credentials import CredentialError, OAuthToken
 

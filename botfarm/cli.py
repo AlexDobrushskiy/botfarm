@@ -1979,7 +1979,7 @@ def auth(config_path, fix):
 
     Use --fix to skip confirmation prompts and fix all issues automatically.
     """
-    from botfarm.auth_setup import run_auth_checks, run_interactive_auth, display_auth_summary
+    from botfarm.auth_setup import run_interactive_auth
 
     cfg_path = config_path or DEFAULT_CONFIG_PATH
     config = None
