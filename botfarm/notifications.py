@@ -113,6 +113,7 @@ class Notifier:
         failure_reason: str | None = None,
         failure_category: str | None = None,
         review_summary: str | None = None,
+        todo_status: str = "Todo",
     ) -> None:
         """Notify that a task failed."""
         env_label = self._CATEGORY_LABELS.get(failure_category or "")
@@ -132,8 +133,8 @@ class Notifier:
         if review_summary:
             lines.append(review_summary)
         lines.append(
-            "_To retry: remove 'Failed' and 'Human' labels "
-            "and move ticket to Todo. The agent will pick up where it left off._"
+            f"_To retry: remove 'Failed' and 'Human' labels "
+            f"and move ticket to {todo_status}. The agent will pick up where it left off._"
         )
         self._send("task_failed", "\n".join(lines))
 
