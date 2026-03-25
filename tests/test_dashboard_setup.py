@@ -1789,15 +1789,19 @@ class TestClaudeAuthEndpoint:
 
 
 class TestClaudeAuthStatusEndpoint:
-    def test_returns_not_authenticated(self, db_file, monkeypatch):
+    def test_returns_not_authenticated_and_expired_when_no_process(self, db_file, monkeypatch):
         _mock_auth_unavailable(monkeypatch)
+        # Ensure no active auth state
+        monkeypatch.setattr("botfarm.dashboard.routes_setup._claude_auth_state", None)
         config = _make_config()
         app = create_app(db_path=db_file, botfarm_config=config)
         client = TestClient(app)
 
         resp = client.get("/api/setup/claude/auth/status")
         assert resp.status_code == 200
-        assert resp.json()["authenticated"] is False
+        data = resp.json()
+        assert data["authenticated"] is False
+        assert data["expired"] is True
 
     def test_returns_authenticated(self, db_file, monkeypatch):
         from botfarm.credentials import OAuthToken
@@ -1812,4 +1816,6 @@ class TestClaudeAuthStatusEndpoint:
 
         resp = client.get("/api/setup/claude/auth/status")
         assert resp.status_code == 200
-        assert resp.json()["authenticated"] is True
+        data = resp.json()
+        assert data["authenticated"] is True
+        assert data["expired"] is False

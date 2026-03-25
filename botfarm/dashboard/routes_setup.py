@@ -737,6 +737,7 @@ def _start_claude_auth_process() -> tuple[str | None, str | None]:
             # Prevent the CLI from opening a browser
             env.pop("DISPLAY", None)
             env.pop("WAYLAND_DISPLAY", None)
+            env.pop("BROWSER", None)
 
             proc = subprocess.Popen(
                 ["claude", "auth", "login"],
@@ -840,22 +841,33 @@ def claude_auth_status(request: Request):
     """
     authenticated = _check_claude_auth().done
 
-    if authenticated:
-        # Auth complete — clean up background subprocess
-        with _claude_auth_lock:
-            _cleanup_claude_auth()
-
-    # Also clean up if the process has been running too long
+    expired = False
     with _claude_auth_lock:
-        if (
+        if authenticated:
+            _cleanup_claude_auth()
+        elif (
             _claude_auth_state is not None
             and time.monotonic() - _claude_auth_state["started_at"]
             > _CLAUDE_AUTH_TIMEOUT
         ):
             logger.info("Claude auth process timed out — cleaning up")
             _cleanup_claude_auth()
+            expired = True
+        elif _claude_auth_state is not None:
+            proc = _claude_auth_state.get("proc")
+            if proc is not None and proc.poll() is not None:
+                logger.info("Claude auth process exited unexpectedly — cleaning up")
+                _cleanup_claude_auth()
+                expired = True
 
-    return JSONResponse({"authenticated": authenticated})
+    # No active auth session and not authenticated — flow is dead
+    if not authenticated and not expired and _claude_auth_state is None:
+        expired = True
+
+    return JSONResponse({
+        "authenticated": authenticated,
+        "expired": expired,
+    })
 
 
 # ---------------------------------------------------------------------------
