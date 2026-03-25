@@ -132,6 +132,37 @@
         font-size: 0.85rem;
         margin-bottom: 0.5rem;
     }
+    .project-card-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+    .project-card-header h3 { margin-bottom: 0; }
+    .btn-remove-project {
+        background: none;
+        border: 1px solid var(--pico-del-color);
+        color: var(--pico-del-color);
+        padding: 0.3rem 0.75rem;
+        border-radius: var(--pico-border-radius);
+        cursor: pointer;
+        font-size: 0.85rem;
+        width: auto;
+        margin: 0;
+    }
+    .btn-remove-project:hover {
+        background: var(--pico-del-color);
+        color: var(--pico-background-color);
+    }
+    #remove-project-modal .warning-list {
+        background: rgba(239, 68, 68, 0.1);
+        border-radius: var(--pico-border-radius);
+        padding: 0.75rem 1rem;
+        margin: 0.75rem 0;
+    }
+    #remove-project-modal .warning-list ul {
+        margin: 0.25rem 0 0 1.25rem;
+        padding: 0;
+    }
 </style>
 
 <h1>Configuration</h1>
@@ -153,7 +184,10 @@
     <h2>Projects</h2>
     {% for project in full_config_values.projects %}
     <div class="project-card">
-        <h3>{{ project.name }}</h3>
+        <div class="project-card-header">
+            <h3>{{ project.name }}</h3>
+            <button type="button" class="btn-remove-project" onclick="openRemoveProjectModal('{{ project.name }}')">Remove</button>
+        </div>
         <figure>
         <table>
             <tbody>
@@ -525,7 +559,10 @@
     <div id="feedback-projects"></div>
     {% for project in config_values.projects %}
     <div class="project-card" data-project-name="{{ project.name }}">
-        <h3>{{ project.name }}</h3>
+        <div class="project-card-header">
+            <h3>{{ project.name }}</h3>
+            <button type="button" class="btn-remove-project" onclick="openRemoveProjectModal('{{ project.name }}')">Remove</button>
+        </div>
 
         <label for="project-{{ loop.index0 }}-tracker_project">
             Project filter <small>(optional — exact project name, e.g. "Bot farm")</small>
@@ -586,6 +623,29 @@
 </section>
 
 </div>
+
+{# ==================== REMOVE PROJECT MODAL ==================== #}
+<dialog id="remove-project-modal">
+    <article style="max-width: 32rem;">
+        <header>
+            <button aria-label="Close" rel="prev" onclick="document.getElementById('remove-project-modal').close()"></button>
+            <h3>Remove Project</h3>
+        </header>
+        <p>Are you sure you want to remove <strong id="remove-modal-name"></strong>?</p>
+        <div id="remove-modal-details"></div>
+        <div id="remove-modal-warnings"></div>
+        <fieldset id="remove-modal-clean-field" style="display:none; margin-bottom: 0.5rem;">
+            <label>
+                <input type="checkbox" id="remove-modal-clean" role="switch">
+                Also remove cloned repo directory
+            </label>
+        </fieldset>
+        <footer style="display: flex; gap: 0.5rem; justify-content: flex-end;">
+            <button class="secondary" onclick="document.getElementById('remove-project-modal').close()" style="width: auto;">Cancel</button>
+            <button id="remove-modal-confirm" onclick="confirmRemoveProject()" style="width: auto; background: var(--pico-del-color); border-color: var(--pico-del-color);">Remove</button>
+        </footer>
+    </article>
+</dialog>
 
 <script>
 function switchTab(tabName) {
@@ -765,6 +825,100 @@ function saveProjects() {
     .catch(function() {
         feedbackEl.innerHTML = '<div class="config-feedback error" role="alert">Network error.</div>';
         if (btn) btn.removeAttribute("aria-busy");
+    });
+}
+
+var _removeProjectName = "";
+
+function openRemoveProjectModal(projectName) {
+    _removeProjectName = projectName;
+    var modal = document.getElementById("remove-project-modal");
+    document.getElementById("remove-modal-name").textContent = projectName;
+    document.getElementById("remove-modal-details").innerHTML = '<p aria-busy="true">Loading project details...</p>';
+    document.getElementById("remove-modal-warnings").innerHTML = "";
+    document.getElementById("remove-modal-clean-field").style.display = "none";
+    document.getElementById("remove-modal-clean").checked = false;
+    var confirmBtn = document.getElementById("remove-modal-confirm");
+    confirmBtn.disabled = false;
+    confirmBtn.textContent = "Remove";
+    modal.showModal();
+
+    fetch("/api/project/" + encodeURIComponent(projectName) + "/remove-info")
+        .then(function(resp) { return resp.json(); })
+        .then(function(data) {
+            if (data.error) {
+                document.getElementById("remove-modal-details").innerHTML =
+                    '<div class="config-feedback error">' + data.error + '</div>';
+                return;
+            }
+
+            var detailsHtml = '<p>Team: <strong>' + data.team + '</strong>, ' +
+                data.slots.length + ' slot(s)</p>';
+            document.getElementById("remove-modal-details").innerHTML = detailsHtml;
+
+            // Show warnings for active slots
+            if (data.active_slots && data.active_slots.length > 0) {
+                var warningHtml = '<div class="warning-list"><strong>Active slots:</strong><ul>';
+                for (var i = 0; i < data.active_slots.length; i++) {
+                    var s = data.active_slots[i];
+                    warningHtml += '<li>Slot ' + s.slot_id + ': ' + s.status;
+                    if (s.ticket_id) warningHtml += ' (' + s.ticket_id + ')';
+                    warningHtml += '</li>';
+                }
+                warningHtml += '</ul><p style="margin:0.5rem 0 0 0"><small>Active slots will be forcefully removed.</small></p></div>';
+                document.getElementById("remove-modal-warnings").innerHTML = warningHtml;
+            }
+
+            // Show clean option if repo dir is manageable
+            if (data.can_clean && data.repo_dir) {
+                document.getElementById("remove-modal-clean-field").style.display = "block";
+            }
+        })
+        .catch(function() {
+            document.getElementById("remove-modal-details").innerHTML =
+                '<div class="config-feedback error">Failed to load project details.</div>';
+        });
+}
+
+function confirmRemoveProject() {
+    var btn = document.getElementById("remove-modal-confirm");
+    btn.disabled = true;
+    btn.setAttribute("aria-busy", "true");
+    btn.textContent = "Removing...";
+
+    var clean = document.getElementById("remove-modal-clean").checked;
+
+    fetch("/api/project/remove", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+            name: _removeProjectName,
+            force: true,
+            clean: clean
+        })
+    })
+    .then(function(resp) {
+        return resp.json().then(function(data) { return {ok: resp.ok, data: data}; });
+    })
+    .then(function(result) {
+        document.getElementById("remove-project-modal").close();
+        if (result.ok && result.data.ok) {
+            showToast('Project "' + _removeProjectName + '" removed successfully.', "success");
+            setTimeout(function() { window.location.reload(); }, 500);
+        } else {
+            var msg = (result.data.errors || ["Unknown error"]).join("; ");
+            showToast("Remove failed: " + msg, "error");
+            btn.disabled = false;
+            btn.removeAttribute("aria-busy");
+            btn.textContent = "Remove";
+        }
+    })
+    .catch(function() {
+        document.getElementById("remove-project-modal").close();
+        showToast("Network error while removing project.", "error");
+        btn.disabled = false;
+        btn.removeAttribute("aria-busy");
+        btn.textContent = "Remove";
     });
 }
 </script>

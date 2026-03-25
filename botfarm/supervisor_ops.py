@@ -1532,6 +1532,80 @@ Note: The supervisor handles status transitions automatically — do not move th
         )
 
     # ------------------------------------------------------------------
+    # Remove project at runtime (called from dashboard)
+    # ------------------------------------------------------------------
+
+    def request_remove_project(self, project_name: str) -> None:
+        """Thread-safe request to remove a project (called from dashboard)."""
+        with self._remove_project_lock:
+            self._remove_project_requests.append(project_name)
+        self._wake_event.set()
+
+    def _handle_remove_project_requests(self) -> None:
+        """Drain pending remove-project requests and execute each."""
+        with self._remove_project_lock:
+            requests = list(dict.fromkeys(self._remove_project_requests))
+            self._remove_project_requests.clear()
+        for project_name in requests:
+            try:
+                self.remove_project(project_name)
+            except Exception:
+                logger.exception(
+                    "Failed to remove project %s", project_name,
+                )
+
+    def remove_project(self, project_name: str) -> None:
+        """Unregister a project at runtime.
+
+        Removes the project from in-memory state: ``_projects``,
+        ``_config.projects``, ``_slot_manager``, ``_pollers``, and the
+        dev server manager.  Config YAML and database cleanup are handled
+        by the dashboard API endpoint before this callback fires.
+
+        Raises ``ValueError`` if the project is not registered.
+        """
+        if project_name not in self._projects:
+            logger.warning(
+                "remove_project: '%s' not in _projects, skipping",
+                project_name,
+            )
+            return
+
+        # Remove poller
+        self._pollers.pop(project_name, None)
+
+        # Unregister from dev server manager
+        self._devserver_mgr.unregister_project(project_name)
+
+        # Remove all slots for this project from the slot manager
+        keys_to_remove = [
+            k for k in self._slot_manager._slots
+            if k[0] == project_name
+        ]
+        for key in keys_to_remove:
+            del self._slot_manager._slots[key]
+        if keys_to_remove:
+            self._slot_manager.save()
+
+        # Remove from config.projects list
+        self._config.projects = [
+            p for p in self._config.projects if p.name != project_name
+        ]
+
+        # Remove from _projects dict
+        self._projects.pop(project_name, None)
+
+        # Log event for audit trail
+        insert_event(
+            self._conn,
+            event_type="project_removed",
+            detail=json.dumps({"project": project_name}),
+        )
+        self._conn.commit()
+
+        logger.info("Removed project '%s' from supervisor", project_name)
+
+    # ------------------------------------------------------------------
     # Resume paused slots (delegation)
     # ------------------------------------------------------------------
 
