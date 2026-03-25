@@ -1497,3 +1497,89 @@ class TestAddProjectFlags:
         config = yaml.safe_load(config_path.read_text())
         added = next(p for p in config["projects"] if p["name"] == "my-app")
         assert added["team"] == "SMA"
+
+
+class TestAddProjectJiraBugtracker:
+    """Tests for add-project when bugtracker.type is 'jira'."""
+
+    @pytest.fixture()
+    def jira_config_dir(self, tmp_path):
+        """Create a tmp config dir with a Jira bugtracker config."""
+        base_dir = tmp_path / "existing-proj-repo"
+        base_dir.mkdir()
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "projects:\n"
+            "  - name: existing-proj\n"
+            "    team: AIR\n"
+            f"    base_dir: {base_dir}\n"
+            "    worktree_prefix: existing-slot-\n"
+            "    slots: [1]\n"
+            "bugtracker:\n"
+            "  type: jira\n"
+            "  api_key: test-jira-token\n"
+            "  url: https://myorg.atlassian.net\n"
+            "  email: user@example.com\n"
+        )
+        return tmp_path, config_path
+
+    def test_jira_no_linear_warning(self, runner, jira_config_dir, tmp_path, monkeypatch):
+        """Jira config should not warn about LINEAR_API_KEY."""
+        _, config_path = jira_config_dir
+        monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_DIR", tmp_path / ".botfarm")
+        monkeypatch.delenv("LINEAR_API_KEY", raising=False)
+
+        with patch("botfarm.project_setup.subprocess.run", side_effect=_make_mock_run()):
+            result = runner.invoke(
+                main,
+                ["add-project", "--config", str(config_path)],
+                input="git@github.com:user/my-app.git\nmy-app\nAIR\n\n1\ny\n",
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "LINEAR_API_KEY" not in result.output
+
+    def test_jira_shows_jira_prompt(self, runner, jira_config_dir, tmp_path, monkeypatch):
+        """Jira config should prompt for 'Jira project key' instead of 'Team key'."""
+        _, config_path = jira_config_dir
+        monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_DIR", tmp_path / ".botfarm")
+        monkeypatch.delenv("LINEAR_API_KEY", raising=False)
+
+        with patch("botfarm.project_setup.subprocess.run", side_effect=_make_mock_run()):
+            result = runner.invoke(
+                main,
+                ["add-project", "--config", str(config_path)],
+                input="git@github.com:user/my-app.git\nmy-app\nAIR\n\n1\ny\n",
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "Jira project key" in result.output
+        assert "Team key (e.g. SMA)" not in result.output
+
+    def test_jira_full_flow_non_interactive(
+        self, runner, jira_config_dir, tmp_path, monkeypatch
+    ):
+        """Jira config with all flags should work non-interactively."""
+        _, config_path = jira_config_dir
+        monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_DIR", tmp_path / ".botfarm")
+        monkeypatch.delenv("LINEAR_API_KEY", raising=False)
+
+        with patch("botfarm.project_setup.subprocess.run", side_effect=_make_mock_run()):
+            result = runner.invoke(
+                main,
+                [
+                    "add-project",
+                    "--config", str(config_path),
+                    "--repo-url", "git@github.com:user/my-app.git",
+                    "--name", "my-app",
+                    "--team", "AIR",
+                    "--slots", "1",
+                    "--yes",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "added successfully" in result.output
+        config = yaml.safe_load(config_path.read_text())
+        added = next(p for p in config["projects"] if p["name"] == "my-app")
+        assert added["team"] == "AIR"

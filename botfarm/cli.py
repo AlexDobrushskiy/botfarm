@@ -1083,8 +1083,9 @@ def add_project(config_path, repo_url, name, team, tracker_project_flag, num_slo
         p["name"] for p in existing_projects if isinstance(p, dict) and "name" in p
     } - placeholder_names
 
-    # Load the Linear API key from environment
-    linear_api_key = os.environ.get("LINEAR_API_KEY", "")
+    # Determine bugtracker type from config
+    bt_data = data.get("bugtracker") or data.get("linear") or {}
+    bt_type = str(bt_data.get("type", "linear"))
 
     console.print("\n[bold]Add a new project to botfarm[/bold]\n")
 
@@ -1110,38 +1111,50 @@ def add_project(config_path, repo_url, name, team, tracker_project_flag, num_slo
     selected_team = None
     client = None
     if not team_key:
-        if linear_api_key:
-            try:
-                client = create_client(api_key=linear_api_key)
-                teams = client.list_teams()
-                if teams:
-                    console.print("\n[bold]Available teams:[/bold]")
-                    for i, t in enumerate(teams, 1):
-                        console.print(f"  {i}. {t['name']} ({t['key']})")
-                    choice = click.prompt(
-                        "\nSelect team number",
-                        type=click.IntRange(1, len(teams)),
-                    )
-                    selected_team = teams[choice - 1]
-                    team_key = selected_team["key"]
-                else:
+        if bt_type == "linear":
+            linear_api_key = os.environ.get("LINEAR_API_KEY", "")
+            if linear_api_key:
+                try:
+                    client = create_client(api_key=linear_api_key)
+                    teams = client.list_teams()
+                    if teams:
+                        console.print("\n[bold]Available teams:[/bold]")
+                        for i, t in enumerate(teams, 1):
+                            console.print(f"  {i}. {t['name']} ({t['key']})")
+                        choice = click.prompt(
+                            "\nSelect team number",
+                            type=click.IntRange(1, len(teams)),
+                        )
+                        selected_team = teams[choice - 1]
+                        team_key = selected_team["key"]
+                    else:
+                        team_key = click.prompt("Team key (e.g. SMA)")
+                except BugtrackerError as exc:
+                    click.echo(f"Warning: Could not fetch teams: {exc}")
                     team_key = click.prompt("Team key (e.g. SMA)")
-            except BugtrackerError as exc:
-                click.echo(f"Warning: Could not fetch teams: {exc}")
+            else:
+                click.echo("Warning: LINEAR_API_KEY not set. Team selection will be manual.")
                 team_key = click.prompt("Team key (e.g. SMA)")
         else:
-            click.echo("Warning: LINEAR_API_KEY not set. Team selection will be manual.")
-            team_key = click.prompt("Team key (e.g. SMA)")
+            team_key = click.prompt("Jira project key (e.g. AIR)")
 
     # --- 4. Project selection (optional) ---
     # tracker_project_flag=None means not provided; "" means explicitly empty
     tracker_project = tracker_project_flag if tracker_project_flag is not None else ""
-    _project_filter_help = (
-        "\n[bold]Project filter[/bold] (optional)\n"
-        "  Limits which tickets botfarm picks up from this team.\n"
-        "  Enter the exact Linear project name (e.g. 'Bot farm').\n"
-        "  Leave empty to monitor all tickets in the team."
-    )
+    if bt_type == "jira":
+        _project_filter_help = (
+            "\n[bold]Project filter[/bold] (optional)\n"
+            "  Limits which tickets botfarm picks up from this project.\n"
+            "  Enter the exact Jira project name.\n"
+            "  Leave empty to monitor all tickets in the project."
+        )
+    else:
+        _project_filter_help = (
+            "\n[bold]Project filter[/bold] (optional)\n"
+            "  Limits which tickets botfarm picks up from this team.\n"
+            "  Enter the exact Linear project name (e.g. 'Bot farm').\n"
+            "  Leave empty to monitor all tickets in the team."
+        )
     if tracker_project_flag is None and not yes:
         if client and selected_team:
             try:
