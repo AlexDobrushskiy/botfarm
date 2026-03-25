@@ -22,6 +22,7 @@ from .routes_main import router as main_router
 from .routes_partials import router as partials_router
 from .routes_projects import router as projects_router
 from .routes_setup import router as setup_router
+from .routes_terminal import router as terminal_router
 from .state import STATIC_DIR, TEMPLATES_DIR, init_caches
 
 logger = logging.getLogger(__name__)
@@ -129,6 +130,12 @@ def create_app(
     app.state.devserver_manager = devserver_manager
     app.state.templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
+    # Expose config flags to all templates via Jinja2 globals
+    terminal_on = False
+    if botfarm_config and hasattr(botfarm_config, "dashboard"):
+        terminal_on = getattr(botfarm_config.dashboard, "terminal_enabled", False)
+    app.state.templates.env.globals["terminal_enabled"] = terminal_on
+
     # Initialise per-app rate-limit caches (isolated per app instance)
     init_caches(app)
 
@@ -141,6 +148,7 @@ def create_app(
     app.include_router(logs_router)
     app.include_router(devserver_router)
     app.include_router(setup_router)
+    app.include_router(terminal_router)
 
     return app
 
