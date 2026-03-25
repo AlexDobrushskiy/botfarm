@@ -1,7 +1,5 @@
 """Tests for botfarm remove-project CLI command."""
 
-import sqlite3
-
 import pytest
 import yaml
 from click.testing import CliRunner
@@ -45,6 +43,8 @@ def db_and_config(tmp_path, monkeypatch):
     config_path.write_text(yaml.dump(config_data))
 
     monkeypatch.setenv("BOTFARM_DB_PATH", str(db_path))
+    # Point DEFAULT_CONFIG_DIR to tmp_path so the safety check allows cleanup
+    monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_DIR", tmp_path)
     return db_path, config_path
 
 
@@ -190,6 +190,45 @@ class TestRemoveProjectCommand:
         )
         assert result.exit_code == 0, result.output
         assert projects_dir.exists()
+
+    def test_clean_ignored_outside_managed_path(self, runner, tmp_path, monkeypatch):
+        """--clean should be ignored when base_dir is outside managed projects path."""
+        db_path = tmp_path / "botfarm.db"
+        conn = init_db(db_path, allow_migration=True)
+        conn.close()
+
+        # base_dir is directly in tmp_path, not under the managed projects dir
+        external_dir = tmp_path / "external-repo"
+        external_dir.mkdir()
+        (external_dir / "somefile").write_text("data")
+
+        config_path = tmp_path / "config.yaml"
+        config_data = {
+            "projects": [
+                {
+                    "name": "ext-proj",
+                    "base_dir": str(external_dir),
+                    "team": "EXT",
+                    "slots": [1],
+                },
+            ],
+            "bugtracker": {"type": "linear", "api_key": "test-key"},
+        }
+        config_path.write_text(yaml.dump(config_data))
+        monkeypatch.setenv("BOTFARM_DB_PATH", str(db_path))
+        # managed root is tmp_path/managed — external_dir is not under it
+        monkeypatch.setattr("botfarm.cli.DEFAULT_CONFIG_DIR", tmp_path / "managed")
+
+        result = runner.invoke(
+            main, [
+                "remove-project", "ext-proj",
+                "--config", str(config_path), "--clean", "--yes",
+            ]
+        )
+        assert result.exit_code == 0, result.output
+        assert "--clean ignored" in result.output
+        # Directory should NOT be deleted
+        assert external_dir.exists()
 
     def test_preserves_other_projects(self, runner, tmp_path, monkeypatch):
         """Removing one project should not affect another."""

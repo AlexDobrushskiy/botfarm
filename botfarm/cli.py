@@ -1304,13 +1304,20 @@ def remove_project(name, config_path, force, clean, yes):
             conn.close()
         raise SystemExit(1)
 
-    # Determine repo directory for cleanup
+    # Determine repo directory for cleanup.
+    # Only allow cleaning directories under the managed projects path
+    # (~/.botfarm/projects/) to prevent accidental deletion of user directories.
     base_dir = project_entry.get("base_dir", "")
-    # The project dir is the parent of base_dir (base_dir points to the repo dir,
-    # and worktrees are siblings). For projects created by add-project, the
-    # structure is ~/.botfarm/projects/<name>/{repo, <name>-slot-1, ...}
-    repo_path = Path(base_dir).expanduser() if base_dir else None
-    projects_dir = repo_path.parent if repo_path else None
+    repo_path = Path(base_dir).expanduser().resolve() if base_dir else None
+    managed_root = (DEFAULT_CONFIG_DIR / "projects").expanduser().resolve()
+    projects_dir = None
+    if repo_path and repo_path.parent != repo_path:
+        candidate = repo_path.parent
+        try:
+            candidate.relative_to(managed_root)
+            projects_dir = candidate
+        except ValueError:
+            pass
 
     # Summary
     console.print(f"\n[bold]Remove project '{name}'[/bold]\n")
@@ -1322,7 +1329,12 @@ def remove_project(name, config_path, force, clean, yes):
 
     # Determine whether to clean repo directory
     should_clean = False
-    if clean:
+    if clean and not projects_dir:
+        console.print(
+            "[yellow]  --clean ignored: base_dir is outside the managed "
+            f"projects path ({managed_root})[/yellow]"
+        )
+    elif clean:
         should_clean = True
     elif projects_dir and projects_dir.exists() and not yes:
         should_clean = click.confirm(
