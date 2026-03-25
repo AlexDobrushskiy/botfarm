@@ -1,19 +1,23 @@
-"""API routes for adding projects: Linear team/project lookups, project creation, SSE progress."""
+"""API routes for adding and removing projects."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
 import re
+import shutil
 import uuid
 from pathlib import Path
 from threading import Lock, Thread
 
+import yaml
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from sse_starlette.sse import EventSourceResponse
 
 from botfarm.bugtracker import create_client
+from botfarm.config import DEFAULT_CONFIG_DIR, write_yaml_atomic
+from botfarm.db import delete_project_data, init_db, load_all_slots
 from botfarm.project_setup import (
     extract_repo_name,
     setup_project,
@@ -402,3 +406,220 @@ def api_suggest_name(request: Request, repo_url: str = ""):
     if not repo_url:
         return JSONResponse({"name": ""})
     return JSONResponse({"name": extract_repo_name(repo_url)})
+
+
+# --- Remove project ---
+
+
+@router.get("/api/project/{name}/remove-info")
+def api_project_remove_info(request: Request, name: str):
+    """Return project details for the remove confirmation dialog.
+
+    Returns active slots, repo directory info, and whether the repo is
+    inside the managed projects path (eligible for cleanup).
+    """
+    app = request.app
+    cfg = app.state.botfarm_config
+    if cfg is None:
+        return JSONResponse(
+            {"error": "Botfarm config not available"}, status_code=503,
+        )
+
+    # Find project in config
+    project_cfg = None
+    for p in cfg.projects:
+        if p.name == name:
+            project_cfg = p
+            break
+    if project_cfg is None:
+        return JSONResponse(
+            {"error": f"Project '{name}' not found in config"}, status_code=404,
+        )
+
+    # Gather active slot info from database
+    active_slots = []
+    conn = None
+    try:
+        conn = init_db(app.state.db_path)
+        rows = load_all_slots(conn)
+        for row in rows:
+            if row["project"] == name and row["status"] in (
+                "busy", "paused_limit", "paused_manual",
+            ):
+                active_slots.append({
+                    "slot_id": row["slot_id"],
+                    "status": row["status"],
+                    "ticket_id": row["ticket_id"] or None,
+                })
+    except Exception as exc:
+        logger.warning("Failed to read slots for remove-info: %s", exc)
+    finally:
+        if conn:
+            conn.close()
+
+    # Determine repo directory and whether it's manageable
+    base_dir = getattr(project_cfg, "base_dir", "")
+    repo_path = Path(base_dir).expanduser().resolve() if base_dir else None
+    managed_root = (DEFAULT_CONFIG_DIR / "projects").expanduser().resolve()
+    projects_dir = None
+    can_clean = False
+    if repo_path and repo_path.parent != repo_path:
+        candidate = repo_path.parent
+        try:
+            rel = candidate.relative_to(managed_root)
+            if rel.parts:
+                projects_dir = str(candidate)
+                can_clean = candidate.exists()
+        except ValueError:
+            pass
+
+    return JSONResponse({
+        "name": name,
+        "team": project_cfg.team,
+        "slots": project_cfg.slots,
+        "active_slots": active_slots,
+        "repo_dir": projects_dir,
+        "can_clean": can_clean,
+    })
+
+
+@router.post("/api/project/remove")
+async def api_project_remove(request: Request):
+    """Remove a project from config, clean up database, optionally remove repo.
+
+    Expects JSON body: ``{"name": "...", "force": false, "clean": false}``
+    """
+    app = request.app
+    cfg = app.state.botfarm_config
+    if cfg is None:
+        return JSONResponse(
+            {"ok": False, "errors": ["Botfarm config not available"]},
+            status_code=503,
+        )
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(
+            {"ok": False, "errors": ["Invalid JSON body"]}, status_code=400,
+        )
+
+    name = (body.get("name") or "").strip()
+    force = bool(body.get("force", False))
+    clean = bool(body.get("clean", False))
+
+    if not name:
+        return JSONResponse(
+            {"ok": False, "errors": ["Project name is required"]},
+            status_code=400,
+        )
+
+    # Verify project exists in config (use source_path to read raw YAML)
+    config_path = Path(cfg.source_path) if cfg.source_path else None
+    if not config_path or not config_path.exists():
+        return JSONResponse(
+            {"ok": False, "errors": ["Config file not found"]},
+            status_code=500,
+        )
+
+    raw = config_path.read_text()
+    data = yaml.safe_load(raw) or {}
+    projects = data.get("projects") or []
+
+    project_entry = None
+    project_index = None
+    for i, p in enumerate(projects):
+        if isinstance(p, dict) and p.get("name") == name:
+            project_entry = p
+            project_index = i
+            break
+
+    if project_entry is None:
+        return JSONResponse(
+            {"ok": False, "errors": [f"Project '{name}' not found in config"]},
+            status_code=404,
+        )
+
+    # Check for active slots unless force
+    conn = None
+    try:
+        conn = init_db(app.state.db_path)
+    except Exception as exc:
+        logger.warning("Failed to open database for remove: %s", exc)
+
+    try:
+        if conn and not force:
+            rows = load_all_slots(conn)
+            active = [
+                r for r in rows
+                if r["project"] == name
+                and r["status"] in ("busy", "paused_limit", "paused_manual")
+            ]
+            if active:
+                details = [
+                    f"Slot {r['slot_id']}: {r['status']} ({r['ticket_id'] or 'no ticket'})"
+                    for r in active
+                ]
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "errors": [
+                            f"Project '{name}' has {len(active)} active slot(s): "
+                            + "; ".join(details)
+                            + ". Use force to remove anyway."
+                        ],
+                    },
+                    status_code=409,
+                )
+
+        # Determine repo directory for cleanup
+        base_dir = project_entry.get("base_dir", "")
+        repo_path = Path(base_dir).expanduser().resolve() if base_dir else None
+        managed_root = (DEFAULT_CONFIG_DIR / "projects").expanduser().resolve()
+        projects_dir = None
+        if repo_path and repo_path.parent != repo_path:
+            candidate = repo_path.parent
+            try:
+                rel = candidate.relative_to(managed_root)
+                if rel.parts:
+                    projects_dir = candidate
+            except ValueError:
+                pass
+
+        # 1. Clean up database (first — rolls back on failure, keeping
+        #    config unchanged so removal can be retried)
+        db_summary = {}
+        if conn:
+            counts = delete_project_data(conn, name)
+            conn.commit()
+            db_summary = counts
+
+        # 2. Remove from config.yaml
+        projects.pop(project_index)
+        data["projects"] = projects
+        write_yaml_atomic(config_path, data)
+    finally:
+        if conn:
+            conn.close()
+
+    # 3. Optionally remove repo directory
+    cleaned_dir = False
+    if clean and projects_dir and projects_dir.exists():
+        shutil.rmtree(projects_dir)
+        cleaned_dir = True
+
+    # 4. Notify supervisor to drop in-memory state
+    cb = app.state.on_remove_project
+    if cb is not None:
+        try:
+            cb(name)
+        except Exception:
+            logger.exception("on_remove_project callback failed for %s", name)
+
+    return JSONResponse({
+        "ok": True,
+        "data": {
+            "db_cleanup": db_summary,
+            "cleaned_dir": cleaned_dir,
+        },
+    })

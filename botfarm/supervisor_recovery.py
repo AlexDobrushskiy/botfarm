@@ -559,7 +559,13 @@ class RecoveryMixin:
             except queue_mod.Empty:
                 break
             slot = self._slot_manager.get_slot(wr.project, wr.slot_id)
-            if wr.ticket_id and slot and wr.ticket_id != slot.ticket_id:
+            if slot is None:
+                logger.info(
+                    "Ignoring result for removed slot %s/%d",
+                    wr.project, wr.slot_id,
+                )
+                continue
+            if wr.ticket_id and wr.ticket_id != slot.ticket_id:
                 logger.warning(
                     "Ignoring stale result for %s/%d: result ticket=%s, "
                     "current ticket=%s (status=%s)",

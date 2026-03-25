@@ -1,23 +1,27 @@
-"""Tests for dashboard add-project routes: Linear lookups, project creation, SSE progress."""
+"""Tests for dashboard project routes: Linear lookups, project creation, SSE progress, and removal."""
 
 import time
 from unittest.mock import MagicMock, patch
 
+import yaml
 from fastapi.testclient import TestClient
 
 from botfarm.config import BotfarmConfig, LinearConfig, ProjectConfig
 from botfarm.dashboard import create_app
-from botfarm.db import init_db
+from botfarm.db import init_db, upsert_slot
 
 
-def _make_config(*, projects=None, api_key="test-key"):
-    return BotfarmConfig(
+def _make_config(*, projects=None, api_key="test-key", source_path=""):
+    cfg = BotfarmConfig(
         projects=projects or [],
         bugtracker=LinearConfig(api_key=api_key),
     )
+    if source_path:
+        cfg.source_path = source_path
+    return cfg
 
 
-def _make_app(tmp_path, *, config=None, on_add_project=None):
+def _make_app(tmp_path, *, config=None, on_add_project=None, on_remove_project=None):
     db_path = tmp_path / "test.db"
     conn = init_db(db_path)
     conn.close()
@@ -25,6 +29,7 @@ def _make_app(tmp_path, *, config=None, on_add_project=None):
         db_path=db_path,
         botfarm_config=config or _make_config(),
         on_add_project=on_add_project,
+        on_remove_project=on_remove_project,
     )
 
 
@@ -518,3 +523,237 @@ class TestLinearProjectAutoCreate:
             time.sleep(0.2)
             # setup_project should NOT be called since linear client is unavailable
             mock_setup.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Remove-project endpoints
+# ---------------------------------------------------------------------------
+
+
+def _write_config_yaml(tmp_path, projects):
+    """Write a config.yaml with the given project dicts and return the path."""
+    config_path = tmp_path / "config.yaml"
+    data = {"projects": projects}
+    config_path.write_text(yaml.dump(data, default_flow_style=False))
+    return config_path
+
+
+def _make_remove_app(tmp_path, *, project_dicts=None, project_configs=None,
+                     on_remove_project=None):
+    """Create an app wired for remove-project tests.
+
+    *project_dicts* are the raw YAML dicts written to config.yaml.
+    *project_configs* are the ProjectConfig objects on BotfarmConfig.
+    """
+    if project_dicts is None:
+        project_dicts = [{"name": "demo", "team": "ENG", "base_dir": "/tmp/demo/repo",
+                          "worktree_prefix": "/tmp/demo/slot-", "slots": [1, 2]}]
+    if project_configs is None:
+        project_configs = [
+            ProjectConfig(name=p["name"], team=p["team"],
+                          base_dir=p.get("base_dir", ""),
+                          worktree_prefix=p.get("worktree_prefix", ""),
+                          slots=p.get("slots", [1]))
+            for p in project_dicts
+        ]
+    config_path = _write_config_yaml(tmp_path, project_dicts)
+    cfg = _make_config(projects=project_configs, source_path=str(config_path))
+    db_path = tmp_path / "test.db"
+    conn = init_db(db_path)
+    conn.close()
+    return create_app(
+        db_path=db_path,
+        botfarm_config=cfg,
+        on_remove_project=on_remove_project,
+    )
+
+
+class TestRemoveInfoEndpoint:
+    def test_project_not_found(self, tmp_path):
+        app = _make_remove_app(tmp_path)
+        client = TestClient(app)
+        resp = client.get("/api/project/nonexistent/remove-info")
+        assert resp.status_code == 404
+
+    def test_returns_project_details(self, tmp_path):
+        app = _make_remove_app(tmp_path)
+        client = TestClient(app)
+        resp = client.get("/api/project/demo/remove-info")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["name"] == "demo"
+        assert data["team"] == "ENG"
+        assert data["slots"] == [1, 2]
+        assert data["active_slots"] == []
+
+    def test_shows_active_slots(self, tmp_path):
+        project_dicts = [{"name": "busy-proj", "team": "ENG",
+                          "base_dir": "/tmp/bp/repo",
+                          "worktree_prefix": "/tmp/bp/slot-", "slots": [1]}]
+        project_configs = [
+            ProjectConfig(name="busy-proj", team="ENG",
+                          base_dir="/tmp/bp/repo",
+                          worktree_prefix="/tmp/bp/slot-", slots=[1]),
+        ]
+        config_path = _write_config_yaml(tmp_path, project_dicts)
+        cfg = _make_config(projects=project_configs, source_path=str(config_path))
+        db_path = tmp_path / "test.db"
+        conn = init_db(db_path)
+        upsert_slot(conn, {
+            "project": "busy-proj", "slot_id": 1, "status": "busy",
+            "ticket_id": "SMA-100", "ticket_title": "test", "branch": "",
+            "pr_url": "", "stage": "implement", "stage_iteration": 1,
+            "current_session_id": "", "started_at": "", "stage_started_at": "",
+            "sigterm_sent_at": None, "pid": None, "interrupted_by_limit": 0,
+            "resume_after": None, "stages_completed": [], "ticket_labels": [],
+        })
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=db_path, botfarm_config=cfg)
+        client = TestClient(app)
+        resp = client.get("/api/project/busy-proj/remove-info")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["active_slots"]) == 1
+        assert data["active_slots"][0]["ticket_id"] == "SMA-100"
+
+    def test_no_config(self, tmp_path):
+        db_path = tmp_path / "test.db"
+        conn = init_db(db_path)
+        conn.close()
+        app = create_app(db_path=db_path)
+        client = TestClient(app)
+        resp = client.get("/api/project/demo/remove-info")
+        assert resp.status_code == 503
+
+
+class TestRemoveEndpoint:
+    def test_missing_name(self, tmp_path):
+        app = _make_remove_app(tmp_path)
+        client = TestClient(app)
+        resp = client.post("/api/project/remove", json={"name": ""})
+        assert resp.status_code == 400
+
+    def test_project_not_found_in_yaml(self, tmp_path):
+        app = _make_remove_app(tmp_path)
+        client = TestClient(app)
+        resp = client.post("/api/project/remove", json={"name": "nonexistent"})
+        assert resp.status_code == 404
+
+    def test_successful_removal(self, tmp_path):
+        on_remove = MagicMock()
+        app = _make_remove_app(tmp_path, on_remove_project=on_remove)
+        client = TestClient(app)
+        resp = client.post("/api/project/remove", json={"name": "demo"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+
+        # Config YAML should no longer contain the project
+        config_path = tmp_path / "config.yaml"
+        reloaded = yaml.safe_load(config_path.read_text())
+        assert len(reloaded["projects"]) == 0
+
+        # Supervisor callback should have been invoked
+        on_remove.assert_called_once_with("demo")
+
+    def test_active_slots_block_removal(self, tmp_path):
+        project_dicts = [{"name": "active", "team": "ENG",
+                          "base_dir": "/tmp/a/repo",
+                          "worktree_prefix": "/tmp/a/slot-", "slots": [1]}]
+        project_configs = [
+            ProjectConfig(name="active", team="ENG",
+                          base_dir="/tmp/a/repo",
+                          worktree_prefix="/tmp/a/slot-", slots=[1]),
+        ]
+        config_path = _write_config_yaml(tmp_path, project_dicts)
+        cfg = _make_config(projects=project_configs, source_path=str(config_path))
+        db_path = tmp_path / "test.db"
+        conn = init_db(db_path)
+        upsert_slot(conn, {
+            "project": "active", "slot_id": 1, "status": "busy",
+            "ticket_id": "SMA-99", "ticket_title": "test", "branch": "",
+            "pr_url": "", "stage": "implement", "stage_iteration": 1,
+            "current_session_id": "", "started_at": "", "stage_started_at": "",
+            "sigterm_sent_at": None, "pid": None, "interrupted_by_limit": 0,
+            "resume_after": None, "stages_completed": [], "ticket_labels": [],
+        })
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=db_path, botfarm_config=cfg)
+        client = TestClient(app)
+        resp = client.post("/api/project/remove", json={"name": "active"})
+        assert resp.status_code == 409
+        assert "active slot" in resp.json()["errors"][0].lower()
+
+    def test_force_bypasses_active_check(self, tmp_path):
+        project_dicts = [{"name": "forced", "team": "ENG",
+                          "base_dir": "/tmp/f/repo",
+                          "worktree_prefix": "/tmp/f/slot-", "slots": [1]}]
+        project_configs = [
+            ProjectConfig(name="forced", team="ENG",
+                          base_dir="/tmp/f/repo",
+                          worktree_prefix="/tmp/f/slot-", slots=[1]),
+        ]
+        config_path = _write_config_yaml(tmp_path, project_dicts)
+        cfg = _make_config(projects=project_configs, source_path=str(config_path))
+        db_path = tmp_path / "test.db"
+        conn = init_db(db_path)
+        upsert_slot(conn, {
+            "project": "forced", "slot_id": 1, "status": "busy",
+            "ticket_id": "SMA-88", "ticket_title": "test", "branch": "",
+            "pr_url": "", "stage": "implement", "stage_iteration": 1,
+            "current_session_id": "", "started_at": "", "stage_started_at": "",
+            "sigterm_sent_at": None, "pid": None, "interrupted_by_limit": 0,
+            "resume_after": None, "stages_completed": [], "ticket_labels": [],
+        })
+        conn.commit()
+        conn.close()
+        app = create_app(db_path=db_path, botfarm_config=cfg)
+        client = TestClient(app)
+        resp = client.post("/api/project/remove",
+                           json={"name": "forced", "force": True})
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+
+    def test_clean_removes_repo_dir(self, tmp_path):
+        # Set up a managed project directory
+        managed_root = tmp_path / "projects"
+        proj_dir = managed_root / "demo"
+        repo_dir = proj_dir / "repo"
+        repo_dir.mkdir(parents=True)
+        (repo_dir / "README.md").write_text("hello")
+
+        project_dicts = [{"name": "demo", "team": "ENG",
+                          "base_dir": str(repo_dir),
+                          "worktree_prefix": str(proj_dir / "slot-"),
+                          "slots": [1]}]
+        project_configs = [
+            ProjectConfig(name="demo", team="ENG",
+                          base_dir=str(repo_dir),
+                          worktree_prefix=str(proj_dir / "slot-"), slots=[1]),
+        ]
+        config_path = _write_config_yaml(tmp_path, project_dicts)
+        cfg = _make_config(projects=project_configs, source_path=str(config_path))
+        db_path = tmp_path / "test.db"
+        conn = init_db(db_path)
+        conn.close()
+        app = create_app(db_path=db_path, botfarm_config=cfg)
+        client = TestClient(app)
+
+        # Patch DEFAULT_CONFIG_DIR so managed_root check works with tmp_path
+        with patch("botfarm.dashboard.routes_projects.DEFAULT_CONFIG_DIR", tmp_path):
+            resp = client.post("/api/project/remove",
+                               json={"name": "demo", "clean": True})
+        assert resp.status_code == 200
+        assert resp.json()["data"]["cleaned_dir"] is True
+        assert not proj_dir.exists()
+
+    def test_no_config(self, tmp_path):
+        db_path = tmp_path / "test.db"
+        conn = init_db(db_path)
+        conn.close()
+        app = create_app(db_path=db_path)
+        client = TestClient(app)
+        resp = client.post("/api/project/remove", json={"name": "test"})
+        assert resp.status_code == 503
