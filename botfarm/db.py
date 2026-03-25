@@ -912,6 +912,24 @@ def load_all_slots(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     ).fetchall()
 
 
+def delete_project_data(conn: sqlite3.Connection, project: str) -> dict[str, int]:
+    """Delete all project-scoped rows from the database.
+
+    Removes rows from ``slots``, ``queue_entries``, and
+    ``project_pause_state`` for the given project name.
+
+    Returns a dict mapping table name to the number of rows deleted.
+    Does NOT commit — caller is responsible for committing.
+    """
+    counts: dict[str, int] = {}
+    for table in ("slots", "queue_entries", "project_pause_state"):
+        cur = conn.execute(
+            f"DELETE FROM {table} WHERE project = ?", (project,)
+        )
+        counts[table] = cur.rowcount
+    return counts
+
+
 def load_dispatch_state(conn: sqlite3.Connection) -> tuple[bool, str | None, str | None]:
     """Load dispatch pause state. Returns (paused, reason, supervisor_heartbeat)."""
     row = conn.execute(
