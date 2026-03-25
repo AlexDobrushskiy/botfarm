@@ -488,7 +488,7 @@ def run_pipeline(
     if resume_from_stage:
         task_row = get_task(conn, task_id)
         pr_url = (task_row["pr_url"] if task_row else None) or _recover_pr_url(
-            conn, task_id, cwd, env=coder_env,
+            cwd, env=coder_env,
         )
         if pr_url:
             pipeline.pr_url = pr_url

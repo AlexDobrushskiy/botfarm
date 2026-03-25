@@ -1533,23 +1533,21 @@ class TestCheckPrStatus:
         assert result is None
 
     def test_gh_pr_url_for_branch_success(self):
-        """_gh_pr_url_for_branch returns URL on success."""
-        mock_proc = MagicMock()
-        mock_proc.returncode = 0
-        mock_proc.stdout = "https://github.com/org/repo/pull/42\n"
-
-        with patch("botfarm.supervisor_recovery.subprocess.run", return_value=mock_proc):
+        """_gh_pr_url_for_branch delegates to _find_open_pr_url."""
+        with patch(
+            "botfarm.supervisor_recovery._find_open_pr_url",
+            return_value="https://github.com/org/repo/pull/42",
+        ):
             result = Supervisor._gh_pr_url_for_branch("my-branch", "/tmp/repo")
 
         assert result == "https://github.com/org/repo/pull/42"
 
     def test_gh_pr_url_for_branch_no_pr(self):
-        """_gh_pr_url_for_branch returns None when no PR exists."""
-        mock_proc = MagicMock()
-        mock_proc.returncode = 1
-        mock_proc.stdout = ""
-
-        with patch("botfarm.supervisor_recovery.subprocess.run", return_value=mock_proc):
+        """_gh_pr_url_for_branch returns None when no open PR exists."""
+        with patch(
+            "botfarm.supervisor_recovery._find_open_pr_url",
+            return_value=None,
+        ):
             result = Supervisor._gh_pr_url_for_branch("my-branch", "/tmp/repo")
 
         assert result is None

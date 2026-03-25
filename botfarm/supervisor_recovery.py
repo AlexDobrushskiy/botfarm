@@ -24,6 +24,7 @@ from botfarm.db import (
 )
 from botfarm.slots import SlotState, _is_pid_alive
 from botfarm.worker import STAGES
+from botfarm.worker_claude import _find_open_pr_url
 
 logger = logging.getLogger(__name__)
 
@@ -483,23 +484,13 @@ class RecoveryMixin:
         branch: str | None, cwd: str,
         *, env: dict[str, str] | None = None,
     ) -> str | None:
-        """Get the PR URL for a branch via ``gh pr view``."""
+        """Get the open PR URL for a branch.
+
+        Delegates to :func:`~botfarm.worker_claude._find_open_pr_url`.
+        """
         if not branch:
             return None
-        subprocess_env = {**os.environ, **env} if env else None
-        try:
-            proc = subprocess.run(
-                ["gh", "pr", "view", branch, "--json", "url", "--jq", ".url"],
-                capture_output=True, text=True, cwd=cwd, timeout=15,
-                env=subprocess_env,
-            )
-            if proc.returncode == 0 and proc.stdout.strip():
-                url = proc.stdout.strip()
-                if "/pull/" in url:
-                    return url
-        except Exception as exc:
-            logger.debug("gh pr view failed for branch %s: %s", branch, exc)
-        return None
+        return _find_open_pr_url(branch, cwd, env=env)
 
     @staticmethod
     def _gh_pr_state(

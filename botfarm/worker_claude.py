@@ -599,28 +599,74 @@ def _extract_pr_url_from_log(log_file: Path | None) -> str | None:
     return f"https://github.com/{owner}/{repo}/pull/{number}"
 
 
-def _gh_pr_view_url(cwd: str | Path, *, env: dict[str, str] | None = None) -> str | None:
-    """Get the PR URL for the current branch via ``gh pr view``.
+def _find_open_pr_url(
+    branch: str, cwd: str | Path,
+    *, env: dict[str, str] | None = None,
+) -> str | None:
+    """Find the open PR URL for *branch* via ``gh``.
 
-    Returns the URL if a PR exists on the current branch, ``None`` otherwise.
+    Uses ``gh pr list --head <branch> --state open`` as the primary lookup,
+    falling back to ``gh pr view`` filtered by open state.
     """
     subprocess_env = {**os.environ, **env} if env else None
+    # Primary: targeted query for open PRs on this branch
     try:
         proc = subprocess.run(
-            ["gh", "pr", "view", "--json", "url", "--jq", ".url"],
-            capture_output=True,
-            text=True,
-            cwd=str(cwd),
-            timeout=15,
+            ["gh", "pr", "list", "--head", branch, "--state", "open",
+             "--json", "url", "--limit", "1"],
+            capture_output=True, text=True, cwd=str(cwd), timeout=15,
             env=subprocess_env,
         )
         if proc.returncode == 0 and proc.stdout.strip():
-            url = proc.stdout.strip()
-            if "github.com" in url and "/pull/" in url:
-                return url
+            prs = json.loads(proc.stdout)
+            if prs:
+                url = prs[0].get("url", "")
+                if "github.com" in url and "/pull/" in url:
+                    return url
     except Exception:
-        logger.debug("gh pr view failed for PR URL fallback", exc_info=True)
+        logger.debug("gh pr list failed for branch %s", branch, exc_info=True)
+
+    # Fallback: gh pr view filtered by open state
+    try:
+        proc = subprocess.run(
+            ["gh", "pr", "view", branch, "--json", "url,state"],
+            capture_output=True, text=True, cwd=str(cwd), timeout=15,
+            env=subprocess_env,
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            data = json.loads(proc.stdout)
+            if data.get("state") == "OPEN":
+                url = data.get("url", "")
+                if "github.com" in url and "/pull/" in url:
+                    return url
+    except Exception:
+        logger.debug("gh pr view fallback failed for branch %s", branch, exc_info=True)
     return None
+
+
+def _gh_pr_view_url(cwd: str | Path, *, env: dict[str, str] | None = None) -> str | None:
+    """Get the open PR URL for the current branch.
+
+    Resolves the current branch via ``git rev-parse`` then delegates to
+    :func:`_find_open_pr_url`.
+    """
+    subprocess_env = {**os.environ, **env} if env else None
+    # Get the current branch name
+    try:
+        branch_proc = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, cwd=str(cwd), timeout=10,
+            env=subprocess_env,
+        )
+        if branch_proc.returncode != 0 or not branch_proc.stdout.strip():
+            logger.debug("Could not determine current branch for PR lookup")
+            return None
+        branch = branch_proc.stdout.strip()
+    except Exception:
+        logger.debug("Failed to get current branch", exc_info=True)
+        return None
+
+    return _find_open_pr_url(branch, cwd, env=env)
 
 
 def _parse_pr_url(pr_url: str) -> tuple[str, str, str]:
@@ -757,33 +803,33 @@ def _check_pr_merged(pr_url: str, cwd: str | Path, *, env: dict[str, str] | None
 
 
 def _recover_pr_url(
-    conn, task_id: int, cwd: str | Path,
+    cwd: str | Path,
     *, env: dict[str, str] | None = None,
 ) -> str | None:
     """Recover the PR URL for a resumed pipeline.
 
-    First checks ``gh pr view`` in the working directory, then falls back
-    to scanning previous stage_run records in the database.
+    Uses ``gh pr list --head <branch> --state open`` to find the open PR
+    for the current branch, falling back to ``gh pr view`` filtered by
+    open state.
     """
     subprocess_env = {**os.environ, **env} if env else None
-    # Try gh pr view to get current branch's PR URL
+    # Get the current branch name
     try:
-        proc = subprocess.run(
-            ["gh", "pr", "view", "--json", "url", "--jq", ".url"],
-            capture_output=True,
-            text=True,
-            cwd=str(cwd),
+        branch_proc = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, cwd=str(cwd), timeout=10,
             env=subprocess_env,
         )
-        if proc.returncode == 0 and proc.stdout.strip():
-            url = proc.stdout.strip()
-            if "github.com" in url and "/pull/" in url:
-                logger.info("Recovered PR URL from gh: %s", url)
-                return url
+        if branch_proc.returncode != 0 or not branch_proc.stdout.strip():
+            return None
+        branch = branch_proc.stdout.strip()
     except Exception:
-        pass
+        return None
 
-    return None
+    url = _find_open_pr_url(branch, cwd, env=env)
+    if url:
+        logger.info("Recovered PR URL from gh: %s", url)
+    return url
 
 
 # ---------------------------------------------------------------------------
