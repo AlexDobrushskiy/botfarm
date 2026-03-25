@@ -1824,6 +1824,12 @@ class _PipelineContext:
             # _finish_stage updates it (harmless no-op) and records failure.
             return result, stage_run_id
 
+        # Accumulate the failed attempt's metrics into pipeline totals so
+        # _finish_stage (which only sees the retry result) doesn't drop them.
+        if result.agent_result:
+            self.pipeline.total_turns += result.agent_result.num_turns
+            self.pipeline.total_duration_seconds += result.agent_result.duration_seconds
+
         return retry_result, new_stage_run_id
 
     def _finish_stage(

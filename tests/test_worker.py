@@ -4501,6 +4501,13 @@ class TestAuthFailureRetry:
         # Retry was attempted — _execute_stage was called
         assert mock_exec.call_count == 1
         mock_cm_cls.return_value.refresh_token.assert_called_once()
+        # Returned result is the successful retry
+        assert result is success_result
+        assert result.success is True
+        assert sr_id is not None  # new stage_run was created for retry
+        # Failed attempt's metrics accumulated into pipeline totals
+        assert ctx.pipeline.total_turns == failed_result.agent_result.num_turns
+        assert ctx.pipeline.total_duration_seconds == failed_result.agent_result.duration_seconds
         # auth_retry event recorded
         events = get_events(conn, task_id=task_id, event_type="auth_retry")
         assert len(events) == 1
