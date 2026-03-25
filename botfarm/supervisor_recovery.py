@@ -7,6 +7,7 @@ have full access to supervisor state.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import queue as queue_mod
@@ -483,20 +484,45 @@ class RecoveryMixin:
         branch: str | None, cwd: str,
         *, env: dict[str, str] | None = None,
     ) -> str | None:
-        """Get the PR URL for a branch via ``gh pr view``."""
+        """Get the open PR URL for a branch.
+
+        Uses ``gh pr list --head <branch> --state open`` to find
+        specifically the open PR, avoiding stale merged PRs.
+        Falls back to ``gh pr view`` filtered by open state.
+        """
         if not branch:
             return None
         subprocess_env = {**os.environ, **env} if env else None
+        # Primary: targeted query for open PRs on this branch
         try:
             proc = subprocess.run(
-                ["gh", "pr", "view", branch, "--json", "url", "--jq", ".url"],
+                ["gh", "pr", "list", "--head", branch, "--state", "open",
+                 "--json", "url", "--limit", "1"],
                 capture_output=True, text=True, cwd=cwd, timeout=15,
                 env=subprocess_env,
             )
             if proc.returncode == 0 and proc.stdout.strip():
-                url = proc.stdout.strip()
-                if "/pull/" in url:
-                    return url
+                prs = json.loads(proc.stdout)
+                if prs:
+                    url = prs[0].get("url", "")
+                    if "/pull/" in url:
+                        return url
+        except Exception as exc:
+            logger.debug("gh pr list failed for branch %s: %s", branch, exc)
+
+        # Fallback: gh pr view filtered by open state
+        try:
+            proc = subprocess.run(
+                ["gh", "pr", "view", branch, "--json", "url,state"],
+                capture_output=True, text=True, cwd=cwd, timeout=15,
+                env=subprocess_env,
+            )
+            if proc.returncode == 0 and proc.stdout.strip():
+                data = json.loads(proc.stdout)
+                if data.get("state") == "OPEN":
+                    url = data.get("url", "")
+                    if "/pull/" in url:
+                        return url
         except Exception as exc:
             logger.debug("gh pr view failed for branch %s: %s", branch, exc)
         return None

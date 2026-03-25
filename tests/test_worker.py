@@ -869,36 +869,88 @@ class TestExtractPrUrlFromLog:
 class TestGhPrViewUrl:
     @patch("botfarm.worker_claude.subprocess.run")
     def test_returns_url_on_success(self, mock_run, tmp_path):
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=["gh"], returncode=0,
-            stdout="https://github.com/owner/repo/pull/42\n",
-            stderr="",
-        )
+        """gh pr list --state open returns the open PR URL."""
+        mock_run.side_effect = [
+            # git rev-parse --abbrev-ref HEAD
+            subprocess.CompletedProcess(args=["git"], returncode=0, stdout="my-branch\n", stderr=""),
+            # gh pr list --head my-branch --state open
+            subprocess.CompletedProcess(
+                args=["gh"], returncode=0,
+                stdout='[{"url":"https://github.com/owner/repo/pull/42"}]\n',
+                stderr="",
+            ),
+        ]
         assert _gh_pr_view_url(tmp_path) == "https://github.com/owner/repo/pull/42"
 
     @patch("botfarm.worker_claude.subprocess.run")
     def test_returns_none_on_failure(self, mock_run, tmp_path):
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=["gh"], returncode=1, stdout="", stderr="no PR found",
-        )
+        """Returns None when no open PR exists for the branch."""
+        mock_run.side_effect = [
+            # git rev-parse
+            subprocess.CompletedProcess(args=["git"], returncode=0, stdout="my-branch\n", stderr=""),
+            # gh pr list returns empty
+            subprocess.CompletedProcess(args=["gh"], returncode=0, stdout="[]\n", stderr=""),
+            # gh pr view fallback also fails
+            subprocess.CompletedProcess(args=["gh"], returncode=1, stdout="", stderr="no PR found"),
+        ]
         assert _gh_pr_view_url(tmp_path) is None
 
     @patch("botfarm.worker_claude.subprocess.run")
     def test_returns_none_on_exception(self, mock_run, tmp_path):
-        mock_run.side_effect = FileNotFoundError("gh not found")
+        mock_run.side_effect = FileNotFoundError("git not found")
         assert _gh_pr_view_url(tmp_path) is None
 
     @patch("botfarm.worker_claude.subprocess.run")
     def test_passes_env(self, mock_run, tmp_path):
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=["gh"], returncode=0,
-            stdout="https://github.com/owner/repo/pull/42\n",
-            stderr="",
-        )
+        mock_run.side_effect = [
+            # git rev-parse
+            subprocess.CompletedProcess(args=["git"], returncode=0, stdout="my-branch\n", stderr=""),
+            # gh pr list
+            subprocess.CompletedProcess(
+                args=["gh"], returncode=0,
+                stdout='[{"url":"https://github.com/owner/repo/pull/42"}]\n',
+                stderr="",
+            ),
+        ]
         _gh_pr_view_url(tmp_path, env={"GH_TOKEN": "tok"})
-        call_env = mock_run.call_args[1].get("env") or mock_run.call_args.kwargs.get("env")
+        # Check that env was passed to the gh pr list call (second call)
+        call_env = mock_run.call_args_list[1][1].get("env") or mock_run.call_args_list[1].kwargs.get("env")
         assert call_env is not None
         assert call_env["GH_TOKEN"] == "tok"
+
+    @patch("botfarm.worker_claude.subprocess.run")
+    def test_skips_merged_pr_in_fallback(self, mock_run, tmp_path):
+        """gh pr view fallback filters out merged PRs."""
+        mock_run.side_effect = [
+            # git rev-parse
+            subprocess.CompletedProcess(args=["git"], returncode=0, stdout="my-branch\n", stderr=""),
+            # gh pr list returns empty (no open PR)
+            subprocess.CompletedProcess(args=["gh"], returncode=0, stdout="[]\n", stderr=""),
+            # gh pr view returns a merged PR
+            subprocess.CompletedProcess(
+                args=["gh"], returncode=0,
+                stdout='{"url":"https://github.com/owner/repo/pull/10","state":"MERGED"}\n',
+                stderr="",
+            ),
+        ]
+        assert _gh_pr_view_url(tmp_path) is None
+
+    @patch("botfarm.worker_claude.subprocess.run")
+    def test_fallback_returns_open_pr(self, mock_run, tmp_path):
+        """gh pr view fallback returns URL when PR is open."""
+        mock_run.side_effect = [
+            # git rev-parse
+            subprocess.CompletedProcess(args=["git"], returncode=0, stdout="my-branch\n", stderr=""),
+            # gh pr list fails
+            subprocess.CompletedProcess(args=["gh"], returncode=1, stdout="", stderr="error"),
+            # gh pr view returns an open PR
+            subprocess.CompletedProcess(
+                args=["gh"], returncode=0,
+                stdout='{"url":"https://github.com/owner/repo/pull/10","state":"OPEN"}\n',
+                stderr="",
+            ),
+        ]
+        assert _gh_pr_view_url(tmp_path) == "https://github.com/owner/repo/pull/10"
 
 
 # ---------------------------------------------------------------------------
@@ -2113,29 +2165,35 @@ class TestRunPipelinePauseEvent:
 class TestRecoverPrUrl:
     @patch("botfarm.worker_claude.subprocess.run")
     def test_recovers_url_from_gh(self, mock_run, conn, task_id, tmp_path):
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=["gh"],
-            returncode=0,
-            stdout="https://github.com/owner/repo/pull/42\n",
-            stderr="",
-        )
+        mock_run.side_effect = [
+            # git rev-parse
+            subprocess.CompletedProcess(args=["git"], returncode=0, stdout="my-branch\n", stderr=""),
+            # gh pr list --state open
+            subprocess.CompletedProcess(
+                args=["gh"], returncode=0,
+                stdout='[{"url":"https://github.com/owner/repo/pull/42"}]\n',
+                stderr="",
+            ),
+        ]
         url = _recover_pr_url(conn, task_id, tmp_path)
         assert url == "https://github.com/owner/repo/pull/42"
 
     @patch("botfarm.worker_claude.subprocess.run")
     def test_returns_none_on_gh_failure(self, mock_run, conn, task_id, tmp_path):
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=["gh"],
-            returncode=1,
-            stdout="",
-            stderr="no PR found",
-        )
+        mock_run.side_effect = [
+            # git rev-parse
+            subprocess.CompletedProcess(args=["git"], returncode=0, stdout="my-branch\n", stderr=""),
+            # gh pr list returns empty
+            subprocess.CompletedProcess(args=["gh"], returncode=0, stdout="[]\n", stderr=""),
+            # gh pr view fallback also fails
+            subprocess.CompletedProcess(args=["gh"], returncode=1, stdout="", stderr="no PR found"),
+        ]
         url = _recover_pr_url(conn, task_id, tmp_path)
         assert url is None
 
     @patch("botfarm.worker_claude.subprocess.run")
     def test_returns_none_on_exception(self, mock_run, conn, task_id, tmp_path):
-        mock_run.side_effect = FileNotFoundError("gh not found")
+        mock_run.side_effect = FileNotFoundError("git not found")
         url = _recover_pr_url(conn, task_id, tmp_path)
         assert url is None
 

@@ -1533,10 +1533,10 @@ class TestCheckPrStatus:
         assert result is None
 
     def test_gh_pr_url_for_branch_success(self):
-        """_gh_pr_url_for_branch returns URL on success."""
+        """_gh_pr_url_for_branch returns URL from gh pr list --state open."""
         mock_proc = MagicMock()
         mock_proc.returncode = 0
-        mock_proc.stdout = "https://github.com/org/repo/pull/42\n"
+        mock_proc.stdout = '[{"url":"https://github.com/org/repo/pull/42"}]\n'
 
         with patch("botfarm.supervisor_recovery.subprocess.run", return_value=mock_proc):
             result = Supervisor._gh_pr_url_for_branch("my-branch", "/tmp/repo")
@@ -1544,12 +1544,14 @@ class TestCheckPrStatus:
         assert result == "https://github.com/org/repo/pull/42"
 
     def test_gh_pr_url_for_branch_no_pr(self):
-        """_gh_pr_url_for_branch returns None when no PR exists."""
-        mock_proc = MagicMock()
-        mock_proc.returncode = 1
-        mock_proc.stdout = ""
-
-        with patch("botfarm.supervisor_recovery.subprocess.run", return_value=mock_proc):
+        """_gh_pr_url_for_branch returns None when no open PR exists."""
+        with patch("botfarm.supervisor_recovery.subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                # gh pr list returns empty
+                MagicMock(returncode=0, stdout="[]\n"),
+                # gh pr view fallback also fails
+                MagicMock(returncode=1, stdout=""),
+            ]
             result = Supervisor._gh_pr_url_for_branch("my-branch", "/tmp/repo")
 
         assert result is None
