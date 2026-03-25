@@ -577,6 +577,48 @@ class TestCheckLinearApi:
         review_fail = [r for r in failed if "Code Review" in r.message]
         assert len(review_fail) == 1
 
+    def test_linear_check_names_use_linear_labels(self, tmp_path):
+        """Linear bugtracker should produce linear_team / linear_status check names."""
+        config = _make_config(tmp_path)
+        team_states = {
+            "Todo": "s1", "In Progress": "s2",
+            "Done": "s3", "In Review": "s4",
+        }
+        with patch.object(
+            __import__("botfarm.bugtracker.linear.client", fromlist=["LinearClient"]).LinearClient,
+            "get_team_states",
+            return_value=team_states,
+        ):
+            results = check_linear_api(config)
+
+        assert results[0].name == "linear_team:TST"
+        assert "team" in results[0].message
+        status_results = [r for r in results if r.name.startswith("linear_status:")]
+        assert len(status_results) == 4
+
+    def test_jira_check_names_use_jira_labels(self, tmp_path):
+        """Jira bugtracker should produce jira_project / jira_status check names."""
+        config = _make_config(tmp_path, bugtracker=JiraBugtrackerConfig(
+            api_key="jira_key", url="https://test.atlassian.net", email="test@test.com",
+        ))
+        team_states = {
+            "Todo": "s1", "In Progress": "s2",
+            "Done": "s3", "In Review": "s4",
+        }
+        with patch(
+            "botfarm.preflight.create_client",
+        ) as mock_create:
+            mock_create.return_value.get_team_states.return_value = team_states
+            results = check_linear_api(config)
+
+        assert results[0].name == "jira_project:TST"
+        assert "project" in results[0].message
+        status_results = [r for r in results if r.name.startswith("jira_status:")]
+        assert len(status_results) == 4
+        # No linear-prefixed check names should appear
+        linear_names = [r for r in results if r.name.startswith("linear_")]
+        assert len(linear_names) == 0
+
 
 # ---------------------------------------------------------------------------
 # check_credentials

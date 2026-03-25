@@ -212,6 +212,11 @@ def check_linear_api(config: BotfarmConfig) -> list[CheckResult]:
 
         team_key = project.team
         cache_key = (bt.api_key, team_key)
+        # Use bugtracker-appropriate labels for check names/messages
+        is_jira = bt.type == "jira"
+        team_label = "jira_project" if is_jira else "linear_team"
+        status_label = "jira_status" if is_jira else "linear_status"
+        entity_word = "project" if is_jira else "team"
         if cache_key in checked_teams:
             team_states = checked_teams[cache_key]
         else:
@@ -232,16 +237,16 @@ def check_linear_api(config: BotfarmConfig) -> list[CheckResult]:
                 checked_teams[cache_key] = team_states
             except BugtrackerError as exc:
                 results.append(CheckResult(
-                    name=f"linear_team:{team_key}",
+                    name=f"{team_label}:{team_key}",
                     passed=False,
-                    message=f"Cannot reach team '{team_key}': {exc}",
+                    message=f"Cannot reach {entity_word} '{team_key}': {exc}",
                 ))
                 continue
 
             results.append(CheckResult(
-                name=f"linear_team:{team_key}",
+                name=f"{team_label}:{team_key}",
                 passed=True,
-                message=f"OK — team '{team_key}' found with {len(team_states)} states",
+                message=f"OK — {entity_word} '{team_key}' found with {len(team_states)} states",
             ))
 
         # Verify configured status names exist in the team's workflow
@@ -254,17 +259,17 @@ def check_linear_api(config: BotfarmConfig) -> list[CheckResult]:
         for field, status_name in configured_statuses.items():
             if status_name not in team_states:
                 results.append(CheckResult(
-                    name=f"linear_status:{team_key}/{field}",
+                    name=f"{status_label}:{team_key}/{field}",
                     passed=False,
                     message=(
                         f"Status '{status_name}' (from bugtracker.{field}) "
-                        f"not found in team '{team_key}'. "
+                        f"not found in {entity_word} '{team_key}'. "
                         f"Available: {sorted(team_states.keys())}"
                     ),
                 ))
             else:
                 results.append(CheckResult(
-                    name=f"linear_status:{team_key}/{field}",
+                    name=f"{status_label}:{team_key}/{field}",
                     passed=True,
                     message=f"OK — '{status_name}'",
                 ))
