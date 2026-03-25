@@ -1032,7 +1032,7 @@ from botfarm.project_setup import (
     "--project",
     "tracker_project_flag",
     default=None,
-    help="Bugtracker project filter — exact project name (e.g. 'Bot farm'). Limits which tickets are picked up.",
+    help="Bugtracker project filter — exact Linear project name, case-sensitive (e.g. 'Bot farm'). Limits which tickets are picked up. Not used for Jira.",
 )
 @click.option(
     "--slots",
@@ -1144,15 +1144,15 @@ def add_project(config_path, repo_url, name, team, tracker_project_flag, num_slo
     if bt_type == "jira":
         _project_filter_help = (
             "\n[bold]Project filter[/bold] (optional)\n"
-            "  Limits which tickets botfarm picks up from this project.\n"
-            "  Enter the exact Jira project name.\n"
-            "  Leave empty to monitor all tickets in the project."
+            "  [dim]Note: Jira uses the project key (set above) to select tickets.[/dim]\n"
+            "  [dim]This filter is not currently used for Jira — you can skip it.[/dim]"
         )
     else:
         _project_filter_help = (
             "\n[bold]Project filter[/bold] (optional)\n"
             "  Limits which tickets botfarm picks up from this team.\n"
-            "  Enter the exact Linear project name (e.g. 'Bot farm').\n"
+            "  Enter the exact Linear project name (case-sensitive).\n"
+            "  Example: 'Bot farm'\n"
             "  Leave empty to monitor all tickets in the team."
         )
     if tracker_project_flag is None and not yes:
