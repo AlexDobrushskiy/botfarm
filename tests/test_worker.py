@@ -4877,6 +4877,39 @@ class TestAuthFailureRetry:
         assert len(runs) == 2
 
     @patch("botfarm.worker._execute_stage")
+    @patch("botfarm.credentials.CredentialManager")
+    @patch("botfarm.supervisor_workers._classify_failure", return_value="auth_failure")
+    def test_retry_updates_oauth_token_in_env_dicts(
+        self, mock_classify, mock_cm_cls, mock_exec, conn, task_id, tmp_path,
+    ):
+        """After token refresh, coder_env and reviewer_env should contain the new token."""
+        ctx = self._make_ctx(conn, task_id, tmp_path)
+        ctx.coder_env = {"CLAUDE_CODE_OAUTH_TOKEN": "old-token", "GH_TOKEN": "gh-abc"}
+        ctx.reviewer_env = {"CLAUDE_CODE_OAUTH_TOKEN": "old-token"}
+
+        failed_result = self._auth_failure_result()
+        mock_cm_cls.return_value.refresh_token.return_value = "fresh-token"
+        mock_exec.return_value = _mock_stage_result("implement", pr_url=PR_URL)
+
+        ctx._maybe_retry_on_auth_failure(
+            failed_result,
+            stage="implement",
+            pr_url=None,
+            iteration=1,
+            log_file=None,
+            stage_run_id=None,
+            stage_tpl=None,
+            on_context_fill=None,
+            extra_usage=False,
+            codex_kwargs={},
+            wall_start=time.monotonic(),
+        )
+        assert ctx.coder_env["CLAUDE_CODE_OAUTH_TOKEN"] == "fresh-token"
+        assert ctx.reviewer_env["CLAUDE_CODE_OAUTH_TOKEN"] == "fresh-token"
+        # Other env vars untouched
+        assert ctx.coder_env["GH_TOKEN"] == "gh-abc"
+
+    @patch("botfarm.worker._execute_stage")
     def test_run_and_record_retries_on_auth_failure(
         self, mock_exec, conn, task_id, tmp_path,
     ):

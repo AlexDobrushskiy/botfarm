@@ -1772,6 +1772,12 @@ class _PipelineContext:
 
         logger.info("Token refreshed — retrying stage '%s' for %s", stage, self.ticket_id)
 
+        # Update the env dicts so the retry (and any later stages) use the
+        # fresh token instead of the stale one injected at pipeline start.
+        for env_dict in (self.coder_env, self.reviewer_env):
+            if env_dict is not None and "CLAUDE_CODE_OAUTH_TOKEN" in env_dict:
+                env_dict["CLAUDE_CODE_OAUTH_TOKEN"] = new_token
+
         # Finalize the original stage_run with the auth failure result
         # so that any turns/tokens/cost from the failed attempt are preserved.
         if stage_run_id is not None:
