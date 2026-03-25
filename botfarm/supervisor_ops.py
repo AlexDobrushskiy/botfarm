@@ -1574,7 +1574,8 @@ Note: The supervisor handles status transitions automatically — do not move th
         # Remove poller
         self._pollers.pop(project_name, None)
 
-        # Unregister from dev server manager
+        # Stop running dev server (if any) and unregister from manager
+        self._devserver_mgr.stop(project_name)
         self._devserver_mgr.unregister_project(project_name)
 
         # Clean up worker process tracking and pause events for this project.

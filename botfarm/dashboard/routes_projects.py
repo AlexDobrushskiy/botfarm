@@ -586,17 +586,18 @@ async def api_project_remove(request: Request):
             except ValueError:
                 pass
 
-        # 1. Remove from config.yaml
-        projects.pop(project_index)
-        data["projects"] = projects
-        write_yaml_atomic(config_path, data)
-
-        # 2. Clean up database
+        # 1. Clean up database (first — rolls back on failure, keeping
+        #    config unchanged so removal can be retried)
         db_summary = {}
         if conn:
             counts = delete_project_data(conn, name)
             conn.commit()
             db_summary = counts
+
+        # 2. Remove from config.yaml
+        projects.pop(project_index)
+        data["projects"] = projects
+        write_yaml_atomic(config_path, data)
     finally:
         if conn:
             conn.close()
