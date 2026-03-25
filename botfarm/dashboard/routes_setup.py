@@ -6,8 +6,13 @@ import asyncio
 import html
 import logging
 import os
+import pty
+import re
+import select
 import shutil
 import subprocess
+import threading
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -653,6 +658,215 @@ async def poll_device_code_flow(request: Request):
     return JSONResponse({
         "status": "error",
         "message": html.escape(data.get("error_description", error or "Unknown error")),
+    })
+
+
+# ---------------------------------------------------------------------------
+# Claude Code authentication (browser-based, no terminal required)
+# ---------------------------------------------------------------------------
+
+# Module-level state for the claude auth subprocess
+_claude_auth_state: dict | None = None
+_claude_auth_lock = threading.Lock()
+_CLAUDE_AUTH_TIMEOUT = 15 * 60  # 15 minutes
+
+
+def _extract_auth_url(text: str) -> str | None:
+    """Extract an authentication URL from Claude CLI output.
+
+    Looks for HTTPS URLs in the text.  Strips common trailing punctuation
+    that might have been captured as part of the match.
+    """
+    match = re.search(r"https://[^\s<>\"'\x00-\x1f]+", text)
+    if match:
+        return match.group(0).rstrip(".,;:!?)")
+    return None
+
+
+def _cleanup_claude_auth() -> None:
+    """Terminate and clean up any active Claude auth subprocess.
+
+    Must be called while holding ``_claude_auth_lock``.
+    """
+    global _claude_auth_state
+    if _claude_auth_state is None:
+        return
+
+    state = _claude_auth_state
+    _claude_auth_state = None
+
+    master_fd = state.get("master_fd")
+    if master_fd is not None:
+        try:
+            os.close(master_fd)
+        except OSError:
+            pass
+
+    proc = state.get("proc")
+    if proc is not None and proc.poll() is None:
+        try:
+            proc.terminate()
+            proc.wait(timeout=2)
+        except Exception:
+            try:
+                proc.kill()
+                proc.wait(timeout=1)
+            except Exception:
+                pass
+
+
+def _start_claude_auth_process() -> tuple[str | None, str | None]:
+    """Start ``claude auth login`` and extract the OAuth URL.
+
+    Returns ``(url, None)`` on success or ``(None, error_message)`` on
+    failure.  The subprocess is stored in module state so it can continue
+    polling for auth completion in the background.
+    """
+    global _claude_auth_state
+
+    if not shutil.which("claude"):
+        return None, "Claude Code CLI is not installed or not on PATH."
+
+    with _claude_auth_lock:
+        _cleanup_claude_auth()
+
+        master_fd, slave_fd = pty.openpty()
+        try:
+            env = os.environ.copy()
+            env["TERM"] = "dumb"
+            # Prevent the CLI from opening a browser
+            env.pop("DISPLAY", None)
+            env.pop("WAYLAND_DISPLAY", None)
+            env.pop("BROWSER", None)
+
+            proc = subprocess.Popen(
+                ["claude", "auth", "login"],
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                close_fds=True,
+                env=env,
+            )
+        except Exception as exc:
+            os.close(master_fd)
+            os.close(slave_fd)
+            return None, f"Failed to start Claude auth: {exc}"
+
+        os.close(slave_fd)
+
+        _claude_auth_state = {
+            "proc": proc,
+            "master_fd": master_fd,
+            "started_at": time.monotonic(),
+        }
+
+    # Read output until we find a URL (or timeout)
+    output = ""
+    url = None
+    deadline = time.monotonic() + 30
+
+    while time.monotonic() < deadline:
+        try:
+            ready, _, _ = select.select([master_fd], [], [], 1.0)
+        except (OSError, ValueError):
+            break
+        if ready:
+            try:
+                data = os.read(master_fd, 4096)
+                if not data:
+                    break
+                output += data.decode("utf-8", errors="replace")
+                url = _extract_auth_url(output)
+                if url:
+                    break
+            except OSError:
+                break
+        if proc.poll() is not None:
+            break
+
+    if url:
+        return url, None
+
+    # Process exited early — try to drain remaining output
+    if proc.poll() is not None:
+        try:
+            while True:
+                ready, _, _ = select.select([master_fd], [], [], 0.1)
+                if not ready:
+                    break
+                data = os.read(master_fd, 4096)
+                if not data:
+                    break
+                output += data.decode("utf-8", errors="replace")
+        except OSError:
+            pass
+        url = _extract_auth_url(output)
+        if url:
+            return url, None
+
+    # No URL found — clean up
+    with _claude_auth_lock:
+        _cleanup_claude_auth()
+
+    return None, "Could not extract authentication URL from Claude output."
+
+
+@router.post("/api/setup/claude/auth")
+async def start_claude_auth(request: Request):
+    """Start Claude Code authentication and return the OAuth URL.
+
+    Launches ``claude auth login`` in a pty subprocess, captures the
+    OAuth URL from its output, and returns it so the frontend can show
+    a clickable link.  The subprocess continues running in the background
+    to complete the OAuth flow when the user authorises in their browser.
+    """
+    if _check_claude_auth().done:
+        return JSONResponse({"status": "already_authenticated"})
+
+    url, error = await asyncio.to_thread(_start_claude_auth_process)
+    if error:
+        return JSONResponse({"error": error}, status_code=400)
+
+    return JSONResponse({"url": url})
+
+
+@router.get("/api/setup/claude/auth/status")
+def claude_auth_status(request: Request):
+    """Check whether Claude Code authentication has completed.
+
+    The frontend polls this endpoint after the user has been shown the
+    OAuth URL.  When the credentials file appears (written by the
+    ``claude`` subprocess), authentication is complete and the subprocess
+    is cleaned up.
+    """
+    authenticated = _check_claude_auth().done
+
+    expired = False
+    with _claude_auth_lock:
+        if authenticated:
+            _cleanup_claude_auth()
+        elif (
+            _claude_auth_state is not None
+            and time.monotonic() - _claude_auth_state["started_at"]
+            > _CLAUDE_AUTH_TIMEOUT
+        ):
+            logger.info("Claude auth process timed out — cleaning up")
+            _cleanup_claude_auth()
+            expired = True
+        elif _claude_auth_state is not None:
+            proc = _claude_auth_state.get("proc")
+            if proc is not None and proc.poll() is not None:
+                logger.info("Claude auth process exited unexpectedly — cleaning up")
+                _cleanup_claude_auth()
+                expired = True
+
+    # No active auth session and not authenticated — flow is dead
+    if not authenticated and not expired and _claude_auth_state is None:
+        expired = True
+
+    return JSONResponse({
+        "authenticated": authenticated,
+        "expired": expired,
     })
 
 
