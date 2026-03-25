@@ -2768,3 +2768,102 @@ class TestAddProject:
         assert supervisor._slot_manager.get_slot("new-project", 1) is None
         assert supervisor._slot_manager.get_slot("new-project", 2) is None
         assert "new-project" not in supervisor._pollers
+
+
+# ---------------------------------------------------------------------------
+# _get_oauth_token helper
+# ---------------------------------------------------------------------------
+
+
+class TestGetOAuthToken:
+    """Tests for WorkerLifecycleManager._get_oauth_token."""
+
+    def _make_manager(self):
+        from botfarm.supervisor_workers import WorkerLifecycleManager
+        sup = MagicMock()
+        return WorkerLifecycleManager(sup)
+
+    @patch("botfarm.credentials.CredentialManager")
+    def test_returns_token_when_not_expired(self, mock_cm_cls):
+        mock_cm = mock_cm_cls.return_value
+        mock_cm.is_token_expired.return_value = False
+        mock_cm.get_token.return_value = "access-token-abc"
+
+        mgr = self._make_manager()
+        token = mgr._get_oauth_token()
+
+        assert token == "access-token-abc"
+        mock_cm.get_token.assert_called_once()
+        mock_cm.refresh_token.assert_not_called()
+
+    @patch("botfarm.credentials.CredentialManager")
+    def test_refreshes_when_expired(self, mock_cm_cls):
+        mock_cm = mock_cm_cls.return_value
+        mock_cm.is_token_expired.return_value = True
+        mock_cm.refresh_token.return_value = "refreshed-token-xyz"
+
+        mgr = self._make_manager()
+        token = mgr._get_oauth_token()
+
+        assert token == "refreshed-token-xyz"
+        mock_cm.refresh_token.assert_called_once()
+
+    @patch("botfarm.credentials.CredentialManager")
+    def test_returns_empty_on_failure(self, mock_cm_cls):
+        mock_cm = mock_cm_cls.return_value
+        mock_cm.is_token_expired.side_effect = Exception("cred error")
+
+        mgr = self._make_manager()
+        token = mgr._get_oauth_token()
+
+        assert token == ""
+
+    @patch("botfarm.credentials.CredentialManager")
+    def test_returns_empty_when_get_token_returns_none(self, mock_cm_cls):
+        mock_cm = mock_cm_cls.return_value
+        mock_cm.is_token_expired.return_value = False
+        mock_cm.get_token.return_value = None
+
+        mgr = self._make_manager()
+        token = mgr._get_oauth_token()
+
+        assert token == ""
+
+
+class TestWorkerEntryOAuthForwarding:
+    """Verify _worker_entry passes oauth_token through to run_pipeline."""
+
+    @patch("botfarm.supervisor_workers.run_pipeline")
+    def test_oauth_token_forwarded_to_run_pipeline(self, mock_pipeline, tmp_path, monkeypatch):
+        import multiprocessing
+        db_path = str(tmp_path / "test.db")
+        monkeypatch.setenv("BOTFARM_DB_PATH", db_path)
+        q = multiprocessing.Queue()
+
+        conn = init_db(db_path, allow_migration=True)
+        task_id = insert_task(conn, ticket_id="TST-OAF", title="OAuth fwd",
+                              project="proj", slot=1, status="in_progress")
+        conn.commit()
+        conn.close()
+
+        mock_result = MagicMock()
+        mock_result.success = True
+        mock_result.paused = False
+        mock_result.no_pr_reason = None
+        mock_result.result_text = None
+        mock_pipeline.return_value = mock_result
+
+        _worker_entry(
+            ticket_id="TST-OAF",
+            ticket_title="OAuth fwd",
+            task_id=task_id,
+            project_name="proj",
+            slot_id=1,
+            cwd=str(tmp_path),
+            result_queue=q,
+            max_turns=None,
+            oauth_token="worker-oauth-tok-456",
+        )
+
+        call_kwargs = mock_pipeline.call_args[1]
+        assert call_kwargs["oauth_token"] == "worker-oauth-tok-456"

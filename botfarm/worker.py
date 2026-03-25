@@ -400,6 +400,7 @@ def run_pipeline(
     bugtracker_api_key: str = "",
     bugtracker_url: str = "",
     bugtracker_email: str = "",
+    oauth_token: str = "",
 ) -> PipelineResult:
     """Execute the full implement→review→fix→pr_checks→merge pipeline.
 
@@ -446,6 +447,16 @@ def run_pipeline(
     ident = identities or IdentitiesConfig()
     coder_env = build_coder_env(ident, slot_db_path) or None
     reviewer_env = build_reviewer_env(ident, slot_db_path) or None
+
+    # Inject the pre-fetched OAuth token so Claude Code uses it directly
+    # instead of reading from the credential file (avoids refresh races).
+    if oauth_token:
+        if coder_env is None:
+            coder_env = {}
+        coder_env["CLAUDE_CODE_OAUTH_TOKEN"] = oauth_token
+        if reviewer_env is None:
+            reviewer_env = {}
+        reviewer_env["CLAUDE_CODE_OAUTH_TOKEN"] = oauth_token
 
     # Build MCP config for bugtracker tools.
     # Prefer the coder identity's tracker key so operations appear under the
