@@ -82,6 +82,10 @@ def format_project_entry(project_dict: dict, indent: int = 2) -> str:
         lines.append(
             f"{cont}tracker_project: {yaml_scalar(project_dict['tracker_project'])}"
         )
+    if project_dict.get("include_tags"):
+        lines.append(
+            f"{cont}include_tags: {yaml_scalar(project_dict['include_tags'])}"
+        )
     if project_dict.get("project_type"):
         lines.append(
             f"{cont}project_type: {yaml_scalar(project_dict['project_type'])}"
@@ -729,6 +733,7 @@ def setup_project(
     progress_callback: Callable[[str], None] | None = None,
     project_type: str = "",
     setup_commands: list[str] | None = None,
+    include_tags: list[str] | None = None,
 ) -> dict:
     """Set up a new project end-to-end: clone or init, worktrees, config update.
 
@@ -763,6 +768,7 @@ def setup_project(
         project_type: Optional project type (e.g. "python", "node").
         setup_commands: Optional list of shell commands to run in each
             worktree after creation.
+        include_tags: Optional list of tag names to filter tickets by.
 
     Returns:
         The project dict that was written to config.
@@ -859,6 +865,8 @@ def setup_project(
             project_dict["project_type"] = project_type
         if setup_commands:
             project_dict["setup_commands"] = setup_commands
+        if include_tags:
+            project_dict["include_tags"] = include_tags
 
         append_project_to_config(
             config_path, project_dict, replace_names=replace_names,

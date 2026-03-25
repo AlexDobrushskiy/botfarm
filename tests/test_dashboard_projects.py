@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import yaml
 from fastapi.testclient import TestClient
 
-from botfarm.config import BotfarmConfig, LinearConfig, ProjectConfig
+from botfarm.config import BotfarmConfig, JiraBugtrackerConfig, LinearConfig, ProjectConfig
 from botfarm.dashboard import create_app
 from botfarm.db import init_db, upsert_slot
 
@@ -430,6 +430,143 @@ class TestAddProjectPage:
         assert resp.status_code == 200
         assert "Add Project" in resp.text
         assert "/projects/add" in resp.text
+
+
+def _make_jira_config(*, projects=None, api_key="test-key", source_path=""):
+    cfg = BotfarmConfig(
+        projects=projects or [],
+        bugtracker=JiraBugtrackerConfig(
+            api_key=api_key, url="https://test.atlassian.net", email="test@test.com",
+        ),
+    )
+    if source_path:
+        cfg.source_path = source_path
+    return cfg
+
+
+class TestAddProjectPageJira:
+    def test_renders_jira_fields(self, tmp_path):
+        app = _make_app(tmp_path, config=_make_jira_config())
+        client = TestClient(app)
+        resp = client.get("/projects/add")
+        assert resp.status_code == 200
+        assert "jira_project_key" in resp.text
+        assert "jira_include_tags" in resp.text
+
+    def test_hides_linear_fields_for_jira(self, tmp_path):
+        app = _make_app(tmp_path, config=_make_jira_config())
+        client = TestClient(app)
+        resp = client.get("/projects/add")
+        assert resp.status_code == 200
+        # Linear fields div should be hidden
+        assert 'id="linear-fields" style="display:none;"' in resp.text
+        # Jira fields div should be visible (no display:none)
+        assert 'id="jira-fields" style="display:none;"' not in resp.text
+
+    def test_shows_linear_fields_for_linear(self, tmp_path):
+        app = _make_app(tmp_path)
+        client = TestClient(app)
+        resp = client.get("/projects/add")
+        assert resp.status_code == 200
+        # Linear fields should be visible
+        assert 'id="linear-fields" style="display:none;"' not in resp.text
+        # Jira fields should be hidden
+        assert 'id="jira-fields" style="display:none;"' in resp.text
+
+
+class TestJiraProjectCreate:
+    def test_jira_validation_requires_team(self, tmp_path):
+        app = _make_app(tmp_path, config=_make_jira_config())
+        client = TestClient(app)
+        resp = client.post(
+            "/api/project/create",
+            json={"repo_url": "git@github.com:u/r.git", "name": "test",
+                  "team": "", "slots": 1},
+        )
+        assert resp.status_code == 400
+        assert any("Jira project key" in e for e in resp.json()["errors"])
+
+    def test_jira_skips_linear_project_creation(self, tmp_path):
+        app = _make_app(tmp_path, config=_make_jira_config())
+        client = TestClient(app)
+        mock_bt = MagicMock()
+        with patch("botfarm.dashboard.routes_projects.setup_project") as mock_setup, \
+             patch("botfarm.dashboard.routes_projects._get_bugtracker_client", return_value=mock_bt):
+            mock_setup.return_value = {"name": "jira-proj"}
+            resp = client.post(
+                "/api/project/create",
+                json={
+                    "repo_url": "git@github.com:u/r.git",
+                    "name": "jira-proj",
+                    "team": "AIR",
+                    "create_linear_project": True,
+                    "tracker_project": "some-project",
+                    "slots": 1,
+                },
+            )
+            assert resp.status_code == 200
+            time.sleep(0.2)
+            # Should NOT attempt Linear project creation for Jira bugtracker
+            mock_bt.get_or_create_project.assert_not_called()
+
+    def test_passes_include_tags(self, tmp_path):
+        app = _make_app(tmp_path, config=_make_jira_config())
+        client = TestClient(app)
+        with patch("botfarm.dashboard.routes_projects.setup_project") as mock_setup:
+            mock_setup.return_value = {"name": "tagged"}
+            resp = client.post(
+                "/api/project/create",
+                json={
+                    "repo_url": "git@github.com:u/r.git",
+                    "name": "tagged",
+                    "team": "AIR",
+                    "slots": 1,
+                    "include_tags": ["botfarm", "ready"],
+                },
+            )
+            assert resp.status_code == 200
+            time.sleep(0.1)
+            call_kwargs = mock_setup.call_args
+            assert call_kwargs[1]["include_tags"] == ["botfarm", "ready"]
+
+    def test_include_tags_as_comma_string(self, tmp_path):
+        app = _make_app(tmp_path, config=_make_jira_config())
+        client = TestClient(app)
+        with patch("botfarm.dashboard.routes_projects.setup_project") as mock_setup:
+            mock_setup.return_value = {"name": "tagged2"}
+            resp = client.post(
+                "/api/project/create",
+                json={
+                    "repo_url": "git@github.com:u/r.git",
+                    "name": "tagged2",
+                    "team": "AIR",
+                    "slots": 1,
+                    "include_tags": "botfarm, ready",
+                },
+            )
+            assert resp.status_code == 200
+            time.sleep(0.1)
+            call_kwargs = mock_setup.call_args
+            assert call_kwargs[1]["include_tags"] == ["botfarm", "ready"]
+
+    def test_empty_include_tags_passes_none(self, tmp_path):
+        app = _make_app(tmp_path, config=_make_jira_config())
+        client = TestClient(app)
+        with patch("botfarm.dashboard.routes_projects.setup_project") as mock_setup:
+            mock_setup.return_value = {"name": "notags"}
+            resp = client.post(
+                "/api/project/create",
+                json={
+                    "repo_url": "git@github.com:u/r.git",
+                    "name": "notags",
+                    "team": "AIR",
+                    "slots": 1,
+                },
+            )
+            assert resp.status_code == 200
+            time.sleep(0.1)
+            call_kwargs = mock_setup.call_args
+            assert call_kwargs[1]["include_tags"] is None
 
 
 class TestLinearProjectAutoCreate:
