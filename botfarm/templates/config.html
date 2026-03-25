@@ -192,7 +192,7 @@
         <table>
             <tbody>
                 <tr><td>Team</td><td>{{ project.team }}</td></tr>
-                <tr><td>Project filter <small>(exact {% if full_config_values.bugtracker.type == 'jira' %}Jira component{% else %}Linear project{% endif %} name — limits which tickets are picked up)</small></td><td>{{ project.tracker_project or "(all tickets in team)" }}</td></tr>
+                <tr><td>Project filter <small>({% if full_config_values.bugtracker.type == 'jira' %}not used for Jira{% else %}exact Linear project name — limits which tickets are picked up{% endif %})</small></td><td>{{ project.tracker_project or "(all tickets in team)" }}</td></tr>
                 <tr><td>Base directory</td><td><code>{{ project.base_dir }}</code></td></tr>
                 <tr><td>Worktree prefix</td><td><code>{{ project.worktree_prefix }}</code></td></tr>
                 <tr>
@@ -592,7 +592,7 @@
         <label for="project-{{ loop.index0 }}-tracker_project">
             Project filter
             {% if config_values.bugtracker.type == 'jira' %}
-            <small>(optional — exact Jira project name, case-sensitive; e.g. "My Project")</small>
+            <small>(not used for Jira — Jira selects tickets via project key)</small>
             {% else %}
             <small>(optional — exact Linear project name, case-sensitive; e.g. "Bot farm")</small>
             {% endif %}
