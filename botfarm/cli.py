@@ -1711,7 +1711,8 @@ def preflight(config_path):
     console = Console()
     console.print("Running preflight checks…", style="bold")
 
-    results = run_preflight_checks(cfg)
+    git_env = build_git_env(cfg.identities)
+    results = run_preflight_checks(cfg, env=git_env)
 
     # Display results
     table = Table(title="Preflight Checks")

@@ -879,10 +879,11 @@ class TestInitCommand:
 class TestPreflightCommand:
     def _make_config(self):
         """Build a minimal BotfarmConfig."""
-        from botfarm.config import BotfarmConfig, DashboardConfig
+        from botfarm.config import BotfarmConfig, DashboardConfig, IdentitiesConfig
 
         cfg = BotfarmConfig.__new__(BotfarmConfig)
         cfg.dashboard = DashboardConfig(enabled=False, port=8420)
+        cfg.identities = IdentitiesConfig()
         return cfg
 
     def test_no_config_file(self, runner, db_file, monkeypatch):
