@@ -560,7 +560,7 @@ async def start_device_code_flow(request: Request):
     except httpx.HTTPError as exc:
         logger.warning("Device code request failed: %s", exc)
         return JSONResponse(
-            {"error": f"Failed to contact GitHub: {exc}"}, status_code=502,
+            {"error": f"Failed to contact GitHub: {html.escape(str(exc))}"}, status_code=502,
         )
 
     if resp.status_code != 200:
@@ -572,7 +572,7 @@ async def start_device_code_flow(request: Request):
     data = resp.json()
     if "user_code" not in data:
         return JSONResponse(
-            {"error": data.get("error_description", "Unexpected response from GitHub.")},
+            {"error": html.escape(data.get("error_description", "Unexpected response from GitHub."))},
             status_code=502,
         )
 
@@ -621,7 +621,7 @@ async def poll_device_code_flow(request: Request):
             )
     except httpx.HTTPError as exc:
         logger.warning("Device code poll failed: %s", exc)
-        return JSONResponse({"status": "error", "message": str(exc)})
+        return JSONResponse({"status": "error", "message": html.escape(str(exc))})
 
     data = resp.json()
 
@@ -652,7 +652,7 @@ async def poll_device_code_flow(request: Request):
 
     return JSONResponse({
         "status": "error",
-        "message": data.get("error_description", error or "Unknown error"),
+        "message": html.escape(data.get("error_description", error or "Unknown error")),
     })
 
 

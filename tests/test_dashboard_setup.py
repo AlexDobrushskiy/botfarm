@@ -637,7 +637,6 @@ class TestSetupGithubEndpoint:
 
 def _fake_httpx_client(response):
     """Build a mock ``httpx.AsyncClient`` context manager returning *response*."""
-    import httpx
 
     class FakeResponse:
         def __init__(self, status_code, data):
