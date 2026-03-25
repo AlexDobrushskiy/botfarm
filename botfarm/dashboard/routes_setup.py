@@ -12,6 +12,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import httpx
 import yaml
 
 from fastapi import APIRouter, Request
@@ -530,6 +531,129 @@ async def setup_github(request: Request):
     os.environ["GH_TOKEN"] = token
 
     return _feedback("GitHub token validated and saved.")
+
+
+# ---------------------------------------------------------------------------
+# GitHub device code flow
+# ---------------------------------------------------------------------------
+
+# GitHub CLI OAuth App client ID (public, used by `gh auth login --web`).
+_GH_CLIENT_ID = "178c6fc778ccc68e1d6a"
+_GH_DEVICE_CODE_URL = "https://github.com/login/device/code"
+_GH_TOKEN_URL = "https://github.com/login/oauth/access_token"
+
+
+@router.post("/api/setup/github/device-code")
+async def start_device_code_flow(request: Request):
+    """Start GitHub OAuth device code flow.
+
+    Calls the GitHub device authorization endpoint and returns a user code
+    and verification URL that the user opens in their browser.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(
+                _GH_DEVICE_CODE_URL,
+                data={"client_id": _GH_CLIENT_ID, "scope": "repo read:org"},
+                headers={"Accept": "application/json"},
+            )
+    except httpx.HTTPError as exc:
+        logger.warning("Device code request failed: %s", exc)
+        return JSONResponse(
+            {"error": f"Failed to contact GitHub: {exc}"}, status_code=502,
+        )
+
+    if resp.status_code != 200:
+        logger.warning("Device code request returned %s: %s", resp.status_code, resp.text)
+        return JSONResponse(
+            {"error": "GitHub returned an error. Try again later."}, status_code=502,
+        )
+
+    data = resp.json()
+    if "user_code" not in data:
+        return JSONResponse(
+            {"error": data.get("error_description", "Unexpected response from GitHub.")},
+            status_code=502,
+        )
+
+    return JSONResponse({
+        "user_code": data["user_code"],
+        "verification_uri": data["verification_uri"],
+        "device_code": data["device_code"],
+        "interval": data.get("interval", 5),
+        "expires_in": data.get("expires_in", 900),
+    })
+
+
+@router.post("/api/setup/github/device-code/poll")
+async def poll_device_code_flow(request: Request):
+    """Poll for GitHub device code flow completion.
+
+    The frontend calls this periodically with the ``device_code`` obtained
+    from the start endpoint.  When the user completes authorization in
+    their browser, GitHub returns an access token which is saved to ``.env``
+    and the process environment.
+    """
+    app = request.app
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(
+            {"status": "error", "message": "Invalid JSON body."}, status_code=400,
+        )
+    device_code = str(body.get("device_code", "")).strip()
+    if not device_code:
+        return JSONResponse(
+            {"status": "error", "message": "device_code is required."}, status_code=400,
+        )
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(
+                _GH_TOKEN_URL,
+                data={
+                    "client_id": _GH_CLIENT_ID,
+                    "device_code": device_code,
+                    "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                },
+                headers={"Accept": "application/json"},
+            )
+    except httpx.HTTPError as exc:
+        logger.warning("Device code poll failed: %s", exc)
+        return JSONResponse({"status": "error", "message": str(exc)})
+
+    data = resp.json()
+
+    if "access_token" in data:
+        token = data["access_token"]
+        # Persist to .env and process environment
+        env_path = _resolve_env_path(app)
+        try:
+            _write_env_file(env_path, {"GH_TOKEN": token})
+        except OSError as exc:
+            logger.error("Failed to write GH_TOKEN to .env: %s", exc)
+            return JSONResponse({"status": "error", "message": "Failed to save token."})
+        os.environ["GH_TOKEN"] = token
+        return JSONResponse({"status": "complete"})
+
+    error = data.get("error", "")
+    if error == "authorization_pending":
+        return JSONResponse({"status": "pending"})
+    if error == "slow_down":
+        return JSONResponse({
+            "status": "slow_down",
+            "interval": data.get("interval", 10),
+        })
+    if error == "expired_token":
+        return JSONResponse({"status": "expired"})
+    if error == "access_denied":
+        return JSONResponse({"status": "denied"})
+
+    return JSONResponse({
+        "status": "error",
+        "message": data.get("error_description", error or "Unknown error"),
+    })
 
 
 # ---------------------------------------------------------------------------
