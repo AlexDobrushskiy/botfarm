@@ -722,14 +722,13 @@ class Supervisor(RecoveryMixin, OperationsMixin):
 
     def _poll_usage(self) -> None:
         """Poll the usage API and update slot manager state."""
-        # In api_key mode, usage polling is disabled — /usage requires OAuth
-        if self._config.auth_mode == "api_key":
-            return
-        # Sync poll interval from config (may be changed at runtime via dashboard)
-        self._usage_poller.poll_interval = self._config.usage_limits.poll_interval_seconds
-        state = self._usage_poller.poll(self._conn)
-        if self._usage_poller.last_polled_fresh:
-            self._slot_manager.set_usage(state.to_dict())
+        # Claude /usage API requires OAuth — skip in api_key mode.
+        # Codex rate-limit polling is independent and must still run.
+        if self._config.auth_mode != "api_key":
+            self._usage_poller.poll_interval = self._config.usage_limits.poll_interval_seconds
+            state = self._usage_poller.poll(self._conn)
+            if self._usage_poller.last_polled_fresh:
+                self._slot_manager.set_usage(state.to_dict())
         self._codex_usage_poller.poll(self._conn)
         self._check_usage_stalls()
 

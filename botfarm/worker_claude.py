@@ -316,6 +316,7 @@ def run_claude_streaming(
     on_context_fill: ContextFillCallback | None = None,
     timeout: float | None = None,
     mcp_config: str | None = None,
+    auth_mode: str = "oauth",
 ) -> ClaudeResult:
     """Run ``claude`` with streaming output and per-turn context fill callbacks.
 
@@ -351,12 +352,8 @@ def run_claude_streaming(
         "--dangerously-skip-permissions",
         "--max-turns", str(max_turns),
     ]
-    # Detect auth mode from environment — BOTFARM_AUTH_MODE is set by the
-    # supervisor when auth_mode is "api_key".  In --bare mode, Claude Code
-    # skips hooks, auto-memory, and CLAUDE.md auto-discovery; --add-dir
-    # compensates for the last of these.
-    effective_env = env if env else {}
-    auth_mode = effective_env.get("BOTFARM_AUTH_MODE") or os.environ.get("BOTFARM_AUTH_MODE", "oauth")
+    # In --bare mode, Claude Code skips hooks, auto-memory, and CLAUDE.md
+    # auto-discovery; --add-dir compensates for the last of these.
     if auth_mode == "api_key":
         cmd.append("--bare")
         cmd.extend(["--add-dir", str(cwd)])
@@ -540,6 +537,7 @@ def _invoke_claude(
     on_context_fill: ContextFillCallback | None = None,
     timeout: float | None = None,
     mcp_config: str | None = None,
+    auth_mode: str = "oauth",
 ) -> ClaudeResult:
     """Run Claude via the streaming runner.
 
@@ -551,7 +549,7 @@ def _invoke_claude(
     return run_claude_streaming(
         prompt, cwd=cwd, max_turns=max_turns,
         log_file=log_file, env=env, on_context_fill=on_context_fill,
-        timeout=timeout, mcp_config=mcp_config,
+        timeout=timeout, mcp_config=mcp_config, auth_mode=auth_mode,
     )
 
 _NO_PR_NEEDED_RE = re.compile(r"NO_PR_NEEDED:\s*(.+)", re.IGNORECASE | re.DOTALL)

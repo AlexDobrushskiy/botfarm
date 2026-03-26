@@ -322,8 +322,9 @@ def _check_api_key_credentials() -> list[CheckResult]:
                 "Set it in your .env file or environment."
             ),
         )]
-    # Show a short preview (first 8 chars + "...") for verification
-    preview = api_key[:8] + "..." if len(api_key) > 8 else api_key
+    # Show a short preview (first 4 chars + "...") for verification — short
+    # enough to avoid leaking secret material for non-standard key formats.
+    preview = api_key[:4] + "..." if len(api_key) > 4 else api_key
     return [CheckResult(
         name="claude_credentials",
         passed=True,

@@ -90,6 +90,7 @@ def build_adapter_registry(
     *,
     codex_model: str | None = None,
     codex_reasoning_effort: str | None = None,
+    auth_mode: str = "oauth",
 ) -> AdapterRegistry:
     """Build the default adapter registry.
 
@@ -101,7 +102,7 @@ def build_adapter_registry(
     from botfarm.agent_codex import CodexAdapter
 
     return {
-        "claude": ClaudeAdapter(),
+        "claude": ClaudeAdapter(auth_mode=auth_mode),
         "codex": CodexAdapter(
             model=codex_model,
             reasoning_effort=codex_reasoning_effort,

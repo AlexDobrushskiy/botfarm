@@ -459,16 +459,6 @@ def run_pipeline(
             reviewer_env = {}
         reviewer_env["CLAUDE_CODE_OAUTH_TOKEN"] = oauth_token
 
-    # Propagate auth_mode to Claude subprocess so run_claude_streaming
-    # can add --bare when using API key authentication.
-    if auth_mode == "api_key":
-        if coder_env is None:
-            coder_env = {}
-        coder_env["BOTFARM_AUTH_MODE"] = "api_key"
-        if reviewer_env is None:
-            reviewer_env = {}
-        reviewer_env["BOTFARM_AUTH_MODE"] = "api_key"
-
     # Build MCP config for bugtracker tools.
     # Prefer the coder identity's tracker key so operations appear under the
     # coder bot; fall back to the shared bugtracker key.
@@ -548,6 +538,7 @@ def run_pipeline(
     registry = build_adapter_registry(
         codex_model=codex_ac.model or None,
         codex_reasoning_effort=codex_ac.reasoning_effort or None,
+        auth_mode=auth_mode,
     )
 
     # Shared context for _run_and_record helper
