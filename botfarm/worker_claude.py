@@ -813,10 +813,6 @@ def _parse_qa_report(text: str) -> tuple[str | None, list[dict], bool | None]:
         if bug:
             bugs.append(bug)
 
-    # If verdict is still ambiguous, infer from bug count
-    if passed is None and report_text is not None:
-        passed = len(bugs) == 0
-
     return report_text, bugs, passed
 
 

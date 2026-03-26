@@ -74,11 +74,11 @@ class TestParseQaReport:
         report_text, bugs, passed = _parse_qa_report(text)
         assert report_text == "Everything looks good."
         assert bugs == []
-        # No explicit verdict, but report present with no bugs → inferred PASSED
-        assert passed is True
+        # No explicit verdict → stays ambiguous even with no bugs
+        assert passed is None
 
-    def test_verdict_inferred_from_bugs(self):
-        """When report exists but no Verdict: line, infer from bug count."""
+    def test_no_verdict_with_bugs_stays_ambiguous(self):
+        """When report exists but no Verdict: line, passed stays None."""
         text = (
             "QA_REPORT_START\n"
             "Tested the feature.\n"
@@ -93,8 +93,8 @@ class TestParseQaReport:
         report_text, bugs, passed = _parse_qa_report(text)
         assert report_text is not None
         assert len(bugs) == 1
-        # Has bugs but no explicit verdict → inferred FAILED
-        assert passed is False
+        # No explicit verdict → stays ambiguous even with bugs present
+        assert passed is None
 
     def test_case_insensitive_markers(self):
         text = (
