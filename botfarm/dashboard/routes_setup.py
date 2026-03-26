@@ -947,7 +947,7 @@ async def save_auth_method(request: Request):
 
     if method not in VALID_AUTH_MODES:
         return _feedback(
-            f"Invalid auth method: {method!r}. Must be one of {sorted(VALID_AUTH_MODES)}.",
+            f"Invalid auth method: {html.escape(method)!r}. Must be one of {sorted(VALID_AUTH_MODES)}.",
             "error", 400,
         )
 
@@ -993,7 +993,7 @@ async def save_auth_method(request: Request):
         cfg.auth_mode = method
     app.state.auth_mode = method
 
-    return _feedback(f"Auth method set to '{method}'. Restart the supervisor for full effect.")
+    return _feedback(f"Auth method set to '{method}'. New workers will use this mode; in-flight workers are unaffected.")
 
 
 # ---------------------------------------------------------------------------

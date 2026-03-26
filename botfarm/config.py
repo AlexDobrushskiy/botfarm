@@ -1297,7 +1297,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
     # Auth mode: "oauth" (default), "api_key" (--bare), or "long_lived_token".
     # Accept both "claude_auth_method" (preferred) and "auth_mode" (legacy).
     # Auto-detect from environment when not explicitly set in config.
-    raw_auth_mode = data.get("claude_auth_method") or data.get("auth_mode")
+    raw_auth_mode = data.get("claude_auth_method") if "claude_auth_method" in data else data.get("auth_mode")
     if raw_auth_mode is not None:
         auth_mode = str(raw_auth_mode)
     elif os.environ.get("ANTHROPIC_API_KEY"):
