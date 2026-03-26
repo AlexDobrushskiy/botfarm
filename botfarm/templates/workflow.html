@@ -56,6 +56,7 @@
                 <option value="" {% if not stage.result_parser %}selected{% endif %}>(none)</option>
                 <option value="pr_url" {% if stage.result_parser == 'pr_url' %}selected{% endif %}>pr_url</option>
                 <option value="review_verdict" {% if stage.result_parser == 'review_verdict' %}selected{% endif %}>review_verdict</option>
+                <option value="qa_report" {% if stage.result_parser == 'qa_report' %}selected{% endif %}>qa_report</option>
             </select>
         </div>
 
