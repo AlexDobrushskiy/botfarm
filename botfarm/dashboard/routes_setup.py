@@ -23,7 +23,7 @@ import yaml
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from botfarm.config import write_yaml_atomic
+from botfarm.config import LONG_LIVED_TOKEN_ENV_VAR, VALID_AUTH_MODES, write_yaml_atomic
 from botfarm.credentials import CredentialError, _load_token
 
 from .routes_config import _resolve_env_path, _write_env_file
@@ -43,6 +43,38 @@ class SetupStep:
     id: str
     label: str
     done: bool
+
+
+def _get_env_var(app, key: str) -> str:
+    """Return the value of *key* from ``os.environ`` or the ``.env`` file.
+
+    If the variable is present in ``.env`` but not yet in the process
+    environment, it is loaded into ``os.environ`` so that downstream code
+    (e.g. supervisor workers) can read it without a restart.
+    """
+    value = os.environ.get(key, "")
+    if value:
+        return value
+
+    env_path = _resolve_env_path(app)
+    if not env_path.exists():
+        return ""
+
+    for line in env_path.read_text().splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        k, _, v = stripped.partition("=")
+        if k.strip() == key:
+            v = v.strip()
+            # Strip surrounding quotes
+            if len(v) >= 2 and v[0] == v[-1] and v[0] in ('"', "'"):
+                v = v[1:-1]
+            if v:
+                os.environ[key] = v
+            return v
+
+    return ""
 
 
 def _check_bugtracker_type(config: BotfarmConfig) -> SetupStep:
@@ -77,19 +109,29 @@ def _check_github_auth() -> SetupStep:
     return SetupStep(id="github_auth", label="GitHub authentication", done=done)
 
 
-def _check_claude_auth() -> SetupStep:
+def _check_claude_auth(config: BotfarmConfig | None = None) -> SetupStep:
     """Check whether Claude Code credentials are available.
 
-    Uses the credential loading mechanism from ``botfarm.credentials``,
-    which checks ``~/.claude/.credentials.json`` on Linux and the system
-    keychain on macOS.
+    The check varies by auth mode:
+    - **oauth** (default): looks for OAuth credentials on disk via
+      ``botfarm.credentials._load_token``.
+    - **long_lived_token**: checks ``CLAUDE_LONG_LIVED_TOKEN`` env var.
+    - **api_key**: checks ``ANTHROPIC_API_KEY`` env var.
     """
+    auth_mode = config.auth_mode if config else "oauth"
     done = False
-    try:
-        _load_token()
-        done = True
-    except CredentialError:
-        pass
+
+    if auth_mode == "long_lived_token":
+        done = bool(os.environ.get(LONG_LIVED_TOKEN_ENV_VAR, ""))
+    elif auth_mode == "api_key":
+        done = bool(os.environ.get("ANTHROPIC_API_KEY", ""))
+    else:
+        try:
+            _load_token()
+            done = True
+        except CredentialError:
+            pass
+
     return SetupStep(id="claude_auth", label="Claude Code authentication", done=done)
 
 
@@ -123,7 +165,7 @@ def get_setup_steps(config: BotfarmConfig) -> list[SetupStep]:
         _check_bugtracker_type(config),
         _check_bugtracker_api_key(config),
         _check_github_auth(),
-        _check_claude_auth(),
+        _check_claude_auth(config),
         _check_project_configured(config),
         _check_repos_cloned(config),
     ]
@@ -181,14 +223,14 @@ def _section_done_map(steps: list[SetupStep]) -> dict[str, bool]:
     }
 
 
-def _build_credentials_context(cfg: BotfarmConfig | None) -> dict:
+def _build_credentials_context(cfg: BotfarmConfig | None, app=None) -> dict:
     """Build template context dict for the credentials partial.
 
     Shared by ``setup_page`` (initial render) and ``partial_setup_credentials``
     (htmx refresh) to avoid duplicating the same assembly logic.
     """
     github_done = _check_github_auth().done
-    claude_done = _check_claude_auth().done
+    claude_done = _check_claude_auth(cfg).done
 
     ssh_key_path = ""
     ssh_key_exists = False
@@ -226,8 +268,14 @@ def _build_credentials_context(cfg: BotfarmConfig | None) -> dict:
         "jira_url": jira_url,
         "jira_email": jira_email,
         "auth_mode": auth_mode,
-        "long_lived_token_set": bool(os.environ.get("CLAUDE_LONG_LIVED_TOKEN", "")),
-        "api_key_set": bool(os.environ.get("ANTHROPIC_API_KEY", "")),
+        "long_lived_token_set": bool(
+            _get_env_var(app, LONG_LIVED_TOKEN_ENV_VAR) if app
+            else os.environ.get(LONG_LIVED_TOKEN_ENV_VAR, "")
+        ),
+        "api_key_set": bool(
+            _get_env_var(app, "ANTHROPIC_API_KEY") if app
+            else os.environ.get("ANTHROPIC_API_KEY", "")
+        ),
     }
 
 
@@ -262,7 +310,7 @@ def setup_page(request: Request):
         repos_cloned = by_id.get("repos_cloned", False)
 
     # Credential partial context (shared helper avoids duplication)
-    cred_ctx = _build_credentials_context(config)
+    cred_ctx = _build_credentials_context(config, app=app)
 
     bt_type = ""
     if config is not None:
@@ -882,8 +930,6 @@ def claude_auth_status(request: Request):
 @router.post("/api/setup/claude/auth-method")
 async def save_auth_method(request: Request):
     """Save the selected Claude auth method to config.yaml."""
-    from botfarm.config import VALID_AUTH_MODES
-
     app = request.app
     cfg = app.state.botfarm_config
 
@@ -896,17 +942,18 @@ async def save_auth_method(request: Request):
             "error", 400,
         )
 
-    # Validate token availability for the selected mode
-    if method == "long_lived_token" and not os.environ.get("CLAUDE_LONG_LIVED_TOKEN"):
+    # Validate token availability for the selected mode.
+    # Check both os.environ and the .env file so users don't need a restart.
+    if method == "long_lived_token" and not _get_env_var(app, LONG_LIVED_TOKEN_ENV_VAR):
         return _feedback(
-            "CLAUDE_LONG_LIVED_TOKEN environment variable is not set. "
-            "Set it in your .env file before selecting this mode.",
+            "CLAUDE_LONG_LIVED_TOKEN is not set. "
+            "Add it to your .env file before selecting this mode.",
             "error", 400,
         )
-    if method == "api_key" and not os.environ.get("ANTHROPIC_API_KEY"):
+    if method == "api_key" and not _get_env_var(app, "ANTHROPIC_API_KEY"):
         return _feedback(
-            "ANTHROPIC_API_KEY environment variable is not set. "
-            "Set it in your .env file before selecting this mode.",
+            "ANTHROPIC_API_KEY is not set. "
+            "Add it to your .env file before selecting this mode.",
             "error", 400,
         )
 
@@ -950,5 +997,5 @@ def partial_setup_credentials(request: Request):
     cfg = request.app.state.botfarm_config
     templates = request.app.state.templates
     return templates.TemplateResponse(request, "partials/setup_credentials.html", {
-        **_build_credentials_context(cfg),
+        **_build_credentials_context(cfg, app=request.app),
     })
