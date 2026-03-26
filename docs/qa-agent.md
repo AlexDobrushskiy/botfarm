@@ -7,8 +7,8 @@ The QA agent is a pipeline type that launches an autonomous "QA engineer" — a 
 The QA agent reuses existing Botfarm primitives:
 
 - **Slot/worktree** — runs in a regular slot with the branch checked out from `origin/main`
-- **Pipeline template** — `qa` pipeline with a single `qa_test` stage (stored in DB like existing pipelines)
-- **Label routing** — tickets with `manual-qa` label route to the `qa` pipeline via existing label-based pipeline selection
+- **Pipeline template** — `qa` pipeline with a single `qa` stage (stored in DB like existing pipelines). Must be created manually via the dashboard or SQL — it is not auto-seeded on fresh installs
+- **Label routing** — tickets with `manual-qa` label route to the `qa` pipeline via `pipeline_templates.ticket_label` (requires the `qa` pipeline template to exist in the DB)
 - **MCP tools** — Playwright MCP (for browser testing) is automatically added alongside the bugtracker MCP
 - **Bugtracker integration** — report posted as a comment, bugs created as new tickets, labels updated (`qa-passed`/`qa-failed`)
 
@@ -18,7 +18,7 @@ The `qa` pipeline has a single stage:
 
 | Field | Value |
 |---|---|
-| Stage name | `qa_test` |
+| Stage name | `qa` |
 | Executor | `claude` |
 | Identity | `coder` |
 | Max turns | 300 (QA sessions are long — Playwright back-and-forth) |
@@ -26,6 +26,8 @@ The `qa` pipeline has a single stage:
 | Result parser | `qa_report` |
 
 No loops — the agent tests and reports in one pass.
+
+> **Note:** This pipeline template is not auto-provisioned. You must create it manually (via the dashboard or direct SQL insert into `pipeline_templates` / `stage_templates`). The values above are recommended defaults.
 
 ## Trigger Scenarios
 
@@ -37,16 +39,6 @@ Examples:
 - "Test MCP scanning end-to-end after recent sprint changes"
 - "Post-deploy sanity check for v2.4.0 — run through critical flows"
 - "Regression test: verify login, dashboard, scan creation still work"
-
-### Scenario B: Post-merge auto-trigger
-
-When an implementation pipeline completes and the original ticket has the `manual-qa` label, the supervisor automatically creates a standalone QA ticket that references the original. This ticket gets picked up by the poller and routes to the QA pipeline naturally. No special worker logic needed — it reuses the same Scenario A flow.
-
-The auto-created ticket includes:
-- Title: `QA: <original ticket title>`
-- Description: reference to the original ticket + PR URL
-- Labels: `manual-qa`
-- Priority: same as original
 
 ## Creating QA Tickets
 
@@ -166,7 +158,9 @@ The agent can also output a JSON report:
 
 ### Verdict line
 
-The report must include a `Verdict:` line with either `PASSED` or `FAILED`. If no verdict is found, the system defaults to `FAILED` (a silent pass is more dangerous than a false negative).
+The report should include a `Verdict:` line with either `PASSED` or `FAILED`. The `Verdict:` line can appear anywhere inside the `QA_REPORT_START`/`QA_REPORT_END` block (or the full output text as a fallback) — placement doesn't matter, the parser searches with a multiline regex.
+
+If no `Verdict:` line is found, the system infers the result from whether bugs were detected: no bugs = PASSED, any bugs = FAILED. If the entire report cannot be parsed at all (no markers and no JSON), it defaults to FAILED.
 
 ## Post-QA Actions
 
@@ -177,7 +171,7 @@ After the QA pipeline completes, the supervisor automatically:
    - Title: `[QA Bug] <bug title>`
    - Priority mapped from severity: critical=1, high=2, medium=3, low=4
    - Labels: `Bug`, `QA`
-   - Linked to the original ticket
+   - Referenced from the original ticket (via text in description: "Found during QA of TICKET-ID")
 3. **Updates labels** on the trigger ticket:
    - Adds `qa-passed` if no bugs found
    - Adds `qa-failed` if bugs found (or if the report couldn't be parsed)
@@ -191,12 +185,12 @@ The QA pipeline uses the same configuration infrastructure as other pipelines. S
 
 ### Pipeline template settings
 
-| Setting | Default | Description |
+| Setting | Recommended | Description |
 |---|---|---|
 | `max_turns` | 300 | Maximum Claude turns for the QA session |
 | `timeout_minutes` | 120 | Maximum duration for the QA stage |
 
-These can be customized by editing the `stage_templates` record in the database.
+These values are set when you create the pipeline template. They can be customized by editing the `stage_templates` record in the database.
 
 ### Timeout overrides
 
@@ -206,7 +200,7 @@ Per-label timeout overrides configured in `config.yaml` apply to QA stages as we
 agents:
   timeout_overrides:
     manual-qa:
-      qa_test: 180  # Allow 3 hours for QA on tickets with this label
+      qa: 180  # Allow 3 hours for QA on tickets with this label
 ```
 
 ### MCP servers

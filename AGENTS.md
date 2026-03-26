@@ -43,7 +43,7 @@ Key patterns:
 - All state persists to SQLite (`~/.botfarm/botfarm.db`) after every mutation — supervisor survives crashes
 - Usage limits pause slots mid-pipeline and resume from interrupted stage
 - Claude invoked via `claude -p --output-format json --mcp-config <temp-file>` subprocess (MCP config provides bugtracker tools)
-- QA pipeline: `qa` pipeline with single `qa_test` stage, `qa_report` result parser extracts report text/bugs/verdict from agent output, Playwright MCP merged into config via `pipeline_templates.mcp_servers`
+- QA pipeline: `qa` pipeline with single `qa` stage, `qa_report` result parser extracts report text/bugs/verdict from agent output, Playwright MCP merged into config via `pipeline_templates.mcp_servers`. The `qa` pipeline template must be created manually — it is not auto-seeded in database migrations
 
 Design principle — no-restart operations:
 - Users should never need to restart the supervisor for routine operational changes (adding collaborators, fixing credentials, config tweaks)
@@ -85,12 +85,12 @@ No PR created. Agent researches and posts findings as a comment on the ticket, t
 Review/fix loop happens via ticket comments (not GitHub).
 
 ### QA Tickets (label: `manual-qa`)
-Routes to the `qa` pipeline (single `qa_test` stage). The agent tests the feature described in the ticket using Playwright MCP, shell commands, and DB queries. Produces a structured report with `QA_REPORT_START`/`QA_REPORT_END` and `BUG_START`/`BUG_END` markers. After completion, the supervisor posts the report as a comment, creates bug tickets, and adds `qa-passed` or `qa-failed` labels. See `docs/qa-agent.md` for full details.
+Routes to the `qa` pipeline (single `qa` stage). The agent tests the feature described in the ticket using Playwright MCP, shell commands, and DB queries. Produces a structured report with `QA_REPORT_START`/`QA_REPORT_END` and `BUG_START`/`BUG_END` markers. After completion, the supervisor posts the report as a comment, creates bug tickets, and adds `qa-passed` or `qa-failed` labels. See `docs/qa-agent.md` for full details.
 
 ### Label-Based Pipeline Routing
 Pipeline selection uses the `ticket_label` column on `pipeline_templates`:
 - `Investigation` label → `investigation` pipeline
-- `manual-qa` label → `qa` pipeline
+- `manual-qa` label → `qa` pipeline (requires manually creating the `qa` pipeline template in the DB first)
 - No matching label → default `implementation` pipeline
 
 ### Creating Tickets
