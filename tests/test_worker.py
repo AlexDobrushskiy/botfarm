@@ -28,6 +28,8 @@ from botfarm.worker import (
     _detect_no_pr_needed,
     _is_investigation,
     build_bugtracker_mcp_config,
+    _merge_mcp_configs,
+    _PLAYWRIGHT_MCP_SERVER,
     build_coder_env,
     build_git_env,
     build_reviewer_env,
@@ -4522,6 +4524,38 @@ class TestBuildBugtrackerMcpConfig:
         assert build_bugtracker_mcp_config(
             "jira", "tok", bugtracker_url="https://acme.atlassian.net", jira_username="",
         ) == ""
+
+
+# ---------------------------------------------------------------------------
+# _merge_mcp_configs
+# ---------------------------------------------------------------------------
+
+
+class TestMergeMcpConfigs:
+    def test_merges_extra_server_into_existing_config(self):
+        base = '{"mcpServers":{"linear":{"command":"npx"}}}'
+        result = _merge_mcp_configs(base, {"playwright": {"command": "npx"}})
+        parsed = json.loads(result)
+        assert "linear" in parsed["mcpServers"]
+        assert "playwright" in parsed["mcpServers"]
+
+    def test_empty_base_returns_extra_only(self):
+        result = _merge_mcp_configs("", {"playwright": {"command": "npx"}})
+        parsed = json.loads(result)
+        assert parsed == {"mcpServers": {"playwright": {"command": "npx"}}}
+
+    def test_invalid_base_replaced_with_extra(self):
+        result = _merge_mcp_configs("not-json", {"playwright": {"command": "npx"}})
+        parsed = json.loads(result)
+        assert parsed == {"mcpServers": {"playwright": {"command": "npx"}}}
+
+    def test_playwright_server_config(self):
+        result = _merge_mcp_configs("", _PLAYWRIGHT_MCP_SERVER)
+        parsed = json.loads(result)
+        pw = parsed["mcpServers"]["playwright"]
+        assert pw["command"] == "npx"
+        assert "-y" in pw["args"]
+        assert "@anthropic/mcp-playwright" in pw["args"]
 
 
 # ---------------------------------------------------------------------------

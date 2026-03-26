@@ -257,6 +257,35 @@ def build_bugtracker_mcp_config(
     return ""
 
 
+def _merge_mcp_configs(base_config: str, extra_servers: dict) -> str:
+    """Merge additional MCP servers into an existing MCP config JSON string.
+
+    *base_config* is a JSON string (as returned by
+    ``build_bugtracker_mcp_config``).  *extra_servers* is a dict of
+    ``{server_name: server_config}`` to add under ``mcpServers``.
+    If *base_config* is empty or invalid JSON, returns a new config
+    containing only *extra_servers*.
+    """
+    if base_config:
+        try:
+            merged = json.loads(base_config)
+        except json.JSONDecodeError:
+            merged = {"mcpServers": {}}
+    else:
+        merged = {"mcpServers": {}}
+    merged["mcpServers"].update(extra_servers)
+    return json.dumps(merged)
+
+
+_PLAYWRIGHT_MCP_SERVER = {
+    "playwright": {
+        "command": "npx",
+        "args": ["-y", "@anthropic/mcp-playwright"],
+    }
+}
+"""Playwright MCP server config.  Requires Node.js to be installed at runtime."""
+
+
 # ---------------------------------------------------------------------------
 # Pipeline orchestrator
 # ---------------------------------------------------------------------------
@@ -484,6 +513,11 @@ def run_pipeline(
         conn, ticket_id, ticket_labels or [], max_turns,
         max_review_iterations, max_ci_retries, max_merge_conflict_retries,
     )
+
+    # Extend MCP config for pipelines that need extra tools.
+    # QA pipelines get the Playwright MCP server for browser automation.
+    if pipeline_tpl is not None and pipeline_tpl.name.lower() == "qa":
+        mcp_config = _merge_mcp_configs(mcp_config, _PLAYWRIGHT_MCP_SERVER)
 
     # Validate resume_from_stage upfront — check against all pipeline stages
     # (including loop-managed ones), not just main stages.
