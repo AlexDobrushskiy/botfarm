@@ -23,7 +23,7 @@ import yaml
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from botfarm.config import write_yaml_atomic
+from botfarm.config import LONG_LIVED_TOKEN_ENV_VAR, VALID_AUTH_MODES, write_yaml_atomic
 from botfarm.credentials import CredentialError, _load_token
 
 from .routes_config import _resolve_env_path, _write_env_file
@@ -43,6 +43,38 @@ class SetupStep:
     id: str
     label: str
     done: bool
+
+
+def _get_env_var(app, key: str) -> str:
+    """Return the value of *key* from ``os.environ`` or the ``.env`` file.
+
+    If the variable is present in ``.env`` but not yet in the process
+    environment, it is loaded into ``os.environ`` so that downstream code
+    (e.g. supervisor workers) can read it without a restart.
+    """
+    value = os.environ.get(key, "")
+    if value:
+        return value
+
+    env_path = _resolve_env_path(app)
+    if not env_path.exists():
+        return ""
+
+    for line in env_path.read_text().splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        k, _, v = stripped.partition("=")
+        if k.strip() == key:
+            v = v.strip()
+            # Strip surrounding quotes
+            if len(v) >= 2 and v[0] == v[-1] and v[0] in ('"', "'"):
+                v = v[1:-1]
+            if v:
+                os.environ[key] = v
+            return v
+
+    return ""
 
 
 def _check_bugtracker_type(config: BotfarmConfig) -> SetupStep:
@@ -77,19 +109,38 @@ def _check_github_auth() -> SetupStep:
     return SetupStep(id="github_auth", label="GitHub authentication", done=done)
 
 
-def _check_claude_auth() -> SetupStep:
+def _check_claude_auth(config: BotfarmConfig | None = None, app=None) -> SetupStep:
     """Check whether Claude Code credentials are available.
 
-    Uses the credential loading mechanism from ``botfarm.credentials``,
-    which checks ``~/.claude/.credentials.json`` on Linux and the system
-    keychain on macOS.
+    The check varies by auth mode:
+    - **oauth** (default): looks for OAuth credentials on disk via
+      ``botfarm.credentials._load_token``.
+    - **long_lived_token**: checks ``CLAUDE_LONG_LIVED_TOKEN`` env var.
+    - **api_key**: checks ``ANTHROPIC_API_KEY`` env var.
+
+    When *app* is provided, environment variables are resolved via
+    ``_get_env_var`` which also reads from the ``.env`` file, keeping
+    behaviour consistent with ``_build_credentials_context``.
     """
+    auth_mode = config.auth_mode if config else "oauth"
     done = False
-    try:
-        _load_token()
-        done = True
-    except CredentialError:
-        pass
+
+    def _env(key: str) -> str:
+        if app is not None:
+            return _get_env_var(app, key)
+        return os.environ.get(key, "")
+
+    if auth_mode == "long_lived_token":
+        done = bool(_env(LONG_LIVED_TOKEN_ENV_VAR))
+    elif auth_mode == "api_key":
+        done = bool(_env("ANTHROPIC_API_KEY"))
+    else:
+        try:
+            _load_token()
+            done = True
+        except CredentialError:
+            pass
+
     return SetupStep(id="claude_auth", label="Claude Code authentication", done=done)
 
 
@@ -117,13 +168,13 @@ def _check_repos_cloned(config: BotfarmConfig) -> SetupStep:
     )
 
 
-def get_setup_steps(config: BotfarmConfig) -> list[SetupStep]:
+def get_setup_steps(config: BotfarmConfig, app=None) -> list[SetupStep]:
     """Return the full ordered checklist of setup steps."""
     return [
         _check_bugtracker_type(config),
         _check_bugtracker_api_key(config),
         _check_github_auth(),
-        _check_claude_auth(),
+        _check_claude_auth(config, app=app),
         _check_project_configured(config),
         _check_repos_cloned(config),
     ]
@@ -138,7 +189,7 @@ def api_setup_status(request: Request):
             {"error": "No configuration loaded"}, status_code=503
         )
 
-    steps = get_setup_steps(config)
+    steps = get_setup_steps(config, app=request.app)
     setup_complete = all(s.done for s in steps)
     return JSONResponse({
         "setup_complete": setup_complete,
@@ -153,7 +204,7 @@ def partial_setup_status(request: Request):
     steps: list[SetupStep] = []
     setup_complete = False
     if config is not None:
-        steps = get_setup_steps(config)
+        steps = get_setup_steps(config, app=request.app)
         setup_complete = all(s.done for s in steps)
 
     templates = request.app.state.templates
@@ -181,14 +232,14 @@ def _section_done_map(steps: list[SetupStep]) -> dict[str, bool]:
     }
 
 
-def _build_credentials_context(cfg: BotfarmConfig | None) -> dict:
+def _build_credentials_context(cfg: BotfarmConfig | None, app=None) -> dict:
     """Build template context dict for the credentials partial.
 
     Shared by ``setup_page`` (initial render) and ``partial_setup_credentials``
     (htmx refresh) to avoid duplicating the same assembly logic.
     """
     github_done = _check_github_auth().done
-    claude_done = _check_claude_auth().done
+    claude_done = _check_claude_auth(cfg, app=app).done
 
     ssh_key_path = ""
     ssh_key_exists = False
@@ -213,6 +264,8 @@ def _build_credentials_context(cfg: BotfarmConfig | None) -> dict:
             jira_url = cfg.bugtracker.url or ""
             jira_email = cfg.bugtracker.email or ""
 
+    auth_mode = cfg.auth_mode if cfg else "oauth"
+
     return {
         "github_done": github_done,
         "claude_done": claude_done,
@@ -223,6 +276,15 @@ def _build_credentials_context(cfg: BotfarmConfig | None) -> dict:
         "bt_api_key_set": bt_api_key_set,
         "jira_url": jira_url,
         "jira_email": jira_email,
+        "auth_mode": auth_mode,
+        "long_lived_token_set": bool(
+            _get_env_var(app, LONG_LIVED_TOKEN_ENV_VAR) if app
+            else os.environ.get(LONG_LIVED_TOKEN_ENV_VAR, "")
+        ),
+        "api_key_set": bool(
+            _get_env_var(app, "ANTHROPIC_API_KEY") if app
+            else os.environ.get("ANTHROPIC_API_KEY", "")
+        ),
     }
 
 
@@ -247,7 +309,7 @@ def setup_page(request: Request):
     degraded = degraded_getter() if degraded_getter else False
 
     if config is not None:
-        steps = get_setup_steps(config)
+        steps = get_setup_steps(config, app=app)
         all_steps_done = all(s.done for s in steps)
         setup_complete = all_steps_done and not degraded
         section_done = _section_done_map(steps)
@@ -257,7 +319,7 @@ def setup_page(request: Request):
         repos_cloned = by_id.get("repos_cloned", False)
 
     # Credential partial context (shared helper avoids duplication)
-    cred_ctx = _build_credentials_context(config)
+    cred_ctx = _build_credentials_context(config, app=app)
 
     bt_type = ""
     if config is not None:
@@ -871,6 +933,70 @@ def claude_auth_status(request: Request):
 
 
 # ---------------------------------------------------------------------------
+# Auth method configuration
+# ---------------------------------------------------------------------------
+
+@router.post("/api/setup/claude/auth-method")
+async def save_auth_method(request: Request):
+    """Save the selected Claude auth method to config.yaml."""
+    app = request.app
+    cfg = app.state.botfarm_config
+
+    body = await request.json()
+    method = body.get("auth_method", "oauth")
+
+    if method not in VALID_AUTH_MODES:
+        return _feedback(
+            f"Invalid auth method: {html.escape(method)!r}. Must be one of {sorted(VALID_AUTH_MODES)}.",
+            "error", 400,
+        )
+
+    # Validate token availability for the selected mode.
+    # Check both os.environ and the .env file so users don't need a restart.
+    if method == "long_lived_token" and not _get_env_var(app, LONG_LIVED_TOKEN_ENV_VAR):
+        return _feedback(
+            "CLAUDE_LONG_LIVED_TOKEN is not set. "
+            "Add it to your .env file before selecting this mode.",
+            "error", 400,
+        )
+    if method == "api_key" and not _get_env_var(app, "ANTHROPIC_API_KEY"):
+        return _feedback(
+            "ANTHROPIC_API_KEY is not set. "
+            "Add it to your .env file before selecting this mode.",
+            "error", 400,
+        )
+
+    config_path = Path(cfg.source_path) if cfg and cfg.source_path else None
+    if not config_path or not config_path.exists():
+        return _feedback(
+            "config.yaml not found — cannot persist auth method change.",
+            "error", 400,
+        )
+
+    try:
+        raw = config_path.read_text()
+        data = yaml.safe_load(raw)
+        if not isinstance(data, dict):
+            data = {}
+
+        # Write as claude_auth_method (preferred name); remove legacy auth_mode
+        # to avoid ambiguity.
+        data["claude_auth_method"] = method
+        data.pop("auth_mode", None)
+        write_yaml_atomic(config_path, data)
+    except Exception:
+        logger.exception("Failed to write auth method to config.yaml")
+        return _feedback("Failed to update config.yaml.", "error", 500)
+
+    # Update in-memory config and app state
+    if cfg:
+        cfg.auth_mode = method
+    app.state.auth_mode = method
+
+    return _feedback(f"Auth method set to '{method}'. New workers will use this mode; in-flight workers are unaffected.")
+
+
+# ---------------------------------------------------------------------------
 # Credential status partial
 # ---------------------------------------------------------------------------
 
@@ -880,5 +1006,5 @@ def partial_setup_credentials(request: Request):
     cfg = request.app.state.botfarm_config
     templates = request.app.state.templates
     return templates.TemplateResponse(request, "partials/setup_credentials.html", {
-        **_build_credentials_context(cfg),
+        **_build_credentials_context(cfg, app=request.app),
     })

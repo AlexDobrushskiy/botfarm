@@ -271,7 +271,10 @@ class DatabaseConfig:
     path: str = ""
 
 
-VALID_AUTH_MODES = ("oauth", "api_key")
+VALID_AUTH_MODES = ("oauth", "api_key", "long_lived_token")
+
+# Environment variable that supplies the token for long_lived_token auth mode.
+LONG_LIVED_TOKEN_ENV_VAR = "CLAUDE_LONG_LIVED_TOKEN"
 
 
 @dataclass
@@ -965,6 +968,14 @@ def _validate_config(config: BotfarmConfig) -> None:
             f"got: {config.auth_mode!r}"
         )
 
+    if config.auth_mode == "long_lived_token":
+        if not os.environ.get(LONG_LIVED_TOKEN_ENV_VAR):
+            raise ConfigError(
+                f"auth_mode is 'long_lived_token' but {LONG_LIVED_TOKEN_ENV_VAR} "
+                f"environment variable is not set. Set it in your .env file or "
+                f"environment before starting the supervisor."
+            )
+
     if config.notifications.webhook_format not in ("slack", "discord"):
         raise ConfigError(
             f"notifications.webhook_format must be 'slack' or 'discord', "
@@ -1283,9 +1294,10 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
 
     start_paused = _parse_bool(data, "start_paused", True, section="top-level")
 
-    # Auth mode: "oauth" (default) or "api_key" (--bare mode with ANTHROPIC_API_KEY).
+    # Auth mode: "oauth" (default), "api_key" (--bare), or "long_lived_token".
+    # Accept both "claude_auth_method" (preferred) and "auth_mode" (legacy).
     # Auto-detect from environment when not explicitly set in config.
-    raw_auth_mode = data.get("auth_mode")
+    raw_auth_mode = data.get("claude_auth_method") if "claude_auth_method" in data else data.get("auth_mode")
     if raw_auth_mode is not None:
         auth_mode = str(raw_auth_mode)
     elif os.environ.get("ANTHROPIC_API_KEY"):

@@ -478,13 +478,16 @@ def run_pipeline(
     coder_env = build_coder_env(ident, slot_db_path) or None
     reviewer_env = build_reviewer_env(ident, slot_db_path) or None
 
-    # CLAUDE_CODE_OAUTH_TOKEN should only be injected when using long-lived
-    # tokens (not short-lived OAuth access tokens).  Short-lived tokens go
-    # stale mid-session and cause 401s in Claude Code subagents (Agent tool)
-    # which inherit the env var but cannot refresh it.  In standard "oauth"
-    # mode, let Claude Code read credentials from disk directly.
-    # TODO(SMA-558): add explicit long_lived_token auth mode and pass the
-    # token here only in that mode.
+    # Inject the long-lived token so Claude Code uses it directly.
+    # Only for long_lived_token mode — in oauth mode, Claude Code reads
+    # credentials from disk (short-lived tokens go stale mid-session).
+    if oauth_token and auth_mode == "long_lived_token":
+        if coder_env is None:
+            coder_env = {}
+        coder_env["CLAUDE_CODE_OAUTH_TOKEN"] = oauth_token
+        if reviewer_env is None:
+            reviewer_env = {}
+        reviewer_env["CLAUDE_CODE_OAUTH_TOKEN"] = oauth_token
 
     # Build MCP config for bugtracker tools.
     # Prefer the coder identity's tracker key so operations appear under the
@@ -1640,8 +1643,9 @@ class _PipelineContext:
         # Pre-stage token freshness check — proactively refresh expired
         # OAuth tokens in the credential file before spawning a Claude
         # subprocess so it reads a valid token from disk.
-        # Skip in api_key mode where ANTHROPIC_API_KEY is used instead.
-        if uses_agent and self.auth_mode != "api_key":
+        # Only applies to oauth mode — api_key uses ANTHROPIC_API_KEY,
+        # and long_lived_token uses a static token that doesn't expire.
+        if uses_agent and self.auth_mode == "oauth":
             try:
                 from botfarm.credentials import CredentialManager
 
@@ -1692,8 +1696,9 @@ class _PipelineContext:
 
         # Auth-failure retry: if the stage failed with an authentication
         # error, refresh the OAuth token and re-run the stage exactly once.
-        # Skip in api_key mode where OAuth tokens are not used.
-        if not result.success and uses_agent and self.auth_mode != "api_key":
+        # Only applies to oauth mode — api_key uses static ANTHROPIC_API_KEY,
+        # and long_lived_token uses a static long-lived token.
+        if not result.success and uses_agent and self.auth_mode == "oauth":
             result, stage_run_id = self._maybe_retry_on_auth_failure(
                 result,
                 stage=stage,

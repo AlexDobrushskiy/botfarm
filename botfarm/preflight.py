@@ -281,10 +281,13 @@ def check_credentials(*, auth_mode: str = "oauth") -> list[CheckResult]:
     """Check that Claude credentials exist.
 
     When ``auth_mode`` is ``"api_key"``, checks for ``ANTHROPIC_API_KEY``
-    in the environment instead of OAuth credentials.
+    in the environment.  When ``"long_lived_token"``, checks for
+    ``CLAUDE_LONG_LIVED_TOKEN``.  Otherwise checks OAuth credentials.
     """
     if auth_mode == "api_key":
         return _check_api_key_credentials()
+    if auth_mode == "long_lived_token":
+        return _check_long_lived_token_credentials()
     return _check_oauth_credentials()
 
 
@@ -329,6 +332,29 @@ def _check_api_key_credentials() -> list[CheckResult]:
         name="claude_credentials",
         passed=True,
         message=f"OK — ANTHROPIC_API_KEY set ({preview}), using --bare mode",
+    )]
+
+
+def _check_long_lived_token_credentials() -> list[CheckResult]:
+    """Check that ``CLAUDE_LONG_LIVED_TOKEN`` is set for long-lived token mode."""
+    from botfarm.config import LONG_LIVED_TOKEN_ENV_VAR
+
+    token = os.environ.get(LONG_LIVED_TOKEN_ENV_VAR, "")
+    if not token:
+        return [CheckResult(
+            name="claude_credentials",
+            passed=False,
+            message=(
+                f"{LONG_LIVED_TOKEN_ENV_VAR} is not set — required for "
+                f"long_lived_token auth mode. Set it in your .env file or "
+                f"environment."
+            ),
+        )]
+    preview = token[:4] + "..." if len(token) > 4 else token
+    return [CheckResult(
+        name="claude_credentials",
+        passed=True,
+        message=f"OK — {LONG_LIVED_TOKEN_ENV_VAR} set ({preview}), using long-lived token mode",
     )]
 
 

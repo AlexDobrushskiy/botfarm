@@ -3881,3 +3881,37 @@ def test_load_config_auth_mode_invalid(tmp_path):
     config_path = _write_config(tmp_path, data)
     with pytest.raises(ConfigError, match="auth_mode"):
         load_config(config_path)
+
+
+def test_load_config_claude_auth_method_preferred_over_auth_mode(tmp_path):
+    """claude_auth_method takes precedence over legacy auth_mode."""
+    data = {**MINIMAL_CONFIG, "claude_auth_method": "api_key", "auth_mode": "oauth"}
+    config_path = _write_config(tmp_path, data)
+    config = load_config(config_path)
+    assert config.auth_mode == "api_key"
+
+
+def test_load_config_claude_auth_method_alone(tmp_path):
+    """claude_auth_method works without auth_mode being present."""
+    data = {**MINIMAL_CONFIG, "claude_auth_method": "api_key"}
+    config_path = _write_config(tmp_path, data)
+    config = load_config(config_path)
+    assert config.auth_mode == "api_key"
+
+
+def test_load_config_long_lived_token_requires_env_var(tmp_path, monkeypatch):
+    """long_lived_token mode raises ConfigError when env var is missing."""
+    monkeypatch.delenv("CLAUDE_LONG_LIVED_TOKEN", raising=False)
+    data = {**MINIMAL_CONFIG, "claude_auth_method": "long_lived_token"}
+    config_path = _write_config(tmp_path, data)
+    with pytest.raises(ConfigError, match="CLAUDE_LONG_LIVED_TOKEN"):
+        load_config(config_path)
+
+
+def test_load_config_long_lived_token_succeeds_with_env_var(tmp_path, monkeypatch):
+    """long_lived_token mode succeeds when env var is set."""
+    monkeypatch.setenv("CLAUDE_LONG_LIVED_TOKEN", "test-token-value")
+    data = {**MINIMAL_CONFIG, "claude_auth_method": "long_lived_token"}
+    config_path = _write_config(tmp_path, data)
+    config = load_config(config_path)
+    assert config.auth_mode == "long_lived_token"
