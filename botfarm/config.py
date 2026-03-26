@@ -752,7 +752,7 @@ def resolve_project_bugtracker(
     )
 
 
-_KNOWN_TIMEOUT_STAGES = {"implement", "review", "fix", "pr_checks", "ci_fix", "merge", "resolve_conflict"}
+_KNOWN_TIMEOUT_STAGES = {"implement", "review", "fix", "pr_checks", "ci_fix", "merge", "resolve_conflict", "qa"}
 
 
 def resolve_stage_timeout(
