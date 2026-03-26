@@ -451,6 +451,37 @@ class TestHandleQaCompletion:
         # qa-failed label added
         poller.add_labels.assert_called_once_with("TST-1", ["qa-failed"])
 
+    def test_no_pr_detected_from_comments_not_standalone(self, supervisor):
+        """When no-PR is detected from task comments (not slot.no_pr_reason),
+        the QA handler should treat it as non-standalone and NOT try to
+        move the ticket (normal flow already handled it)."""
+        sm, slot = self._assign_qa_slot(supervisor)
+        poller = supervisor._pollers["test-project"]
+        supervisor._pending_result_texts[("test-project", 1)] = _qa_report_json(
+            passed=False,
+        )
+
+        # Simulate no_pr detected from task comments: insert a task with
+        # comments containing the NO_PR_NEEDED marker.
+        task_id = insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="QA Test", project="test-project", slot=1,
+        )
+        update_task(supervisor._conn, task_id, comments="NO_PR_NEEDED: investigation only")
+        supervisor._conn.commit()
+
+        with patch.object(supervisor, "_check_pr_status", return_value=(None, None)):
+            supervisor._handle_finished_slots()
+
+        # Normal flow detects no_pr from comments → moves to Done.
+        # QA handler sees no_pr is set → NOT standalone → does NOT try to
+        # move or log "leaving open".  Only one move_issue call (from normal flow).
+        poller.move_issue.assert_called_once_with("TST-1", "Done")
+
+        # QA side effects still run (label, comment)
+        poller.add_labels.assert_called_once_with("TST-1", ["qa-failed"])
+        poller.add_comment.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # BugtrackerPoller.create_issue tests

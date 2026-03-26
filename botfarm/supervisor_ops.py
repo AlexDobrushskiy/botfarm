@@ -179,6 +179,7 @@ class OperationsMixin:
         bt_cfg = self._resolve_project_bt(project)
         poller = self._pollers.get(project)
         has_qa = "qa" in (slot.stages_completed or [])
+        no_pr = None
 
         if poller and slot.ticket_id:
             if poller.is_issue_terminal(slot.ticket_id):
@@ -230,7 +231,7 @@ class OperationsMixin:
 
         # QA side effects layered on top of normal completion flow.
         if has_qa:
-            self._handle_qa_completion(slot, poller)
+            self._handle_qa_completion(slot, poller, no_pr=no_pr)
 
         # Webhook notification
         self._notify_task_completed(slot)
@@ -331,11 +332,16 @@ class OperationsMixin:
     # QA pipeline completion
     # ------------------------------------------------------------------
 
-    def _handle_qa_completion(self, slot: SlotState, poller) -> None:
+    def _handle_qa_completion(
+        self, slot: SlotState, poller, *, no_pr: str | None = None,
+    ) -> None:
         """Handle post-QA pipeline actions: report, bug tickets, labels.
 
         Called from ``_handle_completed_slot`` when the completed pipeline
         includes a ``"qa"`` stage.
+
+        *no_pr* is the resolved no-PR reason from the caller, which may
+        include detection from task comments (not just ``slot.no_pr_reason``).
         """
         if not poller or not slot.ticket_id:
             return
@@ -380,7 +386,7 @@ class OperationsMixin:
         # Status transition: standalone QA tickets move to Done if passed.
         # For implementation tickets with QA, bugs are tracked separately
         # and the ticket stays at Done (already handled by normal flow).
-        is_standalone_qa = not slot.pr_url and not slot.no_pr_reason
+        is_standalone_qa = not slot.pr_url and not no_pr
         bt_cfg = self._resolve_project_bt(slot.project)
         if not poller.is_issue_terminal(slot.ticket_id):
             if is_standalone_qa and passed:
