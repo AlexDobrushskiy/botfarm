@@ -3486,6 +3486,41 @@ class TestProjectRunCommandFields:
         assert config.projects[0].run_port == 0
 
 
+class TestQaTeardownCommand:
+    """Test qa_teardown_command parsing and validation."""
+
+    def test_loads_from_yaml(self, tmp_path):
+        data = {
+            "projects": [{
+                "name": "p", "team": "TST", "base_dir": "~/d",
+                "worktree_prefix": "s-", "slots": [1],
+                "qa_teardown_command": "docker compose down",
+            }],
+            "bugtracker": {"type": "linear", "api_key": "k"},
+        }
+        config_path = _write_config(tmp_path, data)
+        config = load_config(config_path)
+        assert config.projects[0].qa_teardown_command == "docker compose down"
+
+    def test_defaults_to_empty(self, tmp_path):
+        config_path = _write_config(tmp_path, MINIMAL_CONFIG)
+        config = load_config(config_path)
+        assert config.projects[0].qa_teardown_command == ""
+
+    def test_invalid_type_raises(self, tmp_path):
+        data = {
+            "projects": [{
+                "name": "p", "team": "TST", "base_dir": "~/d",
+                "worktree_prefix": "s-", "slots": [1],
+                "qa_teardown_command": 123,
+            }],
+            "bugtracker": {"type": "linear", "api_key": "k"},
+        }
+        config_path = _write_config(tmp_path, data)
+        with pytest.raises(ConfigError, match="qa_teardown_command must be a string"):
+            load_config(config_path)
+
+
 class TestBotfarmConfigBugtracker:
     """Test BotfarmConfig.bugtracker field."""
 
