@@ -221,14 +221,12 @@ class OperationsMixin:
         project_cfg = self._projects.get(project)
         if project_cfg is None:
             return
-        if not project_cfg.run_port and not project_cfg.qa_teardown_command:
-            return
         try:
             from botfarm.qa_cleanup import cleanup_qa_environment
             worktree_cwd = self._slot_worktree_cwd(project_cfg, slot_id)
             cleanup_qa_environment(project_cfg, slot_id, worktree_cwd=worktree_cwd)
         except Exception:
-            logger.debug(
+            logger.warning(
                 "QA cleanup failed for %s/%d", project, slot_id, exc_info=True,
             )
 

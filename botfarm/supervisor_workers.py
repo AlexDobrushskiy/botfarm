@@ -1202,9 +1202,6 @@ class WorkerLifecycleManager:
         if proc is not None:
             proc.join(timeout=2)
 
-        # QA environment cleanup (port, docker, browsers, teardown command)
-        self._sup._maybe_cleanup_qa_environment(project, slot.slot_id)
-
         reason = f"timeout in stage {stage}"
         self._slot_manager.mark_failed(project, slot.slot_id, reason=reason)
 
