@@ -213,6 +213,8 @@ def _build_credentials_context(cfg: BotfarmConfig | None) -> dict:
             jira_url = cfg.bugtracker.url or ""
             jira_email = cfg.bugtracker.email or ""
 
+    auth_mode = cfg.auth_mode if cfg else "oauth"
+
     return {
         "github_done": github_done,
         "claude_done": claude_done,
@@ -223,6 +225,9 @@ def _build_credentials_context(cfg: BotfarmConfig | None) -> dict:
         "bt_api_key_set": bt_api_key_set,
         "jira_url": jira_url,
         "jira_email": jira_email,
+        "auth_mode": auth_mode,
+        "long_lived_token_set": bool(os.environ.get("CLAUDE_LONG_LIVED_TOKEN", "")),
+        "api_key_set": bool(os.environ.get("ANTHROPIC_API_KEY", "")),
     }
 
 
@@ -868,6 +873,71 @@ def claude_auth_status(request: Request):
         "authenticated": authenticated,
         "expired": expired,
     })
+
+
+# ---------------------------------------------------------------------------
+# Auth method configuration
+# ---------------------------------------------------------------------------
+
+@router.post("/api/setup/claude/auth-method")
+async def save_auth_method(request: Request):
+    """Save the selected Claude auth method to config.yaml."""
+    from botfarm.config import VALID_AUTH_MODES
+
+    app = request.app
+    cfg = app.state.botfarm_config
+
+    body = await request.json()
+    method = body.get("auth_method", "oauth")
+
+    if method not in VALID_AUTH_MODES:
+        return _feedback(
+            f"Invalid auth method: {method!r}. Must be one of {sorted(VALID_AUTH_MODES)}.",
+            "error", 400,
+        )
+
+    # Validate token availability for the selected mode
+    if method == "long_lived_token" and not os.environ.get("CLAUDE_LONG_LIVED_TOKEN"):
+        return _feedback(
+            "CLAUDE_LONG_LIVED_TOKEN environment variable is not set. "
+            "Set it in your .env file before selecting this mode.",
+            "error", 400,
+        )
+    if method == "api_key" and not os.environ.get("ANTHROPIC_API_KEY"):
+        return _feedback(
+            "ANTHROPIC_API_KEY environment variable is not set. "
+            "Set it in your .env file before selecting this mode.",
+            "error", 400,
+        )
+
+    config_path = Path(cfg.source_path) if cfg and cfg.source_path else None
+    if not config_path or not config_path.exists():
+        return _feedback(
+            "config.yaml not found — cannot persist auth method change.",
+            "error", 400,
+        )
+
+    try:
+        raw = config_path.read_text()
+        data = yaml.safe_load(raw)
+        if not isinstance(data, dict):
+            data = {}
+
+        # Write as claude_auth_method (preferred name); remove legacy auth_mode
+        # to avoid ambiguity.
+        data["claude_auth_method"] = method
+        data.pop("auth_mode", None)
+        write_yaml_atomic(config_path, data)
+    except Exception:
+        logger.exception("Failed to write auth method to config.yaml")
+        return _feedback("Failed to update config.yaml.", "error", 500)
+
+    # Update in-memory config and app state
+    if cfg:
+        cfg.auth_mode = method
+    app.state.auth_mode = method
+
+    return _feedback(f"Auth method set to '{method}'. Restart the supervisor for full effect.")
 
 
 # ---------------------------------------------------------------------------

@@ -741,12 +741,16 @@ class WorkerLifecycleManager:
         from botfarm.config import resolve_project_bugtracker
         project_bt = resolve_project_bugtracker(self._config.bugtracker, project_cfg)
 
-        # In standard "oauth" mode we do NOT pass the token via env var —
-        # short-lived access tokens go stale mid-session and cause 401s in
-        # Claude Code subagents.  Claude Code reads credentials from disk.
-        # TODO(SMA-558): when long_lived_token auth mode is added, pass the
-        # token here via _get_oauth_token() for that mode only.
-        oauth_token = ""
+        # In oauth mode, do NOT pass the token via env var — short-lived
+        # access tokens go stale mid-session and cause 401s in subagents.
+        # Claude Code reads credentials from disk in oauth mode.
+        # In long_lived_token mode, pass the static token from env var.
+        # In api_key mode, no token is needed (uses ANTHROPIC_API_KEY).
+        if self._config.auth_mode == "long_lived_token":
+            from botfarm.config import LONG_LIVED_TOKEN_ENV_VAR
+            oauth_token = os.environ.get(LONG_LIVED_TOKEN_ENV_VAR, "")
+        else:
+            oauth_token = ""
 
         proc = multiprocessing.Process(
             target=_worker_entry,

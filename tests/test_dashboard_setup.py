@@ -1188,6 +1188,7 @@ class TestBuildCredentialsContext:
         expected_keys = {
             "github_done", "claude_done", "ssh_key_path", "ssh_key_exists",
             "bt_type", "bt_workspace", "bt_api_key_set", "jira_url", "jira_email",
+            "auth_mode", "long_lived_token_set", "api_key_set",
         }
         assert set(ctx.keys()) == expected_keys
 
