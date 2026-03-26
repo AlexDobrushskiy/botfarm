@@ -341,6 +341,36 @@ class BugtrackerPoller(ABC):
         self._coder_client.add_labels(issue_id, label_ids)
         logger.info("Added labels %s to issue %s", label_names, issue_id)
 
+    def create_issue(
+        self,
+        *,
+        title: str,
+        description: str = "",
+        priority: int | None = None,
+        label_names: list[str] | None = None,
+        project_id: str | None = None,
+    ) -> CreatedIssue:
+        """Create a new issue in the poller's team (uses coder client).
+
+        Resolves team ID and label IDs automatically from names.
+        """
+        team_key = self._project.team  # type: ignore[attr-defined]
+        team_id = self._coder_client.get_team_id(team_key)
+        label_ids = None
+        if label_names:
+            label_ids = [
+                self._coder_client.get_or_create_label(team_key, name)
+                for name in label_names
+            ]
+        return self._coder_client.create_issue(
+            team_id=team_id,
+            title=title,
+            description=description,
+            priority=priority,
+            label_ids=label_ids,
+            project_id=project_id,
+        )
+
     def add_comment_as_owner(self, issue_id: str, body: str) -> None:
         """Add a comment using the owner's client (for system-level notifications)."""
         self._client.add_comment(issue_id, body)
