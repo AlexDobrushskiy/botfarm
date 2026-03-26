@@ -31,7 +31,7 @@ No loops — the agent tests and reports in one pass.
 
 ## Trigger Scenarios
 
-### Scenario A: Standalone QA ticket
+### Standalone QA ticket
 
 Create a ticket with the `manual-qa` label. The poller picks it up and routes it to the `qa` pipeline. The agent checks out `origin/main` at HEAD and runs immediately.
 
@@ -270,16 +270,23 @@ Verdict: FAILED
 
 ### Environment cleanup
 
-The QA agent may start services (docker compose, npm start, etc.) and launch a Playwright browser. If the agent times out or fails, these processes may be left running. The supervisor's timeout handler kills the worker process tree, but background processes started by the agent (docker containers, spawned servers) may survive.
+The QA agent may start services (docker compose, npm start, etc.) and launch a Playwright browser. When the pipeline completes, fails, or times out, the supervisor automatically runs `cleanup_qa_environment()` (`qa_cleanup.py`), which:
 
-To clean up manually:
+1. **Kills the port holder** — if `run_port` is configured, kills any process bound to that port (verified to belong to the worktree)
+2. **Runs `docker compose down`** — stops containers if a compose file exists in the worktree
+3. **Kills orphaned browsers** — finds and kills Playwright/Chromium processes whose working directory is under the worktree
+4. **Runs teardown command** — executes `qa_teardown_command` from project config, if configured
+
+All steps are resilient — failures are logged but never propagate.
+
+If automated cleanup misses something (e.g., a process bound to a different port, or `fuser`/`pgrep` not installed), clean up manually:
 - Check for orphaned processes on the expected port: `lsof -i :<port>`
 - Kill orphaned containers: `docker compose down` in the worktree directory
 - Kill orphaned browser processes: `pkill -f chromium` or `pkill -f playwright`
 
 ### Port conflicts
 
-If a QA run fails with port-already-in-use errors, a previous run likely left a process behind. Check and kill the process using the port:
+If a QA run fails with port-already-in-use errors, automated cleanup may have missed a process from a previous run. Check and kill the process using the port:
 
 ```bash
 lsof -i :3000  # or whatever port the project uses
