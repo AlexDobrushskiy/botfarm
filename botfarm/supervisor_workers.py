@@ -741,13 +741,12 @@ class WorkerLifecycleManager:
         from botfarm.config import resolve_project_bugtracker
         project_bt = resolve_project_bugtracker(self._config.bugtracker, project_cfg)
 
-        # Obtain a fresh OAuth access token for the worker.  The supervisor
-        # is single-threaded for dispatch, so refresh is serialised — no races.
-        # In api_key mode, OAuth tokens are not used — skip retrieval.
-        if self._config.auth_mode == "api_key":
-            oauth_token = ""
-        else:
-            oauth_token = self._get_oauth_token()
+        # In standard "oauth" mode we do NOT pass the token via env var —
+        # short-lived access tokens go stale mid-session and cause 401s in
+        # Claude Code subagents.  Claude Code reads credentials from disk.
+        # TODO(SMA-558): when long_lived_token auth mode is added, pass the
+        # token here via _get_oauth_token() for that mode only.
+        oauth_token = ""
 
         proc = multiprocessing.Process(
             target=_worker_entry,
