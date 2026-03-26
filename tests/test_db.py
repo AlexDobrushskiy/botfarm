@@ -875,9 +875,11 @@ class TestMigrationInfrastructure:
         c.execute("ALTER TABLE dispatch_state RENAME COLUMN tracker_capacity_checked_at TO linear_capacity_checked_at")
         c.execute("ALTER TABLE dispatch_state RENAME COLUMN tracker_capacity_by_project TO linear_capacity_by_project")
         c.execute("ALTER TABLE cleanup_batch_items RENAME COLUMN tracker_uuid TO linear_uuid")
+        # Reverse migration 033 (mcp_servers column on pipeline_templates)
+        c.execute("ALTER TABLE pipeline_templates DROP COLUMN mcp_servers")
         c.commit()
 
-        # Now run migrations 030, 031, and 032
+        # Now run migrations 030+
         _run_migrations(c, from_version=29)
 
         # Verify the audit tables exist
@@ -920,9 +922,11 @@ class TestMigrationInfrastructure:
         c.execute("ALTER TABLE dispatch_state RENAME COLUMN tracker_capacity_checked_at TO linear_capacity_checked_at")
         c.execute("ALTER TABLE dispatch_state RENAME COLUMN tracker_capacity_by_project TO linear_capacity_by_project")
         c.execute("ALTER TABLE cleanup_batch_items RENAME COLUMN tracker_uuid TO linear_uuid")
+        # Reverse migration 033 (mcp_servers column on pipeline_templates)
+        c.execute("ALTER TABLE pipeline_templates DROP COLUMN mcp_servers")
         c.commit()
 
-        # Running migrations 030, 031, and 032 must not fail on pre-existing tables
+        # Running migrations 030+ must not fail on pre-existing tables
         _run_migrations(c, from_version=29)
 
         # Verify version advanced to latest

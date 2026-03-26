@@ -416,6 +416,17 @@ class TestCreatePipeline:
         assert isinstance(pid, int)
         assert pid > 0
 
+    def test_create_pipeline_with_mcp_servers(self, conn):
+        servers = {"playwright": {"command": "npx", "args": ["-y", "@anthropic/mcp-playwright"]}}
+        pid = create_pipeline(conn, "qa_pipe", mcp_servers=servers)
+        pipeline = load_pipeline_by_name(conn, "qa_pipe")
+        assert pipeline.mcp_servers == servers
+
+    def test_create_pipeline_mcp_servers_none_by_default(self, conn):
+        pid = create_pipeline(conn, "no_mcp")
+        pipeline = load_pipeline_by_name(conn, "no_mcp")
+        assert pipeline.mcp_servers is None
+
 
 # ---------------------------------------------------------------------------
 # Pipeline CRUD — update_pipeline
@@ -440,6 +451,20 @@ class TestUpdatePipeline:
         update_pipeline(conn, pid, ticket_label="NewLabel")
         pipeline = load_pipeline_by_name(conn, "label_test")
         assert pipeline.ticket_label == "NewLabel"
+
+    def test_update_mcp_servers(self, conn):
+        pid = create_pipeline(conn, "mcp_update_test")
+        servers = {"playwright": {"command": "npx"}}
+        update_pipeline(conn, pid, mcp_servers=servers)
+        pipeline = load_pipeline_by_name(conn, "mcp_update_test")
+        assert pipeline.mcp_servers == servers
+
+    def test_update_mcp_servers_to_none(self, conn):
+        servers = {"playwright": {"command": "npx"}}
+        pid = create_pipeline(conn, "mcp_clear_test", mcp_servers=servers)
+        update_pipeline(conn, pid, mcp_servers=None)
+        pipeline = load_pipeline_by_name(conn, "mcp_clear_test")
+        assert pipeline.mcp_servers is None
 
     def test_update_is_default_true_unsets_others(self, conn):
         pid = create_pipeline(conn, "new_default_update")
