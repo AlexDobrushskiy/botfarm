@@ -106,6 +106,7 @@ def partial_usage(request: Request):
     last_usage_check = snapshot_at or state.get("last_usage_check")
     stale = usage_is_stale(last_usage_check)
     codex_usage = state.get("codex_usage", {})
+    auth_mode = getattr(app.state, "auth_mode", "oauth")
     return templates.TemplateResponse(request, "partials/usage.html", {
         "usage": usage,
         "codex_usage": codex_usage,
@@ -114,6 +115,7 @@ def partial_usage(request: Request):
         "last_usage_check": last_usage_check,
         "usage_stale": stale,
         "elapsed": elapsed,
+        "auth_mode": auth_mode,
     })
 
 

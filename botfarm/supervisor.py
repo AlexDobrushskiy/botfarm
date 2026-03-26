@@ -186,12 +186,17 @@ class Supervisor(RecoveryMixin, OperationsMixin):
         self._notifier = Notifier(config.notifications)
         self._was_busy = False  # Track busy→idle transition for notifications
 
-        # Usage poller
+        # Usage poller — disabled in api_key mode (requires OAuth bearer tokens)
         self._usage_poller = UsagePoller(
             poll_interval=config.usage_limits.poll_interval_seconds,
             notifier=self._notifier,
         )
-        if not config.setup_mode:
+        if config.auth_mode == "api_key":
+            logger.warning(
+                "Usage tracking unavailable in API key mode — "
+                "/usage API requires OAuth bearer tokens"
+            )
+        elif not config.setup_mode:
             self._usage_poller.restore_backoff_state(self._conn)
 
         # Codex (OpenAI) usage poller — optional, no-op if not configured
@@ -405,8 +410,8 @@ class Supervisor(RecoveryMixin, OperationsMixin):
                 self._recover_on_startup()
                 self._apply_start_paused()
 
-            # Initial usage poll
-            if not self._degraded:
+            # Initial usage poll (skipped in api_key mode)
+            if not self._degraded and self._config.auth_mode != "api_key":
                 try:
                     self._usage_poller.force_poll(self._conn)
                 except Exception:
@@ -543,10 +548,11 @@ class Supervisor(RecoveryMixin, OperationsMixin):
             self._recover_on_startup()
             self._apply_start_paused()
 
-            try:
-                self._usage_poller.force_poll(self._conn)
-            except Exception:
-                logger.exception("Usage poll after recovery failed — continuing without usage data")
+            if self._config.auth_mode != "api_key":
+                try:
+                    self._usage_poller.force_poll(self._conn)
+                except Exception:
+                    logger.exception("Usage poll after recovery failed — continuing without usage data")
         else:
             logger.warning(
                 "Preflight checks still failing — remaining in degraded mode"
@@ -716,11 +722,13 @@ class Supervisor(RecoveryMixin, OperationsMixin):
 
     def _poll_usage(self) -> None:
         """Poll the usage API and update slot manager state."""
-        # Sync poll interval from config (may be changed at runtime via dashboard)
-        self._usage_poller.poll_interval = self._config.usage_limits.poll_interval_seconds
-        state = self._usage_poller.poll(self._conn)
-        if self._usage_poller.last_polled_fresh:
-            self._slot_manager.set_usage(state.to_dict())
+        # Claude /usage API requires OAuth — skip in api_key mode.
+        # Codex rate-limit polling is independent and must still run.
+        if self._config.auth_mode != "api_key":
+            self._usage_poller.poll_interval = self._config.usage_limits.poll_interval_seconds
+            state = self._usage_poller.poll(self._conn)
+            if self._usage_poller.last_polled_fresh:
+                self._slot_manager.set_usage(state.to_dict())
         self._codex_usage_poller.poll(self._conn)
         self._check_usage_stalls()
 

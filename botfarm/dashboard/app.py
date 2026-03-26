@@ -114,6 +114,7 @@ def create_app(
     app.state.db_path = Path(db_path).expanduser()
     app.state.workspace = workspace
     app.state.botfarm_config = botfarm_config
+    app.state.auth_mode = botfarm_config.auth_mode if botfarm_config else "oauth"
     app.state.restart_required = False
     app.state.on_pause = on_pause
     app.state.on_resume = on_resume

@@ -277,7 +277,18 @@ def check_linear_api(config: BotfarmConfig) -> list[CheckResult]:
     return results
 
 
-def check_credentials() -> list[CheckResult]:
+def check_credentials(*, auth_mode: str = "oauth") -> list[CheckResult]:
+    """Check that Claude credentials exist.
+
+    When ``auth_mode`` is ``"api_key"``, checks for ``ANTHROPIC_API_KEY``
+    in the environment instead of OAuth credentials.
+    """
+    if auth_mode == "api_key":
+        return _check_api_key_credentials()
+    return _check_oauth_credentials()
+
+
+def _check_oauth_credentials() -> list[CheckResult]:
     """Check that Claude OAuth credentials exist and can be loaded."""
     try:
         token = _load_token()
@@ -289,13 +300,35 @@ def check_credentials() -> list[CheckResult]:
             critical=False,  # Supervisor can run without — limit checking disabled
         )]
 
-    msg = "OK — token loaded"
+    msg = "OK — OAuth token loaded"
     if token.expires_at:
         msg += f" (expires_at: {token.expires_at})"
     return [CheckResult(
         name="claude_credentials",
         passed=True,
         message=msg,
+    )]
+
+
+def _check_api_key_credentials() -> list[CheckResult]:
+    """Check that ``ANTHROPIC_API_KEY`` is set for --bare mode."""
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return [CheckResult(
+            name="claude_credentials",
+            passed=False,
+            message=(
+                "ANTHROPIC_API_KEY is not set — required for api_key auth mode. "
+                "Set it in your .env file or environment."
+            ),
+        )]
+    # Show a short preview (first 4 chars + "...") for verification — short
+    # enough to avoid leaking secret material for non-standard key formats.
+    preview = api_key[:4] + "..." if len(api_key) > 4 else api_key
+    return [CheckResult(
+        name="claude_credentials",
+        passed=True,
+        message=f"OK — ANTHROPIC_API_KEY set ({preview}), using --bare mode",
     )]
 
 
@@ -983,7 +1016,7 @@ def run_preflight_checks(
     results.extend(check_core_bare(config))
     results.extend(check_worktree_dirs(config))
     results.extend(check_linear_api(config))
-    results.extend(check_credentials())
+    results.extend(check_credentials(auth_mode=config.auth_mode))
     results.extend(check_claude_binary())
     results.extend(check_notifications_webhook(config))
     results.extend(check_identity_ssh_key(config))

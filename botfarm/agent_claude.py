@@ -13,6 +13,9 @@ _DEFAULT_MAX_TURNS = 200
 class ClaudeAdapter:
     """Adapter that wraps :func:`run_claude_streaming` as an :class:`AgentAdapter`."""
 
+    def __init__(self, *, auth_mode: str = "oauth") -> None:
+        self._auth_mode = auth_mode
+
     @property
     def name(self) -> str:
         return "claude"
@@ -51,6 +54,7 @@ class ClaudeAdapter:
             on_context_fill=on_context_fill,
             timeout=timeout,
             mcp_config=mcp_config,
+            auth_mode=self._auth_mode,
         )
         return _claude_result_to_agent_result(claude_result)
 

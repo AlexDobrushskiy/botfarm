@@ -401,6 +401,7 @@ def run_pipeline(
     bugtracker_url: str = "",
     bugtracker_email: str = "",
     oauth_token: str = "",
+    auth_mode: str = "oauth",
 ) -> PipelineResult:
     """Execute the full implement→review→fix→pr_checks→merge pipeline.
 
@@ -537,6 +538,7 @@ def run_pipeline(
     registry = build_adapter_registry(
         codex_model=codex_ac.model or None,
         codex_reasoning_effort=codex_ac.reasoning_effort or None,
+        auth_mode=auth_mode,
     )
 
     # Shared context for _run_and_record helper
@@ -574,6 +576,7 @@ def run_pipeline(
         _refreshable_limits=_compute_refreshable_limits(pipeline_tpl),
         prior_context=prior_context,
         bugtracker_type=bugtracker_type,
+        auth_mode=auth_mode,
     )
 
     # Build main-stage list: skip loop-managed stages (they're handled
@@ -1341,6 +1344,7 @@ class _PipelineContext:
     )
     prior_context: str = ""
     bugtracker_type: str = "Linear"
+    auth_mode: str = "oauth"
 
     def _refresh_runtime_config(self) -> None:
         """Re-read runtime config from DB and update mutable fields.
@@ -1604,7 +1608,8 @@ class _PipelineContext:
 
         # Pre-stage token freshness check — proactively refresh expired
         # OAuth tokens before spawning a Claude subprocess to avoid 401s.
-        if uses_agent:
+        # Skip in api_key mode where ANTHROPIC_API_KEY is used instead.
+        if uses_agent and self.auth_mode != "api_key":
             try:
                 from botfarm.credentials import CredentialManager
 
@@ -1655,7 +1660,8 @@ class _PipelineContext:
 
         # Auth-failure retry: if the stage failed with an authentication
         # error, refresh the OAuth token and re-run the stage exactly once.
-        if not result.success and uses_agent:
+        # Skip in api_key mode where OAuth tokens are not used.
+        if not result.success and uses_agent and self.auth_mode != "api_key":
             result, stage_run_id = self._maybe_retry_on_auth_failure(
                 result,
                 stage=stage,

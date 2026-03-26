@@ -3838,3 +3838,46 @@ class TestPerProjectBugtracker:
         assert result.capacity_monitoring.warning_threshold == 0.5
         # Other thresholds fall back to the global's values
         assert result.capacity_monitoring.critical_threshold == global_bt.capacity_monitoring.critical_threshold
+
+
+# --- auth_mode ---
+
+
+def test_load_config_auth_mode_default(tmp_path):
+    """auth_mode defaults to 'oauth' when not set and ANTHROPIC_API_KEY absent."""
+    config_path = _write_config(tmp_path, MINIMAL_CONFIG)
+    config = load_config(config_path)
+    assert config.auth_mode == "oauth"
+
+
+def test_load_config_auth_mode_explicit(tmp_path):
+    """auth_mode can be set explicitly in config."""
+    data = {**MINIMAL_CONFIG, "auth_mode": "api_key"}
+    config_path = _write_config(tmp_path, data)
+    config = load_config(config_path)
+    assert config.auth_mode == "api_key"
+
+
+def test_load_config_auth_mode_auto_detect_api_key(tmp_path, monkeypatch):
+    """auth_mode auto-detects 'api_key' when ANTHROPIC_API_KEY is set."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-key-123")
+    config_path = _write_config(tmp_path, MINIMAL_CONFIG)
+    config = load_config(config_path)
+    assert config.auth_mode == "api_key"
+
+
+def test_load_config_auth_mode_explicit_overrides_auto_detect(tmp_path, monkeypatch):
+    """Explicit auth_mode in config overrides auto-detection."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-key-123")
+    data = {**MINIMAL_CONFIG, "auth_mode": "oauth"}
+    config_path = _write_config(tmp_path, data)
+    config = load_config(config_path)
+    assert config.auth_mode == "oauth"
+
+
+def test_load_config_auth_mode_invalid(tmp_path):
+    """Invalid auth_mode raises ConfigError."""
+    data = {**MINIMAL_CONFIG, "auth_mode": "bad_mode"}
+    config_path = _write_config(tmp_path, data)
+    with pytest.raises(ConfigError, match="auth_mode"):
+        load_config(config_path)

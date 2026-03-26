@@ -76,6 +76,7 @@ class TestClaudeAdapter:
             on_context_fill=None,
             timeout=300.0,
             mcp_config=None,
+            auth_mode="oauth",
         )
 
         assert isinstance(result, AgentResult)

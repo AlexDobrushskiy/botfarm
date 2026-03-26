@@ -649,6 +649,20 @@ class TestCheckCredentials:
         assert results[0].passed
         assert "expires_at" not in results[0].message
 
+    def test_api_key_mode_pass(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key-12345678")
+        results = check_credentials(auth_mode="api_key")
+        assert len(results) == 1
+        assert results[0].passed
+        assert "--bare" in results[0].message
+
+    def test_api_key_mode_missing(self, monkeypatch):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        results = check_credentials(auth_mode="api_key")
+        assert len(results) == 1
+        assert not results[0].passed
+        assert "ANTHROPIC_API_KEY" in results[0].message
+
 
 # ---------------------------------------------------------------------------
 # check_database
