@@ -533,3 +533,228 @@ class TestPollerCreateIssue:
             project_id=None,
         )
         assert result.identifier == "TST-50"
+
+
+# ---------------------------------------------------------------------------
+# _maybe_trigger_qa_ticket tests
+# ---------------------------------------------------------------------------
+
+
+class TestMaybeTriggerQaTicket:
+    """Tests for auto-creating QA tickets after implementation completion."""
+
+    def _assign_impl_slot(self, supervisor, *, labels=None, pr_url=None):
+        """Assign a completed implementation ticket with given labels."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Add login page", branch="b1",
+            ticket_labels=labels or [],
+        )
+        slot = sm.get_slot("test-project", 1)
+        slot.pr_url = pr_url
+        slot.stages_completed = ["implement", "review"]
+        sm.mark_completed("test-project", 1)
+        return sm, slot
+
+    def test_creates_qa_ticket_when_manual_qa_label_and_pr(self, supervisor):
+        """A completed ticket with manual-qa label and a PR triggers QA ticket creation."""
+        sm, _ = self._assign_impl_slot(
+            supervisor,
+            labels=["manual-qa"],
+            pr_url="https://github.com/test/repo/pull/42",
+        )
+        poller = supervisor._pollers["test-project"]
+        poller._client.fetch_issue_details.return_value = MagicMock(priority=2)
+
+        with patch.object(supervisor, "_check_pr_status", return_value=("merged", None)):
+            supervisor._handle_finished_slots()
+
+        poller.create_issue.assert_called_once()
+        call_kwargs = poller.create_issue.call_args.kwargs
+        assert call_kwargs["title"] == "QA: Add login page"
+        assert "TST-1" in call_kwargs["description"]
+        assert "https://github.com/test/repo/pull/42" in call_kwargs["description"]
+        assert call_kwargs["label_names"] == ["manual-qa"]
+        assert call_kwargs["priority"] == 2
+
+    def test_skips_when_no_manual_qa_label(self, supervisor):
+        """Tickets without manual-qa label don't trigger QA ticket creation."""
+        sm, _ = self._assign_impl_slot(
+            supervisor,
+            labels=["Feature"],
+            pr_url="https://github.com/test/repo/pull/42",
+        )
+        poller = supervisor._pollers["test-project"]
+
+        with patch.object(supervisor, "_check_pr_status", return_value=("merged", None)):
+            supervisor._handle_finished_slots()
+
+        poller.create_issue.assert_not_called()
+
+    def test_skips_when_no_pr_url(self, supervisor):
+        """Tickets without a PR URL don't trigger QA (e.g. investigation tickets)."""
+        sm, _ = self._assign_impl_slot(
+            supervisor,
+            labels=["manual-qa"],
+            pr_url=None,
+        )
+        poller = supervisor._pollers["test-project"]
+
+        with patch.object(supervisor, "_check_pr_status", return_value=(None, None)):
+            supervisor._handle_finished_slots()
+
+        poller.create_issue.assert_not_called()
+
+    def test_skips_for_qa_pipelines(self, supervisor):
+        """Completed QA pipelines don't trigger another QA ticket (no infinite loop)."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="QA: something", branch="b1",
+            ticket_labels=["manual-qa"],
+        )
+        slot = sm.get_slot("test-project", 1)
+        slot.stages_completed = ["qa"]
+        sm.mark_completed("test-project", 1)
+
+        poller = supervisor._pollers["test-project"]
+        supervisor._pending_result_texts[("test-project", 1)] = _qa_report_json(
+            passed=True,
+        )
+
+        with patch.object(supervisor, "_check_pr_status", return_value=(None, None)):
+            supervisor._handle_finished_slots()
+
+        # QA completion actions run, but no new QA ticket created
+        poller.create_issue.assert_not_called()
+
+    def test_manual_qa_label_case_insensitive(self, supervisor):
+        """The manual-qa label check is case-insensitive."""
+        sm, _ = self._assign_impl_slot(
+            supervisor,
+            labels=["Manual-QA"],
+            pr_url="https://github.com/test/repo/pull/42",
+        )
+        poller = supervisor._pollers["test-project"]
+        poller._client.fetch_issue_details.return_value = MagicMock(priority=3)
+
+        with patch.object(supervisor, "_check_pr_status", return_value=("merged", None)):
+            supervisor._handle_finished_slots()
+
+        poller.create_issue.assert_called_once()
+        assert poller.create_issue.call_args.kwargs["title"] == "QA: Add login page"
+
+    def test_creation_failure_does_not_crash(self, supervisor):
+        """If QA ticket creation fails, the slot still completes normally."""
+        sm, _ = self._assign_impl_slot(
+            supervisor,
+            labels=["manual-qa"],
+            pr_url="https://github.com/test/repo/pull/42",
+        )
+        poller = supervisor._pollers["test-project"]
+        poller._client.fetch_issue_details.return_value = MagicMock(priority=2)
+        poller.create_issue.side_effect = Exception("API error")
+
+        with patch.object(supervisor, "_check_pr_status", return_value=("merged", None)):
+            supervisor._handle_finished_slots()
+
+        # Slot still freed despite creation failure
+        assert sm.get_slot("test-project", 1).status == "free"
+
+    def test_priority_fetch_failure_uses_none(self, supervisor):
+        """If fetching priority fails, QA ticket is still created with no priority."""
+        sm, _ = self._assign_impl_slot(
+            supervisor,
+            labels=["manual-qa"],
+            pr_url="https://github.com/test/repo/pull/42",
+        )
+        poller = supervisor._pollers["test-project"]
+        poller._client.fetch_issue_details.side_effect = Exception("fetch failed")
+
+        with patch.object(supervisor, "_check_pr_status", return_value=("merged", None)):
+            supervisor._handle_finished_slots()
+
+        poller.create_issue.assert_called_once()
+        assert poller.create_issue.call_args.kwargs["priority"] is None
+
+    def test_uses_ticket_id_when_title_missing(self, supervisor):
+        """When ticket_title is None, falls back to ticket_id."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title=None, branch="b1",
+            ticket_labels=["manual-qa"],
+        )
+        slot = sm.get_slot("test-project", 1)
+        slot.pr_url = "https://github.com/test/repo/pull/42"
+        slot.stages_completed = ["implement"]
+        sm.mark_completed("test-project", 1)
+
+        poller = supervisor._pollers["test-project"]
+        poller._client.fetch_issue_details.return_value = MagicMock(priority=3)
+
+        with patch.object(supervisor, "_check_pr_status", return_value=("merged", None)):
+            supervisor._handle_finished_slots()
+
+        poller.create_issue.assert_called_once()
+        assert poller.create_issue.call_args.kwargs["title"] == "QA: TST-1"
+
+    def test_records_qa_ticket_triggered_event(self, supervisor):
+        """Successful QA ticket creation records a qa_ticket_triggered event."""
+        sm, _ = self._assign_impl_slot(
+            supervisor,
+            labels=["manual-qa"],
+            pr_url="https://github.com/test/repo/pull/42",
+        )
+        # Create a task so the event can be associated with it.
+        task_id = insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Add login page",
+            project="test-project", slot=1,
+        )
+        supervisor._conn.commit()
+
+        poller = supervisor._pollers["test-project"]
+        poller._client.fetch_issue_details.return_value = MagicMock(priority=2)
+
+        with patch.object(supervisor, "_check_pr_status", return_value=("merged", None)):
+            supervisor._handle_finished_slots()
+
+        poller.create_issue.assert_called_once()
+        events = get_events(
+            supervisor._conn,
+            task_id=task_id, event_type="qa_ticket_triggered",
+        )
+        assert len(events) == 1
+        assert "TST-1" in events[0]["detail"]
+
+    def test_idempotent_on_retry(self, supervisor):
+        """If qa_ticket_triggered event already exists, skip creation (crash recovery)."""
+        sm, _ = self._assign_impl_slot(
+            supervisor,
+            labels=["manual-qa"],
+            pr_url="https://github.com/test/repo/pull/42",
+        )
+        # Create a task and pre-insert the trigger event to simulate prior run.
+        from botfarm.db import insert_event
+        task_id = insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Add login page",
+            project="test-project", slot=1,
+        )
+        insert_event(
+            supervisor._conn,
+            task_id=task_id,
+            event_type="qa_ticket_triggered",
+            detail="created TST-99 for TST-1",
+        )
+        supervisor._conn.commit()
+
+        poller = supervisor._pollers["test-project"]
+
+        with patch.object(supervisor, "_check_pr_status", return_value=("merged", None)):
+            supervisor._handle_finished_slots()
+
+        # create_issue should NOT be called — event already exists.
+        poller.create_issue.assert_not_called()
