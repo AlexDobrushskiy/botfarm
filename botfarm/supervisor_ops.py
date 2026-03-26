@@ -233,6 +233,10 @@ class OperationsMixin:
         if has_qa:
             self._handle_qa_completion(slot, poller, no_pr=no_pr)
 
+        # Auto-trigger QA ticket for implementation tickets with manual-qa label.
+        if not has_qa:
+            self._maybe_trigger_qa_ticket(slot, poller)
+
         # Webhook notification
         self._notify_task_completed(slot)
 
@@ -450,6 +454,67 @@ class OperationsMixin:
         if raw_result_text:
             return f"**QA Report**\n\n{_truncate_for_comment(raw_result_text)}"
         return "**QA Report** — no report data available"
+
+    def _maybe_trigger_qa_ticket(self, slot: SlotState, poller) -> None:
+        """Create a standalone QA ticket if the completed ticket has manual-qa label.
+
+        Only triggers for implementation tickets (those with a merged PR).
+        The created QA ticket gets picked up by the poller like any other ticket.
+        """
+        if not poller or not slot.ticket_id:
+            return
+        labels = slot.ticket_labels or []
+        if not any(lbl.lower() == "manual-qa" for lbl in labels):
+            return
+        if not slot.pr_url:
+            return
+
+        ticket_title = slot.ticket_title or slot.ticket_id
+        project_cfg = self._projects.get(slot.project)
+        project_id = None
+        if project_cfg:
+            try:
+                project_id = poller.get_project_id(
+                    project_cfg.tracker_project,
+                )
+            except Exception:
+                logger.debug(
+                    "Could not resolve project ID for QA trigger of %s",
+                    slot.ticket_id,
+                    exc_info=True,
+                )
+
+        priority = None
+        try:
+            details = poller._client.fetch_issue_details(slot.ticket_id)
+            priority = details.priority
+        except Exception:
+            logger.debug(
+                "Could not fetch priority for QA trigger of %s",
+                slot.ticket_id,
+                exc_info=True,
+            )
+
+        description = (
+            f"Automated QA for {slot.ticket_id}: {ticket_title}\n\n"
+            f"PR: {slot.pr_url}"
+        )
+        try:
+            created = poller.create_issue(
+                title=f"QA: {ticket_title}",
+                description=description,
+                priority=priority,
+                label_names=["manual-qa"],
+                project_id=project_id,
+            )
+            logger.info(
+                "Created QA ticket %s for completed %s",
+                created.identifier, slot.ticket_id,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to create QA ticket for %s", slot.ticket_id,
+            )
 
     def _create_qa_bug_tickets(
         self, poller, slot: SlotState, report: QaReport,
