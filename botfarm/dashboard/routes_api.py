@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import sqlite3
 import time
@@ -443,12 +444,15 @@ def _pipeline_to_dict(conn: sqlite3.Connection, pipeline_id: int) -> dict | None
             "SELECT * FROM stage_loops WHERE pipeline_id = ?", (pipeline_id,)
         ).fetchall()
     ]
+    raw_mcp = row["mcp_servers"]
+    mcp_servers = json.loads(raw_mcp) if raw_mcp else None
     return {
         "id": row["id"],
         "name": row["name"],
         "description": row["description"],
         "ticket_label": row["ticket_label"],
         "is_default": bool(row["is_default"]),
+        "mcp_servers": mcp_servers,
         "stages": stages,
         "loops": loops,
     }
@@ -508,6 +512,7 @@ async def api_create_pipeline(request: Request):
             description=body.get("description"),
             ticket_label=body.get("ticket_label"),
             is_default=body.get("is_default", False),
+            mcp_servers=body.get("mcp_servers"),
         )
         data = _pipeline_to_dict(conn, new_id)
         return JSONResponse({"ok": True, "data": data})

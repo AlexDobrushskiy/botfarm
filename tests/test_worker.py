@@ -4549,6 +4549,11 @@ class TestMergeMcpConfigs:
         parsed = json.loads(result)
         assert parsed == {"mcpServers": {"playwright": {"command": "npx"}}}
 
+    def test_valid_json_missing_mcp_servers_key(self):
+        result = _merge_mcp_configs("{}", {"playwright": {"command": "npx"}})
+        parsed = json.loads(result)
+        assert parsed == {"mcpServers": {"playwright": {"command": "npx"}}}
+
     def test_playwright_server_config(self):
         result = _merge_mcp_configs("", _PLAYWRIGHT_MCP_SERVER)
         parsed = json.loads(result)

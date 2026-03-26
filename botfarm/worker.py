@@ -273,7 +273,7 @@ def _merge_mcp_configs(base_config: str, extra_servers: dict) -> str:
             merged = {"mcpServers": {}}
     else:
         merged = {"mcpServers": {}}
-    merged["mcpServers"].update(extra_servers)
+    merged.setdefault("mcpServers", {}).update(extra_servers)
     return json.dumps(merged)
 
 
@@ -514,10 +514,9 @@ def run_pipeline(
         max_review_iterations, max_ci_retries, max_merge_conflict_retries,
     )
 
-    # Extend MCP config for pipelines that need extra tools.
-    # QA pipelines get the Playwright MCP server for browser automation.
-    if pipeline_tpl is not None and pipeline_tpl.name.lower() == "qa":
-        mcp_config = _merge_mcp_configs(mcp_config, _PLAYWRIGHT_MCP_SERVER)
+    # Extend MCP config with any extra servers declared on the pipeline template.
+    if pipeline_tpl is not None and pipeline_tpl.mcp_servers:
+        mcp_config = _merge_mcp_configs(mcp_config, pipeline_tpl.mcp_servers)
 
     # Validate resume_from_stage upfront — check against all pipeline stages
     # (including loop-managed ones), not just main stages.

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import dataclass, field
 
@@ -39,6 +40,7 @@ class PipelineTemplate:
     description: str | None
     ticket_label: str | None  # Label that selects this pipeline
     is_default: bool
+    mcp_servers: dict | None = None  # Extra MCP servers to merge into config
     stages: list[StageTemplate] = field(default_factory=list)
     loops: list[StageLoop] = field(default_factory=list)
 
@@ -175,12 +177,16 @@ def _build_pipeline(conn: sqlite3.Connection, row: sqlite3.Row) -> PipelineTempl
         for lp in loop_rows
     ]
 
+    raw_mcp = row["mcp_servers"]
+    mcp_servers = json.loads(raw_mcp) if raw_mcp else None
+
     return PipelineTemplate(
         id=pipeline_id,
         name=row["name"],
         description=row["description"],
         ticket_label=row["ticket_label"],
         is_default=bool(row["is_default"]),
+        mcp_servers=mcp_servers,
         stages=stages,
         loops=loops,
     )
@@ -197,25 +203,29 @@ def create_pipeline(
     description: str | None = None,
     ticket_label: str | None = None,
     is_default: bool = False,
+    mcp_servers: dict | None = None,
 ) -> int:
     """Insert a new pipeline template and return its ID.
 
     If *is_default* is True, any existing default pipeline is unset first.
+    *mcp_servers* is an optional dict of extra MCP server configs to merge
+    at pipeline start (e.g. ``{"playwright": {"command": "npx", ...}}``).
     """
     if is_default:
         conn.execute("UPDATE pipeline_templates SET is_default = 0 WHERE is_default = 1")
     cur = conn.execute(
-        "INSERT INTO pipeline_templates (name, description, ticket_label, is_default) "
-        "VALUES (?, ?, ?, ?)",
-        (name, description, ticket_label, int(is_default)),
+        "INSERT INTO pipeline_templates (name, description, ticket_label, is_default, mcp_servers) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (name, description, ticket_label, int(is_default),
+         json.dumps(mcp_servers) if mcp_servers else None),
     )
     conn.commit()
     return cur.lastrowid
 
 
 def update_pipeline(conn: sqlite3.Connection, pipeline_id: int, **kwargs: object) -> None:
-    """Update pipeline fields. Accepted keys: name, description, ticket_label, is_default."""
-    allowed = {"name", "description", "ticket_label", "is_default"}
+    """Update pipeline fields. Accepted keys: name, description, ticket_label, is_default, mcp_servers."""
+    allowed = {"name", "description", "ticket_label", "is_default", "mcp_servers"}
     unknown = set(kwargs) - allowed
     if unknown:
         raise ValueError(f"Unknown fields: {unknown}")
@@ -227,6 +237,9 @@ def update_pipeline(conn: sqlite3.Connection, pipeline_id: int, **kwargs: object
         updates["is_default"] = 1
     elif "is_default" in updates:
         updates["is_default"] = int(updates["is_default"])
+    if "mcp_servers" in updates:
+        val = updates["mcp_servers"]
+        updates["mcp_servers"] = json.dumps(val) if val else None
     set_clause = ", ".join(f"{col} = ?" for col in updates)
     conn.execute(
         f"UPDATE pipeline_templates SET {set_clause} WHERE id = ?",
