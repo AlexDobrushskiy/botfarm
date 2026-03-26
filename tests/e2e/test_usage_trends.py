@@ -21,8 +21,8 @@ class TestUsageTrendsPage:
         """P0: Current usage section is displayed."""
         page.goto(f"{live_server}/usage")
         text = page.locator("main").inner_text()
-        assert "5-hour utilization" in text
-        assert "7-day utilization" in text
+        assert "5-hour window" in text
+        assert "7-day window" in text
 
 
 @pytest.mark.playwright

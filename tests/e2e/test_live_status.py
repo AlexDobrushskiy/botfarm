@@ -78,8 +78,8 @@ class TestUsagePanel:
         """P0: Usage panel shows 5-hour and 7-day utilization."""
         panel = page.locator("#usage-panel")
         text = panel.inner_text()
-        assert "5-hour utilization" in text
-        assert "7-day utilization" in text
+        assert "5-hour window" in text
+        assert "7-day window" in text
 
     def test_usage_progress_bars(self, page):
         """P0: Usage panel contains progress bar elements."""
