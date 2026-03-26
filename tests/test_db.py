@@ -2232,7 +2232,7 @@ class TestWorkflowDefinitionTables:
 
     def test_pipeline_count(self, conn):
         count = conn.execute("SELECT COUNT(*) FROM pipeline_templates").fetchone()[0]
-        assert count == 2
+        assert count == 3
 
     # -- stage_templates seed data --
 
@@ -2530,9 +2530,9 @@ class TestWorkflowDefinitionTables:
         c = init_db(db_file, allow_migration=True)
         # Verify tables exist and seed data is present
         count = c.execute("SELECT COUNT(*) FROM pipeline_templates").fetchone()[0]
-        assert count == 2
+        assert count == 3  # implementation + investigation + manual-qa
         count = c.execute("SELECT COUNT(*) FROM stage_templates").fetchone()[0]
-        assert count == 8  # 7 impl + 1 investigation
+        assert count == 9  # 7 impl + 1 investigation + 1 manual-qa
         count = c.execute("SELECT COUNT(*) FROM stage_loops").fetchone()[0]
         assert count == 3
         c.close()

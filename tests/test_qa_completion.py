@@ -699,3 +699,62 @@ class TestMaybeTriggerQaTicket:
 
         poller.create_issue.assert_called_once()
         assert poller.create_issue.call_args.kwargs["title"] == "QA: TST-1"
+
+    def test_records_qa_ticket_triggered_event(self, supervisor):
+        """Successful QA ticket creation records a qa_ticket_triggered event."""
+        sm, _ = self._assign_impl_slot(
+            supervisor,
+            labels=["manual-qa"],
+            pr_url="https://github.com/test/repo/pull/42",
+        )
+        # Create a task so the event can be associated with it.
+        task_id = insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Add login page",
+            project="test-project", slot=1,
+        )
+        supervisor._conn.commit()
+
+        poller = supervisor._pollers["test-project"]
+        poller._client.fetch_issue_details.return_value = MagicMock(priority=2)
+
+        with patch.object(supervisor, "_check_pr_status", return_value=("merged", None)):
+            supervisor._handle_finished_slots()
+
+        poller.create_issue.assert_called_once()
+        events = get_events(
+            supervisor._conn,
+            task_id=task_id, event_type="qa_ticket_triggered",
+        )
+        assert len(events) == 1
+        assert "TST-1" in events[0]["detail"]
+
+    def test_idempotent_on_retry(self, supervisor):
+        """If qa_ticket_triggered event already exists, skip creation (crash recovery)."""
+        sm, _ = self._assign_impl_slot(
+            supervisor,
+            labels=["manual-qa"],
+            pr_url="https://github.com/test/repo/pull/42",
+        )
+        # Create a task and pre-insert the trigger event to simulate prior run.
+        from botfarm.db import insert_event
+        task_id = insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Add login page",
+            project="test-project", slot=1,
+        )
+        insert_event(
+            supervisor._conn,
+            task_id=task_id,
+            event_type="qa_ticket_triggered",
+            detail="created TST-99 for TST-1",
+        )
+        supervisor._conn.commit()
+
+        poller = supervisor._pollers["test-project"]
+
+        with patch.object(supervisor, "_check_pr_status", return_value=("merged", None)):
+            supervisor._handle_finished_slots()
+
+        # create_issue should NOT be called — event already exists.
+        poller.create_issue.assert_not_called()

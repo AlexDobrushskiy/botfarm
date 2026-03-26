@@ -460,6 +460,10 @@ class OperationsMixin:
 
         Only triggers for implementation tickets (those with a merged PR).
         The created QA ticket gets picked up by the poller like any other ticket.
+
+        Idempotent: records a ``qa_ticket_triggered`` event after creation so
+        retries of ``_handle_completed_slot`` (e.g. crash recovery) won't
+        create duplicate QA tickets.
         """
         if not poller or not slot.ticket_id:
             return
@@ -468,6 +472,20 @@ class OperationsMixin:
             return
         if not slot.pr_url:
             return
+
+        # Idempotency: skip if we already triggered a QA ticket for this task.
+        task_id = self._find_task_id(slot.ticket_id)
+        if task_id is not None:
+            existing = get_events(
+                self._conn, task_id=task_id,
+                event_type="qa_ticket_triggered", limit=1,
+            )
+            if existing:
+                logger.debug(
+                    "QA ticket already triggered for %s — skipping",
+                    slot.ticket_id,
+                )
+                return
 
         ticket_title = slot.ticket_title or slot.ticket_id
         project_cfg = self._projects.get(slot.project)
@@ -511,6 +529,13 @@ class OperationsMixin:
                 "Created QA ticket %s for completed %s",
                 created.identifier, slot.ticket_id,
             )
+            insert_event(
+                self._conn,
+                task_id=task_id,
+                event_type="qa_ticket_triggered",
+                detail=f"created {created.identifier} for {slot.ticket_id}",
+            )
+            self._conn.commit()
         except Exception:
             logger.exception(
                 "Failed to create QA ticket for %s", slot.ticket_id,
