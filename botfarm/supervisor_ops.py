@@ -15,6 +15,7 @@ import re
 import signal
 import subprocess
 import time
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -48,6 +49,104 @@ from botfarm.worker import is_protected_branch
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# QA report parsing
+# ---------------------------------------------------------------------------
+
+_SEVERITY_TO_PRIORITY = {
+    "critical": 1,
+    "high": 2,
+    "medium": 3,
+    "low": 4,
+}
+
+
+@dataclass
+class QaBug:
+    """A single bug extracted from a QA report."""
+
+    title: str
+    description: str = ""
+    severity: str = "medium"
+
+
+@dataclass
+class QaReport:
+    """Structured QA results parsed from worker result_text."""
+
+    passed: bool
+    summary: str = ""
+    bugs: list[QaBug] = field(default_factory=list)
+    report_text: str = ""
+
+
+def parse_qa_report(result_text: str | None) -> QaReport | None:
+    """Parse a QA report from result_text.
+
+    Supports two formats:
+
+    1. **JSON** — structured data with ``"type": "qa_report"``::
+
+        {
+            "type": "qa_report",
+            "passed": true/false,
+            "summary": "...",
+            "bugs": [{"title": "...", "description": "...", "severity": "high"}, ...],
+            "report_text": "Full human-readable report..."
+        }
+
+    2. **Text markers** — output produced by the QA agent using
+       ``QA_REPORT_START``/``QA_REPORT_END`` and ``BUG_START``/``BUG_END``
+       delimiters (parsed by :func:`worker_claude._parse_qa_report`).
+
+    Returns ``None`` if *result_text* is missing or contains no QA data.
+    """
+    if not result_text:
+        return None
+
+    # --- Try JSON first ---
+    try:
+        data = json.loads(result_text)
+        if isinstance(data, dict) and data.get("type") == "qa_report":
+            bugs = [
+                QaBug(
+                    title=b.get("title", "Untitled bug"),
+                    description=b.get("description", ""),
+                    severity=b.get("severity", "medium"),
+                )
+                for b in data.get("bugs", [])
+                if isinstance(b, dict)
+            ]
+            return QaReport(
+                passed=bool(data.get("passed", not bugs)),
+                summary=data.get("summary", ""),
+                bugs=bugs,
+                report_text=data.get("report_text", ""),
+            )
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    # --- Fall back to text-marker format ---
+    from botfarm.worker_claude import _parse_qa_report as _parse_markers
+
+    report_text, raw_bugs, passed = _parse_markers(result_text)
+    if report_text is None and not raw_bugs and passed is None:
+        return None
+    bugs = [
+        QaBug(
+            title=b.get("title", "Untitled bug"),
+            description=b.get("description", ""),
+            severity=b.get("severity", "medium"),
+        )
+        for b in raw_bugs
+    ]
+    return QaReport(
+        passed=bool(passed) if passed is not None else not bugs,
+        summary="",
+        bugs=bugs,
+        report_text=report_text or "",
+    )
+
 
 class OperationsMixin:
     """Slot cleanup, stop-slot, comments, notifications, and limits for Supervisor."""
@@ -79,6 +178,9 @@ class OperationsMixin:
         project = slot.project
         bt_cfg = self._resolve_project_bt(project)
         poller = self._pollers.get(project)
+        has_qa = "qa" in (slot.stages_completed or [])
+        no_pr = None
+
         if poller and slot.ticket_id:
             if poller.is_issue_terminal(slot.ticket_id):
                 logger.info(
@@ -97,27 +199,39 @@ class OperationsMixin:
                             no_pr = _detect_no_pr_needed(task["comments"])
                 if no_pr:
                     target_status = bt_cfg.done_status
-                elif self._check_pr_status(slot)[0] == "merged":
-                    target_status = bt_cfg.done_status
                 else:
-                    target_status = bt_cfg.in_review_status
+                    pr_status, resolved_pr_url = self._check_pr_status(slot)
+                    if resolved_pr_url and not slot.pr_url:
+                        slot.pr_url = resolved_pr_url
+                    if pr_status == "merged":
+                        target_status = bt_cfg.done_status
+                    else:
+                        target_status = bt_cfg.in_review_status
 
-                try:
-                    poller.move_issue(slot.ticket_id, target_status)
-                    logger.info(
-                        "Moved %s to '%s' after successful pipeline",
-                        slot.ticket_id, target_status,
-                    )
-                except Exception:
-                    logger.exception(
-                        "Failed to move %s to '%s'", slot.ticket_id, target_status,
-                    )
+                # For standalone QA pipelines (no PR, no no_pr_reason),
+                # _handle_qa_completion manages the status transition.
+                is_standalone_qa = has_qa and not slot.pr_url and not no_pr
+                if not is_standalone_qa:
+                    try:
+                        poller.move_issue(slot.ticket_id, target_status)
+                        logger.info(
+                            "Moved %s to '%s' after successful pipeline",
+                            slot.ticket_id, target_status,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Failed to move %s to '%s'", slot.ticket_id, target_status,
+                        )
 
             if bt_cfg.comment_on_completion and not slot.no_pr_reason:
                 self._post_completion_comment(poller, slot)
 
             if slot.no_pr_reason:
                 self._post_no_pr_comment(poller, slot)
+
+        # QA side effects layered on top of normal completion flow.
+        if has_qa:
+            self._handle_qa_completion(slot, poller, no_pr=no_pr)
 
         # Webhook notification
         self._notify_task_completed(slot)
@@ -213,6 +327,154 @@ class OperationsMixin:
         self._cleanup_slot_db(project, slot.slot_id)
         self._pending_result_texts.pop((project, slot.slot_id), None)
         logger.info("Freed slot %s/%d after failure", project, slot.slot_id)
+
+    # ------------------------------------------------------------------
+    # QA pipeline completion
+    # ------------------------------------------------------------------
+
+    def _handle_qa_completion(
+        self, slot: SlotState, poller, *, no_pr: str | None = None,
+    ) -> None:
+        """Handle post-QA pipeline actions: report, bug tickets, labels.
+
+        Called from ``_handle_completed_slot`` when the completed pipeline
+        includes a ``"qa"`` stage.
+
+        *no_pr* is the resolved no-PR reason from the caller, which may
+        include detection from task comments (not just ``slot.no_pr_reason``).
+        """
+        if not poller or not slot.ticket_id:
+            return
+
+        result_text = self._pending_result_texts.get(
+            (slot.project, slot.slot_id)
+        )
+        if not result_text:
+            task_id = self._find_task_id(slot.ticket_id)
+            if task_id is not None:
+                task = get_task(self._conn, task_id)
+                if task and task["result_text"]:
+                    result_text = task["result_text"]
+
+        report = parse_qa_report(result_text)
+
+        # Post the QA report as a comment on the trigger ticket.
+        comment_body = self._build_qa_comment(report, result_text)
+        try:
+            poller.add_comment(slot.ticket_id, comment_body)
+        except Exception:
+            logger.exception(
+                "Failed to post QA report comment on %s", slot.ticket_id,
+            )
+
+        # Create bug tickets for each bug found.
+        if report and report.bugs:
+            self._create_qa_bug_tickets(poller, slot, report)
+
+        # Add qa-passed / qa-failed label.  Default to failed when the
+        # report could not be parsed — a silent pass is more dangerous than
+        # a false negative that gets human triage.
+        passed = report.passed if report else False
+        label_name = "qa-passed" if passed else "qa-failed"
+        try:
+            poller.add_labels(slot.ticket_id, [label_name])
+        except Exception:
+            logger.exception(
+                "Failed to add '%s' label to %s", label_name, slot.ticket_id,
+            )
+
+        # Status transition: standalone QA tickets move to Done if passed.
+        # For implementation tickets with QA, bugs are tracked separately
+        # and the ticket stays at Done (already handled by normal flow).
+        is_standalone_qa = not slot.pr_url and not no_pr
+        bt_cfg = self._resolve_project_bt(slot.project)
+        if not poller.is_issue_terminal(slot.ticket_id):
+            if is_standalone_qa and passed:
+                try:
+                    poller.move_issue(slot.ticket_id, bt_cfg.done_status)
+                    logger.info(
+                        "QA passed for standalone ticket %s — moved to '%s'",
+                        slot.ticket_id, bt_cfg.done_status,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to move %s to '%s'",
+                        slot.ticket_id, bt_cfg.done_status,
+                    )
+            elif is_standalone_qa and not passed:
+                logger.info(
+                    "QA failed for standalone ticket %s — leaving open with "
+                    "'qa-failed' label",
+                    slot.ticket_id,
+                )
+
+    @staticmethod
+    def _build_qa_comment(
+        report: QaReport | None,
+        raw_result_text: str | None,
+    ) -> str:
+        """Build the QA report comment body."""
+        if report:
+            status = "passed" if report.passed else "failed"
+            lines = [f"**QA Report — {status}**"]
+            if report.summary:
+                lines.append("")
+                lines.append(report.summary)
+            if report.bugs:
+                lines.append("")
+                lines.append(f"**Bugs found: {len(report.bugs)}**")
+                for bug in report.bugs:
+                    lines.append(f"- **[{bug.severity}]** {bug.title}")
+            if report.report_text:
+                lines.append("")
+                lines.append("---")
+                lines.append(_truncate_for_comment(report.report_text))
+            return "\n".join(lines)
+        # Fallback: post raw result_text if we couldn't parse structured data.
+        if raw_result_text:
+            return f"**QA Report**\n\n{_truncate_for_comment(raw_result_text)}"
+        return "**QA Report** — no report data available"
+
+    def _create_qa_bug_tickets(
+        self, poller, slot: SlotState, report: QaReport,
+    ) -> None:
+        """Create a bug ticket for each bug in the QA report."""
+        project_cfg = self._projects.get(slot.project)
+        project_id = None
+        if project_cfg:
+            try:
+                project_id = poller.get_project_id(
+                    project_cfg.tracker_project,
+                )
+            except Exception:
+                logger.debug(
+                    "Could not resolve project ID for %s",
+                    project_cfg.tracker_project,
+                    exc_info=True,
+                )
+
+        for bug in report.bugs:
+            priority = _SEVERITY_TO_PRIORITY.get(bug.severity.lower(), 3)
+            description = bug.description
+            if slot.ticket_id:
+                description += f"\n\n---\nFound during QA of {slot.ticket_id}"
+            try:
+                created = poller.create_issue(
+                    title=f"[QA Bug] {bug.title}",
+                    description=description,
+                    priority=priority,
+                    label_names=["Bug", "QA"],
+                    project_id=project_id,
+                )
+                logger.info(
+                    "Created QA bug ticket %s for %s: %s",
+                    created.identifier, slot.ticket_id, bug.title,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to create QA bug ticket for %s: %s",
+                    slot.ticket_id, bug.title,
+                )
 
     # ------------------------------------------------------------------
     # Base directory guardrail
