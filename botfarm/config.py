@@ -152,13 +152,14 @@ class ProjectConfig:
     """Project configuration.
 
     Fields: ``team``, ``tracker_project``, ``project_type``,
-    ``setup_commands``, ``run_command``, ``run_env``, ``run_port``.
+    ``setup_commands``, ``run_command``, ``run_env``, ``run_port``,
+    ``qa_teardown_command``.
     """
 
     __slots__ = ("name", "base_dir", "worktree_prefix", "slots",
                  "team", "tracker_project", "project_type",
                  "setup_commands", "run_command", "run_env", "run_port",
-                 "include_tags", "bugtracker")
+                 "include_tags", "bugtracker", "qa_teardown_command")
 
     def __init__(
         self,
@@ -175,6 +176,7 @@ class ProjectConfig:
         run_port: int = 0,
         include_tags: list[str] | None = None,
         bugtracker: dict | None = None,
+        qa_teardown_command: str = "",
     ) -> None:
         self.name = name
         self.base_dir = base_dir
@@ -189,6 +191,7 @@ class ProjectConfig:
         self.run_port = run_port
         self.include_tags = include_tags
         self.bugtracker = bugtracker
+        self.qa_teardown_command = qa_teardown_command
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, ProjectConfig):
@@ -203,7 +206,8 @@ class ProjectConfig:
                 and self.run_env == other.run_env
                 and self.run_port == other.run_port
                 and self.include_tags == other.include_tags
-                and self.bugtracker == other.bugtracker)
+                and self.bugtracker == other.bugtracker
+                and self.qa_teardown_command == other.qa_teardown_command)
 
     def __repr__(self) -> str:
         return (f"ProjectConfig(name={self.name!r}, team={self.team!r}, "
@@ -214,7 +218,8 @@ class ProjectConfig:
                 f"run_command={self.run_command!r}, "
                 f"run_env={self.run_env!r}, run_port={self.run_port!r}, "
                 f"include_tags={self.include_tags!r}, "
-                f"bugtracker={self.bugtracker!r})")
+                f"bugtracker={self.bugtracker!r}, "
+                f"qa_teardown_command={self.qa_teardown_command!r})")
 
 
 @dataclass
@@ -641,6 +646,13 @@ def _parse_project(data: dict) -> ProjectConfig:
                 f"Project '{data['name']}': include_tags must be a list of strings"
             )
 
+    # qa_teardown_command
+    qa_teardown_command = data.get("qa_teardown_command", "")
+    if not isinstance(qa_teardown_command, str):
+        raise ConfigError(
+            f"Project '{data['name']}': qa_teardown_command must be a string"
+        )
+
     # Per-project bugtracker overrides
     bugtracker_data = data.get("bugtracker")
     if bugtracker_data is not None:
@@ -670,6 +682,7 @@ def _parse_project(data: dict) -> ProjectConfig:
         run_port=run_port,
         include_tags=include_tags,
         bugtracker=bugtracker_data,
+        qa_teardown_command=qa_teardown_command,
     )
 
 
@@ -1663,7 +1676,8 @@ def _validate_project_updates(
     _NEW_PROJECT_REQUIRED = {"name", "team", "base_dir", "worktree_prefix", "slots"}
     _NEW_PROJECT_OPTIONAL = {"tracker_project", "project_type", "setup_commands",
                               "run_command", "run_env", "run_port",
-                              "include_tags", "bugtracker"}
+                              "include_tags", "bugtracker",
+                              "qa_teardown_command"}
     _NEW_PROJECT_ALLOWED = _NEW_PROJECT_REQUIRED | _NEW_PROJECT_OPTIONAL
     seen_names: set[str] = set()
 
@@ -1774,7 +1788,8 @@ def _validate_project_updates(
             # Existing project: editable fields
             allowed_keys = {"name", "slots", "tracker_project",
                             "run_command", "run_env", "run_port",
-                            "include_tags", "bugtracker"}
+                            "include_tags", "bugtracker",
+                            "qa_teardown_command"}
             extra = set(proj.keys()) - allowed_keys
             if extra:
                 errors.append(
@@ -1843,7 +1858,8 @@ def write_structural_config_updates(config_path: Path, updates: dict) -> None:
                 # Existing project: merge editable fields
                 target = by_name[name]
                 for fld in ("slots", "tracker_project", "include_tags",
-                            "run_command", "run_env", "run_port", "bugtracker"):
+                            "run_command", "run_env", "run_port", "bugtracker",
+                            "qa_teardown_command"):
                     if fld in proj_update:
                         val = proj_update[fld]
                         if fld == "include_tags" and val == []:
@@ -1875,6 +1891,8 @@ def write_structural_config_updates(config_path: Path, updates: dict) -> None:
                         new_proj["run_port"] = proj_update["run_port"]
                     if proj_update.get("bugtracker"):
                         new_proj["bugtracker"] = proj_update["bugtracker"]
+                    if proj_update.get("qa_teardown_command"):
+                        new_proj["qa_teardown_command"] = proj_update["qa_teardown_command"]
                     existing_projects.append(new_proj)
 
     write_yaml_atomic(config_path, data)

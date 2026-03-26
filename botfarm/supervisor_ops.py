@@ -255,6 +255,7 @@ class OperationsMixin:
         )
         self._conn.commit()
 
+        self._maybe_cleanup_qa_environment(project, slot.slot_id)
         self._slot_manager.free_slot(project, slot.slot_id)
         self._cleanup_slot_db(project, slot.slot_id)
         self._pending_result_texts.pop((project, slot.slot_id), None)
@@ -323,10 +324,25 @@ class OperationsMixin:
         )
         self._conn.commit()
 
+        self._maybe_cleanup_qa_environment(project, slot.slot_id)
         self._slot_manager.free_slot(project, slot.slot_id)
         self._cleanup_slot_db(project, slot.slot_id)
         self._pending_result_texts.pop((project, slot.slot_id), None)
         logger.info("Freed slot %s/%d after failure", project, slot.slot_id)
+
+    def _maybe_cleanup_qa_environment(self, project: str, slot_id: int) -> None:
+        """Run QA environment cleanup if the project has a run_port or teardown command."""
+        project_cfg = self._projects.get(project)
+        if project_cfg is None:
+            return
+        try:
+            from botfarm.qa_cleanup import cleanup_qa_environment
+            worktree_cwd = self._slot_worktree_cwd(project_cfg, slot_id)
+            cleanup_qa_environment(project_cfg, slot_id, worktree_cwd=worktree_cwd)
+        except Exception:
+            logger.warning(
+                "QA cleanup failed for %s/%d", project, slot_id, exc_info=True,
+            )
 
     # ------------------------------------------------------------------
     # QA pipeline completion
