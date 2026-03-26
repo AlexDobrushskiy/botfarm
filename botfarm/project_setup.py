@@ -104,6 +104,10 @@ def format_project_entry(project_dict: dict, indent: int = 2) -> str:
         lines.append(f"{cont}run_env:")
         for k, v in project_dict["run_env"].items():
             lines.append(f"{cont}  {yaml_scalar(k)}: {yaml_scalar(v)}")
+    if project_dict.get("qa_teardown_command"):
+        lines.append(
+            f"{cont}qa_teardown_command: {yaml_scalar(project_dict['qa_teardown_command'])}"
+        )
     return "\n".join(lines)
 
 

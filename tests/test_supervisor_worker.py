@@ -646,7 +646,33 @@ class TestSlotWorktreeCwd:
             supervisor._handle_failed_slot(slot)
             mock_cleanup.assert_called_once_with("test-project", 1)
 
+    def test_completed_slot_calls_qa_cleanup(self, supervisor, tmp_path):
+        """QA cleanup should be called when a completed slot is freed."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.mark_completed("test-project", 1)
+        slot = sm.get_slot("test-project", 1)
 
+        with patch.object(supervisor, "_maybe_cleanup_qa_environment") as mock_qa:
+            supervisor._handle_completed_slot(slot)
+            mock_qa.assert_called_once_with("test-project", 1)
+
+    def test_failed_slot_calls_qa_cleanup(self, supervisor, tmp_path):
+        """QA cleanup should be called when a failed slot is freed."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.mark_failed("test-project", 1)
+        slot = sm.get_slot("test-project", 1)
+
+        with patch.object(supervisor, "_maybe_cleanup_qa_environment") as mock_qa:
+            supervisor._handle_failed_slot(slot)
+            mock_qa.assert_called_once_with("test-project", 1)
 
 
 # ---------------------------------------------------------------------------
