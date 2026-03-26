@@ -686,7 +686,7 @@ class TestUsagePanelEnhancements:
         app = create_app(db_path=db_path)
         client = TestClient(app)
         resp = client.get("/partials/usage")
-        assert "Codex Usage" in resp.text
+        assert "Codex" in resp.text
         assert "65%" in resp.text
         assert "pro" in resp.text
 

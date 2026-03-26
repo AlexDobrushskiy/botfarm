@@ -1,52 +1,58 @@
 {% if auth_mode is defined and auth_mode == "api_key" %}
 <p style="margin-bottom: 0;">N/A — usage tracking unavailable in API key mode</p>
 {% elif usage %}
-<div class="grid">
-    <div>
-        <strong>5-hour utilization:</strong>
-        {% if usage.utilization_5h is not none %}
-            <span class="{% if usage.utilization_5h >= 0.85 %}status-failed{% elif usage.utilization_5h >= 0.7 %}status-busy{% else %}status-free{% endif %}">
-                {{ "%.1f"|format(usage.utilization_5h * 100) }}%
-            </span>
-            <progress value="{{ (usage.utilization_5h * 100)|round|int }}" max="100" style="margin-bottom: 0;"></progress>
-            {% if usage.resets_at_5h %}
-            <br><small>Resets at: <span class="reset-countdown" data-reset="{{ usage.resets_at_5h }}">{{ usage.resets_at_5h[:19] }}</span></small>
+{# ── Claude (Anthropic API) usage ── #}
+<div style="padding: 0.75rem; border: 1px solid var(--pico-muted-border-color); border-radius: var(--pico-border-radius);">
+    <strong>Claude</strong>
+    {% if usage.extra_usage_enabled %}
+        <small style="opacity: 0.6; margin-left: 0.25rem;">(extra usage enabled)</small>
+    {% endif %}
+    <div class="grid" style="margin-top: 0.5rem;">
+        <div>
+            <small style="opacity: 0.7;">5-hour window</small>
+            {% if usage.utilization_5h is not none %}
+                <br>
+                <span class="{% if usage.utilization_5h >= 0.85 %}status-failed{% elif usage.utilization_5h >= 0.7 %}status-busy{% else %}status-free{% endif %}">
+                    <strong>{{ "%.1f"|format(usage.utilization_5h * 100) }}%</strong>
+                </span>
+                <progress value="{{ (usage.utilization_5h * 100)|round|int }}" max="100" style="margin-bottom: 0;"></progress>
+                {% if usage.resets_at_5h %}
+                <small>Resets: <span class="reset-countdown" data-reset="{{ usage.resets_at_5h }}">{{ usage.resets_at_5h[:19] }}</span></small>
+                {% endif %}
+            {% else %}
+                <br><span style="opacity: 0.5;">—</span>
             {% endif %}
-        {% else %}
-            -
-        {% endif %}
-    </div>
-    <div>
-        <strong>7-day utilization:</strong>
-        {% if usage.utilization_7d is not none %}
-            <span class="{% if usage.utilization_7d >= 0.9 %}status-failed{% elif usage.utilization_7d >= 0.75 %}status-busy{% else %}status-free{% endif %}">
-                {{ "%.1f"|format(usage.utilization_7d * 100) }}%
-            </span>
-            <progress value="{{ (usage.utilization_7d * 100)|round|int }}" max="100" style="margin-bottom: 0;"></progress>
-            {% if usage.resets_at_7d %}
-            <br><small>Resets at: <span class="reset-countdown" data-reset="{{ usage.resets_at_7d }}">{{ usage.resets_at_7d[:19] }}</span></small>
+        </div>
+        <div>
+            <small style="opacity: 0.7;">7-day window</small>
+            {% if usage.utilization_7d is not none %}
+                <br>
+                <span class="{% if usage.utilization_7d >= 0.9 %}status-failed{% elif usage.utilization_7d >= 0.75 %}status-busy{% else %}status-free{% endif %}">
+                    <strong>{{ "%.1f"|format(usage.utilization_7d * 100) }}%</strong>
+                </span>
+                <progress value="{{ (usage.utilization_7d * 100)|round|int }}" max="100" style="margin-bottom: 0;"></progress>
+                {% if usage.resets_at_7d %}
+                <small>Resets: <span class="reset-countdown" data-reset="{{ usage.resets_at_7d }}">{{ usage.resets_at_7d[:19] }}</span></small>
+                {% endif %}
+            {% else %}
+                <br><span style="opacity: 0.5;">—</span>
             {% endif %}
-        {% else %}
-            -
-        {% endif %}
+        </div>
     </div>
-</div>
-{% if usage.extra_usage_enabled %}
-<div style="margin-top: 0.75rem; padding: 0.75rem; border: 1px solid var(--pico-muted-border-color); border-radius: var(--pico-border-radius);">
-    <strong>Extra Usage:</strong>
-    {% if usage.extra_usage_used_credits is not none and usage.extra_usage_monthly_limit %}
+    {% if usage.extra_usage_enabled and usage.extra_usage_used_credits is not none and usage.extra_usage_monthly_limit %}
+    <div style="margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px solid var(--pico-muted-border-color);">
+        <small style="opacity: 0.7;">Extra usage</small>
+        <br>
         <span class="{% if usage.extra_usage_utilization is not none and usage.extra_usage_utilization >= 80 %}status-failed{% elif usage.extra_usage_utilization is not none and usage.extra_usage_utilization >= 50 %}status-busy{% else %}status-free{% endif %}">
-            ${{ "%.2f"|format(usage.extra_usage_used_credits) }} / ${{ "%.2f"|format(usage.extra_usage_monthly_limit) }}
+            <strong>${{ "%.2f"|format(usage.extra_usage_used_credits) }}</strong> / ${{ "%.2f"|format(usage.extra_usage_monthly_limit) }}
         </span>
         {% if usage.extra_usage_utilization is not none %}
-            ({{ "%.1f"|format(usage.extra_usage_utilization) }}%)
+            <small>({{ "%.1f"|format(usage.extra_usage_utilization) }}%)</small>
         {% endif %}
         <progress value="{{ usage.extra_usage_utilization|round|int if usage.extra_usage_utilization is not none else 0 }}" max="100" style="margin-bottom: 0; margin-top: 0.25rem;"></progress>
-    {% else %}
-        Enabled (no data yet)
+    </div>
     {% endif %}
 </div>
-{% endif %}
 {% if last_usage_check %}
 <div style="display: flex; align-items: center; gap: 0.75rem; margin-top: 0.5rem;">
     <small>Last polled: {{ elapsed(last_usage_check) }} ago</small>
@@ -64,20 +70,38 @@
 </div>
 <div id="usage-refresh-error" style="display: none; margin-top: 0.5rem;"></div>
 {% endif %}
+{# ── Codex usage (only shown when data exists) ── #}
 {% if codex_usage and codex_usage.primary_used_pct is defined and codex_usage.primary_used_pct is not none %}
 <div style="margin-top: 0.75rem; padding: 0.75rem; border: 1px solid var(--pico-muted-border-color); border-radius: var(--pico-border-radius);">
-    <strong>Codex Usage{% if codex_usage.plan_type %} ({{ codex_usage.plan_type }}){% endif %}:</strong>
-    <span class="{% if codex_usage.primary_used_pct >= 0.9 %}status-failed{% elif codex_usage.primary_used_pct >= 0.7 %}status-busy{% else %}status-free{% endif %}">
-        Primary: {{ "%.0f"|format(codex_usage.primary_used_pct * 100) }}%
-    </span>
-    {% if codex_usage.secondary_used_pct is not none %}
-    | <span class="{% if codex_usage.secondary_used_pct >= 0.9 %}status-failed{% elif codex_usage.secondary_used_pct >= 0.7 %}status-busy{% else %}status-free{% endif %}">
-        Secondary: {{ "%.0f"|format(codex_usage.secondary_used_pct * 100) }}%
-    </span>
-    {% endif %}
-    <progress value="{{ (codex_usage.primary_used_pct * 100)|round|int }}" max="100" style="margin-bottom: 0; margin-top: 0.25rem;"></progress>
-    {% if codex_usage.primary_reset_at %}
-    <small>Resets: <time data-timestamp="{{ codex_usage.primary_reset_at }}" title="{{ codex_usage.primary_reset_at }}">{{ codex_usage.primary_reset_at[:19] }}</time></small>
+    <strong>Codex{% if codex_usage.plan_type %} <small style="opacity: 0.6;">({{ codex_usage.plan_type }})</small>{% endif %}</strong>
+    <div class="grid" style="margin-top: 0.5rem;">
+        <div>
+            <small style="opacity: 0.7;">Primary</small>
+            <br>
+            <span class="{% if codex_usage.primary_used_pct >= 0.9 %}status-failed{% elif codex_usage.primary_used_pct >= 0.7 %}status-busy{% else %}status-free{% endif %}">
+                <strong>{{ "%.0f"|format(codex_usage.primary_used_pct * 100) }}%</strong>
+            </span>
+            <progress value="{{ (codex_usage.primary_used_pct * 100)|round|int }}" max="100" style="margin-bottom: 0;"></progress>
+            {% if codex_usage.primary_reset_at %}
+            <small>Resets: <span class="reset-countdown" data-reset="{{ codex_usage.primary_reset_at }}">{{ codex_usage.primary_reset_at[:19] }}</span></small>
+            {% endif %}
+        </div>
+        {% if codex_usage.secondary_used_pct is not none %}
+        <div>
+            <small style="opacity: 0.7;">Secondary</small>
+            <br>
+            <span class="{% if codex_usage.secondary_used_pct >= 0.9 %}status-failed{% elif codex_usage.secondary_used_pct >= 0.7 %}status-busy{% else %}status-free{% endif %}">
+                <strong>{{ "%.0f"|format(codex_usage.secondary_used_pct * 100) }}%</strong>
+            </span>
+            <progress value="{{ (codex_usage.secondary_used_pct * 100)|round|int }}" max="100" style="margin-bottom: 0;"></progress>
+            {% if codex_usage.secondary_reset_at %}
+            <small>Resets: <span class="reset-countdown" data-reset="{{ codex_usage.secondary_reset_at }}">{{ codex_usage.secondary_reset_at[:19] }}</span></small>
+            {% endif %}
+        </div>
+        {% endif %}
+    </div>
+    {% if codex_usage.last_polled_at %}
+    <small style="opacity: 0.6; margin-top: 0.25rem; display: block;">Polled: <span class="timeago" data-timestamp="{{ codex_usage.last_polled_at }}">{{ codex_usage.last_polled_at[:19] }}</span></small>
     {% endif %}
 </div>
 {% endif %}
