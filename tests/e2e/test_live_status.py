@@ -98,7 +98,7 @@ class TestUsagePanel:
         """P1: Extra usage section is visible when enabled."""
         panel = page.locator("#usage-panel")
         text = panel.inner_text()
-        assert "Extra Usage" in text
+        assert "Extra usage" in text
 
     def test_usage_reset_countdown(self, page):
         """P1: Reset countdown is present."""
