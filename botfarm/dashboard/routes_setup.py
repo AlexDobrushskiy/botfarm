@@ -109,7 +109,7 @@ def _check_github_auth() -> SetupStep:
     return SetupStep(id="github_auth", label="GitHub authentication", done=done)
 
 
-def _check_claude_auth(config: BotfarmConfig | None = None) -> SetupStep:
+def _check_claude_auth(config: BotfarmConfig | None = None, app=None) -> SetupStep:
     """Check whether Claude Code credentials are available.
 
     The check varies by auth mode:
@@ -117,14 +117,23 @@ def _check_claude_auth(config: BotfarmConfig | None = None) -> SetupStep:
       ``botfarm.credentials._load_token``.
     - **long_lived_token**: checks ``CLAUDE_LONG_LIVED_TOKEN`` env var.
     - **api_key**: checks ``ANTHROPIC_API_KEY`` env var.
+
+    When *app* is provided, environment variables are resolved via
+    ``_get_env_var`` which also reads from the ``.env`` file, keeping
+    behaviour consistent with ``_build_credentials_context``.
     """
     auth_mode = config.auth_mode if config else "oauth"
     done = False
 
+    def _env(key: str) -> str:
+        if app is not None:
+            return _get_env_var(app, key)
+        return os.environ.get(key, "")
+
     if auth_mode == "long_lived_token":
-        done = bool(os.environ.get(LONG_LIVED_TOKEN_ENV_VAR, ""))
+        done = bool(_env(LONG_LIVED_TOKEN_ENV_VAR))
     elif auth_mode == "api_key":
-        done = bool(os.environ.get("ANTHROPIC_API_KEY", ""))
+        done = bool(_env("ANTHROPIC_API_KEY"))
     else:
         try:
             _load_token()
@@ -159,13 +168,13 @@ def _check_repos_cloned(config: BotfarmConfig) -> SetupStep:
     )
 
 
-def get_setup_steps(config: BotfarmConfig) -> list[SetupStep]:
+def get_setup_steps(config: BotfarmConfig, app=None) -> list[SetupStep]:
     """Return the full ordered checklist of setup steps."""
     return [
         _check_bugtracker_type(config),
         _check_bugtracker_api_key(config),
         _check_github_auth(),
-        _check_claude_auth(config),
+        _check_claude_auth(config, app=app),
         _check_project_configured(config),
         _check_repos_cloned(config),
     ]
@@ -180,7 +189,7 @@ def api_setup_status(request: Request):
             {"error": "No configuration loaded"}, status_code=503
         )
 
-    steps = get_setup_steps(config)
+    steps = get_setup_steps(config, app=request.app)
     setup_complete = all(s.done for s in steps)
     return JSONResponse({
         "setup_complete": setup_complete,
@@ -195,7 +204,7 @@ def partial_setup_status(request: Request):
     steps: list[SetupStep] = []
     setup_complete = False
     if config is not None:
-        steps = get_setup_steps(config)
+        steps = get_setup_steps(config, app=request.app)
         setup_complete = all(s.done for s in steps)
 
     templates = request.app.state.templates
@@ -230,7 +239,7 @@ def _build_credentials_context(cfg: BotfarmConfig | None, app=None) -> dict:
     (htmx refresh) to avoid duplicating the same assembly logic.
     """
     github_done = _check_github_auth().done
-    claude_done = _check_claude_auth(cfg).done
+    claude_done = _check_claude_auth(cfg, app=app).done
 
     ssh_key_path = ""
     ssh_key_exists = False
@@ -300,7 +309,7 @@ def setup_page(request: Request):
     degraded = degraded_getter() if degraded_getter else False
 
     if config is not None:
-        steps = get_setup_steps(config)
+        steps = get_setup_steps(config, app=app)
         all_steps_done = all(s.done for s in steps)
         setup_complete = all_steps_done and not degraded
         section_done = _section_done_map(steps)

@@ -13,10 +13,13 @@ from botfarm.config import (
     ProjectConfig,
 )
 from botfarm.dashboard import create_app
+from botfarm.config import LONG_LIVED_TOKEN_ENV_VAR
 from botfarm.dashboard.routes_setup import (
     SetupStep,
     _build_credentials_context,
+    _check_claude_auth,
     _extract_auth_url,
+    _get_env_var,
     _section_done_map,
     _validate_bugtracker_api_key,
     _validate_github_token,
@@ -1818,3 +1821,257 @@ class TestClaudeAuthStatusEndpoint:
         data = resp.json()
         assert data["authenticated"] is True
         assert data["expired"] is False
+
+
+# ---------------------------------------------------------------------------
+# _get_env_var unit tests
+# ---------------------------------------------------------------------------
+
+class TestGetEnvVar:
+    def test_reads_from_os_environ(self, db_file, tmp_path, monkeypatch):
+        monkeypatch.setenv("MY_TEST_KEY", "from_env")
+        config = _make_config(source_path=str(tmp_path / "config.yaml"))
+        app = create_app(db_path=db_file, botfarm_config=config)
+        assert _get_env_var(app, "MY_TEST_KEY") == "from_env"
+
+    def test_falls_back_to_dot_env(self, db_file, tmp_path, monkeypatch):
+        monkeypatch.delenv("MY_DOTENV_KEY", raising=False)
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("bugtracker:\n  type: linear\n")
+        env_file = tmp_path / ".env"
+        env_file.write_text("MY_DOTENV_KEY=from_dotenv\n")
+        config = _make_config(source_path=str(config_file))
+        app = create_app(db_path=db_file, botfarm_config=config)
+        result = _get_env_var(app, "MY_DOTENV_KEY")
+        assert result == "from_dotenv"
+
+    def test_loads_dotenv_value_into_os_environ(self, db_file, tmp_path, monkeypatch):
+        monkeypatch.delenv("LOADED_KEY", raising=False)
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("bugtracker:\n  type: linear\n")
+        env_file = tmp_path / ".env"
+        env_file.write_text("LOADED_KEY=loaded_value\n")
+        config = _make_config(source_path=str(config_file))
+        app = create_app(db_path=db_file, botfarm_config=config)
+        _get_env_var(app, "LOADED_KEY")
+        assert os.environ.get("LOADED_KEY") == "loaded_value"
+
+    def test_returns_empty_when_not_found(self, db_file, tmp_path, monkeypatch):
+        monkeypatch.delenv("NONEXISTENT_KEY", raising=False)
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("bugtracker:\n  type: linear\n")
+        config = _make_config(source_path=str(config_file))
+        app = create_app(db_path=db_file, botfarm_config=config)
+        assert _get_env_var(app, "NONEXISTENT_KEY") == ""
+
+    def test_strips_quotes_from_dotenv_value(self, db_file, tmp_path, monkeypatch):
+        monkeypatch.delenv("QUOTED_KEY", raising=False)
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("bugtracker:\n  type: linear\n")
+        env_file = tmp_path / ".env"
+        env_file.write_text('QUOTED_KEY="my_quoted_value"\n')
+        config = _make_config(source_path=str(config_file))
+        app = create_app(db_path=db_file, botfarm_config=config)
+        assert _get_env_var(app, "QUOTED_KEY") == "my_quoted_value"
+
+
+# ---------------------------------------------------------------------------
+# _check_claude_auth unit tests for each auth mode
+# ---------------------------------------------------------------------------
+
+class TestCheckClaudeAuth:
+    def test_oauth_mode_uses_load_token(self, monkeypatch):
+        from botfarm.credentials import OAuthToken
+
+        monkeypatch.setattr(
+            "botfarm.dashboard.routes_setup._load_token",
+            lambda: OAuthToken(access_token="abc"),
+        )
+        config = _make_config()
+        config.auth_mode = "oauth"
+        step = _check_claude_auth(config)
+        assert step.done is True
+
+    def test_oauth_mode_credential_error(self, monkeypatch):
+        from botfarm.credentials import CredentialError
+
+        monkeypatch.setattr(
+            "botfarm.dashboard.routes_setup._load_token",
+            lambda: (_ for _ in ()).throw(CredentialError("no creds")),
+        )
+        config = _make_config()
+        config.auth_mode = "oauth"
+        step = _check_claude_auth(config)
+        assert step.done is False
+
+    def test_long_lived_token_mode_with_env_var(self, monkeypatch):
+        monkeypatch.setenv(LONG_LIVED_TOKEN_ENV_VAR, "some-token")
+        config = _make_config()
+        config.auth_mode = "long_lived_token"
+        step = _check_claude_auth(config)
+        assert step.done is True
+
+    def test_long_lived_token_mode_without_env_var(self, monkeypatch):
+        monkeypatch.delenv(LONG_LIVED_TOKEN_ENV_VAR, raising=False)
+        config = _make_config()
+        config.auth_mode = "long_lived_token"
+        step = _check_claude_auth(config)
+        assert step.done is False
+
+    def test_api_key_mode_with_env_var(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+        config = _make_config()
+        config.auth_mode = "api_key"
+        step = _check_claude_auth(config)
+        assert step.done is True
+
+    def test_api_key_mode_without_env_var(self, monkeypatch):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        config = _make_config()
+        config.auth_mode = "api_key"
+        step = _check_claude_auth(config)
+        assert step.done is False
+
+    def test_long_lived_token_reads_dotenv_with_app(
+        self, db_file, tmp_path, monkeypatch,
+    ):
+        """When app is provided, _check_claude_auth reads from .env via _get_env_var."""
+        monkeypatch.delenv(LONG_LIVED_TOKEN_ENV_VAR, raising=False)
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("bugtracker:\n  type: linear\n")
+        env_file = tmp_path / ".env"
+        env_file.write_text(f"{LONG_LIVED_TOKEN_ENV_VAR}=token-in-dotenv\n")
+        config = _make_config(source_path=str(config_file))
+        config.auth_mode = "long_lived_token"
+        app = create_app(db_path=db_file, botfarm_config=config)
+        step = _check_claude_auth(config, app=app)
+        assert step.done is True
+
+    def test_no_config_defaults_to_oauth(self, monkeypatch):
+        from botfarm.credentials import CredentialError
+
+        monkeypatch.setattr(
+            "botfarm.dashboard.routes_setup._load_token",
+            lambda: (_ for _ in ()).throw(CredentialError("no creds")),
+        )
+        step = _check_claude_auth(None)
+        assert step.done is False
+
+
+# ---------------------------------------------------------------------------
+# save_auth_method endpoint tests
+# ---------------------------------------------------------------------------
+
+class TestSaveAuthMethodEndpoint:
+    def test_valid_oauth_mode(self, db_file, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("bugtracker:\n  type: linear\n")
+        config = _make_config(source_path=str(config_file))
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+
+        resp = client.post("/api/setup/claude/auth-method", json={"auth_method": "oauth"})
+        assert resp.status_code == 200
+
+        data = yaml.safe_load(config_file.read_text())
+        assert data["claude_auth_method"] == "oauth"
+        assert "auth_mode" not in data
+
+    def test_invalid_mode_returns_400(self, db_file, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("bugtracker:\n  type: linear\n")
+        config = _make_config(source_path=str(config_file))
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+
+        resp = client.post("/api/setup/claude/auth-method", json={"auth_method": "bad_mode"})
+        assert resp.status_code == 400
+
+    def test_long_lived_token_missing_env_returns_400(self, db_file, tmp_path, monkeypatch):
+        monkeypatch.delenv(LONG_LIVED_TOKEN_ENV_VAR, raising=False)
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("bugtracker:\n  type: linear\n")
+        config = _make_config(source_path=str(config_file))
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+
+        resp = client.post(
+            "/api/setup/claude/auth-method",
+            json={"auth_method": "long_lived_token"},
+        )
+        assert resp.status_code == 400
+        assert "CLAUDE_LONG_LIVED_TOKEN" in resp.text
+
+    def test_long_lived_token_with_env_succeeds(self, db_file, tmp_path, monkeypatch):
+        monkeypatch.setenv(LONG_LIVED_TOKEN_ENV_VAR, "my-token")
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("bugtracker:\n  type: linear\n")
+        config = _make_config(source_path=str(config_file))
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+
+        resp = client.post(
+            "/api/setup/claude/auth-method",
+            json={"auth_method": "long_lived_token"},
+        )
+        assert resp.status_code == 200
+        assert config.auth_mode == "long_lived_token"
+
+    def test_api_key_missing_env_returns_400(self, db_file, tmp_path, monkeypatch):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("bugtracker:\n  type: linear\n")
+        config = _make_config(source_path=str(config_file))
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+
+        resp = client.post(
+            "/api/setup/claude/auth-method",
+            json={"auth_method": "api_key"},
+        )
+        assert resp.status_code == 400
+        assert "ANTHROPIC_API_KEY" in resp.text
+
+    def test_removes_legacy_auth_mode_key(self, db_file, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("bugtracker:\n  type: linear\nauth_mode: oauth\n")
+        config = _make_config(source_path=str(config_file))
+        app = create_app(db_path=db_file, botfarm_config=config)
+        client = TestClient(app)
+
+        resp = client.post("/api/setup/claude/auth-method", json={"auth_method": "oauth"})
+        assert resp.status_code == 200
+
+        data = yaml.safe_load(config_file.read_text())
+        assert "auth_mode" not in data
+        assert data["claude_auth_method"] == "oauth"
+
+    def test_no_config_returns_400(self, db_file):
+        app = create_app(db_path=db_file, botfarm_config=None)
+        client = TestClient(app)
+
+        resp = client.post("/api/setup/claude/auth-method", json={"auth_method": "oauth"})
+        assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Preflight _check_long_lived_token_credentials tests
+# ---------------------------------------------------------------------------
+
+class TestCheckLongLivedTokenCredentials:
+    def test_token_set(self, monkeypatch):
+        from botfarm.preflight import _check_long_lived_token_credentials
+
+        monkeypatch.setenv(LONG_LIVED_TOKEN_ENV_VAR, "test-token-abc")
+        results = _check_long_lived_token_credentials()
+        assert len(results) == 1
+        assert results[0].passed is True
+
+    def test_token_not_set(self, monkeypatch):
+        from botfarm.preflight import _check_long_lived_token_credentials
+
+        monkeypatch.delenv(LONG_LIVED_TOKEN_ENV_VAR, raising=False)
+        results = _check_long_lived_token_credentials()
+        assert len(results) == 1
+        assert results[0].passed is False
+        assert LONG_LIVED_TOKEN_ENV_VAR in results[0].message
