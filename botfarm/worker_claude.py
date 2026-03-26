@@ -470,6 +470,10 @@ class StageResult:
     # Secondary agent result for dual-reviewer flows (e.g. Codex review
     # running alongside Claude review).
     secondary_agent_result: AgentResult | None = None
+    # QA report fields (populated when result_parser == "qa_report")
+    qa_report_text: str | None = None
+    qa_bugs: list[dict] | None = None
+    qa_passed: bool | None = None
 
     # ------------------------------------------------------------------
     # Backward-compatibility read-only properties
@@ -750,6 +754,70 @@ def _parse_review_approved(text: str) -> bool:
             return True
     # Conservative default: assume changes are needed
     return False
+
+
+def _parse_qa_report(text: str) -> tuple[str | None, list[dict], bool | None]:
+    """Parse a QA agent's output for report text, bug entries, and verdict.
+
+    Extracts:
+    - Report text between ``QA_REPORT_START`` / ``QA_REPORT_END`` markers
+    - Bug entries between ``BUG_START`` / ``BUG_END`` markers (title, severity, description)
+    - Overall verdict from the ``Verdict:`` line in the report
+
+    Returns a tuple of ``(report_text, bugs, passed)`` where:
+    - ``report_text`` is the text between the report markers, or ``None`` if not found
+    - ``bugs`` is a list of parsed bug dicts (may be empty)
+    - ``passed`` is ``True`` if verdict is PASSED, ``False`` if FAILED, ``None`` if ambiguous
+
+    Handles partial/missing markers and malformed bug entries gracefully.
+    """
+    # Extract report text between QA_REPORT_START / QA_REPORT_END
+    report_text: str | None = None
+    report_match = re.search(
+        r"QA_REPORT_START\s*(.*?)\s*QA_REPORT_END",
+        text,
+        re.DOTALL | re.IGNORECASE,
+    )
+    if report_match:
+        report_text = report_match.group(1).strip()
+
+    # Parse verdict from the report text (or full text as fallback)
+    search_text = report_text if report_text is not None else text
+    passed: bool | None = None
+    verdict_match = re.search(
+        r"^Verdict:\s*(PASSED|FAILED)\s*$", search_text, re.MULTILINE | re.IGNORECASE
+    )
+    if verdict_match:
+        passed = verdict_match.group(1).upper() == "PASSED"
+
+    # Extract bug entries between BUG_START / BUG_END markers
+    bugs: list[dict] = []
+    for bug_block in re.finditer(
+        r"BUG_START\s*(.*?)\s*BUG_END", text, re.DOTALL | re.IGNORECASE
+    ):
+        block = bug_block.group(1).strip()
+        bug: dict = {}
+
+        title_match = re.search(r"^Title:\s*(.+)$", block, re.MULTILINE)
+        if title_match:
+            bug["title"] = title_match.group(1).strip()
+
+        severity_match = re.search(r"^Severity:\s*(.+)$", block, re.MULTILINE)
+        if severity_match:
+            bug["severity"] = severity_match.group(1).strip().lower()
+
+        desc_match = re.search(r"^Description:\s*\n(.*)", block, re.DOTALL | re.MULTILINE)
+        if desc_match:
+            bug["description"] = desc_match.group(1).strip()
+
+        if bug:
+            bugs.append(bug)
+
+    # If verdict is still ambiguous, infer from bug count
+    if passed is None and report_text is not None:
+        passed = len(bugs) == 0
+
+    return report_text, bugs, passed
 
 
 def _make_stage_log_path(

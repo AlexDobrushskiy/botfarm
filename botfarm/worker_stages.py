@@ -33,6 +33,7 @@ from botfarm.worker_claude import (
     _gh_pr_view_url,
     _invoke_claude,
     _parse_pr_url,
+    _parse_qa_report,
     _parse_review_approved,
     _write_subprocess_log,
 )
@@ -141,6 +142,9 @@ def _run_agent_stage(
     # Apply result_parser
     pr_url: str | None = None
     review_approved: bool | None = None
+    qa_report_text: str | None = None
+    qa_bugs: list[dict] | None = None
+    qa_passed: bool | None = None
     if stage_tpl.result_parser == "pr_url":
         pr_url = _extract_pr_url(result.result_text)
         if pr_url is None:
@@ -153,6 +157,8 @@ def _run_agent_stage(
                 logger.info("Recovered PR URL via fallback: %s", pr_url)
     elif stage_tpl.result_parser == "review_verdict":
         review_approved = _parse_review_approved(result.result_text)
+    elif stage_tpl.result_parser == "qa_report":
+        qa_report_text, qa_bugs, qa_passed = _parse_qa_report(result.result_text)
 
     return StageResult(
         stage=stage_tpl.name,
@@ -160,6 +166,9 @@ def _run_agent_stage(
         agent_result=result,
         pr_url=pr_url,
         review_approved=review_approved,
+        qa_report_text=qa_report_text,
+        qa_bugs=qa_bugs,
+        qa_passed=qa_passed,
     )
 
 
@@ -197,6 +206,9 @@ def _run_claude_stage(
 
     pr_url: str | None = None
     review_approved: bool | None = None
+    qa_report_text: str | None = None
+    qa_bugs: list[dict] | None = None
+    qa_passed: bool | None = None
     if stage_tpl.result_parser == "pr_url":
         pr_url = _extract_pr_url(ar.result_text)
         if pr_url is None:
@@ -209,6 +221,8 @@ def _run_claude_stage(
                 logger.info("Recovered PR URL via fallback: %s", pr_url)
     elif stage_tpl.result_parser == "review_verdict":
         review_approved = _parse_review_approved(ar.result_text)
+    elif stage_tpl.result_parser == "qa_report":
+        qa_report_text, qa_bugs, qa_passed = _parse_qa_report(ar.result_text)
 
     return StageResult(
         stage=stage_tpl.name,
@@ -216,6 +230,9 @@ def _run_claude_stage(
         agent_result=ar,
         pr_url=pr_url,
         review_approved=review_approved,
+        qa_report_text=qa_report_text,
+        qa_bugs=qa_bugs,
+        qa_passed=qa_passed,
     )
 
 
