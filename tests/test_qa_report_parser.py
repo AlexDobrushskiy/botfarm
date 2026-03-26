@@ -194,6 +194,19 @@ class TestParseQaReport:
         assert bugs[1]["severity"] == "low"
         assert bugs[2]["severity"] == "medium"
 
+    def test_description_inline(self):
+        """Description on the same line as the field name is captured."""
+        text = (
+            "BUG_START\n"
+            "Title: Login page crashes\n"
+            "Severity: High\n"
+            "Description: The login page crashes on submit.\n"
+            "BUG_END\n"
+        )
+        _, bugs, _ = _parse_qa_report(text)
+        assert len(bugs) == 1
+        assert bugs[0]["description"] == "The login page crashes on submit."
+
     def test_description_multiline(self):
         """Description field captures multiple lines."""
         text = (

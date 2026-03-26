@@ -807,6 +807,9 @@ def _parse_qa_report(text: str) -> tuple[str | None, list[dict], bool | None]:
             bug["severity"] = severity_match.group(1).strip().lower()
 
         desc_match = re.search(r"^Description:\s*\n(.*)", block, re.DOTALL | re.MULTILINE)
+        if not desc_match:
+            # Fallback: inline description on the same line
+            desc_match = re.search(r"^Description:\s+(.+)", block, re.MULTILINE)
         if desc_match:
             bug["description"] = desc_match.group(1).strip()
 
