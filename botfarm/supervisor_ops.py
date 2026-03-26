@@ -178,11 +178,9 @@ class OperationsMixin:
         project = slot.project
         bt_cfg = self._resolve_project_bt(project)
         poller = self._pollers.get(project)
+        has_qa = "qa" in (slot.stages_completed or [])
 
-        # Detect QA pipeline completions and handle them separately.
-        if "qa" in (slot.stages_completed or []):
-            self._handle_qa_completion(slot, poller)
-        elif poller and slot.ticket_id:
+        if poller and slot.ticket_id:
             if poller.is_issue_terminal(slot.ticket_id):
                 logger.info(
                     "Completed slot %s/%d: ticket %s already in terminal "
@@ -200,27 +198,39 @@ class OperationsMixin:
                             no_pr = _detect_no_pr_needed(task["comments"])
                 if no_pr:
                     target_status = bt_cfg.done_status
-                elif self._check_pr_status(slot)[0] == "merged":
-                    target_status = bt_cfg.done_status
                 else:
-                    target_status = bt_cfg.in_review_status
+                    pr_status, resolved_pr_url = self._check_pr_status(slot)
+                    if resolved_pr_url and not slot.pr_url:
+                        slot.pr_url = resolved_pr_url
+                    if pr_status == "merged":
+                        target_status = bt_cfg.done_status
+                    else:
+                        target_status = bt_cfg.in_review_status
 
-                try:
-                    poller.move_issue(slot.ticket_id, target_status)
-                    logger.info(
-                        "Moved %s to '%s' after successful pipeline",
-                        slot.ticket_id, target_status,
-                    )
-                except Exception:
-                    logger.exception(
-                        "Failed to move %s to '%s'", slot.ticket_id, target_status,
-                    )
+                # For standalone QA pipelines (no PR, no no_pr_reason),
+                # _handle_qa_completion manages the status transition.
+                is_standalone_qa = has_qa and not slot.pr_url and not no_pr
+                if not is_standalone_qa:
+                    try:
+                        poller.move_issue(slot.ticket_id, target_status)
+                        logger.info(
+                            "Moved %s to '%s' after successful pipeline",
+                            slot.ticket_id, target_status,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Failed to move %s to '%s'", slot.ticket_id, target_status,
+                        )
 
             if bt_cfg.comment_on_completion and not slot.no_pr_reason:
                 self._post_completion_comment(poller, slot)
 
             if slot.no_pr_reason:
                 self._post_no_pr_comment(poller, slot)
+
+        # QA side effects layered on top of normal completion flow.
+        if has_qa:
+            self._handle_qa_completion(slot, poller)
 
         # Webhook notification
         self._notify_task_completed(slot)
@@ -355,8 +365,10 @@ class OperationsMixin:
         if report and report.bugs:
             self._create_qa_bug_tickets(poller, slot, report)
 
-        # Add qa-passed / qa-failed label.
-        passed = report.passed if report else True
+        # Add qa-passed / qa-failed label.  Default to failed when the
+        # report could not be parsed — a silent pass is more dangerous than
+        # a false negative that gets human triage.
+        passed = report.passed if report else False
         label_name = "qa-passed" if passed else "qa-failed"
         try:
             poller.add_labels(slot.ticket_id, [label_name])
@@ -410,7 +422,7 @@ class OperationsMixin:
             if report.report_text:
                 lines.append("")
                 lines.append("---")
-                lines.append(report.report_text)
+                lines.append(_truncate_for_comment(report.report_text))
             return "\n".join(lines)
         # Fallback: post raw result_text if we couldn't parse structured data.
         if raw_result_text:
@@ -425,7 +437,7 @@ class OperationsMixin:
         project_id = None
         if project_cfg:
             try:
-                project_id = poller._coder_client.get_project_id(
+                project_id = poller.get_project_id(
                     project_cfg.tracker_project,
                 )
             except Exception:

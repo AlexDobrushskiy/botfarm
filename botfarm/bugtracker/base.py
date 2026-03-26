@@ -371,6 +371,14 @@ class BugtrackerPoller(ABC):
             project_id=project_id,
         )
 
+    def get_project_id(self, project_name: str) -> str | None:
+        """Look up a project ID by name (uses coder client).
+
+        Returns ``None`` if the tracker doesn't support project lookup
+        or the project is not found.
+        """
+        return self._coder_client.get_project_id(project_name)
+
     def add_comment_as_owner(self, issue_id: str, body: str) -> None:
         """Add a comment using the owner's client (for system-level notifications)."""
         self._client.add_comment(issue_id, body)

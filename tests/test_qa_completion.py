@@ -317,7 +317,7 @@ class TestHandleQaCompletion:
         assert sm.get_slot("test-project", 1).status == "free"
 
     def test_qa_completion_with_unparseable_result(self, supervisor):
-        """When result_text isn't valid QA JSON, posts raw text and adds qa-passed."""
+        """When result_text isn't valid QA JSON, posts raw text and adds qa-failed."""
         sm, _ = self._assign_qa_slot(supervisor)
         poller = supervisor._pollers["test-project"]
         supervisor._pending_result_texts[("test-project", 1)] = "just plain text"
@@ -330,11 +330,11 @@ class TestHandleQaCompletion:
         comment_body = poller.add_comment.call_args[0][1]
         assert "just plain text" in comment_body
 
-        # Defaults to qa-passed when report can't be parsed
-        poller.add_labels.assert_called_once_with("TST-1", ["qa-passed"])
+        # Defaults to qa-failed when report can't be parsed (safe default)
+        poller.add_labels.assert_called_once_with("TST-1", ["qa-failed"])
 
     def test_qa_completion_no_result_text(self, supervisor):
-        """When there's no result_text at all, still posts comment and adds label."""
+        """When there's no result_text at all, still posts comment and adds qa-failed."""
         sm, _ = self._assign_qa_slot(supervisor)
         poller = supervisor._pollers["test-project"]
 
@@ -342,7 +342,7 @@ class TestHandleQaCompletion:
             supervisor._handle_finished_slots()
 
         poller.add_comment.assert_called_once()
-        poller.add_labels.assert_called_once_with("TST-1", ["qa-passed"])
+        poller.add_labels.assert_called_once_with("TST-1", ["qa-failed"])
 
     def test_qa_slot_still_emits_completed_event(self, supervisor):
         """QA pipeline completions still emit a slot_completed event."""
@@ -441,9 +441,9 @@ class TestHandleQaCompletion:
         with patch.object(supervisor, "_check_pr_status", return_value=(None, None)):
             supervisor._handle_finished_slots()
 
-        # Has a PR URL → not standalone QA, so no status move
-        # (implementation ticket stays at Done, bugs tracked separately)
-        poller.move_issue.assert_not_called()
+        # Has a PR URL → not standalone QA.  Normal completion flow runs
+        # and moves the ticket to In Review (PR not merged).
+        poller.move_issue.assert_called_once_with("TST-1", "In Review")
 
         # Bug ticket still created
         assert poller.create_issue.call_count == 1
