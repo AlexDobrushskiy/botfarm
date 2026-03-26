@@ -11,7 +11,7 @@ Modules under `botfarm/`:
 - `cli.py` — Click/Rich CLI (status, history, limits, init, run)
 - `config.py` — YAML config loading with `${ENV_VAR}` expansion and validation
 - `supervisor.py` — Main loop: poll Linear, dispatch workers via multiprocessing, manage timeouts, crash recovery
-- `worker.py` — Stage pipeline: implement → review → fix → pr_checks → merge (iterates review/CI fix loops); also runs `qa` pipeline (single `qa_test` stage)
+- `worker.py` — Stage pipeline: implement → review → fix → pr_checks → merge (iterates review/CI fix loops); also runs `qa` pipeline (single `qa` stage)
 - `slots.py` — Slot lifecycle & JSON state persistence (free/busy/paused_limit/failed/completed_pending_cleanup)
 - `db.py` — SQLite (sync, WAL mode) for tasks, stage_runs, usage_snapshots, task_events
 - `bugtracker/` — Abstract bugtracker interfaces, adapters (Linear, Jira), and factory
