@@ -623,6 +623,26 @@ def _check_limit_hit(result: PipelineResult) -> bool:
     return _classify_failure(result.failure_reason) == "limit_hit"
 
 
+# Patterns that indicate a usage/rate limit in Claude output text.
+# These are checked against lowercased text.
+_RESULT_TEXT_LIMIT_PATTERNS = [
+    "you've hit your limit",
+    "you have hit your limit",
+    "hit your limit",
+    "usage limit",
+    "rate limit",
+    "max_tokens_exceeded",
+]
+
+
+def _text_indicates_limit_hit(text: str | None) -> bool:
+    """Check if free-form text (e.g. Claude output) contains limit indicators."""
+    if not text:
+        return False
+    lowered = text.lower()
+    return any(p in lowered for p in _RESULT_TEXT_LIMIT_PATTERNS)
+
+
 # ---------------------------------------------------------------------------
 # WorkerLifecycleManager — owns worker dispatch, resume, timeout, spawn
 # ---------------------------------------------------------------------------
@@ -1201,6 +1221,40 @@ class WorkerLifecycleManager:
         proc = self._workers.pop(key, None)
         if proc is not None:
             proc.join(timeout=2)
+
+        # Before marking as timeout, check if this is really a usage limit hit.
+        # A timeout-killed worker that was previously paused for limits, or
+        # whose usage API still shows limits exceeded, should be paused again
+        # instead of permanently failed.
+        limit_detected = slot.interrupted_by_limit
+        if not limit_detected:
+            try:
+                limit_detected = self._sup._check_usage_api_for_limit()
+            except Exception:
+                logger.debug(
+                    "Usage API check failed during escalate-kill for %s/%d",
+                    project, slot.slot_id, exc_info=True,
+                )
+
+        if limit_detected:
+            logger.info(
+                "Timeout-killed worker %s/%d detected as limit hit "
+                "(interrupted_by_limit=%s, usage_api=%s), pausing instead of failing",
+                project, slot.slot_id, slot.interrupted_by_limit,
+                "checked" if not slot.interrupted_by_limit else "skipped",
+            )
+            from botfarm.supervisor_workers import _WorkerResult
+
+            wr = _WorkerResult(
+                project=project,
+                slot_id=slot.slot_id,
+                success=False,
+                failure_stage=stage,
+                failure_reason=f"timeout in stage {stage} (limit hit)",
+                limit_hit=True,
+            )
+            self._sup._handle_limit_hit(wr)
+            return
 
         reason = f"timeout in stage {stage}"
         self._slot_manager.mark_failed(project, slot.slot_id, reason=reason)

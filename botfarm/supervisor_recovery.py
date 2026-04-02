@@ -23,6 +23,7 @@ from botfarm.db import (
     upsert_ticket_history,
 )
 from botfarm.slots import SlotState, _is_pid_alive
+from botfarm.supervisor_workers import _text_indicates_limit_hit
 from botfarm.worker import STAGES
 from botfarm.worker_claude import _find_open_pr_url
 
@@ -602,6 +603,13 @@ class RecoveryMixin:
                     logger.info(
                         "Worker %s/%d: usage API confirms limit hit "
                         "(not detected by string matching)",
+                        wr.project, wr.slot_id,
+                    )
+                    self._handle_limit_hit(wr)
+                elif _text_indicates_limit_hit(wr.result_text):
+                    logger.info(
+                        "Worker %s/%d: result_text contains limit indicators "
+                        "(not detected by failure_reason or usage API)",
                         wr.project, wr.slot_id,
                     )
                     self._handle_limit_hit(wr)
