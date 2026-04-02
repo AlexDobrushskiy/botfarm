@@ -512,11 +512,13 @@ class TestTextIndicatesLimitHit:
     def test_hit_your_limit(self):
         assert _text_indicates_limit_hit("Sorry, hit your limit. Try again later.") is True
 
-    def test_usage_limit(self):
-        assert _text_indicates_limit_hit("Error: usage limit exceeded") is True
+    def test_usage_limit_too_broad_no_match(self):
+        """Bare 'usage limit' should NOT match — too broad for free-form text."""
+        assert _text_indicates_limit_hit("Error: usage limit exceeded") is False
 
-    def test_rate_limit(self):
-        assert _text_indicates_limit_hit("rate limit reached, please wait") is True
+    def test_rate_limit_too_broad_no_match(self):
+        """Bare 'rate limit' should NOT match — too broad for free-form text."""
+        assert _text_indicates_limit_hit("rate limit reached, please wait") is False
 
     def test_max_tokens_exceeded(self):
         assert _text_indicates_limit_hit("Error: max_tokens_exceeded") is True
@@ -533,8 +535,8 @@ class TestTextIndicatesLimitHit:
 class TestEscalateKillLimitDetection:
     """Tests for _maybe_escalate_kill() detecting limits instead of hard-failing."""
 
-    def test_timeout_with_interrupted_by_limit_pauses(self, supervisor):
-        """Timeout-killed worker with interrupted_by_limit flag pauses instead of failing."""
+    def test_timeout_with_usage_api_limit_detected_pauses(self, supervisor):
+        """Timeout-killed worker pauses when usage API confirms limits exceeded."""
         sm = supervisor.slot_manager
         sm.assign_ticket(
             "test-project", 1,
@@ -545,7 +547,6 @@ class TestEscalateKillLimitDetection:
         now = datetime.now(timezone.utc)
         slot.stage_started_at = (now - timedelta(minutes=130)).isoformat()
         slot.pid = 99999
-        slot.interrupted_by_limit = True  # Previously paused for limits
 
         insert_task(
             supervisor._conn,
@@ -559,11 +560,16 @@ class TestEscalateKillLimitDetection:
             with patch("botfarm.supervisor_workers.os.kill"):
                 supervisor._check_timeouts()
 
-        # Phase 2: grace period elapsed → SIGKILL
+        # Phase 2: grace period elapsed → SIGKILL, usage API says limit hit
         slot = sm.get_slot("test-project", 1)
         slot.sigterm_sent_at = "2020-01-01T00:00:00.000000Z"
 
-        with patch("botfarm.supervisor_workers._kill_process_tree"):
+        with (
+            patch("botfarm.supervisor_workers._kill_process_tree"),
+            patch.object(
+                supervisor, "_check_usage_api_for_limit", return_value=True,
+            ),
+        ):
             supervisor._check_timeouts()
 
         # Should be paused_limit, not failed
@@ -571,8 +577,8 @@ class TestEscalateKillLimitDetection:
         assert slot.status == "paused_limit"
         assert slot.interrupted_by_limit is True
 
-    def test_timeout_with_usage_api_limit_pauses(self, supervisor):
-        """Timeout-killed worker pauses when usage API shows limits exceeded."""
+    def test_timeout_limit_pause_clears_sigterm_sent_at(self, supervisor):
+        """Limit pause from timeout must clear sigterm_sent_at to prevent false SIGKILL on resume."""
         sm = supervisor.slot_manager
         sm.assign_ticket(
             "test-project", 1,
@@ -610,6 +616,7 @@ class TestEscalateKillLimitDetection:
 
         slot = sm.get_slot("test-project", 1)
         assert slot.status == "paused_limit"
+        assert slot.sigterm_sent_at is None
 
     def test_timeout_without_limit_indicators_fails_normally(self, supervisor):
         """Timeout-killed worker without limit indicators is marked failed as before."""
@@ -663,7 +670,6 @@ class TestEscalateKillLimitDetection:
         now = datetime.now(timezone.utc)
         slot.stage_started_at = (now - timedelta(minutes=130)).isoformat()
         slot.pid = 99999
-        slot.interrupted_by_limit = True
 
         insert_task(
             supervisor._conn,
@@ -680,7 +686,12 @@ class TestEscalateKillLimitDetection:
         slot = sm.get_slot("test-project", 1)
         slot.sigterm_sent_at = "2020-01-01T00:00:00.000000Z"
 
-        with patch("botfarm.supervisor_workers._kill_process_tree"):
+        with (
+            patch("botfarm.supervisor_workers._kill_process_tree"),
+            patch.object(
+                supervisor, "_check_usage_api_for_limit", return_value=True,
+            ),
+        ):
             supervisor._check_timeouts()
 
         events = get_events(supervisor._conn, event_type="limit_hit")

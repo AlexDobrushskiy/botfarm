@@ -296,6 +296,7 @@ class SlotManager:
         slot.interrupted_by_limit = True
         slot.resume_after = resume_after
         slot.pid = None
+        slot.sigterm_sent_at = None
         self._save()
 
     def mark_paused_manual(self, project: str, slot_id: int) -> None:
@@ -357,6 +358,7 @@ class SlotManager:
             )
         slot.status = "busy"
         slot.resume_after = None
+        slot.interrupted_by_limit = False
         self._save()
 
     # ------------------------------------------------------------------

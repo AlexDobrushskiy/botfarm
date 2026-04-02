@@ -629,8 +629,6 @@ _RESULT_TEXT_LIMIT_PATTERNS = [
     "you've hit your limit",
     "you have hit your limit",
     "hit your limit",
-    "usage limit",
-    "rate limit",
     "max_tokens_exceeded",
 ]
 
@@ -1223,28 +1221,23 @@ class WorkerLifecycleManager:
             proc.join(timeout=2)
 
         # Before marking as timeout, check if this is really a usage limit hit.
-        # A timeout-killed worker that was previously paused for limits, or
-        # whose usage API still shows limits exceeded, should be paused again
-        # instead of permanently failed.
-        limit_detected = slot.interrupted_by_limit
-        if not limit_detected:
-            try:
-                limit_detected = self._sup._check_usage_api_for_limit()
-            except Exception:
-                logger.debug(
-                    "Usage API check failed during escalate-kill for %s/%d",
-                    project, slot.slot_id, exc_info=True,
-                )
+        # If the usage API confirms limits are exceeded, pause for automatic
+        # resumption instead of permanently failing.
+        limit_detected = False
+        try:
+            limit_detected = self._sup._check_usage_api_for_limit()
+        except Exception:
+            logger.debug(
+                "Usage API check failed during escalate-kill for %s/%d",
+                project, slot.slot_id, exc_info=True,
+            )
 
         if limit_detected:
             logger.info(
                 "Timeout-killed worker %s/%d detected as limit hit "
-                "(interrupted_by_limit=%s, usage_api=%s), pausing instead of failing",
-                project, slot.slot_id, slot.interrupted_by_limit,
-                "checked" if not slot.interrupted_by_limit else "skipped",
+                "via usage API, pausing instead of failing",
+                project, slot.slot_id,
             )
-            from botfarm.supervisor_workers import _WorkerResult
-
             wr = _WorkerResult(
                 project=project,
                 slot_id=slot.slot_id,
