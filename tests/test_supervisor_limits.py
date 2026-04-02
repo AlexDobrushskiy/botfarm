@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -18,6 +19,7 @@ from botfarm.supervisor import (
     _WorkerResult,
     _check_limit_hit,
     _classify_failure,
+    _text_indicates_limit_hit,
 )
 from botfarm.worker import PipelineResult
 from tests.helpers import make_issue
@@ -482,6 +484,313 @@ class TestLimitHitHandling:
         assert slot.status == "failed"
 
 
+
+
+# ---------------------------------------------------------------------------
+# _text_indicates_limit_hit
+# ---------------------------------------------------------------------------
+
+
+class TestTextIndicatesLimitHit:
+    """Tests for _text_indicates_limit_hit() — detecting limits in Claude output text."""
+
+    def test_none_returns_false(self):
+        assert _text_indicates_limit_hit(None) is False
+
+    def test_empty_returns_false(self):
+        assert _text_indicates_limit_hit("") is False
+
+    def test_normal_output_returns_false(self):
+        assert _text_indicates_limit_hit("I implemented the feature successfully") is False
+
+    def test_youve_hit_your_limit(self):
+        assert _text_indicates_limit_hit("You've hit your limit · resets 5am") is True
+
+    def test_you_have_hit_your_limit(self):
+        assert _text_indicates_limit_hit("You have hit your limit for this period") is True
+
+    def test_hit_your_limit(self):
+        assert _text_indicates_limit_hit("Sorry, hit your limit. Try again later.") is True
+
+    def test_usage_limit_too_broad_no_match(self):
+        """Bare 'usage limit' should NOT match — too broad for free-form text."""
+        assert _text_indicates_limit_hit("Error: usage limit exceeded") is False
+
+    def test_rate_limit_too_broad_no_match(self):
+        """Bare 'rate limit' should NOT match — too broad for free-form text."""
+        assert _text_indicates_limit_hit("rate limit reached, please wait") is False
+
+    def test_max_tokens_exceeded(self):
+        assert _text_indicates_limit_hit("Error: max_tokens_exceeded") is True
+
+    def test_case_insensitive(self):
+        assert _text_indicates_limit_hit("YOU'VE HIT YOUR LIMIT") is True
+
+
+# ---------------------------------------------------------------------------
+# Timeout-kill limit detection
+# ---------------------------------------------------------------------------
+
+
+class TestEscalateKillLimitDetection:
+    """Tests for _maybe_escalate_kill() detecting limits instead of hard-failing."""
+
+    def test_timeout_with_usage_api_limit_detected_pauses(self, supervisor):
+        """Timeout-killed worker pauses when usage API confirms limits exceeded."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.update_stage("test-project", 1, stage="fix")
+        slot = sm.get_slot("test-project", 1)
+        now = datetime.now(timezone.utc)
+        slot.stage_started_at = (now - timedelta(minutes=130)).isoformat()
+        slot.pid = 99999
+
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        # Phase 1: SIGTERM
+        with patch("botfarm.supervisor_workers._collect_descendant_pids", return_value=[]):
+            with patch("botfarm.supervisor_workers.os.kill"):
+                supervisor._check_timeouts()
+
+        # Phase 2: grace period elapsed → SIGKILL, usage API says limit hit
+        slot = sm.get_slot("test-project", 1)
+        slot.sigterm_sent_at = "2020-01-01T00:00:00.000000Z"
+
+        with (
+            patch("botfarm.supervisor_workers._kill_process_tree"),
+            patch.object(
+                supervisor, "_check_usage_api_for_limit", return_value=True,
+            ),
+        ):
+            supervisor._check_timeouts()
+
+        # Should be paused_limit, not failed
+        slot = sm.get_slot("test-project", 1)
+        assert slot.status == "paused_limit"
+        assert slot.interrupted_by_limit is True
+
+    def test_timeout_limit_pause_clears_sigterm_sent_at(self, supervisor):
+        """Limit pause from timeout must clear sigterm_sent_at to prevent false SIGKILL on resume."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.update_stage("test-project", 1, stage="implement")
+        slot = sm.get_slot("test-project", 1)
+        now = datetime.now(timezone.utc)
+        slot.stage_started_at = (now - timedelta(minutes=130)).isoformat()
+        slot.pid = 99999
+
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        # Phase 1: SIGTERM
+        with patch("botfarm.supervisor_workers._collect_descendant_pids", return_value=[]):
+            with patch("botfarm.supervisor_workers.os.kill"):
+                supervisor._check_timeouts()
+
+        # Phase 2: grace period elapsed
+        slot = sm.get_slot("test-project", 1)
+        slot.sigterm_sent_at = "2020-01-01T00:00:00.000000Z"
+
+        with (
+            patch("botfarm.supervisor_workers._kill_process_tree"),
+            patch.object(
+                supervisor, "_check_usage_api_for_limit", return_value=True,
+            ),
+        ):
+            supervisor._check_timeouts()
+
+        slot = sm.get_slot("test-project", 1)
+        assert slot.status == "paused_limit"
+        assert slot.sigterm_sent_at is None
+
+    def test_timeout_without_limit_indicators_fails_normally(self, supervisor):
+        """Timeout-killed worker without limit indicators is marked failed as before."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.update_stage("test-project", 1, stage="implement")
+        slot = sm.get_slot("test-project", 1)
+        now = datetime.now(timezone.utc)
+        slot.stage_started_at = (now - timedelta(minutes=130)).isoformat()
+        slot.pid = 99999
+
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        # Phase 1: SIGTERM
+        with patch("botfarm.supervisor_workers._collect_descendant_pids", return_value=[]):
+            with patch("botfarm.supervisor_workers.os.kill"):
+                supervisor._check_timeouts()
+
+        # Phase 2: grace period elapsed
+        slot = sm.get_slot("test-project", 1)
+        slot.sigterm_sent_at = "2020-01-01T00:00:00.000000Z"
+
+        with (
+            patch("botfarm.supervisor_workers._kill_process_tree"),
+            patch.object(
+                supervisor, "_check_usage_api_for_limit", return_value=False,
+            ),
+        ):
+            supervisor._check_timeouts()
+
+        slot = sm.get_slot("test-project", 1)
+        assert slot.status == "failed"
+
+    def test_timeout_limit_pause_records_event(self, supervisor):
+        """Timeout-to-limit-pause records a limit_hit event."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.update_stage("test-project", 1, stage="fix")
+        slot = sm.get_slot("test-project", 1)
+        now = datetime.now(timezone.utc)
+        slot.stage_started_at = (now - timedelta(minutes=130)).isoformat()
+        slot.pid = 99999
+
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        # Phase 1: SIGTERM
+        with patch("botfarm.supervisor_workers._collect_descendant_pids", return_value=[]):
+            with patch("botfarm.supervisor_workers.os.kill"):
+                supervisor._check_timeouts()
+
+        slot = sm.get_slot("test-project", 1)
+        slot.sigterm_sent_at = "2020-01-01T00:00:00.000000Z"
+
+        with (
+            patch("botfarm.supervisor_workers._kill_process_tree"),
+            patch.object(
+                supervisor, "_check_usage_api_for_limit", return_value=True,
+            ),
+        ):
+            supervisor._check_timeouts()
+
+        events = get_events(supervisor._conn, event_type="limit_hit")
+        assert len(events) >= 1
+        assert "fix" in events[-1]["detail"]
+
+
+# ---------------------------------------------------------------------------
+# result_text limit detection in reconcile
+# ---------------------------------------------------------------------------
+
+
+class TestResultTextLimitDetection:
+    """Tests for _reconcile_workers() detecting limits via result_text."""
+
+    def test_result_text_limit_detected_when_api_misses(self, supervisor):
+        """result_text with limit indicators triggers pause even when usage API says no."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        supervisor._result_queue.put(_WorkerResult(
+            project="test-project", slot_id=1, success=False,
+            failure_stage="implement",
+            failure_reason="Unexpected process exit code 1",
+            limit_hit=False,
+            result_text="Error: You've hit your limit · resets 5am",
+        ))
+
+        with patch.object(supervisor, "_check_usage_api_for_limit", return_value=False):
+            supervisor._reconcile_workers()
+
+        slot = sm.get_slot("test-project", 1)
+        assert slot.status == "paused_limit"
+        assert slot.interrupted_by_limit is True
+
+    def test_result_text_without_limit_indicators_fails(self, supervisor):
+        """result_text without limit indicators does not prevent normal failure."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        supervisor._result_queue.put(_WorkerResult(
+            project="test-project", slot_id=1, success=False,
+            failure_stage="implement",
+            failure_reason="Tests failed with exit code 1",
+            limit_hit=False,
+            result_text="I ran the tests but they failed.",
+        ))
+
+        with patch.object(supervisor, "_check_usage_api_for_limit", return_value=False):
+            supervisor._reconcile_workers()
+
+        slot = sm.get_slot("test-project", 1)
+        assert slot.status == "failed"
+
+    def test_result_text_none_does_not_cause_errors(self, supervisor):
+        """None result_text does not cause errors in reconcile path."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        supervisor._result_queue.put(_WorkerResult(
+            project="test-project", slot_id=1, success=False,
+            failure_stage="implement",
+            failure_reason="Something went wrong",
+            limit_hit=False,
+            result_text=None,
+        ))
+
+        with patch.object(supervisor, "_check_usage_api_for_limit", return_value=False):
+            supervisor._reconcile_workers()
+
+        slot = sm.get_slot("test-project", 1)
+        assert slot.status == "failed"
 
 
 # ---------------------------------------------------------------------------
