@@ -93,6 +93,12 @@ def _full_config_values(app) -> dict:
             "pause_five_hour_threshold": cfg.usage_limits.pause_five_hour_threshold,
             "pause_seven_day_threshold": cfg.usage_limits.pause_seven_day_threshold,
         },
+        "codex_usage": {
+            "enabled": cfg.codex_usage.enabled,
+            "poll_interval_seconds": cfg.codex_usage.poll_interval_seconds,
+            "pause_primary_threshold": cfg.codex_usage.pause_primary_threshold,
+            "pause_secondary_threshold": cfg.codex_usage.pause_secondary_threshold,
+        },
         "notifications": {
             "webhook_url": _mask_secret(cfg.notifications.webhook_url),
             "webhook_format": cfg.notifications.webhook_format,
@@ -134,6 +140,12 @@ def _config_values(app) -> dict:
             "poll_interval_seconds": cfg.usage_limits.poll_interval_seconds,
             "pause_five_hour_threshold": cfg.usage_limits.pause_five_hour_threshold,
             "pause_seven_day_threshold": cfg.usage_limits.pause_seven_day_threshold,
+        },
+        "codex_usage": {
+            "enabled": cfg.codex_usage.enabled,
+            "poll_interval_seconds": cfg.codex_usage.poll_interval_seconds,
+            "pause_primary_threshold": cfg.codex_usage.pause_primary_threshold,
+            "pause_secondary_threshold": cfg.codex_usage.pause_secondary_threshold,
         },
         "agents": {
             "max_review_iterations": cfg.agents.max_review_iterations,

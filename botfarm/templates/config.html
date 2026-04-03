@@ -332,6 +332,26 @@
     </figure>
 </section>
 
+{# --- Codex Usage --- #}
+<section class="config-section">
+    <h2>Codex Usage</h2>
+    <figure>
+    <table>
+        <tbody>
+            <tr>
+                <td>Enabled</td>
+                <td class="{{ 'bool-yes' if full_config_values.codex_usage.enabled else 'bool-no' }}">
+                    {{ "Yes" if full_config_values.codex_usage.enabled else "No" }}
+                </td>
+            </tr>
+            <tr><td>Poll interval</td><td>{{ full_config_values.codex_usage.poll_interval_seconds }}s</td></tr>
+            <tr><td>Primary pause threshold</td><td>{{ full_config_values.codex_usage.pause_primary_threshold }}</td></tr>
+            <tr><td>Secondary pause threshold</td><td>{{ full_config_values.codex_usage.pause_secondary_threshold }}</td></tr>
+        </tbody>
+    </table>
+    </figure>
+</section>
+
 {# --- Daily Summary --- #}
 <section class="config-section">
     <h2>Daily Summary</h2>
@@ -478,6 +498,41 @@
             </label>
         </div>
         <button type="submit">Save Usage Limits</button>
+    </form>
+</section>
+
+{# --- Codex Usage section --- #}
+<section class="config-section">
+    <h2>Codex Usage</h2>
+    <div id="feedback-codex_usage"></div>
+    <form onsubmit="return saveSection(event, 'codex_usage')">
+        <fieldset>
+            <label>
+                <input type="checkbox" id="codex_usage-enabled" name="enabled" role="switch"
+                       {% if config_values.codex_usage.enabled %}checked{% endif %}>
+                Enable Codex usage-based pausing
+            </label>
+        </fieldset>
+        <label for="codex_usage-poll_interval_seconds">
+            Poll interval (seconds)
+            <input type="number" id="codex_usage-poll_interval_seconds" name="poll_interval_seconds"
+                   value="{{ config_values.codex_usage.poll_interval_seconds }}" min="1" required>
+        </label>
+        <div class="grid">
+            <label for="codex_usage-pause_primary_threshold">
+                Primary pause threshold
+                <input type="number" id="codex_usage-pause_primary_threshold" name="pause_primary_threshold"
+                       value="{{ config_values.codex_usage.pause_primary_threshold }}"
+                       min="0" max="1" step="0.01" required>
+            </label>
+            <label for="codex_usage-pause_secondary_threshold">
+                Secondary pause threshold
+                <input type="number" id="codex_usage-pause_secondary_threshold" name="pause_secondary_threshold"
+                       value="{{ config_values.codex_usage.pause_secondary_threshold }}"
+                       min="0" max="1" step="0.01" required>
+            </label>
+        </div>
+        <button type="submit">Save Codex Usage</button>
     </form>
 </section>
 
