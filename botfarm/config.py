@@ -1362,6 +1362,10 @@ EDITABLE_FIELDS: dict[tuple[str, str], dict] = {
     ("usage_limits", "poll_interval_seconds"): {"type": "int", "min": 1},
     ("usage_limits", "pause_five_hour_threshold"): {"type": "float", "min": 0.0, "max": 1.0},
     ("usage_limits", "pause_seven_day_threshold"): {"type": "float", "min": 0.0, "max": 1.0},
+    ("codex_usage", "enabled"): {"type": "bool"},
+    ("codex_usage", "pause_primary_threshold"): {"type": "float", "min": 0.0, "max": 1.0},
+    ("codex_usage", "pause_secondary_threshold"): {"type": "float", "min": 0.0, "max": 1.0},
+    ("codex_usage", "poll_interval_seconds"): {"type": "int", "min": 1},
     ("agents", "max_review_iterations"): {"type": "int", "min": 1},
     ("agents", "max_ci_retries"): {"type": "int", "min": 0},
     ("agents", "max_merge_conflict_retries"): {"type": "int", "min": 0},
@@ -1539,6 +1543,7 @@ def apply_config_updates(config: BotfarmConfig, updates: dict) -> None:
     section_map: dict[str, object] = {
         "bugtracker": config.bugtracker,
         "usage_limits": config.usage_limits,
+        "codex_usage": config.codex_usage,
         "agents": config.agents,
         "daily_summary": config.daily_summary,
         "notifications": config.notifications,
