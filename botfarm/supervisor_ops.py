@@ -2209,6 +2209,168 @@ Note: The supervisor handles status transitions automatically — do not move th
         return {"success": True, "slot_id": slot.slot_id}
 
     # ------------------------------------------------------------------
+    # Re-dispatch (A/B comparison)
+    # ------------------------------------------------------------------
+
+    def request_redispatch(
+        self, ticket_id: str, project: str, pipeline_id: int | None,
+    ) -> dict:
+        """Thread-safe request to re-dispatch a completed ticket with a different pipeline.
+
+        Called from the dashboard thread.  Queues the request and blocks
+        until the supervisor tick processes it, then returns a result dict.
+        """
+        done_event = threading.Event()
+        result_holder: list[dict] = []
+
+        with self._redispatch_lock:
+            self._redispatch_requests.append(
+                (ticket_id, project, pipeline_id, result_holder, done_event),
+            )
+        self._wake_event.set()
+
+        done_event.wait(timeout=30)
+        if not done_event.is_set():
+            return {"error": "Re-dispatch request timed out"}
+        return result_holder[0] if result_holder else {"error": "No result"}
+
+    def _handle_redispatch_requests(self) -> None:
+        """Drain pending re-dispatch requests and execute each."""
+        with self._redispatch_lock:
+            requests = list(self._redispatch_requests)
+            self._redispatch_requests.clear()
+
+        for ticket_id, project, pipeline_id, result_holder, done_event in requests:
+            try:
+                result = self._execute_redispatch(ticket_id, project, pipeline_id)
+                result_holder.append(result)
+            except Exception as exc:
+                logger.exception(
+                    "Failed to re-dispatch ticket %s/%s", project, ticket_id,
+                )
+                result_holder.append({"error": f"Internal error: {exc}"})
+            finally:
+                done_event.set()
+
+    def _execute_redispatch(
+        self, ticket_id: str, project: str, pipeline_id: int | None,
+    ) -> dict:
+        """Validate conditions and re-dispatch a completed ticket for A/B comparison."""
+        from botfarm.db import get_task_by_ticket, insert_redispatch_task
+        from botfarm.workflow import load_pipeline_by_name
+
+        # 1. Project exists in config
+        project_cfg = self._projects.get(project)
+        if project_cfg is None:
+            return {"error": f"Project '{project}' not found"}
+
+        # 2. Ticket was previously completed or failed
+        prior_task = get_task_by_ticket(self._conn, ticket_id)
+        if prior_task is None:
+            return {"error": f"No previous task found for ticket {ticket_id}"}
+        if prior_task["status"] not in ("completed", "failed"):
+            return {
+                "error": f"Ticket {ticket_id} is not in a terminal state "
+                f"(current: {prior_task['status']})",
+            }
+
+        # 3. Ticket is not already active in a slot
+        active_ids = self._slot_manager.active_ticket_ids()
+        if ticket_id in active_ids:
+            return {"error": f"Ticket {ticket_id} is already active in a slot"}
+
+        # 4. Resolve pipeline name for context
+        pipeline_name = None
+        if pipeline_id is not None:
+            row = self._conn.execute(
+                "SELECT name FROM pipeline_templates WHERE id = ?",
+                (pipeline_id,),
+            ).fetchone()
+            if row is None:
+                return {"error": f"Pipeline {pipeline_id} not found"}
+            pipeline_name = row["name"]
+
+        # 5. Find a free slot
+        slot = self._slot_manager.find_free_slot_for_project(project)
+        if slot is None:
+            return {"error": f"No free slot available for project '{project}'"}
+
+        # 6. Fetch ticket details from the bugtracker
+        if self._bugtracker_client is None:
+            return {"error": "No bugtracker client available"}
+
+        try:
+            details = self._bugtracker_client.fetch_issue_details(ticket_id)
+        except Exception as exc:
+            return {"error": f"Failed to fetch ticket {ticket_id}: {exc}"}
+
+        # 7. Assign ticket to slot
+        branch = f"{project_cfg.worktree_prefix}{slot.slot_id}"
+        self._slot_manager.assign_ticket(
+            project,
+            slot.slot_id,
+            ticket_id=ticket_id,
+            ticket_title=details.title,
+            branch=branch,
+            ticket_labels=details.labels or [],
+        )
+
+        # 8. Create a NEW task row (not reset the old one)
+        task_id = insert_redispatch_task(
+            self._conn,
+            ticket_id=ticket_id,
+            title=details.title,
+            project=project,
+            slot=slot.slot_id,
+            pipeline_id=pipeline_id,
+            status="in_progress",
+        )
+        from botfarm.db import update_task
+        on_extra = self._usage_poller.state.is_on_extra_usage
+        update_task(
+            self._conn, task_id,
+            started_at=datetime.now(timezone.utc).isoformat(),
+            started_on_extra_usage=int(on_extra),
+        )
+        self._conn.commit()
+
+        # 9. Build prior_context with branch disambiguation hint
+        prior_context = ""
+        if pipeline_name:
+            prior_context = (
+                f"IMPORTANT: This is an A/B comparison run using the '{pipeline_name}' pipeline. "
+                f"To avoid branch name conflicts with a previous run, append '-{pipeline_name}' "
+                "as a suffix to your branch name.\n\n"
+            )
+
+        insert_event(
+            self._conn,
+            event_type="redispatch",
+            task_id=task_id,
+            detail=f"ticket={ticket_id}, project={project}, "
+            f"slot={slot.slot_id}, pipeline_id={pipeline_id}",
+        )
+        self._conn.commit()
+
+        # 10. Spawn worker subprocess
+        self._worker_mgr.spawn_worker(
+            project_name=project,
+            slot_id=slot.slot_id,
+            ticket_id=ticket_id,
+            ticket_title=details.title,
+            ticket_labels=details.labels or [],
+            task_id=task_id,
+            prior_context=prior_context,
+        )
+
+        logger.info(
+            "Re-dispatched %s → %s/slot-%d (pipeline_id=%s)",
+            ticket_id, project, slot.slot_id, pipeline_id,
+        )
+
+        return {"success": True, "slot_id": slot.slot_id, "task_id": task_id}
+
+    # ------------------------------------------------------------------
     # Daily work summary
     # ------------------------------------------------------------------
 

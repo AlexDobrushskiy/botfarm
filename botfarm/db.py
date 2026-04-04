@@ -147,44 +147,61 @@ def insert_task(
 ) -> int:
     """Insert a new task (or reset an existing one for retries) and return its id.
 
-    If a task with the same ticket_id already exists (e.g. a retry after
-    failure), the existing row is updated with fresh values instead of
-    raising an IntegrityError.
+    For regular dispatch, if a task with the same ticket_id already exists
+    (e.g. a retry after failure), the most recent row is updated with fresh
+    values instead of creating a duplicate.
     """
-    conn.execute(
-        """
-        INSERT INTO tasks (ticket_id, title, project, slot, status, created_at,
-                           pipeline_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(ticket_id) DO UPDATE SET
-            title = excluded.title,
-            project = excluded.project,
-            slot = excluded.slot,
-            status = excluded.status,
-            created_at = excluded.created_at,
-            started_at = NULL,
-            completed_at = NULL,
-            turns = 0,
-            review_iterations = 0,
-            comments = '',
-            limit_interruptions = 0,
-            failure_reason = NULL,
-            failure_category = NULL,
-            pr_url = NULL,
-            pipeline_stage = NULL,
-            review_state = NULL,
-            merge_conflict_retries = 0,
-            pipeline_id = excluded.pipeline_id
-        """,
+    existing = conn.execute(
+        "SELECT id FROM tasks WHERE ticket_id = ? ORDER BY id DESC LIMIT 1",
+        (ticket_id,),
+    ).fetchone()
+    if existing:
+        task_id = existing[0]
+        conn.execute(
+            """UPDATE tasks SET
+                title = ?, project = ?, slot = ?, status = ?,
+                created_at = ?, started_at = NULL, completed_at = NULL,
+                turns = 0, review_iterations = 0, comments = '',
+                limit_interruptions = 0, failure_reason = NULL,
+                failure_category = NULL, pr_url = NULL,
+                pipeline_stage = NULL, review_state = NULL,
+                merge_conflict_retries = 0, pipeline_id = ?
+            WHERE id = ?""",
+            (title, project, slot, status, _now_iso(), pipeline_id, task_id),
+        )
+        return task_id
+
+    cur = conn.execute(
+        """INSERT INTO tasks
+            (ticket_id, title, project, slot, status, created_at, pipeline_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?)""",
         (ticket_id, title, project, slot, status, _now_iso(), pipeline_id),
     )
-    # cursor.lastrowid is unreliable for ON CONFLICT DO UPDATE — when
-    # the UPDATE branch fires it may return a stale value from a prior
-    # INSERT.  Always look up the canonical id by ticket_id instead.
-    row = conn.execute(
-        "SELECT id FROM tasks WHERE ticket_id = ?", (ticket_id,)
-    ).fetchone()
-    return row[0]
+    return cur.lastrowid
+
+
+def insert_redispatch_task(
+    conn: sqlite3.Connection,
+    *,
+    ticket_id: str,
+    title: str,
+    project: str,
+    slot: int,
+    pipeline_id: int | None = None,
+    status: str = "pending",
+) -> int:
+    """Insert a new task row for re-dispatch (A/B comparison).
+
+    Unlike :func:`insert_task`, this always creates a new row even if a
+    task for the same ticket_id already exists.
+    """
+    cur = conn.execute(
+        """INSERT INTO tasks
+            (ticket_id, title, project, slot, status, created_at, pipeline_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (ticket_id, title, project, slot, status, _now_iso(), pipeline_id),
+    )
+    return cur.lastrowid
 
 
 def update_task(
@@ -244,10 +261,26 @@ def get_task(conn: sqlite3.Connection, task_id: int) -> sqlite3.Row | None:
 
 
 def get_task_by_ticket(conn: sqlite3.Connection, ticket_id: str) -> sqlite3.Row | None:
-    """Fetch a single task by Linear ticket identifier."""
+    """Fetch the most recent task for a ticket identifier.
+
+    When multiple tasks exist for the same ticket (A/B comparison runs),
+    returns the one with the highest id (most recently created).
+    """
     return conn.execute(
-        "SELECT * FROM tasks WHERE ticket_id = ?", (ticket_id,)
+        "SELECT * FROM tasks WHERE ticket_id = ? ORDER BY id DESC LIMIT 1",
+        (ticket_id,),
     ).fetchone()
+
+
+def get_all_tasks_by_ticket(conn: sqlite3.Connection, ticket_id: str) -> list[sqlite3.Row]:
+    """Fetch all tasks for a ticket identifier, newest first.
+
+    Used by the dashboard to show all A/B comparison runs for a ticket.
+    """
+    return conn.execute(
+        "SELECT * FROM tasks WHERE ticket_id = ? ORDER BY id DESC",
+        (ticket_id,),
+    ).fetchall()
 
 
 def get_task_history(

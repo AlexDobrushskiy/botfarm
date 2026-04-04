@@ -247,6 +247,11 @@ class Supervisor(RecoveryMixin, OperationsMixin):
         self._dispatch_ticket_requests: list[tuple] = []
         self._dispatch_ticket_lock = threading.Lock()
 
+        # Re-dispatch requests from the dashboard thread (A/B comparison).
+        # Each entry: (ticket_id, project, pipeline_id)
+        self._redispatch_requests: list[tuple[str, str, int | None]] = []
+        self._redispatch_lock = threading.Lock()
+
         # Queue for worker results — workers send _WorkerResult here
         self._result_queue: multiprocessing.Queue = multiprocessing.Queue()
 
@@ -352,6 +357,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
                 on_rerun_preflight=self.request_rerun_preflight,
                 on_stop_slot=self.request_stop_slot,
                 on_dispatch_ticket=self.request_dispatch_ticket,
+                on_redispatch=self.request_redispatch,
                 on_add_slot=self.request_add_slot,
                 on_add_project=self.request_add_project,
                 on_remove_project=self.request_remove_project,
@@ -609,6 +615,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
             self._reconcile_workers,
             self._handle_stop_requests,
             self._handle_dispatch_ticket_requests,
+            self._handle_redispatch_requests,
             self._handle_add_slot_requests,
             self._handle_add_project_requests,
             self._handle_remove_project_requests,
