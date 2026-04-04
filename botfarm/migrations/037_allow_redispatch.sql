@@ -24,8 +24,8 @@ CREATE TABLE tasks_new (
     pr_url                TEXT,
     pipeline_stage        TEXT,
     review_state          TEXT,
-    merge_conflict_retries INTEGER DEFAULT 0,
     started_on_extra_usage INTEGER DEFAULT 0,
+    merge_conflict_retries INTEGER DEFAULT 0,
     result_text           TEXT,
     failure_category      TEXT,
     pipeline_id           INTEGER REFERENCES pipeline_templates(id)
