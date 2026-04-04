@@ -165,6 +165,8 @@ function confirmDispatch() {
         btn.disabled = false;
         btn.textContent = "Dispatch";
         showToast("Dispatched " + _dispatchTicketId + " to slot " + (data.slot_id || ""), "success");
+        htmx.trigger("#queue-panel", "htmx:load");
+        htmx.trigger("#slots-panel", "htmx:load");
     }).catch(function(err) {
         document.getElementById("dispatch-modal").close();
         btn.disabled = false;
