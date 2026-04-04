@@ -219,6 +219,7 @@ def start_dashboard(
             host=config.host,
             port=config.port,
             log_level="warning",
+            loop="auto",
         )
 
     thread = threading.Thread(target=_run, daemon=True, name="dashboard")
