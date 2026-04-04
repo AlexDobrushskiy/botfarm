@@ -14,6 +14,7 @@ import queue
 import re
 import signal
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -2054,9 +2055,7 @@ Note: The supervisor handles status transitions automatically — do not move th
         Called from the dashboard thread.  Queues the request and blocks
         until the supervisor tick processes it, then returns a result dict.
         """
-        import threading as _threading
-
-        done_event = _threading.Event()
+        done_event = threading.Event()
         result_holder: list[dict] = []
 
         with self._dispatch_ticket_lock:

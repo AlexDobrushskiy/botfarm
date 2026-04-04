@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from botfarm.dashboard import create_app
-from botfarm.db import init_db, save_queue_entries
+from botfarm.db import init_db
 from botfarm.bugtracker import Issue
 from tests.helpers import seed_slot as _seed_slot
 
