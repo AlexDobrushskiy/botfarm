@@ -52,7 +52,7 @@ def _get_bugtracker_client(app):
 # --- Bugtracker data endpoints ---
 
 
-def _api_teams(app) -> JSONResponse:
+async def _api_teams(app) -> JSONResponse:
     """Shared logic for fetching bugtracker teams."""
     client = _get_bugtracker_client(app)
     if client is None:
@@ -60,7 +60,7 @@ def _api_teams(app) -> JSONResponse:
             {"error": "Bugtracker API key not configured"}, status_code=503,
         )
     try:
-        teams = client.list_teams()
+        teams = await asyncio.to_thread(client.list_teams)
         return JSONResponse([
             {"key": t["key"], "name": t["name"]} for t in teams
         ])
@@ -69,7 +69,7 @@ def _api_teams(app) -> JSONResponse:
         return JSONResponse({"error": str(exc)}, status_code=500)
 
 
-def _api_projects(app, team: str) -> JSONResponse:
+async def _api_projects(app, team: str) -> JSONResponse:
     """Shared logic for fetching bugtracker projects for a team."""
     if not team:
         return JSONResponse(
@@ -80,9 +80,12 @@ def _api_projects(app, team: str) -> JSONResponse:
         return JSONResponse(
             {"error": "Bugtracker API key not configured"}, status_code=503,
         )
+    def _fetch():
+        tid = client.get_team_id(team)
+        return client.list_team_projects(tid)
+
     try:
-        team_id = client.get_team_id(team)
-        projects = client.list_team_projects(team_id)
+        projects = await asyncio.to_thread(_fetch)
         return JSONResponse([
             {"id": p["id"], "name": p["name"]} for p in projects
         ])
@@ -92,27 +95,27 @@ def _api_projects(app, team: str) -> JSONResponse:
 
 
 @router.get("/api/linear/teams")
-def api_linear_teams(request: Request):
+async def api_linear_teams(request: Request):
     """Return bugtracker teams for the dropdown (legacy alias)."""
-    return _api_teams(request.app)
+    return await _api_teams(request.app)
 
 
 @router.get("/api/linear/projects")
-def api_linear_projects(request: Request, team: str = ""):
+async def api_linear_projects(request: Request, team: str = ""):
     """Return bugtracker projects for a team (legacy alias)."""
-    return _api_projects(request.app, team)
+    return await _api_projects(request.app, team)
 
 
 @router.get("/api/bugtracker/teams")
-def api_bugtracker_teams(request: Request):
+async def api_bugtracker_teams(request: Request):
     """Return bugtracker teams for the dropdown."""
-    return _api_teams(request.app)
+    return await _api_teams(request.app)
 
 
 @router.get("/api/bugtracker/projects")
-def api_bugtracker_projects(request: Request, team: str = ""):
+async def api_bugtracker_projects(request: Request, team: str = ""):
     """Return bugtracker projects for a team."""
-    return _api_projects(request.app, team)
+    return await _api_projects(request.app, team)
 
 
 # --- Project creation ---
