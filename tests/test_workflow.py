@@ -21,6 +21,7 @@ from botfarm.workflow import (
     get_stage,
     load_all_pipelines,
     load_pipeline,
+    load_pipeline_by_id,
     load_pipeline_by_name,
     render_prompt,
     reorder_stages,
@@ -93,6 +94,24 @@ class TestLoadPipeline:
     def test_investigation_pipeline_has_no_loops(self, conn):
         pipeline = load_pipeline(conn, ["Investigation"])
         assert pipeline.loops == []
+
+
+# ---------------------------------------------------------------------------
+# load_pipeline_by_id
+# ---------------------------------------------------------------------------
+
+
+class TestLoadPipelineById:
+    def test_load_by_id(self, conn):
+        # Get the implementation pipeline's ID via name first
+        impl = load_pipeline_by_name(conn, "implementation")
+        pipeline = load_pipeline_by_id(conn, impl.id)
+        assert pipeline.name == "implementation"
+        assert pipeline.id == impl.id
+
+    def test_nonexistent_id_raises(self, conn):
+        with pytest.raises(ValueError, match="not found"):
+            load_pipeline_by_id(conn, 99999)
 
 
 # ---------------------------------------------------------------------------

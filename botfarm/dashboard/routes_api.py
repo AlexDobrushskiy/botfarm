@@ -201,6 +201,7 @@ async def api_dispatch_ticket(request: Request):
 
     project = body.get("project", "")
     ticket_id = body.get("ticket_id", "")
+    raw_pipeline_id = body.get("pipeline_id")
 
     if not isinstance(project, str) or not project:
         return JSONResponse(
@@ -211,7 +212,15 @@ async def api_dispatch_ticket(request: Request):
             {"error": "ticket_id is required and must be a string"}, status_code=400,
         )
 
-    result = await asyncio.to_thread(cb, project, ticket_id)
+    pipeline_id: int | None = None
+    if raw_pipeline_id is not None:
+        if not isinstance(raw_pipeline_id, int) or isinstance(raw_pipeline_id, bool):
+            return JSONResponse(
+                {"error": "pipeline_id must be an integer"}, status_code=400,
+            )
+        pipeline_id = raw_pipeline_id
+
+    result = await asyncio.to_thread(cb, project, ticket_id, pipeline_id)
 
     if "error" in result:
         return JSONResponse(result, status_code=409)

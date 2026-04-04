@@ -79,6 +79,7 @@ from botfarm.workflow import (
     get_loop_for_stage,
     get_stage,
     load_pipeline,
+    load_pipeline_by_id,
     render_prompt as render_prompt,
     resolve_max_iterations,
 )
@@ -431,6 +432,7 @@ def run_pipeline(
     bugtracker_email: str = "",
     oauth_token: str = "",
     auth_mode: str = "oauth",
+    pipeline_id: int | None = None,
 ) -> PipelineResult:
     """Execute the full implement→review→fix→pr_checks→merge pipeline.
 
@@ -515,6 +517,7 @@ def run_pipeline(
      pipeline_tpl) = _load_pipeline_config(
         conn, ticket_id, ticket_labels or [], max_turns,
         max_review_iterations, max_ci_retries, max_merge_conflict_retries,
+        pipeline_id=pipeline_id,
     )
 
     # Persist the resolved pipeline_id on the task for later querying.
@@ -691,6 +694,7 @@ def _load_pipeline_config(
     max_review_iterations: int,
     max_ci_retries: int,
     max_merge_conflict_retries: int = 2,
+    pipeline_id: int | None = None,
 ) -> tuple[
     tuple[str, ...],
     dict[str, int],
@@ -702,19 +706,32 @@ def _load_pipeline_config(
 ]:
     """Load pipeline template from DB and derive all configuration.
 
+    When *pipeline_id* is provided (manual dispatch override), it takes
+    precedence over label-based selection.
+
     Returns ``(stages, turns_cfg, eff_max_review_iterations,
     eff_max_ci_retries, eff_max_merge_conflict_retries,
     loop_managed_stages, pipeline_tpl)``.
     """
     pipeline_tpl: PipelineTemplate | None = None
     try:
-        pipeline_tpl = load_pipeline(conn, ticket_labels)
-        logger.info(
-            "Loaded pipeline '%s' for %s (stages: %s)",
-            pipeline_tpl.name, ticket_id,
-            ", ".join(s.name for s in pipeline_tpl.stages),
-        )
+        if pipeline_id is not None:
+            pipeline_tpl = load_pipeline_by_id(conn, pipeline_id)
+            logger.info(
+                "Using manually selected pipeline '%s' (id=%d) for %s (stages: %s)",
+                pipeline_tpl.name, pipeline_id, ticket_id,
+                ", ".join(s.name for s in pipeline_tpl.stages),
+            )
+        else:
+            pipeline_tpl = load_pipeline(conn, ticket_labels)
+            logger.info(
+                "Loaded pipeline '%s' for %s (stages: %s)",
+                pipeline_tpl.name, ticket_id,
+                ", ".join(s.name for s in pipeline_tpl.stages),
+            )
     except Exception:
+        if pipeline_id is not None:
+            raise  # User explicitly chose this pipeline — don't silently fall back
         logger.warning(
             "Could not load pipeline from DB for %s — using legacy constants",
             ticket_id, exc_info=True,
