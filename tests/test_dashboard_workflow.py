@@ -2171,3 +2171,66 @@ class TestAddSlotAPI:
             headers={"Content-Type": "application/json"},
         )
         assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Re-dispatch API
+# ---------------------------------------------------------------------------
+
+
+class TestApiRedispatch:
+    def test_redispatch_no_callback_returns_503(self, db_file):
+        app = create_app(db_path=db_file)
+        client = TestClient(app)
+        resp = client.post("/api/redispatch", json={
+            "ticket_id": "TST-1", "project": "my-project",
+        })
+        assert resp.status_code == 503
+
+    def test_redispatch_missing_fields_returns_400(self, db_file):
+        app = create_app(
+            db_path=db_file,
+            on_redispatch=lambda p, t, pid: {"success": True},
+        )
+        client = TestClient(app)
+        # Missing ticket_id
+        resp = client.post("/api/redispatch", json={"project": "p"})
+        assert resp.status_code == 400
+
+        # Missing project
+        resp = client.post("/api/redispatch", json={"ticket_id": "T-1"})
+        assert resp.status_code == 400
+
+    def test_redispatch_success(self, db_file):
+        app = create_app(
+            db_path=db_file,
+            on_redispatch=lambda p, t, pid: {"success": True, "slot_id": 2},
+        )
+        client = TestClient(app)
+        resp = client.post("/api/redispatch", json={
+            "ticket_id": "TST-1", "project": "my-project", "pipeline_id": 1,
+        })
+        assert resp.status_code == 200
+        assert resp.json()["success"] is True
+
+    def test_redispatch_error_returns_409(self, db_file):
+        app = create_app(
+            db_path=db_file,
+            on_redispatch=lambda p, t, pid: {"error": "Not in terminal state"},
+        )
+        client = TestClient(app)
+        resp = client.post("/api/redispatch", json={
+            "ticket_id": "TST-1", "project": "my-project",
+        })
+        assert resp.status_code == 409
+
+    def test_redispatch_invalid_pipeline_id_type(self, db_file):
+        app = create_app(
+            db_path=db_file,
+            on_redispatch=lambda p, t, pid: {"success": True},
+        )
+        client = TestClient(app)
+        resp = client.post("/api/redispatch", json={
+            "ticket_id": "TST-1", "project": "my-project", "pipeline_id": "abc",
+        })
+        assert resp.status_code == 400

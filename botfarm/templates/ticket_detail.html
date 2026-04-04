@@ -177,6 +177,98 @@
     {% endif %}
 </div>
 
+<!-- Re-dispatch for A/B comparison -->
+{% if task and task.status in ('completed', 'failed') and pipelines %}
+<details style="margin-top: 1.5rem;">
+    <summary><strong>Re-dispatch with different pipeline</strong></summary>
+    <p style="font-size: 0.85rem; color: var(--pico-muted-color);">
+        Run this ticket through a different pipeline for A/B comparison.
+        A new task row will be created without changing the ticket's tracker status.
+    </p>
+    <form id="redispatch-form" style="display: flex; gap: 0.5rem; align-items: end; flex-wrap: wrap;">
+        <label style="flex: 1; min-width: 200px;">
+            Pipeline
+            <select id="redispatch-pipeline" required>
+                {% for p in pipelines %}
+                <option value="{{ p.id }}">{{ p.name }}{% if p.is_default %} (default){% endif %}</option>
+                {% endfor %}
+            </select>
+        </label>
+        <button type="submit" class="outline">Re-dispatch</button>
+    </form>
+    <div id="redispatch-result" style="margin-top: 0.5rem;"></div>
+</details>
+<script>
+document.getElementById('redispatch-form').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const btn = this.querySelector('button[type="submit"]');
+    const result = document.getElementById('redispatch-result');
+    btn.setAttribute('aria-busy', 'true');
+    btn.disabled = true;
+    result.textContent = '';
+    try {
+        const resp = await fetch('/api/redispatch', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                ticket_id: {{ task.ticket_id|tojson }},
+                project: {{ task.project|tojson }},
+                pipeline_id: parseInt(document.getElementById('redispatch-pipeline').value),
+            }),
+        });
+        const data = await resp.json();
+        if (data.error) {
+            const mark = document.createElement('mark');
+            mark.textContent = data.error;
+            result.replaceChildren(mark);
+        } else {
+            const ins = document.createElement('ins');
+            ins.textContent = 'Dispatched to slot ' + data.slot_id;
+            result.replaceChildren(ins);
+        }
+    } catch (err) {
+        const mark = document.createElement('mark');
+        mark.textContent = 'Request failed: ' + err.message;
+        result.replaceChildren(mark);
+    } finally {
+        btn.removeAttribute('aria-busy');
+        btn.disabled = false;
+    }
+});
+</script>
+{% endif %}
+
+<!-- All task runs -->
+{% if all_tasks and all_tasks|length > 1 %}
+<details style="margin-top: 1.5rem;" open>
+    <summary><strong>All Runs ({{ all_tasks|length }})</strong></summary>
+    <table>
+        <thead>
+            <tr>
+                <th>Task ID</th>
+                <th>Status</th>
+                <th>Pipeline</th>
+                <th>Slot</th>
+                <th>Created</th>
+                <th>PR</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for t in all_tasks %}
+            <tr>
+                <td><a href="/task/{{ t.id }}">{{ t.id }}</a></td>
+                <td>{{ t.status }}</td>
+                <td>{{ t.pipeline_name or '-' }}</td>
+                <td>{{ t.slot }}</td>
+                <td><time data-timestamp="{{ t.created_at }}" title="{{ t.created_at[:19] }}">{{ t.created_at[:19] }}</time></td>
+                <td>{% if t.pr_url %}<a href="{{ t.pr_url }}" target="_blank">PR</a>{% else %}-{% endif %}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</details>
+{% endif %}
+
 {% else %}
 <p><a href="/tickets">&larr; Back to Tickets</a></p>
 <p>Ticket not found.</p>

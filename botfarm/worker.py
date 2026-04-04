@@ -511,17 +511,25 @@ def run_pipeline(
         bugtracker_url=bugtracker_url, jira_username=effective_email,
     ) if effective_tracker_key else ""
 
+    # If the supervisor pre-assigned a pipeline_id (e.g. re-dispatch for
+    # A/B comparison), honour it instead of resolving from ticket labels.
+    task_row = get_task(conn, task_id)
+    pre_assigned_pipeline_id = (
+        task_row["pipeline_id"] if task_row and task_row["pipeline_id"] is not None else None
+    )
+
     # Load pipeline template and derive configuration
     (stages, turns_cfg, eff_max_review_iterations, eff_max_ci_retries,
      eff_max_merge_conflict_retries, loop_managed_stages,
      pipeline_tpl) = _load_pipeline_config(
         conn, ticket_id, ticket_labels or [], max_turns,
         max_review_iterations, max_ci_retries, max_merge_conflict_retries,
-        pipeline_id=pipeline_id,
+        pipeline_id=pre_assigned_pipeline_id if pre_assigned_pipeline_id is not None else pipeline_id,
     )
 
     # Persist the resolved pipeline_id on the task for later querying.
-    if pipeline_tpl is not None:
+    # Skip if already pre-assigned (re-dispatch) to avoid overwriting.
+    if pipeline_tpl is not None and not pre_assigned_pipeline_id:
         update_task(conn, task_id, pipeline_id=pipeline_tpl.id)
         conn.commit()
 
@@ -706,8 +714,8 @@ def _load_pipeline_config(
 ]:
     """Load pipeline template from DB and derive all configuration.
 
-    When *pipeline_id* is provided (manual dispatch override), it takes
-    precedence over label-based selection.
+    When *pipeline_id* is provided (manual dispatch or re-dispatch override),
+    it takes precedence over label-based selection.
 
     Returns ``(stages, turns_cfg, eff_max_review_iterations,
     eff_max_ci_retries, eff_max_merge_conflict_retries,

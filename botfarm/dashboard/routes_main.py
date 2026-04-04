@@ -13,6 +13,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from botfarm.db import (
     count_tasks,
     count_ticket_history,
+    get_all_tasks_by_ticket,
     get_distinct_projects,
     get_distinct_ticket_projects,
     get_distinct_ticket_statuses,
@@ -722,6 +723,8 @@ def ticket_detail_page(request: Request, ticket_id: str):
     templates = request.app.state.templates
     ticket = None
     task = None
+    all_tasks: list[dict] = []
+    pipelines: list[dict] = []
     conn = get_db(app)
     if conn:
         try:
@@ -740,6 +743,32 @@ def ticket_detail_page(request: Request, ticket_id: str):
             task_row = get_task_by_ticket(conn, ticket_id)
             if task_row:
                 task = dict(task_row)
+
+            # Fetch all tasks for this ticket (A/B comparison runs)
+            task_rows = get_all_tasks_by_ticket(conn, ticket_id)
+            # Build pipeline name lookup
+            pipeline_names: dict[int, str] = {}
+            try:
+                for pr in conn.execute("SELECT id, name FROM pipeline_templates").fetchall():
+                    pipeline_names[pr["id"]] = pr["name"]
+            except sqlite3.OperationalError:
+                pass
+            for tr in task_rows:
+                td = dict(tr)
+                pid = td.get("pipeline_id")
+                td["pipeline_name"] = pipeline_names.get(pid, "") if pid else ""
+                all_tasks.append(td)
+
+            # Fetch available pipelines for re-dispatch dropdown
+            if task and task.get("status") in ("completed", "failed"):
+                try:
+                    rows = conn.execute(
+                        "SELECT id, name, is_default FROM pipeline_templates "
+                        "ORDER BY is_default DESC, name"
+                    ).fetchall()
+                    pipelines = [dict(r) for r in rows]
+                except sqlite3.OperationalError:
+                    pass
         except sqlite3.OperationalError:
             pass
         finally:
@@ -748,6 +777,8 @@ def ticket_detail_page(request: Request, ticket_id: str):
     return templates.TemplateResponse(request, "ticket_detail.html", {
         "ticket": ticket,
         "task": task,
+        "all_tasks": all_tasks,
+        "pipelines": pipelines,
         "linear_url": lambda tid: linear_url(app, tid),
         "supervisor": supervisor_status(app, state),
         "pause_state": manual_pause_state(state),

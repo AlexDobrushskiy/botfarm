@@ -28,6 +28,7 @@ from botfarm.db import (
     get_schema_version,
     get_stage_run_aggregates,
     get_stage_runs,
+    get_all_tasks_by_ticket,
     get_task,
     get_task_by_ticket,
     get_task_history,
@@ -39,6 +40,7 @@ from botfarm.db import (
     insert_codex_usage_snapshot,
     insert_event,
     insert_stage_run,
+    insert_redispatch_task,
     insert_task,
     insert_usage_api_call,
     insert_usage_snapshot,
@@ -1257,6 +1259,94 @@ class TestTasks:
         assert tid2 == tid1
         row = get_task(conn, tid2)
         assert row["pipeline_id"] is None
+
+
+# ---------------------------------------------------------------------------
+# Re-dispatch (A/B comparison)
+# ---------------------------------------------------------------------------
+
+
+class TestRedispatch:
+    def test_insert_redispatch_creates_new_row(self, conn):
+        """Re-dispatch always creates a new row, not resetting the old one."""
+        tid1 = insert_task(conn, ticket_id="RD-1", title="Original", project="p", slot=1)
+        update_task(conn, tid1, status="completed")
+        conn.commit()
+
+        tid2 = insert_redispatch_task(
+            conn, ticket_id="RD-1", title="A/B run", project="p", slot=2,
+        )
+        conn.commit()
+        assert tid2 != tid1
+
+        # Original task is untouched
+        row1 = get_task(conn, tid1)
+        assert row1["status"] == "completed"
+        assert row1["slot"] == 1
+
+        # New task exists
+        row2 = get_task(conn, tid2)
+        assert row2["ticket_id"] == "RD-1"
+        assert row2["slot"] == 2
+        assert row2["status"] == "pending"
+
+    def test_insert_redispatch_with_pipeline_id(self, conn):
+        conn.execute("INSERT INTO pipeline_templates (name, is_default) VALUES ('qa', 0)")
+        pid = conn.execute("SELECT id FROM pipeline_templates WHERE name = 'qa'").fetchone()[0]
+
+        tid1 = insert_task(conn, ticket_id="RD-2", title="Orig", project="p", slot=1)
+        update_task(conn, tid1, status="failed")
+        conn.commit()
+
+        tid2 = insert_redispatch_task(
+            conn, ticket_id="RD-2", title="Rerun", project="p", slot=2, pipeline_id=pid,
+        )
+        row = get_task(conn, tid2)
+        assert row["pipeline_id"] == pid
+
+    def test_get_task_by_ticket_returns_most_recent(self, conn):
+        """get_task_by_ticket returns the latest task when multiple exist."""
+        tid1 = insert_task(conn, ticket_id="RD-3", title="First", project="p", slot=1)
+        update_task(conn, tid1, status="completed")
+        conn.commit()
+
+        tid2 = insert_redispatch_task(
+            conn, ticket_id="RD-3", title="Second", project="p", slot=2,
+        )
+        conn.commit()
+
+        latest = get_task_by_ticket(conn, "RD-3")
+        assert latest["id"] == tid2
+        assert latest["title"] == "Second"
+
+    def test_get_all_tasks_by_ticket(self, conn):
+        """get_all_tasks_by_ticket returns all tasks, newest first."""
+        tid1 = insert_task(conn, ticket_id="RD-4", title="First", project="p", slot=1)
+        update_task(conn, tid1, status="completed")
+        conn.commit()
+
+        tid2 = insert_redispatch_task(
+            conn, ticket_id="RD-4", title="Second", project="p", slot=2,
+        )
+        conn.commit()
+
+        all_tasks = get_all_tasks_by_ticket(conn, "RD-4")
+        assert len(all_tasks) == 2
+        assert all_tasks[0]["id"] == tid2  # newest first
+        assert all_tasks[1]["id"] == tid1
+
+    def test_insert_task_still_resets_for_retry(self, conn):
+        """Regular insert_task still resets existing row (retry semantics)."""
+        tid1 = insert_task(conn, ticket_id="RD-5", title="First", project="p", slot=1)
+        update_task(conn, tid1, status="failed", failure_reason="test")
+        conn.commit()
+
+        tid2 = insert_task(conn, ticket_id="RD-5", title="Retry", project="p", slot=2)
+        assert tid2 == tid1  # Same row, reset
+        row = get_task(conn, tid2)
+        assert row["status"] == "pending"
+        assert row["failure_reason"] is None
+        assert row["slot"] == 2
 
 
 # ---------------------------------------------------------------------------

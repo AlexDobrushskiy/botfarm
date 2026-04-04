@@ -227,6 +227,49 @@ async def api_dispatch_ticket(request: Request):
     return JSONResponse(result)
 
 
+# --- Re-dispatch API (A/B comparison) ---
+
+@router.post("/api/redispatch")
+async def api_redispatch(request: Request):
+    """Re-dispatch a completed/failed ticket with a different pipeline for A/B comparison."""
+    cb = request.app.state.on_redispatch
+    if cb is None:
+        return JSONResponse(
+            {"error": "Re-dispatch not available (supervisor not connected)"},
+            status_code=503,
+        )
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "Expected a JSON object"}, status_code=400)
+
+    ticket_id = body.get("ticket_id", "")
+    project = body.get("project", "")
+    pipeline_id = body.get("pipeline_id")
+
+    if not isinstance(ticket_id, str) or not ticket_id:
+        return JSONResponse(
+            {"error": "ticket_id is required and must be a string"}, status_code=400,
+        )
+    if not isinstance(project, str) or not project:
+        return JSONResponse(
+            {"error": "project is required and must be a string"}, status_code=400,
+        )
+    if pipeline_id is not None:
+        if isinstance(pipeline_id, bool) or not isinstance(pipeline_id, int):
+            return JSONResponse(
+                {"error": "pipeline_id must be an integer"}, status_code=400,
+            )
+
+    result = await asyncio.to_thread(cb, project, ticket_id, pipeline_id)
+
+    if "error" in result:
+        return JSONResponse(result, status_code=409)
+    return JSONResponse(result)
+
+
 # --- Add Slot API ---
 
 @router.post("/api/slot/add")

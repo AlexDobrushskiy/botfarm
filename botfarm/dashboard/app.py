@@ -41,6 +41,7 @@ def create_app(
     on_rerun_preflight: Callable[[], None] | None = None,
     on_stop_slot: Callable[[str, int], None] | None = None,
     on_dispatch_ticket: Callable[[str, str, int | None], dict] | None = None,
+    on_redispatch: Callable[[str, str, int | None], dict] | None = None,
     on_add_slot: Callable[[str], None] | None = None,
     on_add_project: Callable[[str], None] | None = None,
     on_remove_project: Callable[[str], None] | None = None,
@@ -89,6 +90,10 @@ def create_app(
         Callback invoked when the user manually dispatches a ticket via
         the semi-auto UI. Takes ``(project, ticket_id)`` and returns a
         result dict (e.g. ``supervisor.request_dispatch_ticket``).
+    on_redispatch:
+        Callback invoked when the user re-dispatches a completed ticket
+        with a different pipeline for A/B comparison. Takes
+        ``(project, ticket_id, pipeline_id)`` and returns a result dict.
     on_add_slot:
         Callback invoked when the user requests adding a new slot. Takes
         ``(project,)`` argument (e.g. ``supervisor.request_add_slot``).
@@ -127,6 +132,7 @@ def create_app(
     app.state.on_rerun_preflight = on_rerun_preflight
     app.state.on_stop_slot = on_stop_slot
     app.state.on_dispatch_ticket = on_dispatch_ticket
+    app.state.on_redispatch = on_redispatch
     app.state.on_add_slot = on_add_slot
     app.state.on_add_project = on_add_project
     app.state.on_remove_project = on_remove_project
@@ -195,6 +201,7 @@ def start_dashboard(
     on_rerun_preflight: Callable[[], None] | None = None,
     on_stop_slot: Callable[[str, int], None] | None = None,
     on_dispatch_ticket: Callable[[str, str, int | None], dict] | None = None,
+    on_redispatch: Callable[[str, str, int | None], dict] | None = None,
     on_add_slot: Callable[[str], None] | None = None,
     on_add_project: Callable[[str], None] | None = None,
     on_remove_project: Callable[[str], None] | None = None,
@@ -224,6 +231,7 @@ def start_dashboard(
         on_rerun_preflight=on_rerun_preflight,
         on_stop_slot=on_stop_slot,
         on_dispatch_ticket=on_dispatch_ticket,
+        on_redispatch=on_redispatch,
         on_add_slot=on_add_slot,
         on_add_project=on_add_project,
         on_remove_project=on_remove_project,
