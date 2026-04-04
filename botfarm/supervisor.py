@@ -248,8 +248,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
         self._dispatch_ticket_lock = threading.Lock()
 
         # Re-dispatch requests from the dashboard thread (A/B comparison).
-        # Each entry: (ticket_id, project, pipeline_id)
-        self._redispatch_requests: list[tuple[str, str, int | None]] = []
+        self._redispatch_requests: list[tuple] = []
         self._redispatch_lock = threading.Lock()
 
         # Queue for worker results — workers send _WorkerResult here

@@ -2257,7 +2257,6 @@ Note: The supervisor handles status transitions automatically — do not move th
     ) -> dict:
         """Validate conditions and re-dispatch a completed ticket for A/B comparison."""
         from botfarm.db import get_task_by_ticket, insert_redispatch_task
-        from botfarm.workflow import load_pipeline_by_name
 
         # 1. Project exists in config
         project_cfg = self._projects.get(project)
@@ -2332,7 +2331,6 @@ Note: The supervisor handles status transitions automatically — do not move th
             started_at=datetime.now(timezone.utc).isoformat(),
             started_on_extra_usage=int(on_extra),
         )
-        self._conn.commit()
 
         # 9. Build prior_context with branch disambiguation hint
         prior_context = ""
@@ -2366,6 +2364,20 @@ Note: The supervisor handles status transitions automatically — do not move th
         logger.info(
             "Re-dispatched %s → %s/slot-%d (pipeline_id=%s)",
             ticket_id, project, slot.slot_id, pipeline_id,
+        )
+
+        # 11. Stall tracking so hung redispatched workers are detected
+        import time
+        from botfarm.supervisor_workers import _StallInfo
+        self._stall_tracking[(project, slot.slot_id)] = _StallInfo(
+            dispatch_usage_5h=self._usage_poller.state.utilization_5h,
+            dispatch_time=time.time(),
+        )
+
+        # 12. Capture ticket history for debugging A/B runs
+        self._capture_ticket_history(
+            ticket_id, "redispatch",
+            client=self._bugtracker_client, branch_name=branch,
         )
 
         return {"success": True, "slot_id": slot.slot_id, "task_id": task_id}

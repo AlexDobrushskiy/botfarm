@@ -13,6 +13,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from botfarm.db import (
     count_tasks,
     count_ticket_history,
+    get_all_tasks_by_ticket,
     get_distinct_projects,
     get_distinct_ticket_projects,
     get_distinct_ticket_statuses,
@@ -744,7 +745,6 @@ def ticket_detail_page(request: Request, ticket_id: str):
                 task = dict(task_row)
 
             # Fetch all tasks for this ticket (A/B comparison runs)
-            from botfarm.db import get_all_tasks_by_ticket
             task_rows = get_all_tasks_by_ticket(conn, ticket_id)
             # Build pipeline name lookup
             pipeline_names: dict[int, str] = {}

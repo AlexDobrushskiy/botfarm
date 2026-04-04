@@ -218,12 +218,18 @@ document.getElementById('redispatch-form').addEventListener('submit', async func
         });
         const data = await resp.json();
         if (data.error) {
-            result.innerHTML = '<mark>' + data.error + '</mark>';
+            const mark = document.createElement('mark');
+            mark.textContent = data.error;
+            result.replaceChildren(mark);
         } else {
-            result.innerHTML = '<ins>Dispatched to slot ' + data.slot_id + '</ins>';
+            const ins = document.createElement('ins');
+            ins.textContent = 'Dispatched to slot ' + data.slot_id;
+            result.replaceChildren(ins);
         }
     } catch (err) {
-        result.innerHTML = '<mark>Request failed: ' + err.message + '</mark>';
+        const mark = document.createElement('mark');
+        mark.textContent = 'Request failed: ' + err.message;
+        result.replaceChildren(mark);
     } finally {
         btn.removeAttribute('aria-busy');
         btn.disabled = false;
