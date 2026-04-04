@@ -60,6 +60,7 @@ projects:
     tracker_project: ""          # Optional: filter to a specific project within the team
     include_tags:                # Optional: project-level label filter (overrides global bugtracker.include_tags)
       - my-label
+    dispatch_mode: auto          # Optional: "auto" (default) or "semi-auto"
 ```
 
 **Rules:**
@@ -100,6 +101,17 @@ With this config:
 - A ticket labeled `botfarm-frontend` is picked up by `air-front` only
 - A ticket labeled `botfarm` only is not picked up by either (doesn't match project-level tags)
 - If a project has no `include_tags`, it falls back to the global `bugtracker.include_tags`
+
+#### `dispatch_mode`
+
+Controls how tickets are dispatched for a project. Allowed values:
+
+| Value | Behavior |
+|---|---|
+| `auto` (default) | Tickets are automatically picked up and dispatched to available slots |
+| `semi-auto` | Tickets require manual approval before dispatch |
+
+This is a hot-reloadable setting — changing it in `config.yaml` takes effect at the next supervisor tick without a restart.
 
 ---
 

@@ -3950,3 +3950,99 @@ def test_load_config_long_lived_token_succeeds_with_env_var(tmp_path, monkeypatc
     config_path = _write_config(tmp_path, data)
     config = load_config(config_path)
     assert config.auth_mode == "long_lived_token"
+
+
+# --- dispatch_mode ---
+
+
+def test_load_config_dispatch_mode_auto_explicit(tmp_path):
+    """dispatch_mode: auto loads without error."""
+    data = {
+        "projects": [
+            {
+                "name": "test-project",
+                "team": "TST",
+                "base_dir": "~/test",
+                "worktree_prefix": "test-slot-",
+                "slots": [1],
+                "dispatch_mode": "auto",
+            }
+        ],
+        "bugtracker": {"api_key": "test-key"},
+    }
+    config_path = _write_config(tmp_path, data)
+    config = load_config(config_path)
+    assert config.projects[0].dispatch_mode == "auto"
+
+
+def test_load_config_dispatch_mode_default(tmp_path):
+    """Missing dispatch_mode defaults to 'auto'."""
+    config_path = _write_config(tmp_path, MINIMAL_CONFIG)
+    config = load_config(config_path)
+    assert config.projects[0].dispatch_mode == "auto"
+
+
+def test_load_config_dispatch_mode_semi_auto(tmp_path):
+    """dispatch_mode: semi-auto loads without error."""
+    data = {
+        "projects": [
+            {
+                "name": "test-project",
+                "team": "TST",
+                "base_dir": "~/test",
+                "worktree_prefix": "test-slot-",
+                "slots": [1],
+                "dispatch_mode": "semi-auto",
+            }
+        ],
+        "bugtracker": {"api_key": "test-key"},
+    }
+    config_path = _write_config(tmp_path, data)
+    config = load_config(config_path)
+    assert config.projects[0].dispatch_mode == "semi-auto"
+
+
+def test_load_config_dispatch_mode_invalid(tmp_path):
+    """dispatch_mode with invalid value fails validation."""
+    data = {
+        "projects": [
+            {
+                "name": "test-project",
+                "team": "TST",
+                "base_dir": "~/test",
+                "worktree_prefix": "test-slot-",
+                "slots": [1],
+                "dispatch_mode": "invalid",
+            }
+        ],
+        "bugtracker": {"api_key": "test-key"},
+    }
+    config_path = _write_config(tmp_path, data)
+    with pytest.raises(ConfigError, match="invalid dispatch_mode"):
+        load_config(config_path)
+
+
+def test_load_config_dispatch_mode_hot_reload(tmp_path):
+    """Changing dispatch_mode in YAML is picked up on reload."""
+    data = {
+        "projects": [
+            {
+                "name": "test-project",
+                "team": "TST",
+                "base_dir": "~/test",
+                "worktree_prefix": "test-slot-",
+                "slots": [1],
+                "dispatch_mode": "auto",
+            }
+        ],
+        "bugtracker": {"api_key": "test-key"},
+    }
+    config_path = _write_config(tmp_path, data)
+    config = load_config(config_path)
+    assert config.projects[0].dispatch_mode == "auto"
+
+    # Change to semi-auto and reload
+    data["projects"][0]["dispatch_mode"] = "semi-auto"
+    config_path.write_text(yaml.dump(data))
+    config2 = load_config(config_path)
+    assert config2.projects[0].dispatch_mode == "semi-auto"

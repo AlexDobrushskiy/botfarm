@@ -159,7 +159,8 @@ class ProjectConfig:
     __slots__ = ("name", "base_dir", "worktree_prefix", "slots",
                  "team", "tracker_project", "project_type",
                  "setup_commands", "run_command", "run_env", "run_port",
-                 "include_tags", "bugtracker", "qa_teardown_command")
+                 "include_tags", "bugtracker", "qa_teardown_command",
+                 "dispatch_mode")
 
     def __init__(
         self,
@@ -177,6 +178,7 @@ class ProjectConfig:
         include_tags: list[str] | None = None,
         bugtracker: dict | None = None,
         qa_teardown_command: str = "",
+        dispatch_mode: str = "auto",
     ) -> None:
         self.name = name
         self.base_dir = base_dir
@@ -192,6 +194,7 @@ class ProjectConfig:
         self.include_tags = include_tags
         self.bugtracker = bugtracker
         self.qa_teardown_command = qa_teardown_command
+        self.dispatch_mode = dispatch_mode
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, ProjectConfig):
@@ -207,7 +210,8 @@ class ProjectConfig:
                 and self.run_port == other.run_port
                 and self.include_tags == other.include_tags
                 and self.bugtracker == other.bugtracker
-                and self.qa_teardown_command == other.qa_teardown_command)
+                and self.qa_teardown_command == other.qa_teardown_command
+                and self.dispatch_mode == other.dispatch_mode)
 
     def __repr__(self) -> str:
         return (f"ProjectConfig(name={self.name!r}, team={self.team!r}, "
@@ -219,7 +223,8 @@ class ProjectConfig:
                 f"run_env={self.run_env!r}, run_port={self.run_port!r}, "
                 f"include_tags={self.include_tags!r}, "
                 f"bugtracker={self.bugtracker!r}, "
-                f"qa_teardown_command={self.qa_teardown_command!r})")
+                f"qa_teardown_command={self.qa_teardown_command!r}, "
+                f"dispatch_mode={self.dispatch_mode!r})")
 
 
 @dataclass
@@ -518,6 +523,8 @@ def create_default_config(config_path: Path = DEFAULT_CONFIG_PATH) -> Path:
     return config_path
 
 
+VALID_DISPATCH_MODES = {"auto", "semi-auto"}
+
 # Default run_command / run_port derived from project_type when not explicitly set.
 _PROJECT_TYPE_RUN_DEFAULTS: dict[str, dict[str, object]] = {
     "nextjs": {"run_command": "npm run dev", "run_port": 3000},
@@ -653,6 +660,18 @@ def _parse_project(data: dict) -> ProjectConfig:
             f"Project '{data['name']}': qa_teardown_command must be a string"
         )
 
+    # dispatch_mode
+    dispatch_mode = data.get("dispatch_mode", "auto")
+    if not isinstance(dispatch_mode, str):
+        raise ConfigError(
+            f"Project '{data['name']}': dispatch_mode must be a string"
+        )
+    if dispatch_mode not in VALID_DISPATCH_MODES:
+        raise ConfigError(
+            f"Project '{data['name']}': invalid dispatch_mode {dispatch_mode!r}. "
+            f"Must be one of: {sorted(VALID_DISPATCH_MODES)}"
+        )
+
     # Per-project bugtracker overrides
     bugtracker_data = data.get("bugtracker")
     if bugtracker_data is not None:
@@ -683,6 +702,7 @@ def _parse_project(data: dict) -> ProjectConfig:
         include_tags=include_tags,
         bugtracker=bugtracker_data,
         qa_teardown_command=qa_teardown_command,
+        dispatch_mode=dispatch_mode,
     )
 
 
@@ -1682,7 +1702,7 @@ def _validate_project_updates(
     _NEW_PROJECT_OPTIONAL = {"tracker_project", "project_type", "setup_commands",
                               "run_command", "run_env", "run_port",
                               "include_tags", "bugtracker",
-                              "qa_teardown_command"}
+                              "qa_teardown_command", "dispatch_mode"}
     _NEW_PROJECT_ALLOWED = _NEW_PROJECT_REQUIRED | _NEW_PROJECT_OPTIONAL
     seen_names: set[str] = set()
 
@@ -1764,6 +1784,18 @@ def _validate_project_updates(
         if "bugtracker" in proj:
             errors.extend(_validate_bugtracker_override(proj["bugtracker"], name))
 
+        if "dispatch_mode" in proj:
+            dm = proj["dispatch_mode"]
+            if not isinstance(dm, str):
+                errors.append(
+                    f"projects[{i}] '{name}': dispatch_mode must be a string"
+                )
+            elif dm not in VALID_DISPATCH_MODES:
+                errors.append(
+                    f"projects[{i}] '{name}': invalid dispatch_mode {dm!r}. "
+                    f"Must be one of: {sorted(VALID_DISPATCH_MODES)}"
+                )
+
         if is_new:
             # New project: validate required fields and allowed keys
             missing = _NEW_PROJECT_REQUIRED - set(proj.keys())
@@ -1794,7 +1826,7 @@ def _validate_project_updates(
             allowed_keys = {"name", "slots", "tracker_project",
                             "run_command", "run_env", "run_port",
                             "include_tags", "bugtracker",
-                            "qa_teardown_command"}
+                            "qa_teardown_command", "dispatch_mode"}
             extra = set(proj.keys()) - allowed_keys
             if extra:
                 errors.append(
@@ -1864,7 +1896,7 @@ def write_structural_config_updates(config_path: Path, updates: dict) -> None:
                 target = by_name[name]
                 for fld in ("slots", "tracker_project", "include_tags",
                             "run_command", "run_env", "run_port", "bugtracker",
-                            "qa_teardown_command"):
+                            "qa_teardown_command", "dispatch_mode"):
                     if fld in proj_update:
                         val = proj_update[fld]
                         if fld == "include_tags" and val == []:
@@ -1898,6 +1930,8 @@ def write_structural_config_updates(config_path: Path, updates: dict) -> None:
                         new_proj["bugtracker"] = proj_update["bugtracker"]
                     if proj_update.get("qa_teardown_command"):
                         new_proj["qa_teardown_command"] = proj_update["qa_teardown_command"]
+                    if proj_update.get("dispatch_mode"):
+                        new_proj["dispatch_mode"] = proj_update["dispatch_mode"]
                     existing_projects.append(new_proj)
 
     write_yaml_atomic(config_path, data)
