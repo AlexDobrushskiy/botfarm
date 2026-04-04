@@ -181,6 +181,43 @@ async def api_stop_slot(request: Request):
     })
 
 
+# --- Dispatch Ticket API (semi-auto) ---
+
+@router.post("/api/dispatch")
+async def api_dispatch_ticket(request: Request):
+    """Manually dispatch a specific ticket to a free slot (semi-auto mode)."""
+    cb = request.app.state.on_dispatch_ticket
+    if cb is None:
+        return JSONResponse(
+            {"error": "Dispatch not available (supervisor not connected)"},
+            status_code=503,
+        )
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "Expected a JSON object"}, status_code=400)
+
+    project = body.get("project", "")
+    ticket_id = body.get("ticket_id", "")
+
+    if not isinstance(project, str) or not project:
+        return JSONResponse(
+            {"error": "project is required and must be a string"}, status_code=400,
+        )
+    if not isinstance(ticket_id, str) or not ticket_id:
+        return JSONResponse(
+            {"error": "ticket_id is required and must be a string"}, status_code=400,
+        )
+
+    result = await asyncio.to_thread(cb, project, ticket_id)
+
+    if "error" in result:
+        return JSONResponse(result, status_code=409)
+    return JSONResponse(result)
+
+
 # --- Add Slot API ---
 
 @router.post("/api/slot/add")

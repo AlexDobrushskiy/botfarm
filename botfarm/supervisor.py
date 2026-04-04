@@ -243,6 +243,10 @@ class Supervisor(RecoveryMixin, OperationsMixin):
         self._remove_project_requests: list[str] = []
         self._remove_project_lock = threading.Lock()
 
+        # Dispatch-ticket requests from the dashboard thread (semi-auto mode).
+        self._dispatch_ticket_requests: list[tuple] = []
+        self._dispatch_ticket_lock = threading.Lock()
+
         # Queue for worker results — workers send _WorkerResult here
         self._result_queue: multiprocessing.Queue = multiprocessing.Queue()
 
@@ -347,6 +351,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
                 on_update=self.request_update,
                 on_rerun_preflight=self.request_rerun_preflight,
                 on_stop_slot=self.request_stop_slot,
+                on_dispatch_ticket=self.request_dispatch_ticket,
                 on_add_slot=self.request_add_slot,
                 on_add_project=self.request_add_project,
                 on_remove_project=self.request_remove_project,
@@ -603,6 +608,7 @@ class Supervisor(RecoveryMixin, OperationsMixin):
         for phase in (
             self._reconcile_workers,
             self._handle_stop_requests,
+            self._handle_dispatch_ticket_requests,
             self._handle_add_slot_requests,
             self._handle_add_project_requests,
             self._handle_remove_project_requests,

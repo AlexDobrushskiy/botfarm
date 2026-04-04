@@ -2045,6 +2045,161 @@ Note: The supervisor handles status transitions automatically — do not move th
         self._wake_event.set()
 
     # ------------------------------------------------------------------
+    # Dispatch ticket (manual / semi-auto)
+    # ------------------------------------------------------------------
+
+    def request_dispatch_ticket(self, project: str, ticket_id: str) -> dict:
+        """Thread-safe request to dispatch a specific ticket.
+
+        Called from the dashboard thread.  Queues the request and blocks
+        until the supervisor tick processes it, then returns a result dict.
+        """
+        import threading as _threading
+
+        done_event = _threading.Event()
+        result_holder: list[dict] = []
+
+        with self._dispatch_ticket_lock:
+            self._dispatch_ticket_requests.append(
+                (project, ticket_id, result_holder, done_event),
+            )
+        self._wake_event.set()
+
+        done_event.wait(timeout=30)
+        if not done_event.is_set():
+            return {"error": "Dispatch request timed out"}
+        return result_holder[0] if result_holder else {"error": "No result"}
+
+    def _handle_dispatch_ticket_requests(self) -> None:
+        """Drain pending dispatch-ticket requests and execute each."""
+        with self._dispatch_ticket_lock:
+            requests = list(self._dispatch_ticket_requests)
+            self._dispatch_ticket_requests.clear()
+
+        for project, ticket_id, result_holder, done_event in requests:
+            try:
+                result = self._execute_dispatch_ticket(project, ticket_id)
+                result_holder.append(result)
+            except Exception as exc:
+                logger.exception(
+                    "Failed to dispatch ticket %s/%s", project, ticket_id,
+                )
+                result_holder.append({"error": f"Internal error: {exc}"})
+            finally:
+                done_event.set()
+
+    def _execute_dispatch_ticket(self, project: str, ticket_id: str) -> dict:
+        """Validate conditions and dispatch a manually-selected ticket."""
+        from botfarm.supervisor_workers import build_prior_context
+
+        # 1. Project exists in config
+        project_cfg = self._projects.get(project)
+        if project_cfg is None:
+            return {"error": f"Project '{project}' not found"}
+
+        # 2. Project dispatch_mode is "semi-auto"
+        if project_cfg.dispatch_mode != "semi-auto":
+            return {
+                "error": f"Project '{project}' is not in semi-auto mode "
+                f"(current: {project_cfg.dispatch_mode})",
+            }
+
+        # 3. Ticket exists in queue_entries for that project
+        row = self._conn.execute(
+            "SELECT ticket_id, blocked_by FROM queue_entries "
+            "WHERE project = ? AND ticket_id = ?",
+            (project, ticket_id),
+        ).fetchone()
+        if row is None:
+            return {
+                "error": f"Ticket {ticket_id} not found in queue "
+                f"for project '{project}'",
+            }
+
+        # 4. Ticket is not blocked
+        blocked_by_raw = row["blocked_by"]
+        if blocked_by_raw:
+            blockers = json.loads(blocked_by_raw) if isinstance(
+                blocked_by_raw, str,
+            ) else blocked_by_raw
+            if blockers:
+                return {
+                    "error": f"Ticket {ticket_id} is blocked by: "
+                    f"{', '.join(blockers)}",
+                }
+
+        # 5. A free slot exists
+        prior = build_prior_context(self._conn, ticket_id)
+        slot = self._slot_manager.find_free_slot_for_project(
+            project, preferred_slot_id=prior.prior_slot,
+        )
+        if slot is None:
+            return {"error": f"No free slot available for project '{project}'"}
+
+        # 6. Global dispatch is not paused
+        if self._slot_manager.dispatch_paused:
+            reason = self._slot_manager.dispatch_pause_reason or "unknown"
+            return {"error": f"Global dispatch is paused ({reason})"}
+
+        # 7. Project is not paused
+        if self._slot_manager.is_project_paused(project):
+            reason = (
+                self._slot_manager.get_project_pause_reason(project)
+                or "unknown"
+            )
+            return {"error": f"Project '{project}' is paused ({reason})"}
+
+        # 8. Usage limits are not exceeded
+        thresholds = self._config.usage_limits
+        should_pause, usage_reason = (
+            self._usage_poller.state.should_pause_with_thresholds(
+                five_hour_threshold=thresholds.pause_five_hour_threshold,
+                seven_day_threshold=thresholds.pause_seven_day_threshold,
+                enabled=thresholds.enabled,
+            )
+        )
+        if should_pause:
+            return {"error": f"Usage limits exceeded ({usage_reason})"}
+
+        # Fetch the ticket from the poller
+        poller = self._pollers.get(project)
+        if poller is None:
+            return {"error": f"No poller configured for project '{project}'"}
+
+        active_ids = self._slot_manager.active_ticket_ids()
+        try:
+            poll_result = poller.poll(active_ticket_ids=active_ids)
+        except Exception as exc:
+            return {"error": f"Failed to poll bugtracker: {exc}"}
+
+        issue = None
+        for candidate in poll_result.candidates + poll_result.blocked:
+            if candidate.identifier == ticket_id:
+                issue = candidate
+                break
+        if issue is None:
+            return {
+                "error": f"Ticket {ticket_id} not found in current "
+                f"poll results for project '{project}'",
+            }
+
+        # Dispatch through the same code path as auto-dispatch
+        self._dispatch_worker(project, slot, issue, poller, prior=prior)
+
+        logger.info(
+            "Manual dispatch: %s → %s/slot-%d",
+            ticket_id, project, slot.slot_id,
+        )
+        insert_event(
+            self._conn,
+            event_type="manual_dispatch",
+            detail=f"ticket={ticket_id} project={project} slot={slot.slot_id}",
+        )
+        self._conn.commit()
+
+        return {"success": True, "slot_id": slot.slot_id}
+
+    # ------------------------------------------------------------------
     # Daily work summary
     # ------------------------------------------------------------------
 
