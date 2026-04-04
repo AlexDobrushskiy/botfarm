@@ -1,19 +1,22 @@
-"""Main page routes: index, history, tickets, task_detail, usage, metrics, workflow."""
+"""Main page routes: index, history, tickets, task_detail, usage, metrics, workflow, compare."""
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 import logging
 import sqlite3
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from botfarm.db import (
     count_tasks,
     count_ticket_history,
     get_all_tasks_by_ticket,
+    get_comparable_tickets,
     get_distinct_projects,
     get_distinct_ticket_projects,
     get_distinct_ticket_statuses,
@@ -22,11 +25,13 @@ from botfarm.db import (
     get_events,
     get_latest_context_fill_by_ticket,
     get_pipeline_names,
+    get_recent_tasks_for_picker,
     get_stage_run_aggregates,
     get_stage_runs,
     get_task,
     get_task_by_ticket,
     get_task_history,
+    get_tasks_for_comparison,
     get_ticket_history_entry,
     get_ticket_history_list,
 )
@@ -1080,3 +1085,242 @@ def workflow_page(request: Request):
         "supervisor": supervisor_status(app, state),
         "pause_state": manual_pause_state(state),
     })
+
+
+# --- A/B Comparison ---
+
+
+def _build_run_data(
+    task: dict,
+    stages: list[dict],
+    pipeline_name: str | None,
+) -> dict:
+    """Build enriched run data for one task in the comparison view."""
+    totals = _compute_task_totals(stages)
+    duration_seconds = None
+    if task.get("started_at") and task.get("completed_at"):
+        try:
+            start = datetime.fromisoformat(
+                task["started_at"].replace("Z", "+00:00")
+            )
+            end = datetime.fromisoformat(
+                task["completed_at"].replace("Z", "+00:00")
+            )
+            duration_seconds = int((end - start).total_seconds())
+        except (ValueError, TypeError):
+            pass
+
+    review_count = sum(
+        1 for s in stages if s.get("stage") in ("review", "codex_review")
+    )
+    fix_count = sum(1 for s in stages if s.get("stage") == "fix")
+
+    return {
+        "task": task,
+        "pipeline_name": pipeline_name,
+        "stages": stages,
+        "totals": totals,
+        "duration_seconds": duration_seconds,
+        "duration_display": format_duration(duration_seconds) if duration_seconds is not None else "-",
+        "review_cycles": max(review_count, fix_count),
+    }
+
+
+def _comparison_context(
+    app,
+    conn: sqlite3.Connection,
+    task_ids: list[int],
+) -> list[dict]:
+    """Load and enrich comparison data for the given task IDs."""
+    task_rows = get_tasks_for_comparison(conn, task_ids)
+    if not task_rows:
+        return []
+
+    # Resolve pipeline names
+    pipeline_ids = [
+        r["pipeline_id"] for r in task_rows if r["pipeline_id"] is not None
+    ]
+    pnames = get_pipeline_names(conn, pipeline_ids) if pipeline_ids else {}
+
+    runs = []
+    for row in task_rows:
+        task = dict(row)
+        task = _enrich_tasks(app, [task])[0]
+        stages = [dict(s) for s in get_stage_runs(conn, task["id"])]
+        pname = pnames.get(task.get("pipeline_id"))
+        runs.append(_build_run_data(task, stages, pname))
+    return runs
+
+
+@router.get("/compare", response_class=HTMLResponse)
+def compare_page(request: Request):
+    app = request.app
+    templates = request.app.state.templates
+    params = request.query_params
+
+    # Parse task IDs from ?tasks=1,2 or ?ticket=TICKET-ID
+    task_ids: list[int] = []
+    ticket_id = params.get("ticket")
+    tasks_param = params.get("tasks")
+    if tasks_param:
+        for part in tasks_param.split(","):
+            part = part.strip()
+            if part.isdigit():
+                task_ids.append(int(part))
+
+    comparable_tickets: list[dict] = []
+    recent_tasks: list[dict] = []
+    runs: list[dict] = []
+
+    conn = get_db(app)
+    if conn:
+        try:
+            # If ticket specified, find its tasks
+            if ticket_id and not task_ids:
+                ticket_tasks = get_all_tasks_by_ticket(conn, ticket_id)
+                task_ids = [t["id"] for t in ticket_tasks]
+
+            if task_ids:
+                runs = _comparison_context(app, conn, task_ids)
+
+            # Always load selectors
+            try:
+                comparable_tickets = [dict(r) for r in get_comparable_tickets(conn)]
+            except sqlite3.OperationalError:
+                pass
+            try:
+                recent_tasks = [dict(r) for r in get_recent_tasks_for_picker(conn)]
+            except sqlite3.OperationalError:
+                pass
+        except sqlite3.OperationalError:
+            pass
+        finally:
+            conn.close()
+
+    # Determine which metrics are "better" for color coding
+    if len(runs) >= 2:
+        _annotate_winners(runs)
+
+    state = read_state(app)
+    return templates.TemplateResponse(request, "compare.html", {
+        "runs": runs,
+        "comparable_tickets": comparable_tickets,
+        "recent_tasks": recent_tasks,
+        "selected_task_ids": task_ids,
+        "selected_ticket": ticket_id or "",
+        "linear_url": lambda tid: linear_url(app, tid),
+        "format_duration": format_duration,
+        "context_fill_class": context_fill_class,
+        "supervisor": supervisor_status(app, state),
+        "pause_state": manual_pause_state(state),
+    })
+
+
+def _annotate_winners(runs: list[dict]) -> None:
+    """Mark which run is better/worse for each key metric."""
+    costs = [r["totals"]["total_cost"] for r in runs]
+    durations = [r["duration_seconds"] for r in runs]
+    fills = [r["totals"]["max_context_fill"] for r in runs]
+    reviews = [r["review_cycles"] for r in runs]
+
+    def _mark(values: list, key: str, *, lower_is_better: bool = True) -> None:
+        valid = [(i, v) for i, v in enumerate(values) if v is not None]
+        if len(valid) < 2:
+            return
+        best_val = min(v for _, v in valid) if lower_is_better else max(v for _, v in valid)
+        worst_val = max(v for _, v in valid) if lower_is_better else min(v for _, v in valid)
+        if best_val == worst_val:
+            return
+        for i, v in valid:
+            if v == best_val:
+                runs[i].setdefault("winners", {})[key] = "better"
+            elif v == worst_val:
+                runs[i].setdefault("winners", {})[key] = "worse"
+
+    _mark(costs, "cost")
+    _mark(durations, "duration")
+    _mark(fills, "context_fill")
+    _mark(reviews, "reviews")
+
+
+@router.get("/compare/export", response_class=JSONResponse)
+def compare_export(request: Request):
+    """Export comparison data as JSON or CSV."""
+    app = request.app
+    params = request.query_params
+    fmt = params.get("format", "json")
+
+    task_ids: list[int] = []
+    ticket_id = params.get("ticket")
+    tasks_param = params.get("tasks")
+    if tasks_param:
+        for part in tasks_param.split(","):
+            part = part.strip()
+            if part.isdigit():
+                task_ids.append(int(part))
+
+    conn = get_db(app)
+    if not conn:
+        return JSONResponse({"error": "database unavailable"}, status_code=503)
+
+    try:
+        if ticket_id and not task_ids:
+            ticket_tasks = get_all_tasks_by_ticket(conn, ticket_id)
+            task_ids = [t["id"] for t in ticket_tasks]
+
+        runs = _comparison_context(app, conn, task_ids) if task_ids else []
+    except sqlite3.OperationalError:
+        runs = []
+    finally:
+        conn.close()
+
+    # Build export rows
+    export_rows = []
+    for run in runs:
+        t = run["task"]
+        totals = run["totals"]
+        row = {
+            "task_id": t["id"],
+            "ticket_id": t["ticket_id"],
+            "title": t["title"],
+            "pipeline": run["pipeline_name"] or "",
+            "status": t["status"],
+            "total_cost_usd": round(totals["total_cost"], 6),
+            "duration_seconds": run["duration_seconds"],
+            "duration_display": run["duration_display"],
+            "total_input_tokens": totals["total_input_tokens"],
+            "total_output_tokens": totals["total_output_tokens"],
+            "max_context_fill_pct": totals["max_context_fill"],
+            "review_cycles": run["review_cycles"],
+            "pr_url": t.get("pr_url") or "",
+        }
+        # Per-stage detail
+        for i, stage in enumerate(run["stages"]):
+            prefix = f"stage_{i}"
+            row[f"{prefix}_name"] = stage.get("stage", "")
+            row[f"{prefix}_cost_usd"] = round(stage.get("total_cost_usd") or 0, 6)
+            row[f"{prefix}_duration_s"] = round(stage.get("duration_seconds") or 0, 1)
+            row[f"{prefix}_input_tokens"] = stage.get("input_tokens") or 0
+            row[f"{prefix}_output_tokens"] = stage.get("output_tokens") or 0
+            row[f"{prefix}_context_fill"] = stage.get("context_fill_pct")
+        export_rows.append(row)
+
+    if fmt == "csv":
+        if not export_rows:
+            return HTMLResponse("", media_type="text/csv")
+        buf = io.StringIO()
+        all_keys = dict.fromkeys(k for row in export_rows for k in row)
+        for row in export_rows:
+            for k in row:
+                if row[k] is None:
+                    row[k] = ""
+        writer = csv.DictWriter(buf, fieldnames=all_keys, restval="")
+        writer.writeheader()
+        writer.writerows(export_rows)
+        return HTMLResponse(
+            buf.getvalue(),
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=comparison.csv"},
+        )
+
+    return JSONResponse(export_rows)
