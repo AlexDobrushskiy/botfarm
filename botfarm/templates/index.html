@@ -52,6 +52,27 @@
     </article>
 </dialog>
 
+<!-- Dispatch ticket confirmation modal (outside htmx-refreshed region) -->
+<dialog id="dispatch-modal">
+    <article class="dispatch-modal-article">
+        <header>
+            <button aria-label="Close" rel="prev" onclick="document.getElementById('dispatch-modal').close()"></button>
+            <h3 id="dispatch-modal-title">Dispatch ticket?</h3>
+        </header>
+        <div class="dispatch-modal-body">
+            <table class="dispatch-modal-info">
+                <tr><th>Ticket</th><td id="dispatch-modal-ticket">-</td></tr>
+                <tr><th>Title</th><td id="dispatch-modal-ticket-title">-</td></tr>
+                <tr><th>Project</th><td id="dispatch-modal-project">-</td></tr>
+            </table>
+        </div>
+        <footer>
+            <button class="secondary" onclick="document.getElementById('dispatch-modal').close()">Cancel</button>
+            <button class="dispatch-confirm-btn" id="dispatch-modal-confirm" onclick="confirmDispatch()">Dispatch</button>
+        </footer>
+    </article>
+</dialog>
+
 <script>
 var _stopSlotProject = "";
 var _stopSlotId = 0;
@@ -114,10 +135,56 @@ function addSlot(project) {
     });
 }
 
+var _dispatchProject = "";
+var _dispatchTicketId = "";
+
+function openDispatchModal(el) {
+    _dispatchProject = el.dataset.project;
+    _dispatchTicketId = el.dataset.ticketId;
+    var ticketTitle = el.dataset.ticketTitle;
+    document.getElementById("dispatch-modal-title").textContent = "Dispatch " + _dispatchTicketId + "?";
+    document.getElementById("dispatch-modal-ticket").textContent = _dispatchTicketId;
+    document.getElementById("dispatch-modal-ticket-title").textContent = ticketTitle || "-";
+    document.getElementById("dispatch-modal-project").textContent = _dispatchProject;
+    document.getElementById("dispatch-modal").showModal();
+}
+
+function confirmDispatch() {
+    var btn = document.getElementById("dispatch-modal-confirm");
+    btn.disabled = true;
+    btn.textContent = "Dispatching...";
+    fetch("/api/dispatch", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({project: _dispatchProject, ticket_id: _dispatchTicketId})
+    }).then(function(resp) {
+        if (!resp.ok) return resp.json().then(function(d) { throw new Error(d.error || "Request failed"); });
+        return resp.json();
+    }).then(function(data) {
+        document.getElementById("dispatch-modal").close();
+        btn.disabled = false;
+        btn.textContent = "Dispatch";
+        showToast("Dispatched " + _dispatchTicketId + " to slot " + (data.slot_id || ""), "success");
+    }).catch(function(err) {
+        document.getElementById("dispatch-modal").close();
+        btn.disabled = false;
+        btn.textContent = "Dispatch";
+        showToast("Failed: " + err.message, "error");
+    });
+}
+
 /* Suspend htmx polling on #slots-panel while the stop modal is open */
 document.body.addEventListener("htmx:beforeRequest", function(evt) {
     var panel = document.getElementById("slots-panel");
     if (panel && panel.contains(evt.detail.elt) && document.getElementById("stop-slot-modal").open) {
+        evt.preventDefault();
+    }
+});
+
+/* Suspend htmx polling on #queue-panel while the dispatch modal is open */
+document.body.addEventListener("htmx:beforeRequest", function(evt) {
+    var panel = document.getElementById("queue-panel");
+    if (panel && panel.contains(evt.detail.elt) && document.getElementById("dispatch-modal").open) {
         evt.preventDefault();
     }
 });
