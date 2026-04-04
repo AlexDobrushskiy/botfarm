@@ -33,6 +33,29 @@
                    value="{{ stage.max_turns if stage.max_turns is not none else '' }}" min="1" placeholder="Unlimited">
         </div>
 
+        <div class="stage-prop-row stage-field-claude" data-stage-id="{{ stage.id }}"
+             {% if stage.executor_type != 'claude' %}style="display:none"{% endif %}>
+            <label class="stage-prop-label" for="prop-model-{{ stage.id }}">Model</label>
+            <div class="stage-prop-with-unit">
+                <select class="stage-prop-input" id="prop-model-{{ stage.id }}"
+                        data-current-value="{{ stage.model or '' }}"
+                        onchange="onModelChange({{ stage.id }})">
+                    <option value="">(default)</option>
+                </select>
+                <button type="button" class="model-refresh-btn" title="Refresh models"
+                        onclick="refreshModels({{ stage.id }})">&#x21bb;</button>
+            </div>
+        </div>
+
+        <div class="stage-prop-row stage-field-claude" data-stage-id="{{ stage.id }}"
+             {% if stage.executor_type != 'claude' %}style="display:none"{% endif %}>
+            <label class="stage-prop-label" for="prop-effort-{{ stage.id }}">Effort</label>
+            <select class="stage-prop-input" id="prop-effort-{{ stage.id }}"
+                    data-current-value="{{ stage.effort or '' }}">
+                <option value="">(default)</option>
+            </select>
+        </div>
+
         <div class="stage-prop-row stage-field-shell" data-stage-id="{{ stage.id }}"
              {% if stage.executor_type != 'shell' %}style="display:none"{% endif %}>
             <label class="stage-prop-label" for="prop-shell_command-{{ stage.id }}">Shell command</label>
@@ -187,6 +210,12 @@
             {% if stage.identity %}
             <span class="workflow-identity-badge">{{ stage.identity }}</span>
             {% endif %}
+            {% if stage.model %}
+            <span class="workflow-model-badge">{{ stage.model | replace('claude-', '') | replace('-', ' ') | truncate(16, True, '..') }}</span>
+            {% endif %}
+            {% if stage.effort %}
+            <span class="workflow-effort-badge workflow-effort-{{ stage.effort }}">{{ stage.effort }}</span>
+            {% endif %}
             {% if stage.timeout_minutes %}
             <span class="workflow-timeout">{{ stage.timeout_minutes }}min</span>
             {% endif %}
@@ -218,6 +247,12 @@
                     <div class="workflow-node-name">{{ stage.name }}</div>
                     {% if stage.identity %}
                     <span class="workflow-identity-badge">{{ stage.identity }}</span>
+                    {% endif %}
+                    {% if stage.model %}
+                    <span class="workflow-model-badge">{{ stage.model | replace('claude-', '') | replace('-', ' ') | truncate(16, True, '..') }}</span>
+                    {% endif %}
+                    {% if stage.effort %}
+                    <span class="workflow-effort-badge workflow-effort-{{ stage.effort }}">{{ stage.effort }}</span>
                     {% endif %}
                     {% if stage.timeout_minutes %}
                     <span class="workflow-timeout">{{ stage.timeout_minutes }}min</span>
@@ -259,6 +294,12 @@
                             <div class="workflow-node-name">{{ lp.fix_stage.name }}</div>
                             {% if lp.fix_stage.identity %}
                             <span class="workflow-identity-badge">{{ lp.fix_stage.identity }}</span>
+                            {% endif %}
+                            {% if lp.fix_stage.model %}
+                            <span class="workflow-model-badge">{{ lp.fix_stage.model | replace('claude-', '') | replace('-', ' ') | truncate(16, True, '..') }}</span>
+                            {% endif %}
+                            {% if lp.fix_stage.effort %}
+                            <span class="workflow-effort-badge workflow-effort-{{ lp.fix_stage.effort }}">{{ lp.fix_stage.effort }}</span>
                             {% endif %}
                             {% if lp.fix_stage.timeout_minutes %}
                             <span class="workflow-timeout">{{ lp.fix_stage.timeout_minutes }}min</span>
@@ -497,6 +538,19 @@
                     <option value="" selected>(none)</option>
                     <option value="coder">coder</option>
                     <option value="reviewer">reviewer</option>
+                </select>
+            </div>
+            <div class="stage-prop-row" id="add-stage-model-row">
+                <label class="stage-prop-label" for="add-stage-model">Model</label>
+                <select class="stage-prop-input" id="add-stage-model"
+                        onchange="onAddStageModelChange()">
+                    <option value="">(default)</option>
+                </select>
+            </div>
+            <div class="stage-prop-row" id="add-stage-effort-row">
+                <label class="stage-prop-label" for="add-stage-effort">Effort</label>
+                <select class="stage-prop-input" id="add-stage-effort">
+                    <option value="">(default)</option>
                 </select>
             </div>
             <div class="stage-prop-row">
@@ -922,9 +976,191 @@ input[type="number"].stage-prop-input {
 .stage-add-section {
     margin-top: 0.75rem;
 }
+
+/* ── Model & effort badges on stage cards ── */
+.workflow-model-badge {
+    display: inline-block;
+    font-size: 0.6rem;
+    padding: 0.1rem 0.35rem;
+    border-radius: 0.5rem;
+    background: rgba(129, 140, 248, 0.15);
+    color: #a5b4fc;
+    border: 1px solid rgba(129, 140, 248, 0.25);
+    white-space: nowrap;
+}
+.workflow-effort-badge {
+    display: inline-block;
+    font-size: 0.6rem;
+    font-weight: 600;
+    padding: 0.1rem 0.35rem;
+    border-radius: 0.5rem;
+    white-space: nowrap;
+}
+.workflow-effort-low {
+    background: rgba(100, 116, 139, 0.2);
+    color: #94a3b8;
+}
+.workflow-effort-medium {
+    background: rgba(34, 197, 94, 0.15);
+    color: #4ade80;
+}
+.workflow-effort-high {
+    background: rgba(245, 158, 11, 0.15);
+    color: #fbbf24;
+}
+.workflow-effort-max {
+    background: rgba(239, 68, 68, 0.15);
+    color: #f87171;
+}
+
+/* ── Model refresh button ── */
+.model-refresh-btn {
+    padding: 0.15rem 0.35rem;
+    font-size: 0.8rem;
+    line-height: 1;
+    border-radius: var(--pico-border-radius);
+    cursor: pointer;
+    background: transparent;
+    border: 1px solid var(--pico-muted-color);
+    color: var(--pico-muted-color);
+    transition: all 0.15s ease;
+}
+.model-refresh-btn:hover {
+    border-color: var(--pico-primary);
+    color: var(--pico-primary);
+}
+.model-refresh-btn[disabled] {
+    opacity: 0.4;
+    cursor: default;
+}
 </style>
 
 <script>
+var _availableModels = {{ available_models_json | safe }};
+
+function _formatModelTokens(tokens) {
+    if (tokens >= 1000000) return (tokens / 1000000) + 'M';
+    if (tokens >= 1000) return (tokens / 1000) + 'K';
+    return String(tokens);
+}
+
+function _populateModelDropdown(selectEl, selectedValue) {
+    // Keep only the (default) option
+    while (selectEl.options.length > 1) selectEl.remove(1);
+    var keys = Object.keys(_availableModels).sort();
+    for (var i = 0; i < keys.length; i++) {
+        var id = keys[i];
+        var m = _availableModels[id];
+        var opt = document.createElement('option');
+        opt.value = id;
+        opt.textContent = m.display_name + ' (' + _formatModelTokens(m.max_input_tokens) + ' context)';
+        if (id === selectedValue) opt.selected = true;
+        selectEl.appendChild(opt);
+    }
+}
+
+function _populateEffortDropdown(selectEl, modelId, selectedValue) {
+    while (selectEl.options.length > 1) selectEl.remove(1);
+    var efforts = ['low', 'medium', 'high', 'max'];
+    var supported = null;
+    if (modelId && _availableModels[modelId]) {
+        supported = _availableModels[modelId].supported_efforts;
+    }
+    for (var i = 0; i < efforts.length; i++) {
+        if (supported && supported.indexOf(efforts[i]) === -1) continue;
+        var opt = document.createElement('option');
+        opt.value = efforts[i];
+        opt.textContent = efforts[i];
+        if (efforts[i] === selectedValue) opt.selected = true;
+        selectEl.appendChild(opt);
+    }
+}
+
+function _initModelEffortDropdowns() {
+    // Populate dropdowns for all existing stages using their data from the DOM
+    document.querySelectorAll('select[id^="prop-model-"]').forEach(function(sel) {
+        var stageId = sel.id.replace('prop-model-', '');
+        var currentModel = sel.dataset.currentValue || '';
+        var effortSel = document.getElementById('prop-effort-' + stageId);
+        var currentEffort = effortSel ? (effortSel.dataset.currentValue || '') : '';
+        _populateModelDropdown(sel, currentModel);
+        if (effortSel) _populateEffortDropdown(effortSel, currentModel, currentEffort);
+    });
+    // Also populate the add-stage modal dropdowns
+    var addModelSel = document.getElementById('add-stage-model');
+    if (addModelSel) _populateModelDropdown(addModelSel, '');
+    var addEffortSel = document.getElementById('add-stage-effort');
+    if (addEffortSel) _populateEffortDropdown(addEffortSel, '', '');
+}
+
+function onModelChange(stageId) {
+    var modelSel = document.getElementById('prop-model-' + stageId);
+    var effortSel = document.getElementById('prop-effort-' + stageId);
+    var selectedModel = modelSel.value;
+    var currentEffort = effortSel.value;
+    _populateEffortDropdown(effortSel, selectedModel, currentEffort);
+    // If current effort is no longer valid, reset to default
+    if (effortSel.value !== currentEffort) {
+        effortSel.value = '';
+    }
+}
+
+function onAddStageModelChange() {
+    var modelSel = document.getElementById('add-stage-model');
+    var effortSel = document.getElementById('add-stage-effort');
+    var currentEffort = effortSel.value;
+    _populateEffortDropdown(effortSel, modelSel.value, currentEffort);
+    if (effortSel.value !== currentEffort) {
+        effortSel.value = '';
+    }
+}
+
+function refreshModels(stageId) {
+    var btn = document.querySelector('#prop-model-' + stageId).parentElement.querySelector('.model-refresh-btn');
+    btn.disabled = true;
+    btn.textContent = '...';
+    fetch('/api/models/refresh', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: '{}'
+    })
+    .then(function(resp) { return resp.json(); })
+    .then(function(result) {
+        btn.disabled = false;
+        btn.innerHTML = '&#x21bb;';
+        if (result.ok) {
+            // Update _availableModels from refreshed data
+            var newModels = {};
+            result.data.forEach(function(m) {
+                newModels[m.id] = {
+                    display_name: m.display_name,
+                    max_input_tokens: m.max_input_tokens,
+                    supported_efforts: m.supported_efforts || []
+                };
+            });
+            _availableModels = newModels;
+            // Re-populate all model dropdowns, preserving current selections
+            document.querySelectorAll('select[id^="prop-model-"]').forEach(function(sel) {
+                var sid = sel.id.replace('prop-model-', '');
+                _populateModelDropdown(sel, sel.value);
+                var effortSel = document.getElementById('prop-effort-' + sid);
+                if (effortSel) _populateEffortDropdown(effortSel, sel.value, effortSel.value);
+            });
+            var addModelSel = document.getElementById('add-stage-model');
+            if (addModelSel) _populateModelDropdown(addModelSel, addModelSel.value);
+            showToast('Models refreshed', 'success');
+        } else {
+            var msg = (result.errors && result.errors[0]) || 'Unknown error';
+            showToast('Model refresh failed: ' + msg, 'error');
+        }
+    })
+    .catch(function() {
+        btn.disabled = false;
+        btn.innerHTML = '&#x21bb;';
+        showToast('Model refresh failed: network error', 'error');
+    });
+}
+
 function switchPipeline(name) {
     document.querySelectorAll('.workflow-pipeline').forEach(function(el) {
         el.style.display = 'none';
@@ -1298,17 +1534,23 @@ function saveStageProperties(stageId) {
         body.identity = identity || null;
         var maxTurns = document.getElementById('prop-max_turns-' + stageId).value;
         body.max_turns = maxTurns ? parseInt(maxTurns, 10) : null;
+        body.model = document.getElementById('prop-model-' + stageId).value || null;
+        body.effort = document.getElementById('prop-effort-' + stageId).value || null;
         body.shell_command = null;
     } else if (execType === 'shell') {
         body.shell_command = document.getElementById('prop-shell_command-' + stageId).value || null;
         body.identity = null;
         body.max_turns = null;
+        body.model = null;
+        body.effort = null;
     } else {
         // internal
         body.identity = null;
         body.max_turns = null;
         body.shell_command = null;
         body.result_parser = null;
+        body.model = null;
+        body.effort = null;
     }
 
     var timeout = document.getElementById('prop-timeout_minutes-' + stageId).value;
@@ -1365,6 +1607,37 @@ function saveStageProperties(stageId) {
                     }
                 } else if (badge) {
                     badge.remove();
+                }
+                // Update model badge
+                var modelBadge = node.querySelector('.workflow-model-badge');
+                if (data.model) {
+                    var modelLabel = data.model.replace('claude-', '').replace(/-/g, ' ');
+                    if (modelLabel.length > 16) modelLabel = modelLabel.substring(0, 14) + '..';
+                    if (modelBadge) {
+                        modelBadge.textContent = modelLabel;
+                    } else {
+                        modelBadge = document.createElement('span');
+                        modelBadge.className = 'workflow-model-badge';
+                        modelBadge.textContent = modelLabel;
+                        node.appendChild(modelBadge);
+                    }
+                } else if (modelBadge) {
+                    modelBadge.remove();
+                }
+                // Update effort badge
+                var effortBadge = node.querySelector('.workflow-effort-badge');
+                if (data.effort) {
+                    if (effortBadge) {
+                        effortBadge.textContent = data.effort;
+                        effortBadge.className = 'workflow-effort-badge workflow-effort-' + data.effort;
+                    } else {
+                        effortBadge = document.createElement('span');
+                        effortBadge.className = 'workflow-effort-badge workflow-effort-' + data.effort;
+                        effortBadge.textContent = data.effort;
+                        node.appendChild(effortBadge);
+                    }
+                } else if (effortBadge) {
+                    effortBadge.remove();
                 }
                 // Update timeout badge
                 var timeoutBadge = node.querySelector('.workflow-timeout');
@@ -1773,6 +2046,12 @@ function showAddStageModal(pipelineId, pipelineName) {
     document.getElementById('add-stage-prompt_template').value = '';
     document.getElementById('add-stage-feedback').innerHTML = '';
     document.getElementById('add-stage-identity-row').style.display = '';
+    document.getElementById('add-stage-model-row').style.display = '';
+    document.getElementById('add-stage-effort-row').style.display = '';
+    var addModelSel = document.getElementById('add-stage-model');
+    _populateModelDropdown(addModelSel, '');
+    var addEffortSel = document.getElementById('add-stage-effort');
+    _populateEffortDropdown(addEffortSel, '', '');
     document.getElementById('add-stage-modal').showModal();
 }
 
@@ -1782,7 +2061,10 @@ function closeAddStageModal() {
 
 function onAddStageExecutorChange() {
     var execType = document.getElementById('add-stage-executor_type').value;
-    document.getElementById('add-stage-identity-row').style.display = execType === 'claude' ? '' : 'none';
+    var isClaude = execType === 'claude';
+    document.getElementById('add-stage-identity-row').style.display = isClaude ? '' : 'none';
+    document.getElementById('add-stage-model-row').style.display = isClaude ? '' : 'none';
+    document.getElementById('add-stage-effort-row').style.display = isClaude ? '' : 'none';
 }
 
 function createStage() {
@@ -1814,6 +2096,10 @@ function createStage() {
     if (execType === 'claude') {
         var identity = document.getElementById('add-stage-identity').value;
         if (identity) body.identity = identity;
+        var model = document.getElementById('add-stage-model').value;
+        if (model) body.model = model;
+        var effort = document.getElementById('add-stage-effort').value;
+        if (effort) body.effort = effort;
     }
 
     var prompt = document.getElementById('add-stage-prompt_template').value;
@@ -1987,6 +2273,9 @@ document.querySelectorAll('[data-action="cancel-edit"]').forEach(function(btn) {
         togglePipelineEditor(this.dataset.pipelineName);
     });
 });
+
+// Initialize model/effort dropdowns from available_models data
+_initModelEffortDropdowns();
 </script>
 
 {% endif %}
