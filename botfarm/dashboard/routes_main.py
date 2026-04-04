@@ -29,6 +29,7 @@ from botfarm.db import (
     get_ticket_history_list,
 )
 from botfarm.worker import STAGES
+from botfarm.models import get_cached_models
 from botfarm.workflow import load_all_pipelines, resolve_max_iterations
 
 from .formatters import build_pipeline_state, review_display_status
@@ -890,6 +891,7 @@ def workflow_page(request: Request):
     templates = request.app.state.templates
     conn = get_db(app)
     pipelines_data: list[dict] = []
+    available_models: dict[str, dict] = {}
     if conn:
         try:
             pipelines = load_all_pipelines(conn)
@@ -922,6 +924,8 @@ def workflow_page(request: Request):
                         "max_turns": s.max_turns,
                         "shell_command": s.shell_command,
                         "result_parser": s.result_parser,
+                        "model": s.model,
+                        "effort": s.effort,
                     }
                     for s in pipeline.stages
                 ]
@@ -937,6 +941,8 @@ def workflow_page(request: Request):
                         "max_turns": s.max_turns,
                         "shell_command": s.shell_command,
                         "result_parser": s.result_parser,
+                        "model": s.model,
+                        "effort": s.effort,
                     }
                     for s in main_stages
                 ]
@@ -987,6 +993,8 @@ def workflow_page(request: Request):
                             "max_turns": fix_stage_obj.max_turns,
                             "shell_command": fix_stage_obj.shell_command,
                             "result_parser": fix_stage_obj.result_parser,
+                            "model": fix_stage_obj.model,
+                            "effort": fix_stage_obj.effort,
                         } if fix_stage_obj else None,
                         "max_iterations": eff_max,
                         "raw_max_iterations": loop.max_iterations,
@@ -1006,11 +1014,25 @@ def workflow_page(request: Request):
                 })
         except sqlite3.OperationalError:
             pass
-        finally:
-            conn.close()
+
+        # Fetch available models for model dropdown
+        try:
+            models_list = get_cached_models(conn)
+        except Exception:
+            models_list = []
+
+        for m in models_list:
+            available_models[m.id] = {
+                "display_name": m.display_name,
+                "max_input_tokens": m.max_input_tokens,
+                "supported_efforts": m.supported_efforts or [],
+            }
+
+        conn.close()
     state = read_state(app)
     return templates.TemplateResponse(request, "workflow.html", {
         "pipelines": pipelines_data,
+        "available_models_json": json.dumps(available_models),
         "active_page": "workflow",
         "supervisor": supervisor_status(app, state),
         "pause_state": manual_pause_state(state),
