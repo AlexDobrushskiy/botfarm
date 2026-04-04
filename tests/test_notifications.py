@@ -38,6 +38,39 @@ class TestDetectFormat:
 
 
 # ---------------------------------------------------------------------------
+# _ticket_link
+# ---------------------------------------------------------------------------
+
+
+class TestTicketLink:
+    def test_slack_format(self):
+        n = Notifier(NotificationsConfig(
+            webhook_url="https://hooks.slack.com/services/xxx",
+            webhook_format="slack",
+        ))
+        result = n._ticket_link("SMA-42", "https://linear.app/ws/issue/SMA-42")
+        assert result == "<https://linear.app/ws/issue/SMA-42|SMA-42>"
+        n.close()
+
+    def test_discord_format(self):
+        n = Notifier(NotificationsConfig(
+            webhook_url="https://discord.com/api/webhooks/xxx",
+            webhook_format="discord",
+        ))
+        result = n._ticket_link("SMA-42", "https://linear.app/ws/issue/SMA-42")
+        assert result == "[SMA-42](https://linear.app/ws/issue/SMA-42)"
+        n.close()
+
+    def test_no_url_returns_plain_id(self):
+        n = Notifier(NotificationsConfig(
+            webhook_url="https://hooks.slack.com/services/xxx",
+        ))
+        assert n._ticket_link("SMA-42") == "SMA-42"
+        assert n._ticket_link("SMA-42", None) == "SMA-42"
+        n.close()
+
+
+# ---------------------------------------------------------------------------
 # Notifier — disabled (no URL)
 # ---------------------------------------------------------------------------
 
@@ -178,6 +211,47 @@ class TestNotifierSlack:
         notifier.notify_supervisor_shutdown(reason="unexpected error")
         assert notifier._client.post.call_count == 2
 
+    def test_task_completed_with_ticket_url_creates_slack_link(self, notifier):
+        notifier.notify_task_completed(
+            ticket_id="SMA-42",
+            title="Add widget",
+            ticket_url="https://linear.app/ws/issue/SMA-42",
+        )
+        payload = notifier._client.post.call_args[1]["json"]
+        assert "<https://linear.app/ws/issue/SMA-42|SMA-42>" in payload["text"]
+
+    def test_task_completed_without_ticket_url_uses_plain_id(self, notifier):
+        notifier.notify_task_completed(ticket_id="SMA-42", title="Add widget")
+        payload = notifier._client.post.call_args[1]["json"]
+        assert "SMA-42" in payload["text"]
+        assert "<" not in payload["text"].split("SMA-42")[0][-1:]
+
+    def test_task_failed_with_ticket_url_creates_slack_link(self, notifier):
+        notifier.notify_task_failed(
+            ticket_id="SMA-5",
+            title="Broken",
+            failure_reason="tests failed",
+            ticket_url="https://linear.app/ws/issue/SMA-5",
+        )
+        payload = notifier._client.post.call_args[1]["json"]
+        assert "<https://linear.app/ws/issue/SMA-5|SMA-5>" in payload["text"]
+
+    def test_human_blocker_with_urls_creates_slack_links(self, notifier):
+        notifier.notify_human_blocker(
+            blocker_id="SMA-100",
+            blocker_title="Manual step",
+            blocked_tickets=["SMA-101", "SMA-102"],
+            blocker_url="https://linear.app/ws/issue/SMA-100",
+            blocked_ticket_urls={
+                "SMA-101": "https://linear.app/ws/issue/SMA-101",
+                "SMA-102": "https://linear.app/ws/issue/SMA-102",
+            },
+        )
+        payload = notifier._client.post.call_args[1]["json"]
+        assert "<https://linear.app/ws/issue/SMA-100|SMA-100>" in payload["text"]
+        assert "<https://linear.app/ws/issue/SMA-101|SMA-101>" in payload["text"]
+        assert "<https://linear.app/ws/issue/SMA-102|SMA-102>" in payload["text"]
+
 
 # ---------------------------------------------------------------------------
 # Notifier — capacity threshold notifications
@@ -310,6 +384,15 @@ class TestNotifierDiscord:
         payload = notifier._client.post.call_args[1]["json"]
         assert "content" in payload
         assert "text" not in payload
+
+    def test_task_completed_with_ticket_url_creates_discord_link(self, notifier):
+        notifier.notify_task_completed(
+            ticket_id="SMA-1",
+            title="Test",
+            ticket_url="https://linear.app/ws/issue/SMA-1",
+        )
+        payload = notifier._client.post.call_args[1]["json"]
+        assert "[SMA-1](https://linear.app/ws/issue/SMA-1)" in payload["content"]
 
 
 # ---------------------------------------------------------------------------
@@ -634,6 +717,20 @@ class TestRefactoringAnalysisNotifications:
             ticket_url="https://linear.app/test/issue/SMA-101",
         )
         assert notifier._client.post.call_count == 2
+
+    def test_action_needed_parent_ticket_linked(self, notifier):
+        notifier.notify_refactoring_action_needed(
+            month="March",
+            year=2026,
+            num_tickets=3,
+            parent_ticket_id="SMA-100",
+            brief_list="duplicated auth logic",
+            ticket_url="https://linear.app/test/issue/SMA-99",
+            parent_ticket_url="https://linear.app/test/issue/SMA-100",
+        )
+        payload = notifier._client.post.call_args[1]["json"]
+        text = payload["text"]
+        assert "<https://linear.app/test/issue/SMA-100|SMA-100>" in text
 
     def test_action_needed_not_rate_limited(self, notifier):
         notifier.notify_refactoring_action_needed(

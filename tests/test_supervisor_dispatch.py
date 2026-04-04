@@ -500,6 +500,8 @@ class TestHumanBlockerDetection:
             blocker_id="TST-99",
             blocker_title="Create GitHub accounts",
             blocked_tickets=["TST-10"],
+            blocker_url=None,
+            blocked_ticket_urls=None,
         )
 
     def test_no_notification_when_blocker_lacks_human_label(self, supervisor):
@@ -565,6 +567,8 @@ class TestHumanBlockerDetection:
             blocker_id="TST-99",
             blocker_title="Manual step",
             blocked_tickets=["TST-10", "TST-11"],
+            blocker_url=None,
+            blocked_ticket_urls=None,
         )
 
     def test_label_lookup_failure_does_not_crash(self, supervisor):

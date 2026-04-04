@@ -65,6 +65,15 @@ class Notifier:
     def close(self) -> None:
         self._client.close()
 
+    def _ticket_link(self, ticket_id: str, ticket_url: str | None = None) -> str:
+        """Format a ticket ID as a clickable link for the configured webhook format."""
+        if not ticket_url:
+            return ticket_id
+        fmt = _detect_format(self._config.webhook_url, self._config.webhook_format)
+        if fmt == "discord":
+            return f"[{ticket_id}]({ticket_url})"
+        return f"<{ticket_url}|{ticket_id}>"
+
     # ------------------------------------------------------------------
     # Public event methods
     # ------------------------------------------------------------------
@@ -77,9 +86,11 @@ class Notifier:
         duration_seconds: float | None = None,
         pr_url: str | None = None,
         review_summary: str | None = None,
+        ticket_url: str | None = None,
     ) -> None:
         """Notify that a task completed successfully."""
-        lines = [f"*Task completed:* {ticket_id} — {title}"]
+        linked_id = self._ticket_link(ticket_id, ticket_url)
+        lines = [f"*Task completed:* {linked_id} — {title}"]
         details = []
         if duration_seconds is not None:
             minutes = int(duration_seconds) // 60
@@ -112,13 +123,15 @@ class Notifier:
         failure_category: str | None = None,
         review_summary: str | None = None,
         todo_status: str = "Todo",
+        ticket_url: str | None = None,
     ) -> None:
         """Notify that a task failed."""
+        linked_id = self._ticket_link(ticket_id, ticket_url)
         env_label = self._CATEGORY_LABELS.get(failure_category or "")
         if env_label:
-            lines = [f"*Task failed ({env_label}):* {ticket_id} — {title}"]
+            lines = [f"*Task failed ({env_label}):* {linked_id} — {title}"]
         else:
-            lines = [f"*Task failed:* {ticket_id} — {title}"]
+            lines = [f"*Task failed:* {linked_id} — {title}"]
         if failure_reason:
             lines.append(f"Reason: {failure_reason[:200]}")
         if failure_category == "auth_failure":
@@ -235,12 +248,14 @@ class Notifier:
         parent_ticket_id: str,
         brief_list: str,
         ticket_url: str,
+        parent_ticket_url: str | None = None,
     ) -> None:
         """Notify that a refactoring analysis created follow-up tickets."""
+        linked_parent = self._ticket_link(parent_ticket_id, parent_ticket_url)
         self._send(
             "refactoring_action_needed",
             f"Refactoring Analysis ({month} {year}): {num_tickets} refactoring "
-            f"tickets created under {parent_ticket_id}. "
+            f"tickets created under {linked_parent}. "
             f"Top concerns: {brief_list}. Details: {ticket_url}",
         )
 
@@ -255,9 +270,10 @@ class Notifier:
         Sent only for ticket-count-triggered tickets, since they go to
         Backlog and need human action to move to Todo for dispatch.
         """
+        linked_id = self._ticket_link(ticket_id, ticket_url)
         lines = [
-            f"*Refactoring analysis due* — {ticket_id} created in Backlog",
-            f"Move to Todo when ready for dispatch: {ticket_url}",
+            f"*Refactoring analysis due* — {linked_id} created in Backlog",
+            "Move to Todo when ready for dispatch.",
         ]
         self._send("refactoring_due", "\n".join(lines))
 
@@ -267,15 +283,20 @@ class Notifier:
         blocker_id: str,
         blocker_title: str,
         blocked_tickets: list[str],
+        blocker_url: str | None = None,
+        blocked_ticket_urls: dict[str, str] | None = None,
     ) -> None:
         """Notify that a Human-labeled ticket is blocking the queue.
 
         Rate-limited per blocker ticket using a separate cooldown
         (``human_blocker_cooldown_seconds`` in config, default 1 hour).
         """
-        blocked_list = ", ".join(blocked_tickets)
+        linked_blocker = self._ticket_link(blocker_id, blocker_url)
+        urls = blocked_ticket_urls or {}
+        linked_blocked = [self._ticket_link(tid, urls.get(tid)) for tid in blocked_tickets]
+        blocked_list = ", ".join(linked_blocked)
         message = (
-            f"*Queue blocked by human action* — {blocker_id}: \"{blocker_title}\"\n"
+            f"*Queue blocked by human action* — {linked_blocker}: \"{blocker_title}\"\n"
             f"Blocked tickets: {blocked_list}"
         )
         event_key = f"human_blocker:{blocker_id}"
