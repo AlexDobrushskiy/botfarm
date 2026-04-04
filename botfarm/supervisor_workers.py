@@ -962,6 +962,22 @@ class WorkerLifecycleManager:
         )
         self._conn.commit()
 
+        # Post a "resuming" comment if we posted a pause comment earlier
+        bt_cfg = self._sup._resolve_project_bt(project_name)
+        if bt_cfg.comment_on_limit_pause and slot.limit_comment_posted and slot.ticket_id:
+            poller = self._sup._pollers.get(project_name)
+            if poller:
+                try:
+                    poller.add_comment_as_owner(
+                        slot.ticket_id,
+                        "Usage limits cleared — resuming work.",
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to post limit resume comment on %s",
+                        slot.ticket_id,
+                    )
+
         self._slot_manager.resume_slot(project_name, slot.slot_id)
 
         slot_db = Supervisor._slot_db_path(project_name, slot.slot_id)

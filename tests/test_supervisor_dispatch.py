@@ -1661,6 +1661,147 @@ class TestCommentPosting:
         poller = supervisor._pollers["test-project"]
         poller.add_comment_as_owner.assert_not_called()
 
+    def test_limit_pause_comment_not_duplicated(self, supervisor_custom_statuses):
+        """Second limit hit on same slot should not post another comment."""
+        sup = supervisor_custom_statuses
+        sm = sup.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+
+        wr = _WorkerResult(
+            project="test-project", slot_id=1, success=False,
+            failure_stage="implement", failure_reason="rate limit hit",
+            limit_hit=True,
+        )
+
+        sup._handle_limit_hit(wr)
+        sup._handle_limit_hit(wr)
+
+        poller = sup._pollers["test-project"]
+        poller.add_comment_as_owner.assert_called_once()
+
+    def test_limit_pause_comment_sets_flag(self, supervisor_custom_statuses):
+        """Posting a limit comment sets limit_comment_posted on the slot."""
+        sup = supervisor_custom_statuses
+        sm = sup.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+
+        wr = _WorkerResult(
+            project="test-project", slot_id=1, success=False,
+            failure_stage="implement", failure_reason="rate limit hit",
+            limit_hit=True,
+        )
+
+        sup._handle_limit_hit(wr)
+
+        slot = sm.get_slot("test-project", 1)
+        assert slot.limit_comment_posted is True
+
+    def test_limit_comment_flag_reset_on_resume(self, supervisor_custom_statuses):
+        """Resuming a paused slot resets the limit_comment_posted flag."""
+        sup = supervisor_custom_statuses
+        sm = sup.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+
+        sm.mark_paused_limit("test-project", 1)
+        sm.set_limit_comment_posted("test-project", 1, True)
+        assert sm.get_slot("test-project", 1).limit_comment_posted is True
+
+        sm.resume_slot("test-project", 1)
+        assert sm.get_slot("test-project", 1).limit_comment_posted is False
+
+    def test_limit_resume_comment_posted(self, supervisor_custom_statuses, tmp_path):
+        """When limits clear, a 'resuming' comment is posted."""
+        sup = supervisor_custom_statuses
+        sm = sup.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.update_stage("test-project", 1, stage="implement", session_id="s1")
+        sm.mark_paused_limit(
+            "test-project", 1,
+            resume_after="2020-01-01T00:00:00+00:00",
+        )
+        sm.set_limit_comment_posted("test-project", 1, True)
+
+        insert_task(
+            sup._conn,
+            ticket_id="TST-1", title="Test", project="test-project",
+            slot=1, status="in_progress",
+        )
+        sup._conn.commit()
+
+        sup._usage_poller._state.utilization_5h = 0.10
+        sup._usage_poller._state.utilization_7d = 0.10
+
+        poller = sup._pollers["test-project"]
+
+        with (
+            patch.object(sup._usage_poller, "force_poll"),
+            patch("botfarm.supervisor.multiprocessing.Process") as MockProc,
+        ):
+            mock_proc = MagicMock()
+            mock_proc.pid = 555
+            MockProc.return_value = mock_proc
+
+            sup._handle_paused_slots()
+
+        # Verify a "resuming" comment was posted
+        calls = poller.add_comment_as_owner.call_args_list
+        assert len(calls) == 1
+        assert "resuming" in calls[0][0][1].lower()
+
+    def test_limit_resume_comment_not_posted_without_pause_comment(
+        self, supervisor_custom_statuses, tmp_path,
+    ):
+        """No resume comment if no pause comment was posted (flag is False)."""
+        sup = supervisor_custom_statuses
+        sm = sup.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        sm.update_stage("test-project", 1, stage="implement", session_id="s1")
+        sm.mark_paused_limit(
+            "test-project", 1,
+            resume_after="2020-01-01T00:00:00+00:00",
+        )
+        # limit_comment_posted stays False (default)
+
+        insert_task(
+            sup._conn,
+            ticket_id="TST-1", title="Test", project="test-project",
+            slot=1, status="in_progress",
+        )
+        sup._conn.commit()
+
+        sup._usage_poller._state.utilization_5h = 0.10
+        sup._usage_poller._state.utilization_7d = 0.10
+
+        poller = sup._pollers["test-project"]
+
+        with (
+            patch.object(sup._usage_poller, "force_poll"),
+            patch("botfarm.supervisor.multiprocessing.Process") as MockProc,
+        ):
+            mock_proc = MagicMock()
+            mock_proc.pid = 555
+            MockProc.return_value = mock_proc
+
+            sup._handle_paused_slots()
+
+        # No comment should be posted since we never posted a pause comment
+        poller.add_comment_as_owner.assert_not_called()
+
     def test_failure_comment_error_does_not_break_handling(self, supervisor):
         """If posting the failure comment fails, the slot is still freed."""
         sm = supervisor.slot_manager
