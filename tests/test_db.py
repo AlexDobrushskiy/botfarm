@@ -24,6 +24,7 @@ from botfarm.db import (
     get_downsampled_usage_snapshots,
     get_events,
     get_latest_context_fill_by_ticket,
+    get_pipeline_names,
     get_schema_version,
     get_stage_run_aggregates,
     get_stage_runs,
@@ -881,6 +882,9 @@ class TestMigrationInfrastructure:
         c.execute("ALTER TABLE stage_templates DROP COLUMN model")
         c.execute("ALTER TABLE stage_templates DROP COLUMN effort")
         c.execute("DROP TABLE IF EXISTS available_models")
+        # Reverse migration 036 (pipeline_id columns)
+        c.execute("ALTER TABLE tasks DROP COLUMN pipeline_id")
+        c.execute("ALTER TABLE stage_runs DROP COLUMN pipeline_id")
         c.commit()
 
         # Now run migrations 030+
@@ -932,6 +936,9 @@ class TestMigrationInfrastructure:
         c.execute("ALTER TABLE stage_templates DROP COLUMN model")
         c.execute("ALTER TABLE stage_templates DROP COLUMN effort")
         c.execute("DROP TABLE IF EXISTS available_models")
+        # Reverse migration 036 (pipeline_id columns)
+        c.execute("ALTER TABLE tasks DROP COLUMN pipeline_id")
+        c.execute("ALTER TABLE stage_runs DROP COLUMN pipeline_id")
         c.commit()
 
         # Running migrations 030+ must not fail on pre-existing tables
@@ -1210,6 +1217,66 @@ class TestTasks:
         projects = get_distinct_projects(conn)
         assert projects == ["alpha", "beta"]
 
+    def test_insert_task_with_pipeline_id(self, conn):
+        # Seed a pipeline template to reference
+        conn.execute(
+            "INSERT INTO pipeline_templates (name, is_default) VALUES ('impl', 1)"
+        )
+        pid = conn.execute("SELECT id FROM pipeline_templates WHERE name = 'impl'").fetchone()[0]
+        tid = insert_task(
+            conn, ticket_id="PL-1", title="Pipeline test", project="p", slot=1,
+            pipeline_id=pid,
+        )
+        row = get_task(conn, tid)
+        assert row["pipeline_id"] == pid
+
+    def test_insert_task_pipeline_id_default_none(self, conn):
+        tid = insert_task(conn, ticket_id="PL-2", title="No pipeline", project="p", slot=1)
+        row = get_task(conn, tid)
+        assert row["pipeline_id"] is None
+
+    def test_update_task_pipeline_id(self, conn):
+        conn.execute(
+            "INSERT INTO pipeline_templates (name, is_default) VALUES ('qa', 0)"
+        )
+        pid = conn.execute("SELECT id FROM pipeline_templates WHERE name = 'qa'").fetchone()[0]
+        tid = insert_task(conn, ticket_id="PL-3", title="Update pipeline", project="p", slot=1)
+        update_task(conn, tid, pipeline_id=pid)
+        row = get_task(conn, tid)
+        assert row["pipeline_id"] == pid
+
+    def test_insert_task_retry_resets_pipeline_id(self, conn):
+        conn.execute(
+            "INSERT INTO pipeline_templates (name, is_default) VALUES ('impl', 1)"
+        )
+        pid = conn.execute("SELECT id FROM pipeline_templates WHERE name = 'impl'").fetchone()[0]
+        tid1 = insert_task(conn, ticket_id="PL-R", title="First", project="p", slot=1, pipeline_id=pid)
+        conn.commit()
+        # Retry with different pipeline
+        tid2 = insert_task(conn, ticket_id="PL-R", title="Retry", project="p", slot=1, pipeline_id=None)
+        assert tid2 == tid1
+        row = get_task(conn, tid2)
+        assert row["pipeline_id"] is None
+
+
+# ---------------------------------------------------------------------------
+# Pipeline name lookup
+# ---------------------------------------------------------------------------
+
+
+class TestGetPipelineNames:
+    def test_get_pipeline_names(self, conn):
+        conn.execute("INSERT INTO pipeline_templates (name, is_default) VALUES ('impl', 1)")
+        conn.execute("INSERT INTO pipeline_templates (name, is_default) VALUES ('qa', 0)")
+        rows = conn.execute("SELECT id, name FROM pipeline_templates ORDER BY name").fetchall()
+        ids = [r[0] for r in rows]
+        result = get_pipeline_names(conn, ids)
+        assert result[rows[0][0]] == rows[0][1]
+        assert result[rows[1][0]] == rows[1][1]
+
+    def test_get_pipeline_names_empty(self, conn):
+        assert get_pipeline_names(conn, []) == {}
+
 
 # ---------------------------------------------------------------------------
 # Stage runs
@@ -1246,6 +1313,20 @@ class TestStageRuns:
         )
         runs = get_stage_runs(conn, tid)
         assert runs[0]["was_limit_restart"] == 1
+
+    def test_insert_stage_run_with_pipeline_id(self, conn):
+        conn.execute("INSERT INTO pipeline_templates (name, is_default) VALUES ('impl', 1)")
+        pid = conn.execute("SELECT id FROM pipeline_templates WHERE name = 'impl'").fetchone()[0]
+        tid = insert_task(conn, ticket_id="SR-PL", title="Pipeline SR", project="p", slot=1)
+        insert_stage_run(conn, task_id=tid, stage="implement", pipeline_id=pid)
+        runs = get_stage_runs(conn, tid)
+        assert runs[0]["pipeline_id"] == pid
+
+    def test_insert_stage_run_pipeline_id_default_none(self, conn):
+        tid = insert_task(conn, ticket_id="SR-PLN", title="No pipeline SR", project="p", slot=1)
+        insert_stage_run(conn, task_id=tid, stage="review")
+        runs = get_stage_runs(conn, tid)
+        assert runs[0]["pipeline_id"] is None
 
     def test_foreign_key_enforcement(self, conn):
         with pytest.raises(sqlite3.IntegrityError):

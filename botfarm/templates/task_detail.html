@@ -167,6 +167,9 @@
     <table>
         <tbody>
             <tr><td><strong>Project</strong></td><td>{{ task.project }}</td></tr>
+            {% if task.pipeline_name %}
+            <tr><td><strong>Pipeline</strong></td><td>{{ task.pipeline_name }}</td></tr>
+            {% endif %}
             <tr><td><strong>Slot</strong></td><td>{{ task.slot }}</td></tr>
             <tr><td><strong>Created</strong></td><td>{% if task.created_at %}<time data-timestamp="{{ task.created_at }}" title="{{ task.created_at[:19] }}">{{ task.created_at[:19] }}</time>{% else %}-{% endif %}</td></tr>
             <tr><td><strong>Started</strong></td><td>{% if task.started_at %}<time data-timestamp="{{ task.started_at }}" title="{{ task.started_at[:19] }}">{{ task.started_at[:19] }}</time>{% else %}-{% endif %}</td></tr>

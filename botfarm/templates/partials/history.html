@@ -22,6 +22,7 @@
             {{ sort_header("Ticket", "ticket_id") }}
             <th>Title</th>
             {{ sort_header("Project", "project") }}
+            <th>Pipeline</th>
             {{ sort_header("Status", "status") }}
             <th>Wall Time</th>
             {{ sort_header("Turns", "turns") }}
@@ -41,6 +42,7 @@
             <td><a href="{{ linear_url(task.ticket_id) }}" target="_blank" onclick="event.stopPropagation()">{{ task.ticket_id }}</a> <a href="/tickets/{{ task.ticket_id }}" onclick="event.stopPropagation()" title="View ticket content" style="text-decoration: none; font-size: 0.8rem;">&#x1F4CB;</a></td>
             <td>{{ task.title[:50] }}{% if task.title|length > 50 %}&hellip;{% endif %}</td>
             <td>{{ task.project }}</td>
+            <td>{{ task.pipeline_name if task.pipeline_name else "-" }}</td>
             <td>
                 {% if task.status == "completed" %}
                     <span class="status-free">completed</span>
