@@ -947,22 +947,31 @@ def cleanup_page(request: Request):
 
 
 @router.get("/api/cleanup/preview")
-def api_cleanup_preview(
+async def api_cleanup_preview(
     request: Request,
     limit: int = 50,
     min_age_days: int = 7,
 ):
     """Fetch candidate issues for cleanup preview."""
-    conn = None
+    app = request.app
+
+    def _fetch():
+        conn = init_db(app.state.db_path)
+        try:
+            svc = _get_cleanup_service(app, conn, min_age_days=min_age_days)
+            if svc is None:
+                return None
+            return svc.fetch_candidates(limit=limit)
+        finally:
+            conn.close()
+
     try:
-        conn = init_db(request.app.state.db_path)
-        svc = _get_cleanup_service(request.app, conn, min_age_days=min_age_days)
-        if svc is None:
+        candidates = await asyncio.to_thread(_fetch)
+        if candidates is None:
             return JSONResponse(
                 {"error": "Linear API key not configured"},
                 status_code=503,
             )
-        candidates = svc.fetch_candidates(limit=limit)
         return JSONResponse({
             "candidates": [
                 {
@@ -980,9 +989,6 @@ def api_cleanup_preview(
     except Exception as exc:
         logger.warning("Cleanup preview failed: %s", exc)
         return JSONResponse({"error": str(exc)}, status_code=500)
-    finally:
-        if conn is not None:
-            conn.close()
 
 
 @router.post("/api/cleanup/execute")
@@ -1046,18 +1052,27 @@ async def api_cleanup_execute(request: Request):
 
 
 @router.post("/api/cleanup/undo/{batch_id}")
-def api_cleanup_undo(request: Request, batch_id: str):
+async def api_cleanup_undo(request: Request, batch_id: str):
     """Undo an archive batch."""
-    conn = None
+    app = request.app
+
+    def _undo():
+        conn = init_db(app.state.db_path)
+        try:
+            svc = _get_cleanup_service(app, conn)
+            if svc is None:
+                return None
+            return svc.undo_batch(batch_id)
+        finally:
+            conn.close()
+
     try:
-        conn = init_db(request.app.state.db_path)
-        svc = _get_cleanup_service(request.app, conn)
-        if svc is None:
+        result = await asyncio.to_thread(_undo)
+        if result is None:
             return JSONResponse(
                 {"error": "Linear API key not configured"},
                 status_code=503,
             )
-        result = svc.undo_batch(batch_id)
         return JSONResponse({
             "batch_id": result.batch_id,
             "total": result.total,
@@ -1070,9 +1085,6 @@ def api_cleanup_undo(request: Request, batch_id: str):
     except Exception as exc:
         logger.warning("Cleanup undo failed: %s", exc)
         return JSONResponse({"error": str(exc)}, status_code=500)
-    finally:
-        if conn is not None:
-            conn.close()
 
 
 @router.get("/api/cleanup/batch/{batch_id}")
