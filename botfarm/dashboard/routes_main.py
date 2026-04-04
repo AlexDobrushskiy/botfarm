@@ -1310,6 +1310,10 @@ def compare_export(request: Request):
             return HTMLResponse("", media_type="text/csv")
         buf = io.StringIO()
         all_keys = dict.fromkeys(k for row in export_rows for k in row)
+        for row in export_rows:
+            for k in row:
+                if row[k] is None:
+                    row[k] = ""
         writer = csv.DictWriter(buf, fieldnames=all_keys, restval="")
         writer.writeheader()
         writer.writerows(export_rows)

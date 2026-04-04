@@ -212,7 +212,7 @@ class TestCompareByTaskIds:
             conn.close()
         resp = compare_client.get(f"/compare?tasks={','.join(ids)}")
         assert resp.status_code == 200
-        assert "Summary" in body if (body := resp.text) else False
+        assert "Summary" in resp.text
 
     def test_compare_invalid_task_ids_graceful(self, compare_client):
         resp = compare_client.get("/compare?tasks=abc,xyz")
