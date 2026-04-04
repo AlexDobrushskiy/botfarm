@@ -1151,7 +1151,6 @@ def api_list_models(request: Request):
 @router.post("/api/models/refresh")
 async def api_refresh_models(request: Request):
     """Fetch fresh model list from Anthropic API and cache in DB."""
-    conn = None
     try:
         body = await request.json()
         api_key = body.get("api_key", "")
@@ -1159,9 +1158,16 @@ async def api_refresh_models(request: Request):
             return JSONResponse(
                 {"ok": False, "errors": ["api_key is required"]}, status_code=400
             )
-        conn = init_db(request.app.state.db_path)
-        from botfarm.models import refresh_models
-        models = await asyncio.to_thread(refresh_models, conn, api_key)
+
+        def _refresh():
+            from botfarm.models import refresh_models
+            conn = init_db(request.app.state.db_path)
+            try:
+                return refresh_models(conn, api_key)
+            finally:
+                conn.close()
+
+        models = await asyncio.to_thread(_refresh)
         data = [
             {
                 "id": m.id,
@@ -1178,6 +1184,3 @@ async def api_refresh_models(request: Request):
     except Exception as exc:
         logger.exception("Failed to refresh models")
         return JSONResponse({"ok": False, "errors": [str(exc)]}, status_code=500)
-    finally:
-        if conn is not None:
-            conn.close()
