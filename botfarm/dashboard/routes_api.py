@@ -1161,7 +1161,7 @@ async def api_refresh_models(request: Request):
             )
         conn = init_db(request.app.state.db_path)
         from botfarm.models import refresh_models
-        models = refresh_models(conn, api_key)
+        models = await asyncio.to_thread(refresh_models, conn, api_key)
         data = [
             {
                 "id": m.id,

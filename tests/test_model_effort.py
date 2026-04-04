@@ -284,7 +284,7 @@ class TestRunAgentStageModelEffort:
 
         _, kwargs = mock_adapter.run.call_args
         assert kwargs["model"] is None  # model suppressed when not supported
-        assert kwargs["effort"] == "max"  # effort always passed
+        assert kwargs["effort"] is None  # effort suppressed when not supported
 
 
 # ---------------------------------------------------------------------------
