@@ -730,6 +730,8 @@ def _load_pipeline_config(
                 ", ".join(s.name for s in pipeline_tpl.stages),
             )
     except Exception:
+        if pipeline_id is not None:
+            raise  # User explicitly chose this pipeline — don't silently fall back
         logger.warning(
             "Could not load pipeline from DB for %s — using legacy constants",
             ticket_id, exc_info=True,
