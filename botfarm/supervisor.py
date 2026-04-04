@@ -1034,10 +1034,14 @@ class Supervisor(RecoveryMixin, OperationsMixin):
             title, labels = result
             label_names_lower = {l.lower() for l in labels}
             if "human" in label_names_lower:
+                blocked_urls = {tid: url for tid in blocked_ids
+                                if (url := self._build_ticket_url(tid))}
                 self._notifier.notify_human_blocker(
                     blocker_id=blocker_id,
                     blocker_title=title,
                     blocked_tickets=blocked_ids,
+                    blocker_url=self._build_ticket_url(blocker_id),
+                    blocked_ticket_urls=blocked_urls or None,
                 )
 
     def _check_busy_idle_transition(self) -> None:

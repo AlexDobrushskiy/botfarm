@@ -160,6 +160,15 @@ class OperationsMixin:
             return resolve_project_bugtracker(self._config.bugtracker, project_cfg)
         return self._config.bugtracker
 
+    def _build_ticket_url(self, ticket_id: str) -> str | None:
+        """Construct a bugtracker URL for a ticket ID, or return None."""
+        bt_cfg = self._config.bugtracker
+        if isinstance(bt_cfg, JiraBugtrackerConfig) and bt_cfg.url:
+            return f"{bt_cfg.url.rstrip('/')}/browse/{ticket_id}"
+        if bt_cfg.workspace:
+            return f"https://linear.app/{bt_cfg.workspace}/issue/{ticket_id}"
+        return None
+
     # ------------------------------------------------------------------
     # Handle finished slots
     # ------------------------------------------------------------------
@@ -852,6 +861,7 @@ class OperationsMixin:
             duration_seconds=duration,
             pr_url=pr_url,
             review_summary=self._build_review_summary(task_id),
+            ticket_url=self._build_ticket_url(slot.ticket_id) if slot.ticket_id else None,
         )
 
     def _notify_task_failed(self, slot: SlotState) -> None:
@@ -871,6 +881,7 @@ class OperationsMixin:
             failure_category=category,
             review_summary=self._build_review_summary(task_id),
             todo_status=self._config.bugtracker.todo_status,
+            ticket_url=self._build_ticket_url(slot.ticket_id) if slot.ticket_id else None,
         )
 
     def _maybe_send_refactoring_notification(self, slot: SlotState) -> None:
@@ -881,13 +892,7 @@ class OperationsMixin:
             return
 
         ticket_id = slot.ticket_id or "unknown"
-        bt_cfg = self._config.bugtracker
-        if isinstance(bt_cfg, JiraBugtrackerConfig) and bt_cfg.url:
-            ticket_url = f"{bt_cfg.url.rstrip('/')}/browse/{ticket_id}"
-        elif bt_cfg.workspace:
-            ticket_url = f"https://linear.app/{bt_cfg.workspace}/issue/{ticket_id}"
-        else:
-            ticket_url = ticket_id
+        ticket_url = self._build_ticket_url(ticket_id) or ticket_id
 
         now = datetime.now(timezone.utc)
         month = now.strftime("%B")
@@ -930,6 +935,7 @@ class OperationsMixin:
                 parent_ticket_id=parent_id,
                 brief_list=brief_list,
                 ticket_url=ticket_url,
+                parent_ticket_url=self._build_ticket_url(parent_id),
             )
         elif re.search(
             r"no action needed|no refactoring needed|all clear|"
