@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 import time
 
@@ -181,7 +182,7 @@ def partial_supervisor_controls(request: Request):
 
 
 @router.get("/partials/update-banner", response_class=HTMLResponse)
-def partial_update_banner(request: Request):
+async def partial_update_banner(request: Request):
     app = request.app
     templates = request.app.state.templates
     # Check if supervisor signalled that update failed
@@ -195,7 +196,7 @@ def partial_update_banner(request: Request):
             update_error = getter()
 
     if update_error:
-        count = check_commits_behind(app)
+        count = await asyncio.to_thread(check_commits_behind, app)
         return templates.TemplateResponse(request, "partials/update_banner.html", {
             "update_status": "failed",
             "update_error": update_error,
@@ -209,7 +210,7 @@ def partial_update_banner(request: Request):
             "commits_behind": 0,
             "auto_restart": app.state.auto_restart,
         })
-    count = check_commits_behind(app)
+    count = await asyncio.to_thread(check_commits_behind, app)
     return templates.TemplateResponse(request, "partials/update_banner.html", {
         "update_status": "idle",
         "commits_behind": count,
