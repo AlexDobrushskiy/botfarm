@@ -328,6 +328,7 @@ def _worker_entry(
     bugtracker_email: str = "",
     oauth_token: str = "",
     auth_mode: str = "oauth",
+    pipeline_id: int | None = None,
 ) -> None:
     """Entry point for a worker subprocess.
 
@@ -437,6 +438,7 @@ def _worker_entry(
             bugtracker_email=bugtracker_email,
             oauth_token=oauth_token,
             auth_mode=auth_mode,
+            pipeline_id=pipeline_id,
         )
         if result.paused:
             result_queue.put(_WorkerResult(
@@ -728,6 +730,7 @@ class WorkerLifecycleManager:
         slot_db: str | None = None,
         prior_context: str = "",
         merge_main_before_resume: bool = False,
+        pipeline_id: int | None = None,
     ) -> multiprocessing.Process:
         """Spawn a worker subprocess — shared logic for dispatch and resume paths.
 
@@ -807,6 +810,7 @@ class WorkerLifecycleManager:
                 "bugtracker_email": getattr(project_bt, "email", ""),
                 "oauth_token": oauth_token,
                 "auth_mode": self._config.auth_mode,
+                "pipeline_id": pipeline_id,
             },
             daemon=False,
         )
@@ -826,6 +830,7 @@ class WorkerLifecycleManager:
         poller,
         *,
         prior: PriorContext | None = None,
+        pipeline_id: int | None = None,
     ) -> None:
         """Assign a ticket to a slot and spawn a worker subprocess."""
         from botfarm.db import insert_task
@@ -926,6 +931,7 @@ class WorkerLifecycleManager:
             prior_context=prior_context_str,
             resume_from_stage=resume_from_stage,
             merge_main_before_resume=merge_main_before_resume,
+            pipeline_id=pipeline_id,
         )
 
         logger.info(

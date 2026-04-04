@@ -64,6 +64,14 @@
                 <tr><th>Ticket</th><td id="dispatch-modal-ticket">-</td></tr>
                 <tr><th>Title</th><td id="dispatch-modal-ticket-title">-</td></tr>
                 <tr><th>Project</th><td id="dispatch-modal-project">-</td></tr>
+                <tr>
+                    <th>Pipeline</th>
+                    <td>
+                        <select id="dispatch-modal-pipeline" style="margin: 0; padding: 0.2rem 0.4rem; font-size: 0.85rem;">
+                            <option value="">Loading...</option>
+                        </select>
+                    </td>
+                </tr>
             </table>
         </div>
         <footer>
@@ -137,6 +145,34 @@ function addSlot(project) {
 
 var _dispatchProject = "";
 var _dispatchTicketId = "";
+var _dispatchPipelines = null;
+
+function _loadPipelines(selectEl) {
+    if (_dispatchPipelines !== null) {
+        _populatePipelineSelect(selectEl, _dispatchPipelines);
+        return;
+    }
+    selectEl.innerHTML = '<option value="">Loading...</option>';
+    fetch("/api/workflow/pipelines").then(function(resp) {
+        return resp.json();
+    }).then(function(data) {
+        _dispatchPipelines = (data.ok && data.data) ? data.data : [];
+        _populatePipelineSelect(selectEl, _dispatchPipelines);
+    }).catch(function() {
+        selectEl.innerHTML = '<option value="">(auto-select)</option>';
+    });
+}
+
+function _populatePipelineSelect(selectEl, pipelines) {
+    selectEl.innerHTML = '<option value="">(auto-select by label)</option>';
+    for (var i = 0; i < pipelines.length; i++) {
+        var p = pipelines[i];
+        var opt = document.createElement("option");
+        opt.value = p.id;
+        opt.textContent = p.name + (p.is_default ? " (default)" : "");
+        selectEl.appendChild(opt);
+    }
+}
 
 function openDispatchModal(el) {
     _dispatchProject = el.dataset.project;
@@ -146,6 +182,9 @@ function openDispatchModal(el) {
     document.getElementById("dispatch-modal-ticket").textContent = _dispatchTicketId;
     document.getElementById("dispatch-modal-ticket-title").textContent = ticketTitle || "-";
     document.getElementById("dispatch-modal-project").textContent = _dispatchProject;
+    var pipelineSelect = document.getElementById("dispatch-modal-pipeline");
+    _loadPipelines(pipelineSelect);
+    pipelineSelect.value = "";
     document.getElementById("dispatch-modal").showModal();
 }
 
@@ -153,10 +192,15 @@ function confirmDispatch() {
     var btn = document.getElementById("dispatch-modal-confirm");
     btn.disabled = true;
     btn.textContent = "Dispatching...";
+    var pipelineSelect = document.getElementById("dispatch-modal-pipeline");
+    var payload = {project: _dispatchProject, ticket_id: _dispatchTicketId};
+    if (pipelineSelect.value) {
+        payload.pipeline_id = parseInt(pipelineSelect.value, 10);
+    }
     fetch("/api/dispatch", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({project: _dispatchProject, ticket_id: _dispatchTicketId})
+        body: JSON.stringify(payload)
     }).then(function(resp) {
         if (!resp.ok) return resp.json().then(function(d) { throw new Error(d.error || "Request failed"); });
         return resp.json();

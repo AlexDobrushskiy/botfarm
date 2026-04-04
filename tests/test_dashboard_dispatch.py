@@ -48,8 +48,8 @@ class TestDispatchEndpoint:
         """POST /api/dispatch calls on_dispatch_ticket with project and ticket_id."""
         called = []
 
-        def fake_cb(project, ticket_id):
-            called.append((project, ticket_id))
+        def fake_cb(project, ticket_id, pipeline_id=None):
+            called.append((project, ticket_id, pipeline_id))
             return {"success": True, "slot_id": 1}
 
         app = create_app(db_path=db_file, on_dispatch_ticket=fake_cb)
@@ -62,11 +62,43 @@ class TestDispatchEndpoint:
         data = resp.json()
         assert data["success"] is True
         assert data["slot_id"] == 1
-        assert called == [("my-project", "TST-1")]
+        assert called == [("my-project", "TST-1", None)]
+
+    def test_dispatch_passes_pipeline_id(self, db_file):
+        """POST /api/dispatch forwards pipeline_id to callback."""
+        called = []
+
+        def fake_cb(project, ticket_id, pipeline_id=None):
+            called.append((project, ticket_id, pipeline_id))
+            return {"success": True, "slot_id": 1}
+
+        app = create_app(db_path=db_file, on_dispatch_ticket=fake_cb)
+        client = TestClient(app)
+        resp = client.post(
+            "/api/dispatch",
+            json={"project": "my-project", "ticket_id": "TST-1", "pipeline_id": 2},
+        )
+        assert resp.status_code == 200
+        assert called == [("my-project", "TST-1", 2)]
+
+    def test_dispatch_invalid_pipeline_id_returns_400(self, db_file):
+        """POST /api/dispatch returns 400 for non-integer pipeline_id."""
+        app = create_app(
+            db_path=db_file,
+            on_dispatch_ticket=lambda p, t, pid=None: {"success": True, "slot_id": 1},
+        )
+        client = TestClient(app)
+        for bad_val in ["abc", True, [1], {"x": 1}]:
+            resp = client.post(
+                "/api/dispatch",
+                json={"project": "proj", "ticket_id": "TST-1", "pipeline_id": bad_val},
+            )
+            assert resp.status_code == 400, f"Expected 400 for pipeline_id={bad_val!r}"
+            assert "pipeline_id" in resp.json()["error"]
 
     def test_dispatch_error_returns_409(self, db_file):
         """POST /api/dispatch returns 409 when callback returns an error."""
-        def fake_cb(project, ticket_id):
+        def fake_cb(project, ticket_id, pipeline_id=None):
             return {"error": "No free slot available"}
 
         app = create_app(db_path=db_file, on_dispatch_ticket=fake_cb)
@@ -92,7 +124,7 @@ class TestDispatchEndpoint:
         """POST /api/dispatch returns 400 when project is missing."""
         app = create_app(
             db_path=db_file,
-            on_dispatch_ticket=lambda p, t: {"success": True, "slot_id": 1},
+            on_dispatch_ticket=lambda p, t, pid=None: {"success": True, "slot_id": 1},
         )
         client = TestClient(app)
         resp = client.post("/api/dispatch", json={"ticket_id": "TST-1"})
@@ -103,7 +135,7 @@ class TestDispatchEndpoint:
         """POST /api/dispatch returns 400 when ticket_id is missing."""
         app = create_app(
             db_path=db_file,
-            on_dispatch_ticket=lambda p, t: {"success": True, "slot_id": 1},
+            on_dispatch_ticket=lambda p, t, pid=None: {"success": True, "slot_id": 1},
         )
         client = TestClient(app)
         resp = client.post("/api/dispatch", json={"project": "proj"})
@@ -114,7 +146,7 @@ class TestDispatchEndpoint:
         """POST /api/dispatch rejects non-string project values."""
         app = create_app(
             db_path=db_file,
-            on_dispatch_ticket=lambda p, t: {"success": True, "slot_id": 1},
+            on_dispatch_ticket=lambda p, t, pid=None: {"success": True, "slot_id": 1},
         )
         client = TestClient(app)
         for payload in [1, ["a"], {"x": 1}, True, 0, False]:
@@ -128,7 +160,7 @@ class TestDispatchEndpoint:
         """POST /api/dispatch rejects non-string ticket_id values."""
         app = create_app(
             db_path=db_file,
-            on_dispatch_ticket=lambda p, t: {"success": True, "slot_id": 1},
+            on_dispatch_ticket=lambda p, t, pid=None: {"success": True, "slot_id": 1},
         )
         client = TestClient(app)
         for payload in [1, ["a"], {"x": 1}, True, 0]:
@@ -142,7 +174,7 @@ class TestDispatchEndpoint:
         """POST /api/dispatch returns 400 when body is not a JSON object."""
         app = create_app(
             db_path=db_file,
-            on_dispatch_ticket=lambda p, t: {"success": True, "slot_id": 1},
+            on_dispatch_ticket=lambda p, t, pid=None: {"success": True, "slot_id": 1},
         )
         client = TestClient(app)
         for payload in ["[]", '"string"', "123", "null"]:
@@ -157,7 +189,7 @@ class TestDispatchEndpoint:
         """POST /api/dispatch returns 400 for invalid JSON."""
         app = create_app(
             db_path=db_file,
-            on_dispatch_ticket=lambda p, t: {"success": True, "slot_id": 1},
+            on_dispatch_ticket=lambda p, t, pid=None: {"success": True, "slot_id": 1},
         )
         client = TestClient(app)
         resp = client.post(
@@ -245,10 +277,12 @@ class TestExecuteDispatchTicket:
         self.db_path = db_path
         self.tmp_path = tmp_path
 
-    def _execute(self, project, ticket_id):
+    def _execute(self, project, ticket_id, pipeline_id=None):
         """Call _execute_dispatch_ticket on the mock supervisor."""
         from botfarm.supervisor_ops import OperationsMixin
-        return OperationsMixin._execute_dispatch_ticket(self.sup, project, ticket_id)
+        return OperationsMixin._execute_dispatch_ticket(
+            self.sup, project, ticket_id, pipeline_id=pipeline_id,
+        )
 
     def test_project_not_found(self, _mock_supervisor):
         result = self._execute("nonexistent", "TST-1")
@@ -335,6 +369,17 @@ class TestExecuteDispatchTicket:
         assert result["success"] is True
         assert result["slot_id"] == 1
         self.sup._dispatch_worker.assert_called_once()
+        # Default: no pipeline_id override
+        call_kwargs = self.sup._dispatch_worker.call_args
+        assert call_kwargs.kwargs.get("pipeline_id") is None
+
+    def test_successful_dispatch_with_pipeline_id(self, _mock_supervisor):
+        _seed_queue(self.db_path, "my-project", "TST-1")
+        result = self._execute("my-project", "TST-1", pipeline_id=42)
+        assert result["success"] is True
+        assert result["slot_id"] == 1
+        call_kwargs = self.sup._dispatch_worker.call_args
+        assert call_kwargs.kwargs.get("pipeline_id") == 42
 
     def test_no_poller_for_project(self, _mock_supervisor):
         _seed_queue(self.db_path, "my-project", "TST-1")
