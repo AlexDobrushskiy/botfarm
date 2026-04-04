@@ -137,9 +137,28 @@ def partial_queue(request: Request):
     state = read_state(app)
     queue = state.get("queue")
     project_pauses = state.get("project_pauses", {})
+
+    # Build per-project dispatch_mode and free_slot_count for semi-auto UI
+    cfg = app.state.botfarm_config
+    dispatch_modes = {}
+    if cfg:
+        for proj_cfg in cfg.projects:
+            dispatch_modes[proj_cfg.name] = proj_cfg.dispatch_mode
+
+    slots = state.get("slots", [])
+    free_slot_counts = {}
+    for s in slots:
+        if s["status"] == "free":
+            free_slot_counts[s["project"]] = free_slot_counts.get(s["project"], 0) + 1
+
+    dispatch_paused = state.get("dispatch_paused", False)
+
     return templates.TemplateResponse(request, "partials/queue.html", {
         "queue": queue,
         "project_pauses": project_pauses,
+        "dispatch_modes": dispatch_modes,
+        "free_slot_counts": free_slot_counts,
+        "dispatch_paused": dispatch_paused,
         "linear_url": lambda tid: linear_url(app, tid),
         "elapsed": elapsed,
         "has_callbacks": app.state.on_pause is not None,

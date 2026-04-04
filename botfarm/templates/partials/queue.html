@@ -3,12 +3,21 @@
 {% for proj in queue.projects %}
 {% set proj_pause = project_pauses.get(proj.name, (false, none)) if project_pauses is defined else (false, none) %}
 {% set proj_is_paused = proj_pause[0] %}
+{% set proj_dispatch_mode = dispatch_modes.get(proj.name, "auto") if dispatch_modes is defined else "auto" %}
+{% set proj_free_slots = free_slot_counts.get(proj.name, 0) if free_slot_counts is defined else 0 %}
+{% set is_semi_auto = proj_dispatch_mode == "semi-auto" %}
 <figure>
     <figcaption style="display: flex; align-items: center; justify-content: space-between;">
-        <span>
+        <span style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
             <strong>{{ proj.name }}</strong>
+            {% if is_semi_auto %}
+            <span class="dispatch-mode-badge">Semi-auto</span>
+            {% endif %}
             {% if proj_is_paused %}
-            <span style="color: var(--pico-del-color, #c62828); font-weight: 600; margin-left: 0.5rem;">PAUSED{% if proj_pause[1] %}: {{ proj_pause[1] }}{% endif %}</span>
+            <span style="color: var(--pico-del-color, #c62828); font-weight: 600;">PAUSED{% if proj_pause[1] %}: {{ proj_pause[1] }}{% endif %}</span>
+            {% endif %}
+            {% if is_semi_auto %}
+            <span class="free-slots-indicator{% if proj_free_slots == 0 %} free-slots-none{% endif %}">{{ proj_free_slots }} slot{{ "s" if proj_free_slots != 1 else "" }} available</span>
             {% endif %}
             {% if proj.snapshot_at %}
             <small style="color: var(--pico-muted-color);"> — Last polled: <span class="timeago" data-ts="{{ proj.snapshot_at }}">{{ elapsed(proj.snapshot_at) }}</span> ago</small>
@@ -42,6 +51,7 @@
                 <th>Ticket</th>
                 <th>Title</th>
                 <th>Priority</th>
+                {% if is_semi_auto %}<th>Action</th>{% endif %}
             </tr>
         </thead>
         <tbody>
@@ -60,6 +70,18 @@
                     {% endif %}
                 </td>
                 <td>{{ priority_labels.get(entry.priority, "Normal") }}</td>
+                {% if is_semi_auto %}
+                <td>
+                    {% set can_dispatch = not is_blocked and proj_free_slots > 0 and not proj_is_paused and not (dispatch_paused is defined and dispatch_paused) %}
+                    <button class="dispatch-btn outline{% if not can_dispatch %} secondary{% endif %}"
+                            style="padding: 0.15rem 0.6rem; font-size: 0.8rem; margin: 0;"
+                            {% if not can_dispatch %}disabled{% endif %}
+                            data-project="{{ proj.name }}"
+                            data-ticket-id="{{ entry.ticket_id }}"
+                            data-ticket-title="{{ entry.ticket_title }}"
+                            onclick="openDispatchModal(this)">Run</button>
+                </td>
+                {% endif %}
             </tr>
             {% endfor %}
         </tbody>
