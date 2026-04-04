@@ -894,141 +894,142 @@ def workflow_page(request: Request):
     available_models: dict[str, dict] = {}
     if conn:
         try:
-            pipelines = load_all_pipelines(conn)
-            agents_cfg = (
-                app.state.botfarm_config.agents
-                if app.state.botfarm_config
-                else None
-            )
-            for pipeline in pipelines:
-                loop_managed: set[str] = set()
-                for loop in pipeline.loops:
-                    if loop.on_failure_stage:
-                        loop_managed.add(loop.start_stage)
-                    else:
-                        loop_managed.add(loop.end_stage)
+            try:
+                pipelines = load_all_pipelines(conn)
+                agents_cfg = (
+                    app.state.botfarm_config.agents
+                    if app.state.botfarm_config
+                    else None
+                )
+                for pipeline in pipelines:
+                    loop_managed: set[str] = set()
+                    for loop in pipeline.loops:
+                        if loop.on_failure_stage:
+                            loop_managed.add(loop.start_stage)
+                        else:
+                            loop_managed.add(loop.end_stage)
 
-                main_stages = [
-                    s for s in pipeline.stages
-                    if s.name not in loop_managed
-                ]
+                    main_stages = [
+                        s for s in pipeline.stages
+                        if s.name not in loop_managed
+                    ]
 
-                stages_list = [
-                    {
-                        "id": s.id,
-                        "name": s.name,
-                        "executor_type": s.executor_type,
-                        "identity": s.identity,
-                        "prompt_template": s.prompt_template,
-                        "timeout_minutes": s.timeout_minutes,
-                        "max_turns": s.max_turns,
-                        "shell_command": s.shell_command,
-                        "result_parser": s.result_parser,
-                        "model": s.model,
-                        "effort": s.effort,
-                    }
-                    for s in pipeline.stages
-                ]
+                    stages_list = [
+                        {
+                            "id": s.id,
+                            "name": s.name,
+                            "executor_type": s.executor_type,
+                            "identity": s.identity,
+                            "prompt_template": s.prompt_template,
+                            "timeout_minutes": s.timeout_minutes,
+                            "max_turns": s.max_turns,
+                            "shell_command": s.shell_command,
+                            "result_parser": s.result_parser,
+                            "model": s.model,
+                            "effort": s.effort,
+                        }
+                        for s in pipeline.stages
+                    ]
 
-                main_stages_list = [
-                    {
-                        "id": s.id,
-                        "name": s.name,
-                        "executor_type": s.executor_type,
-                        "identity": s.identity,
-                        "prompt_template": s.prompt_template,
-                        "timeout_minutes": s.timeout_minutes,
-                        "max_turns": s.max_turns,
-                        "shell_command": s.shell_command,
-                        "result_parser": s.result_parser,
-                        "model": s.model,
-                        "effort": s.effort,
-                    }
-                    for s in main_stages
-                ]
+                    main_stages_list = [
+                        {
+                            "id": s.id,
+                            "name": s.name,
+                            "executor_type": s.executor_type,
+                            "identity": s.identity,
+                            "prompt_template": s.prompt_template,
+                            "timeout_minutes": s.timeout_minutes,
+                            "max_turns": s.max_turns,
+                            "shell_command": s.shell_command,
+                            "result_parser": s.result_parser,
+                            "model": s.model,
+                            "effort": s.effort,
+                        }
+                        for s in main_stages
+                    ]
 
-                loops_list = []
-                for loop in pipeline.loops:
-                    eff_max = (
-                        resolve_max_iterations(loop, agents_cfg)
-                        if agents_cfg
-                        else loop.max_iterations
-                    )
-                    if loop.on_failure_stage:
-                        decision_stage = loop.end_stage
-                        fix_stage_name = loop.start_stage
-                    else:
-                        decision_stage = loop.start_stage
-                        fix_stage_name = loop.end_stage
+                    loops_list = []
+                    for loop in pipeline.loops:
+                        eff_max = (
+                            resolve_max_iterations(loop, agents_cfg)
+                            if agents_cfg
+                            else loop.max_iterations
+                        )
+                        if loop.on_failure_stage:
+                            decision_stage = loop.end_stage
+                            fix_stage_name = loop.start_stage
+                        else:
+                            decision_stage = loop.start_stage
+                            fix_stage_name = loop.end_stage
 
-                    fix_stage_obj = next(
-                        (s for s in pipeline.stages if s.name == fix_stage_name),
-                        None,
-                    )
+                        fix_stage_obj = next(
+                            (s for s in pipeline.stages if s.name == fix_stage_name),
+                            None,
+                        )
 
-                    condition = loop.exit_condition or ""
-                    if "review" in condition:
-                        question = "Approved?"
-                    elif "ci" in condition:
-                        question = "CI passed?"
-                    else:
-                        question = "Continue?"
+                        condition = loop.exit_condition or ""
+                        if "review" in condition:
+                            question = "Approved?"
+                        elif "ci" in condition:
+                            question = "CI passed?"
+                        else:
+                            question = "Continue?"
 
-                    loops_list.append({
-                        "id": loop.id,
-                        "name": loop.name,
-                        "start_stage": loop.start_stage,
-                        "end_stage": loop.end_stage,
-                        "config_key": loop.config_key,
-                        "on_failure_stage": loop.on_failure_stage,
-                        "decision_stage": decision_stage,
-                        "fix_stage_name": fix_stage_name,
-                        "fix_stage": {
-                            "id": fix_stage_obj.id,
-                            "name": fix_stage_obj.name,
-                            "executor_type": fix_stage_obj.executor_type,
-                            "identity": fix_stage_obj.identity,
-                            "prompt_template": fix_stage_obj.prompt_template,
-                            "timeout_minutes": fix_stage_obj.timeout_minutes,
-                            "max_turns": fix_stage_obj.max_turns,
-                            "shell_command": fix_stage_obj.shell_command,
-                            "result_parser": fix_stage_obj.result_parser,
-                            "model": fix_stage_obj.model,
-                            "effort": fix_stage_obj.effort,
-                        } if fix_stage_obj else None,
-                        "max_iterations": eff_max,
-                        "raw_max_iterations": loop.max_iterations,
-                        "question": question,
-                        "exit_condition": loop.exit_condition,
+                        loops_list.append({
+                            "id": loop.id,
+                            "name": loop.name,
+                            "start_stage": loop.start_stage,
+                            "end_stage": loop.end_stage,
+                            "config_key": loop.config_key,
+                            "on_failure_stage": loop.on_failure_stage,
+                            "decision_stage": decision_stage,
+                            "fix_stage_name": fix_stage_name,
+                            "fix_stage": {
+                                "id": fix_stage_obj.id,
+                                "name": fix_stage_obj.name,
+                                "executor_type": fix_stage_obj.executor_type,
+                                "identity": fix_stage_obj.identity,
+                                "prompt_template": fix_stage_obj.prompt_template,
+                                "timeout_minutes": fix_stage_obj.timeout_minutes,
+                                "max_turns": fix_stage_obj.max_turns,
+                                "shell_command": fix_stage_obj.shell_command,
+                                "result_parser": fix_stage_obj.result_parser,
+                                "model": fix_stage_obj.model,
+                                "effort": fix_stage_obj.effort,
+                            } if fix_stage_obj else None,
+                            "max_iterations": eff_max,
+                            "raw_max_iterations": loop.max_iterations,
+                            "question": question,
+                            "exit_condition": loop.exit_condition,
+                        })
+
+                    pipelines_data.append({
+                        "id": pipeline.id,
+                        "name": pipeline.name,
+                        "description": pipeline.description,
+                        "is_default": pipeline.is_default,
+                        "ticket_label": pipeline.ticket_label,
+                        "stages": stages_list,
+                        "main_stages": main_stages_list,
+                        "loops": loops_list,
                     })
+            except sqlite3.OperationalError:
+                pass
 
-                pipelines_data.append({
-                    "id": pipeline.id,
-                    "name": pipeline.name,
-                    "description": pipeline.description,
-                    "is_default": pipeline.is_default,
-                    "ticket_label": pipeline.ticket_label,
-                    "stages": stages_list,
-                    "main_stages": main_stages_list,
-                    "loops": loops_list,
-                })
-        except sqlite3.OperationalError:
-            pass
+            # Fetch available models for model dropdown
+            try:
+                models_list = get_cached_models(conn)
+            except Exception:
+                models_list = []
 
-        # Fetch available models for model dropdown
-        try:
-            models_list = get_cached_models(conn)
-        except Exception:
-            models_list = []
-
-        for m in models_list:
-            available_models[m.id] = {
-                "display_name": m.display_name,
-                "max_input_tokens": m.max_input_tokens,
-                "supported_efforts": m.supported_efforts or [],
-            }
-
-        conn.close()
+            for m in models_list:
+                available_models[m.id] = {
+                    "display_name": m.display_name,
+                    "max_input_tokens": m.max_input_tokens,
+                    "supported_efforts": m.supported_efforts or [],
+                }
+        finally:
+            conn.close()
     state = read_state(app)
     return templates.TemplateResponse(request, "workflow.html", {
         "pipelines": pipelines_data,

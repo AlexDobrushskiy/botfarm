@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import sqlite3
 import time
 from datetime import datetime, timezone
@@ -1153,11 +1154,11 @@ async def api_list_models(request: Request):
 async def api_refresh_models(request: Request):
     """Fetch fresh model list from Anthropic API and cache in DB."""
     try:
-        body = await request.json()
-        api_key = body.get("api_key", "")
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
         if not api_key:
             return JSONResponse(
-                {"ok": False, "errors": ["api_key is required"]}, status_code=400
+                {"ok": False, "errors": ["ANTHROPIC_API_KEY is not set"]},
+                status_code=400,
             )
 
         def _refresh():

@@ -1080,8 +1080,6 @@ function _initModelEffortDropdowns() {
     // Populate dropdowns for all existing stages using their data from the DOM
     document.querySelectorAll('select[id^="prop-model-"]').forEach(function(sel) {
         var stageId = sel.id.replace('prop-model-', '');
-        // Read current value from dataset
-        var node = sel.closest('.stage-props-form');
         var currentModel = sel.dataset.currentValue || '';
         var effortSel = document.getElementById('prop-effort-' + stageId);
         var currentEffort = effortSel ? (effortSel.dataset.currentValue || '') : '';
@@ -1124,7 +1122,7 @@ function refreshModels(stageId) {
     fetch('/api/models/refresh', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({api_key: ''})
+        body: '{}'
     })
     .then(function(resp) { return resp.json(); })
     .then(function(result) {
@@ -1150,11 +1148,16 @@ function refreshModels(stageId) {
             });
             var addModelSel = document.getElementById('add-stage-model');
             if (addModelSel) _populateModelDropdown(addModelSel, addModelSel.value);
+            showToast('Models refreshed', 'success');
+        } else {
+            var msg = (result.errors && result.errors[0]) || 'Unknown error';
+            showToast('Model refresh failed: ' + msg, 'error');
         }
     })
     .catch(function() {
         btn.disabled = false;
         btn.innerHTML = '&#x21bb;';
+        showToast('Model refresh failed: network error', 'error');
     });
 }
 
