@@ -52,6 +52,27 @@ class ClaudeResult:
     model_usage_json: str | None = None
 
 
+def _compute_context_fill(
+    input_tokens: int,
+    cache_creation_input_tokens: int,
+    output_tokens: int,
+    model_usage: dict | None,
+) -> float | None:
+    """Compute context fill percentage from the primary model's context window.
+
+    Returns ``None`` when ``modelUsage`` is absent or has no ``contextWindow``.
+    """
+    if not model_usage:
+        return None
+    # Pick the first model entry that has a contextWindow
+    for _model, info in model_usage.items():
+        context_window = info.get("contextWindow")
+        if context_window and context_window > 0:
+            unique_tokens = input_tokens + cache_creation_input_tokens + output_tokens
+            return round(unique_tokens / context_window * 100, 2)
+    return None
+
+
 def parse_claude_output(raw: str) -> ClaudeResult:
     """Parse the JSON output produced by ``claude -p --output-format json``.
 
@@ -97,27 +118,6 @@ def parse_claude_output(raw: str) -> ClaudeResult:
         context_fill_pct=context_fill_pct,
         model_usage_json=model_usage_json,
     )
-
-
-def _compute_context_fill(
-    input_tokens: int,
-    cache_creation_input_tokens: int,
-    output_tokens: int,
-    model_usage: dict | None,
-) -> float | None:
-    """Compute context fill percentage from the primary model's context window.
-
-    Returns ``None`` when ``modelUsage`` is absent or has no ``contextWindow``.
-    """
-    if not model_usage:
-        return None
-    # Pick the first model entry that has a contextWindow
-    for _model, info in model_usage.items():
-        context_window = info.get("contextWindow")
-        if context_window and context_window > 0:
-            unique_tokens = input_tokens + cache_creation_input_tokens + output_tokens
-            return round(unique_tokens / context_window * 100, 2)
-    return None
 
 
 def _compute_turn_context_fill(

@@ -53,6 +53,14 @@ class Notifier:
     handle errors.
     """
 
+    _CATEGORY_LABELS: dict[str, str] = {
+        "env_missing_runtime": "Environment: missing runtime binary",
+        "env_missing_package": "Environment: missing package/module",
+        "env_missing_service": "Environment: service unavailable",
+        "env_missing_config": "Environment: missing configuration",
+        "auth_failure": "Authentication: Claude subprocess auth error",
+    }
+
     def __init__(self, config: NotificationsConfig) -> None:
         self._config = config
         self._last_sent: dict[str, float] = {}
@@ -64,6 +72,59 @@ class Notifier:
 
     def close(self) -> None:
         self._client.close()
+
+    # ------------------------------------------------------------------
+    # Internal
+    # ------------------------------------------------------------------
+
+    def _is_rate_limited(self, event_type: str, cooldown: int | None = None) -> bool:
+        """Check if this event type was sent recently."""
+        last = self._last_sent.get(event_type)
+        if last is None:
+            return False
+        limit = cooldown if cooldown is not None else self._config.rate_limit_seconds
+        return (time.monotonic() - last) < limit
+
+    def _format_payload(self, message: str, fmt: str) -> dict:
+        """Build the webhook payload for the given format."""
+        if fmt == "discord":
+            return {"content": message}
+        # Slack (default)
+        return {"text": message}
+
+    def _send(
+        self,
+        event_type: str,
+        message: str,
+        *,
+        rate_limited: bool = False,
+        rate_limit_seconds: int | None = None,
+    ) -> None:
+        """Format and POST the webhook payload. Never raises.
+
+        When *rate_limit_seconds* is provided, the event is rate-limited
+        using that custom cooldown instead of the global default.
+        """
+        if not self.enabled:
+            return
+
+        use_rate_limit = rate_limited or rate_limit_seconds is not None
+        if use_rate_limit and self._is_rate_limited(event_type, rate_limit_seconds):
+            logger.debug("Rate-limited notification: %s", event_type)
+            return
+
+        try:
+            url = self._config.webhook_url
+            fmt = _detect_format(url, self._config.webhook_format)
+            payload = self._format_payload(message, fmt)
+            resp = self._client.post(url, json=payload)
+            resp.raise_for_status()
+            logger.debug("Sent %s notification", event_type)
+        except Exception:
+            logger.debug("Failed to send %s notification", event_type, exc_info=True)
+        finally:
+            if use_rate_limit:
+                self._last_sent[event_type] = time.monotonic()
 
     # ------------------------------------------------------------------
     # Public event methods
@@ -94,14 +155,6 @@ class Notifier:
         if review_summary:
             lines.append(review_summary)
         self._send("task_completed", "\n".join(lines))
-
-    _CATEGORY_LABELS: dict[str, str] = {
-        "env_missing_runtime": "Environment: missing runtime binary",
-        "env_missing_package": "Environment: missing package/module",
-        "env_missing_service": "Environment: service unavailable",
-        "env_missing_config": "Environment: missing configuration",
-        "auth_failure": "Authentication: Claude subprocess auth error",
-    }
 
     def notify_task_failed(
         self,
@@ -352,56 +405,3 @@ class Notifier:
             "supervisor_shutdown",
             f"*Botfarm supervisor shut down:* {reason}. Workers may still be running.",
         )
-
-    # ------------------------------------------------------------------
-    # Internal
-    # ------------------------------------------------------------------
-
-    def _is_rate_limited(self, event_type: str, cooldown: int | None = None) -> bool:
-        """Check if this event type was sent recently."""
-        last = self._last_sent.get(event_type)
-        if last is None:
-            return False
-        limit = cooldown if cooldown is not None else self._config.rate_limit_seconds
-        return (time.monotonic() - last) < limit
-
-    def _send(
-        self,
-        event_type: str,
-        message: str,
-        *,
-        rate_limited: bool = False,
-        rate_limit_seconds: int | None = None,
-    ) -> None:
-        """Format and POST the webhook payload. Never raises.
-
-        When *rate_limit_seconds* is provided, the event is rate-limited
-        using that custom cooldown instead of the global default.
-        """
-        if not self.enabled:
-            return
-
-        use_rate_limit = rate_limited or rate_limit_seconds is not None
-        if use_rate_limit and self._is_rate_limited(event_type, rate_limit_seconds):
-            logger.debug("Rate-limited notification: %s", event_type)
-            return
-
-        try:
-            url = self._config.webhook_url
-            fmt = _detect_format(url, self._config.webhook_format)
-            payload = self._format_payload(message, fmt)
-            resp = self._client.post(url, json=payload)
-            resp.raise_for_status()
-            logger.debug("Sent %s notification", event_type)
-        except Exception:
-            logger.debug("Failed to send %s notification", event_type, exc_info=True)
-        finally:
-            if use_rate_limit:
-                self._last_sent[event_type] = time.monotonic()
-
-    def _format_payload(self, message: str, fmt: str) -> dict:
-        """Build the webhook payload for the given format."""
-        if fmt == "discord":
-            return {"content": message}
-        # Slack (default)
-        return {"text": message}

@@ -151,6 +151,35 @@ def parse_qa_report(result_text: str | None) -> QaReport | None:
 class OperationsMixin:
     """Slot cleanup, stop-slot, comments, notifications, and limits for Supervisor."""
 
+    # ------------------------------------------------------------------
+    # Periodic refactoring analysis ticket scheduler
+    # ------------------------------------------------------------------
+
+    _REFACTORING_ANALYSIS_TICKET_TEMPLATE = """\
+## Periodic Codebase Refactoring Analysis
+
+This is an automatically scheduled investigation ticket. Analyze the current state of \
+the codebase and determine whether refactoring is needed.
+
+### Instructions
+
+Follow the Refactoring Analysis Procedure documented in AGENTS.md (or docs/refactoring-analysis.md).
+
+### Expected Outcomes
+
+**If code quality is "good enough":**
+1. Post a concise summary comment on this ticket (2-5 bullet points)
+2. Send a notification: "Refactoring analysis complete — no action needed"
+
+**If refactoring is needed:**
+1. Create a parent ticket "Codebase Refactoring — MONTH YEAR" with findings summary
+2. Create child implementation tickets for each refactoring area with dependencies
+3. Post a summary comment on this investigation ticket linking to the parent
+4. Send a notification: "Refactoring analysis complete — N tickets created under PARENT-ID"
+
+Note: The supervisor handles status transitions automatically — do not move this ticket manually.
+"""
+
     def _resolve_project_bt(self, project_name: str):
         """Return the effective bugtracker config for a project."""
         from botfarm.config import resolve_project_bugtracker
@@ -158,181 +187,6 @@ class OperationsMixin:
         if project_cfg:
             return resolve_project_bugtracker(self._config.bugtracker, project_cfg)
         return self._config.bugtracker
-
-    # ------------------------------------------------------------------
-    # Handle finished slots
-    # ------------------------------------------------------------------
-
-    def _handle_finished_slots(self) -> None:
-        """Process completed and failed slots — update Linear, free slots."""
-        for slot in self._slot_manager.all_slots():
-            if slot.status == "completed_pending_cleanup":
-                self._verify_base_dir_clean(slot.project)
-                self._handle_completed_slot(slot)
-            elif slot.status == "failed":
-                self._verify_base_dir_clean(slot.project)
-                self._handle_failed_slot(slot)
-
-    def _handle_completed_slot(self, slot: SlotState) -> None:
-        """Update Linear for a completed slot and free it."""
-        project = slot.project
-        bt_cfg = self._resolve_project_bt(project)
-        poller = self._pollers.get(project)
-        has_qa = "qa" in (slot.stages_completed or [])
-        no_pr = None
-
-        if poller and slot.ticket_id:
-            if poller.is_issue_terminal(slot.ticket_id):
-                logger.info(
-                    "Completed slot %s/%d: ticket %s already in terminal "
-                    "state — skipping status move",
-                    slot.project, slot.slot_id, slot.ticket_id,
-                )
-            else:
-                no_pr = slot.no_pr_reason
-                if not no_pr and not slot.pr_url:
-                    task_id = self._find_task_id(slot.ticket_id)
-                    if task_id is not None:
-                        task = get_task(self._conn, task_id)
-                        if task and task["comments"]:
-                            from botfarm.worker import _detect_no_pr_needed
-                            no_pr = _detect_no_pr_needed(task["comments"])
-                if no_pr:
-                    target_status = bt_cfg.done_status
-                else:
-                    pr_status, resolved_pr_url = self._check_pr_status(slot)
-                    if resolved_pr_url and not slot.pr_url:
-                        slot.pr_url = resolved_pr_url
-                    if pr_status == "merged":
-                        target_status = bt_cfg.done_status
-                    else:
-                        target_status = bt_cfg.in_review_status
-
-                # For standalone QA pipelines (no PR, no no_pr_reason),
-                # _handle_qa_completion manages the status transition.
-                is_standalone_qa = has_qa and not slot.pr_url and not no_pr
-                if not is_standalone_qa:
-                    try:
-                        poller.move_issue(slot.ticket_id, target_status)
-                        logger.info(
-                            "Moved %s to '%s' after successful pipeline",
-                            slot.ticket_id, target_status,
-                        )
-                    except Exception:
-                        logger.exception(
-                            "Failed to move %s to '%s'", slot.ticket_id, target_status,
-                        )
-
-            if bt_cfg.comment_on_completion and not slot.no_pr_reason:
-                self._post_completion_comment(poller, slot)
-
-            if slot.no_pr_reason:
-                self._post_no_pr_comment(poller, slot)
-
-        # QA side effects layered on top of normal completion flow.
-        if has_qa:
-            self._handle_qa_completion(slot, poller, no_pr=no_pr)
-
-        # Auto-trigger QA ticket for implementation tickets with manual-qa label.
-        if not has_qa:
-            self._maybe_trigger_qa_ticket(slot, poller)
-
-        # Webhook notification
-        self._notify_task_completed(slot)
-
-        # Refactoring analysis notification
-        self._maybe_send_refactoring_notification(slot)
-
-        # Capture ticket history at completion
-        if slot.ticket_id:
-            client = poller._client if poller else None
-            self._capture_ticket_history(
-                slot.ticket_id, "completion",
-                client=client, pr_url=slot.pr_url, branch_name=slot.branch,
-            )
-
-        insert_event(
-            self._conn,
-            event_type="slot_completed",
-            detail=f"project={project}, slot={slot.slot_id}, "
-            f"ticket={slot.ticket_id}",
-        )
-        self._conn.commit()
-
-        self._maybe_cleanup_qa_environment(project, slot.slot_id)
-        self._slot_manager.free_slot(project, slot.slot_id)
-        self._cleanup_slot_db(project, slot.slot_id)
-        self._pending_result_texts.pop((project, slot.slot_id), None)
-        logger.info("Freed slot %s/%d after completion", project, slot.slot_id)
-
-    def _handle_failed_slot(self, slot: SlotState) -> None:
-        """Update Linear for a failed slot and free it."""
-        pr_status, resolved_pr_url = self._check_pr_status(slot)
-        # Persist the resolved PR URL so failure comment and history capture
-        # can reference it (slot.pr_url may be empty if worker didn't set it).
-        if resolved_pr_url and not slot.pr_url:
-            slot.pr_url = resolved_pr_url
-        if pr_status == "merged":
-            logger.info(
-                "Failed slot %s/%d has a merged PR — treating as completed",
-                slot.project, slot.slot_id,
-            )
-            task_id = self._find_task_id(slot.ticket_id)
-            if task_id is not None:
-                update_task(self._conn, task_id, status="completed")
-                self._conn.commit()
-            self._handle_completed_slot(slot)
-            return
-
-        project = slot.project
-        bt_cfg = self._resolve_project_bt(project)
-        poller = self._pollers.get(project)
-        if poller and slot.ticket_id:
-            if poller.is_issue_terminal(slot.ticket_id):
-                logger.info(
-                    "Failed slot %s/%d: ticket %s already in terminal state "
-                    "— skipping label update",
-                    slot.project, slot.slot_id, slot.ticket_id,
-                )
-            else:
-                # Don't move the ticket — keep it in its current status.
-                # Add "Failed" and "Human" labels so the poller skips it
-                # (Human is in exclude_tags) and humans can triage.
-                try:
-                    poller.add_labels(slot.ticket_id, ["Failed", "Human"])
-                except Exception:
-                    logger.exception(
-                        "Failed to add failure labels to %s",
-                        slot.ticket_id,
-                    )
-
-                if bt_cfg.comment_on_failure:
-                    self._post_failure_comment(poller, slot)
-
-        # Webhook notification
-        self._notify_task_failed(slot)
-
-        # Capture ticket history at failure
-        if slot.ticket_id:
-            client = poller._client if poller else None
-            self._capture_ticket_history(
-                slot.ticket_id, "failure",
-                client=client, pr_url=slot.pr_url, branch_name=slot.branch,
-            )
-
-        insert_event(
-            self._conn,
-            event_type="slot_failed",
-            detail=f"project={project}, slot={slot.slot_id}, "
-            f"ticket={slot.ticket_id}",
-        )
-        self._conn.commit()
-
-        self._maybe_cleanup_qa_environment(project, slot.slot_id)
-        self._slot_manager.free_slot(project, slot.slot_id)
-        self._cleanup_slot_db(project, slot.slot_id)
-        self._pending_result_texts.pop((project, slot.slot_id), None)
-        logger.info("Freed slot %s/%d after failure", project, slot.slot_id)
 
     def _maybe_cleanup_qa_environment(self, project: str, slot_id: int) -> None:
         """Run QA environment cleanup if the project has a run_port or teardown command."""
@@ -347,6 +201,74 @@ class OperationsMixin:
             logger.warning(
                 "QA cleanup failed for %s/%d", project, slot_id, exc_info=True,
             )
+
+    @staticmethod
+    def _build_qa_comment(
+        report: QaReport | None,
+        raw_result_text: str | None,
+    ) -> str:
+        """Build the QA report comment body."""
+        if report:
+            status = "passed" if report.passed else "failed"
+            lines = [f"**QA Report — {status}**"]
+            if report.summary:
+                lines.append("")
+                lines.append(report.summary)
+            if report.bugs:
+                lines.append("")
+                lines.append(f"**Bugs found: {len(report.bugs)}**")
+                for bug in report.bugs:
+                    lines.append(f"- **[{bug.severity}]** {bug.title}")
+            if report.report_text:
+                lines.append("")
+                lines.append("---")
+                lines.append(_truncate_for_comment(report.report_text))
+            return "\n".join(lines)
+        # Fallback: post raw result_text if we couldn't parse structured data.
+        if raw_result_text:
+            return f"**QA Report**\n\n{_truncate_for_comment(raw_result_text)}"
+        return "**QA Report** — no report data available"
+
+    def _create_qa_bug_tickets(
+        self, poller, slot: SlotState, report: QaReport,
+    ) -> None:
+        """Create a bug ticket for each bug in the QA report."""
+        project_cfg = self._projects.get(slot.project)
+        project_id = None
+        if project_cfg:
+            try:
+                project_id = poller.get_project_id(
+                    project_cfg.tracker_project,
+                )
+            except Exception:
+                logger.debug(
+                    "Could not resolve project ID for %s",
+                    project_cfg.tracker_project,
+                    exc_info=True,
+                )
+
+        for bug in report.bugs:
+            priority = _SEVERITY_TO_PRIORITY.get(bug.severity.lower(), 3)
+            description = bug.description
+            if slot.ticket_id:
+                description += f"\n\n---\nFound during QA of {slot.ticket_id}"
+            try:
+                created = poller.create_issue(
+                    title=f"[QA Bug] {bug.title}",
+                    description=description,
+                    priority=priority,
+                    label_names=["Bug", "QA"],
+                    project_id=project_id,
+                )
+                logger.info(
+                    "Created QA bug ticket %s for %s: %s",
+                    created.identifier, slot.ticket_id, bug.title,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to create QA bug ticket for %s: %s",
+                    slot.ticket_id, bug.title,
+                )
 
     # ------------------------------------------------------------------
     # QA pipeline completion
@@ -427,33 +349,6 @@ class OperationsMixin:
                     "'qa-failed' label",
                     slot.ticket_id,
                 )
-
-    @staticmethod
-    def _build_qa_comment(
-        report: QaReport | None,
-        raw_result_text: str | None,
-    ) -> str:
-        """Build the QA report comment body."""
-        if report:
-            status = "passed" if report.passed else "failed"
-            lines = [f"**QA Report — {status}**"]
-            if report.summary:
-                lines.append("")
-                lines.append(report.summary)
-            if report.bugs:
-                lines.append("")
-                lines.append(f"**Bugs found: {len(report.bugs)}**")
-                for bug in report.bugs:
-                    lines.append(f"- **[{bug.severity}]** {bug.title}")
-            if report.report_text:
-                lines.append("")
-                lines.append("---")
-                lines.append(_truncate_for_comment(report.report_text))
-            return "\n".join(lines)
-        # Fallback: post raw result_text if we couldn't parse structured data.
-        if raw_result_text:
-            return f"**QA Report**\n\n{_truncate_for_comment(raw_result_text)}"
-        return "**QA Report** — no report data available"
 
     def _maybe_trigger_qa_ticket(self, slot: SlotState, poller) -> None:
         """Create a standalone QA ticket if the completed ticket has manual-qa label.
@@ -539,169 +434,6 @@ class OperationsMixin:
         except Exception:
             logger.exception(
                 "Failed to create QA ticket for %s", slot.ticket_id,
-            )
-
-    def _create_qa_bug_tickets(
-        self, poller, slot: SlotState, report: QaReport,
-    ) -> None:
-        """Create a bug ticket for each bug in the QA report."""
-        project_cfg = self._projects.get(slot.project)
-        project_id = None
-        if project_cfg:
-            try:
-                project_id = poller.get_project_id(
-                    project_cfg.tracker_project,
-                )
-            except Exception:
-                logger.debug(
-                    "Could not resolve project ID for %s",
-                    project_cfg.tracker_project,
-                    exc_info=True,
-                )
-
-        for bug in report.bugs:
-            priority = _SEVERITY_TO_PRIORITY.get(bug.severity.lower(), 3)
-            description = bug.description
-            if slot.ticket_id:
-                description += f"\n\n---\nFound during QA of {slot.ticket_id}"
-            try:
-                created = poller.create_issue(
-                    title=f"[QA Bug] {bug.title}",
-                    description=description,
-                    priority=priority,
-                    label_names=["Bug", "QA"],
-                    project_id=project_id,
-                )
-                logger.info(
-                    "Created QA bug ticket %s for %s: %s",
-                    created.identifier, slot.ticket_id, bug.title,
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to create QA bug ticket for %s: %s",
-                    slot.ticket_id, bug.title,
-                )
-
-    # ------------------------------------------------------------------
-    # Base directory guardrail
-    # ------------------------------------------------------------------
-
-    def _verify_base_dir_clean(self, project: str) -> None:
-        """Check that the base repo directory is still on ``main``.
-
-        A misbehaving agent may ``cd`` into the base repo (discovered via
-        ``git rev-parse --git-common-dir``) and switch its branch.  If
-        detected, reset the base dir back to ``main`` and log a warning.
-        """
-        project_cfg = self._projects.get(project)
-        if not project_cfg:
-            return
-        base = Path(project_cfg.base_dir).expanduser()
-        if not base.exists():
-            return
-        try:
-            # Strip GIT_* env vars so subprocesses target the correct repo,
-            # not a parent repo whose vars leaked into the environment.
-            clean_env = {
-                k: v for k, v in os.environ.items()
-                if not k.startswith("GIT_")
-            }
-            result = subprocess.run(
-                ["git", "branch", "--show-current"],
-                cwd=str(base),
-                capture_output=True,
-                text=True,
-                timeout=10,
-                env=clean_env,
-            )
-            branch = result.stdout.strip()
-            if branch and branch != "main":
-                logger.warning(
-                    "Base dir %s is on branch '%s' (expected 'main') — "
-                    "resetting to main",
-                    base, branch,
-                )
-                checkout = subprocess.run(
-                    ["git", "checkout", "main"],
-                    cwd=str(base),
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                    env=clean_env,
-                )
-                if checkout.returncode == 0:
-                    insert_event(
-                        self._conn,
-                        event_type="base_dir_reset",
-                        detail=f"project={project}, was_on={branch}",
-                    )
-                    self._conn.commit()
-                else:
-                    logger.error(
-                        "Failed to reset base dir %s to main: %s",
-                        base, checkout.stderr.strip(),
-                    )
-                    insert_event(
-                        self._conn,
-                        event_type="base_dir_reset_failed",
-                        detail=f"project={project}, was_on={branch}, error={checkout.stderr.strip()}",
-                    )
-                    self._conn.commit()
-        except Exception:
-            logger.debug(
-                "Could not verify base dir branch for %s", project,
-                exc_info=True,
-            )
-
-    # ------------------------------------------------------------------
-    # Linear comments
-    # ------------------------------------------------------------------
-
-    def _post_failure_comment(self, poller, slot: SlotState) -> None:
-        """Post a comment on the Linear issue with failure details."""
-        stage = slot.stage or "unknown"
-        reason = "unknown"
-
-        task_id = self._find_task_id(slot.ticket_id)
-        if task_id is not None:
-            task = get_task(self._conn, task_id)
-            if task and task["failure_reason"]:
-                reason = task["failure_reason"]
-
-        review_iter = slot.stage_iteration if slot.stage in ("review", "fix") else None
-
-        lines = [
-            "**Bot outcome: failed** — requires manual attention",
-            "",
-            f"- **Stage:** `{stage}`",
-            f"- **Failure reason:** {reason}",
-        ]
-
-        if review_iter is not None:
-            lines.append(f"- **Review iteration:** {review_iter}")
-        if slot.pr_url:
-            lines.append(f"- **PR:** {slot.pr_url}")
-
-        result_text = self._pending_result_texts.get(
-            (slot.project, slot.slot_id)
-        )
-        if result_text:
-            lines.append("")
-            lines.append(_truncate_for_comment(result_text))
-
-        lines.append("")
-        lines.append(
-            "**To retry:** remove the `Failed` and `Human` labels and move this "
-            "ticket to Todo. The agent will detect the prior work and continue "
-            "from where it left off (existing PR, completed reviews, etc.) rather "
-            "than starting from scratch."
-        )
-
-        try:
-            poller.add_comment(slot.ticket_id, "\n".join(lines))
-        except Exception:
-            logger.exception(
-                "Failed to post failure comment on %s", slot.ticket_id,
             )
 
     def _post_completion_comment(self, poller, slot: SlotState) -> None:
@@ -853,25 +585,6 @@ class OperationsMixin:
             review_summary=self._build_review_summary(task_id),
         )
 
-    def _notify_task_failed(self, slot: SlotState) -> None:
-        """Send a webhook notification for a failed task."""
-        reason = None
-        category = None
-        task_id = self._find_task_id(slot.ticket_id)
-        if task_id is not None:
-            task = get_task(self._conn, task_id)
-            if task:
-                reason = task["failure_reason"]
-                category = task["failure_category"]
-        self._notifier.notify_task_failed(
-            ticket_id=slot.ticket_id or "unknown",
-            title=slot.ticket_title or "unknown",
-            failure_reason=reason,
-            failure_category=category,
-            review_summary=self._build_review_summary(task_id),
-            todo_status=self._config.bugtracker.todo_status,
-        )
-
     def _maybe_send_refactoring_notification(self, slot: SlotState) -> None:
         """Send a refactoring-analysis-specific notification if applicable."""
         ra_label = self._config.refactoring_analysis.tracker_label.lower()
@@ -948,127 +661,321 @@ class OperationsMixin:
                 ticket_id,
             )
 
-    # ------------------------------------------------------------------
-    # Periodic refactoring analysis ticket scheduler
-    # ------------------------------------------------------------------
+    def _handle_completed_slot(self, slot: SlotState) -> None:
+        """Update Linear for a completed slot and free it."""
+        project = slot.project
+        bt_cfg = self._resolve_project_bt(project)
+        poller = self._pollers.get(project)
+        has_qa = "qa" in (slot.stages_completed or [])
+        no_pr = None
 
-    _REFACTORING_ANALYSIS_TICKET_TEMPLATE = """\
-## Periodic Codebase Refactoring Analysis
-
-This is an automatically scheduled investigation ticket. Analyze the current state of \
-the codebase and determine whether refactoring is needed.
-
-### Instructions
-
-Follow the Refactoring Analysis Procedure documented in AGENTS.md (or docs/refactoring-analysis.md).
-
-### Expected Outcomes
-
-**If code quality is "good enough":**
-1. Post a concise summary comment on this ticket (2-5 bullet points)
-2. Send a notification: "Refactoring analysis complete — no action needed"
-
-**If refactoring is needed:**
-1. Create a parent ticket "Codebase Refactoring — MONTH YEAR" with findings summary
-2. Create child implementation tickets for each refactoring area with dependencies
-3. Post a summary comment on this investigation ticket linking to the parent
-4. Send a notification: "Refactoring analysis complete — N tickets created under PARENT-ID"
-
-Note: The supervisor handles status transitions automatically — do not move this ticket manually.
-"""
-
-    def _maybe_create_refactoring_analysis_ticket(self) -> None:
-        """Check if it's time to create a new refactoring analysis ticket.
-
-        Two independent triggers:
-        1. Time-based (cadence_days) — creates ticket in Todo state
-        2. Ticket-count-based (cadence_tickets) — creates ticket in Backlog
-           state and sends a webhook notification
-
-        Either trigger fires independently.  Shared dedup checks (open
-        tickets, previous ticket still open) prevent duplicate creation.
-        """
-        ra_config = self._config.refactoring_analysis
-        if not ra_config.enabled:
-            return
-
-        now = datetime.now(timezone.utc)
-
-        # --- Check which triggers have fired ---
-        time_triggered = False
-        ticket_count_triggered = False
-
-        last_created = get_last_refactoring_analysis_date(self._conn)
-        last_created_iso = None
-
-        if last_created:
-            days_since = (now - last_created).total_seconds() / 86400
-            if days_since >= ra_config.cadence_days:
-                time_triggered = True
-            last_created_iso = last_created.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-        else:
-            # No previous analysis — time trigger fires immediately
-            time_triggered = True
-
-        if ra_config.cadence_tickets > 0:
-            since = last_created_iso or "1970-01-01T00:00:00.000000Z"
-            completed = count_completed_tasks_since(self._conn, since)
-            if completed >= ra_config.cadence_tickets:
-                ticket_count_triggered = True
-
-        if not time_triggered and not ticket_count_triggered:
-            return
-
-        # --- Shared dedup: previous ticket still open? ---
-        last_ticket_id = get_last_scheduled_refactoring_ticket(self._conn)
-        if last_ticket_id:
-            for poller in self._pollers.values():
-                if poller.is_issue_terminal(last_ticket_id):
-                    break
+        if poller and slot.ticket_id:
+            if poller.is_issue_terminal(slot.ticket_id):
+                logger.info(
+                    "Completed slot %s/%d: ticket %s already in terminal "
+                    "state — skipping status move",
+                    slot.project, slot.slot_id, slot.ticket_id,
+                )
             else:
-                logger.debug(
-                    "Skipping refactoring analysis — previous ticket %s still open",
-                    last_ticket_id,
-                )
-                return
+                no_pr = slot.no_pr_reason
+                if not no_pr and not slot.pr_url:
+                    task_id = self._find_task_id(slot.ticket_id)
+                    if task_id is not None:
+                        task = get_task(self._conn, task_id)
+                        if task and task["comments"]:
+                            from botfarm.worker import _detect_no_pr_needed
+                            no_pr = _detect_no_pr_needed(task["comments"])
+                if no_pr:
+                    target_status = bt_cfg.done_status
+                else:
+                    pr_status, resolved_pr_url = self._check_pr_status(slot)
+                    if resolved_pr_url and not slot.pr_url:
+                        slot.pr_url = resolved_pr_url
+                    if pr_status == "merged":
+                        target_status = bt_cfg.done_status
+                    else:
+                        target_status = bt_cfg.in_review_status
 
-        # --- Shared dedup: any open tickets with the RA label? ---
-        any_check_succeeded = False
-        checked_teams: set[str] = set()
-        for poller in self._pollers.values():
-            if poller.team_key in checked_teams:
-                continue
-            checked_teams.add(poller.team_key)
-            try:
-                open_issues = self._bugtracker_client.fetch_open_issues_with_label(
-                    poller.team_key,
-                    ra_config.tracker_label,
-                )
-                any_check_succeeded = True
-                if open_issues:
-                    logger.debug(
-                        "Skipping refactoring analysis — found %d open ticket(s) "
-                        "with label '%s'",
-                        len(open_issues),
-                        ra_config.tracker_label,
-                    )
-                    return
-            except Exception as exc:
-                logger.warning(
-                    "Failed to check Linear for open refactoring analysis tickets: %s",
-                    exc,
-                )
+                # For standalone QA pipelines (no PR, no no_pr_reason),
+                # _handle_qa_completion manages the status transition.
+                is_standalone_qa = has_qa and not slot.pr_url and not no_pr
+                if not is_standalone_qa:
+                    try:
+                        poller.move_issue(slot.ticket_id, target_status)
+                        logger.info(
+                            "Moved %s to '%s' after successful pipeline",
+                            slot.ticket_id, target_status,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Failed to move %s to '%s'", slot.ticket_id, target_status,
+                        )
 
-        if not any_check_succeeded:
-            logger.warning(
-                "Could not verify open refactoring analysis tickets — "
-                "skipping creation"
+            if bt_cfg.comment_on_completion and not slot.no_pr_reason:
+                self._post_completion_comment(poller, slot)
+
+            if slot.no_pr_reason:
+                self._post_no_pr_comment(poller, slot)
+
+        # QA side effects layered on top of normal completion flow.
+        if has_qa:
+            self._handle_qa_completion(slot, poller, no_pr=no_pr)
+
+        # Auto-trigger QA ticket for implementation tickets with manual-qa label.
+        if not has_qa:
+            self._maybe_trigger_qa_ticket(slot, poller)
+
+        # Webhook notification
+        self._notify_task_completed(slot)
+
+        # Refactoring analysis notification
+        self._maybe_send_refactoring_notification(slot)
+
+        # Capture ticket history at completion
+        if slot.ticket_id:
+            client = poller._client if poller else None
+            self._capture_ticket_history(
+                slot.ticket_id, "completion",
+                client=client, pr_url=slot.pr_url, branch_name=slot.branch,
             )
+
+        insert_event(
+            self._conn,
+            event_type="slot_completed",
+            detail=f"project={project}, slot={slot.slot_id}, "
+            f"ticket={slot.ticket_id}",
+        )
+        self._conn.commit()
+
+        self._maybe_cleanup_qa_environment(project, slot.slot_id)
+        self._slot_manager.free_slot(project, slot.slot_id)
+        self._cleanup_slot_db(project, slot.slot_id)
+        self._pending_result_texts.pop((project, slot.slot_id), None)
+        logger.info("Freed slot %s/%d after completion", project, slot.slot_id)
+
+    # ------------------------------------------------------------------
+    # Linear comments
+    # ------------------------------------------------------------------
+
+    def _post_failure_comment(self, poller, slot: SlotState) -> None:
+        """Post a comment on the Linear issue with failure details."""
+        stage = slot.stage or "unknown"
+        reason = "unknown"
+
+        task_id = self._find_task_id(slot.ticket_id)
+        if task_id is not None:
+            task = get_task(self._conn, task_id)
+            if task and task["failure_reason"]:
+                reason = task["failure_reason"]
+
+        review_iter = slot.stage_iteration if slot.stage in ("review", "fix") else None
+
+        lines = [
+            "**Bot outcome: failed** — requires manual attention",
+            "",
+            f"- **Stage:** `{stage}`",
+            f"- **Failure reason:** {reason}",
+        ]
+
+        if review_iter is not None:
+            lines.append(f"- **Review iteration:** {review_iter}")
+        if slot.pr_url:
+            lines.append(f"- **PR:** {slot.pr_url}")
+
+        result_text = self._pending_result_texts.get(
+            (slot.project, slot.slot_id)
+        )
+        if result_text:
+            lines.append("")
+            lines.append(_truncate_for_comment(result_text))
+
+        lines.append("")
+        lines.append(
+            "**To retry:** remove the `Failed` and `Human` labels and move this "
+            "ticket to Todo. The agent will detect the prior work and continue "
+            "from where it left off (existing PR, completed reviews, etc.) rather "
+            "than starting from scratch."
+        )
+
+        try:
+            poller.add_comment(slot.ticket_id, "\n".join(lines))
+        except Exception:
+            logger.exception(
+                "Failed to post failure comment on %s", slot.ticket_id,
+            )
+
+    def _notify_task_failed(self, slot: SlotState) -> None:
+        """Send a webhook notification for a failed task."""
+        reason = None
+        category = None
+        task_id = self._find_task_id(slot.ticket_id)
+        if task_id is not None:
+            task = get_task(self._conn, task_id)
+            if task:
+                reason = task["failure_reason"]
+                category = task["failure_category"]
+        self._notifier.notify_task_failed(
+            ticket_id=slot.ticket_id or "unknown",
+            title=slot.ticket_title or "unknown",
+            failure_reason=reason,
+            failure_category=category,
+            review_summary=self._build_review_summary(task_id),
+            todo_status=self._config.bugtracker.todo_status,
+        )
+
+    def _handle_failed_slot(self, slot: SlotState) -> None:
+        """Update Linear for a failed slot and free it."""
+        pr_status, resolved_pr_url = self._check_pr_status(slot)
+        # Persist the resolved PR URL so failure comment and history capture
+        # can reference it (slot.pr_url may be empty if worker didn't set it).
+        if resolved_pr_url and not slot.pr_url:
+            slot.pr_url = resolved_pr_url
+        if pr_status == "merged":
+            logger.info(
+                "Failed slot %s/%d has a merged PR — treating as completed",
+                slot.project, slot.slot_id,
+            )
+            task_id = self._find_task_id(slot.ticket_id)
+            if task_id is not None:
+                update_task(self._conn, task_id, status="completed")
+                self._conn.commit()
+            self._handle_completed_slot(slot)
             return
 
-        # Ticket-count trigger → Backlog state; time trigger → Todo state
-        use_backlog = ticket_count_triggered and not time_triggered
-        self._create_refactoring_analysis_ticket(now, use_backlog=use_backlog)
+        project = slot.project
+        bt_cfg = self._resolve_project_bt(project)
+        poller = self._pollers.get(project)
+        if poller and slot.ticket_id:
+            if poller.is_issue_terminal(slot.ticket_id):
+                logger.info(
+                    "Failed slot %s/%d: ticket %s already in terminal state "
+                    "— skipping label update",
+                    slot.project, slot.slot_id, slot.ticket_id,
+                )
+            else:
+                # Don't move the ticket — keep it in its current status.
+                # Add "Failed" and "Human" labels so the poller skips it
+                # (Human is in exclude_tags) and humans can triage.
+                try:
+                    poller.add_labels(slot.ticket_id, ["Failed", "Human"])
+                except Exception:
+                    logger.exception(
+                        "Failed to add failure labels to %s",
+                        slot.ticket_id,
+                    )
+
+                if bt_cfg.comment_on_failure:
+                    self._post_failure_comment(poller, slot)
+
+        # Webhook notification
+        self._notify_task_failed(slot)
+
+        # Capture ticket history at failure
+        if slot.ticket_id:
+            client = poller._client if poller else None
+            self._capture_ticket_history(
+                slot.ticket_id, "failure",
+                client=client, pr_url=slot.pr_url, branch_name=slot.branch,
+            )
+
+        insert_event(
+            self._conn,
+            event_type="slot_failed",
+            detail=f"project={project}, slot={slot.slot_id}, "
+            f"ticket={slot.ticket_id}",
+        )
+        self._conn.commit()
+
+        self._maybe_cleanup_qa_environment(project, slot.slot_id)
+        self._slot_manager.free_slot(project, slot.slot_id)
+        self._cleanup_slot_db(project, slot.slot_id)
+        self._pending_result_texts.pop((project, slot.slot_id), None)
+        logger.info("Freed slot %s/%d after failure", project, slot.slot_id)
+
+    # ------------------------------------------------------------------
+    # Base directory guardrail
+    # ------------------------------------------------------------------
+
+    def _verify_base_dir_clean(self, project: str) -> None:
+        """Check that the base repo directory is still on ``main``.
+
+        A misbehaving agent may ``cd`` into the base repo (discovered via
+        ``git rev-parse --git-common-dir``) and switch its branch.  If
+        detected, reset the base dir back to ``main`` and log a warning.
+        """
+        project_cfg = self._projects.get(project)
+        if not project_cfg:
+            return
+        base = Path(project_cfg.base_dir).expanduser()
+        if not base.exists():
+            return
+        try:
+            # Strip GIT_* env vars so subprocesses target the correct repo,
+            # not a parent repo whose vars leaked into the environment.
+            clean_env = {
+                k: v for k, v in os.environ.items()
+                if not k.startswith("GIT_")
+            }
+            result = subprocess.run(
+                ["git", "branch", "--show-current"],
+                cwd=str(base),
+                capture_output=True,
+                text=True,
+                timeout=10,
+                env=clean_env,
+            )
+            branch = result.stdout.strip()
+            if branch and branch != "main":
+                logger.warning(
+                    "Base dir %s is on branch '%s' (expected 'main') — "
+                    "resetting to main",
+                    base, branch,
+                )
+                checkout = subprocess.run(
+                    ["git", "checkout", "main"],
+                    cwd=str(base),
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    env=clean_env,
+                )
+                if checkout.returncode == 0:
+                    insert_event(
+                        self._conn,
+                        event_type="base_dir_reset",
+                        detail=f"project={project}, was_on={branch}",
+                    )
+                    self._conn.commit()
+                else:
+                    logger.error(
+                        "Failed to reset base dir %s to main: %s",
+                        base, checkout.stderr.strip(),
+                    )
+                    insert_event(
+                        self._conn,
+                        event_type="base_dir_reset_failed",
+                        detail=f"project={project}, was_on={branch}, error={checkout.stderr.strip()}",
+                    )
+                    self._conn.commit()
+        except Exception:
+            logger.debug(
+                "Could not verify base dir branch for %s", project,
+                exc_info=True,
+            )
+
+    # ------------------------------------------------------------------
+    # Handle finished slots
+    # ------------------------------------------------------------------
+
+    def _handle_finished_slots(self) -> None:
+        """Process completed and failed slots — update Linear, free slots."""
+        for slot in self._slot_manager.all_slots():
+            if slot.status == "completed_pending_cleanup":
+                self._verify_base_dir_clean(slot.project)
+                self._handle_completed_slot(slot)
+            elif slot.status == "failed":
+                self._verify_base_dir_clean(slot.project)
+                self._handle_failed_slot(slot)
 
     def _create_refactoring_analysis_ticket(
         self, now: datetime, *, use_backlog: bool = False,
@@ -1197,6 +1104,99 @@ Note: The supervisor handles status transitions automatically — do not move th
         except Exception:
             logger.exception("Failed to create refactoring analysis ticket")
 
+    def _maybe_create_refactoring_analysis_ticket(self) -> None:
+        """Check if it's time to create a new refactoring analysis ticket.
+
+        Two independent triggers:
+        1. Time-based (cadence_days) — creates ticket in Todo state
+        2. Ticket-count-based (cadence_tickets) — creates ticket in Backlog
+           state and sends a webhook notification
+
+        Either trigger fires independently.  Shared dedup checks (open
+        tickets, previous ticket still open) prevent duplicate creation.
+        """
+        ra_config = self._config.refactoring_analysis
+        if not ra_config.enabled:
+            return
+
+        now = datetime.now(timezone.utc)
+
+        # --- Check which triggers have fired ---
+        time_triggered = False
+        ticket_count_triggered = False
+
+        last_created = get_last_refactoring_analysis_date(self._conn)
+        last_created_iso = None
+
+        if last_created:
+            days_since = (now - last_created).total_seconds() / 86400
+            if days_since >= ra_config.cadence_days:
+                time_triggered = True
+            last_created_iso = last_created.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        else:
+            # No previous analysis — time trigger fires immediately
+            time_triggered = True
+
+        if ra_config.cadence_tickets > 0:
+            since = last_created_iso or "1970-01-01T00:00:00.000000Z"
+            completed = count_completed_tasks_since(self._conn, since)
+            if completed >= ra_config.cadence_tickets:
+                ticket_count_triggered = True
+
+        if not time_triggered and not ticket_count_triggered:
+            return
+
+        # --- Shared dedup: previous ticket still open? ---
+        last_ticket_id = get_last_scheduled_refactoring_ticket(self._conn)
+        if last_ticket_id:
+            for poller in self._pollers.values():
+                if poller.is_issue_terminal(last_ticket_id):
+                    break
+            else:
+                logger.debug(
+                    "Skipping refactoring analysis — previous ticket %s still open",
+                    last_ticket_id,
+                )
+                return
+
+        # --- Shared dedup: any open tickets with the RA label? ---
+        any_check_succeeded = False
+        checked_teams: set[str] = set()
+        for poller in self._pollers.values():
+            if poller.team_key in checked_teams:
+                continue
+            checked_teams.add(poller.team_key)
+            try:
+                open_issues = self._bugtracker_client.fetch_open_issues_with_label(
+                    poller.team_key,
+                    ra_config.tracker_label,
+                )
+                any_check_succeeded = True
+                if open_issues:
+                    logger.debug(
+                        "Skipping refactoring analysis — found %d open ticket(s) "
+                        "with label '%s'",
+                        len(open_issues),
+                        ra_config.tracker_label,
+                    )
+                    return
+            except Exception as exc:
+                logger.warning(
+                    "Failed to check Linear for open refactoring analysis tickets: %s",
+                    exc,
+                )
+
+        if not any_check_succeeded:
+            logger.warning(
+                "Could not verify open refactoring analysis tickets — "
+                "skipping creation"
+            )
+            return
+
+        # Ticket-count trigger → Backlog state; time trigger → Todo state
+        use_backlog = ticket_count_triggered and not time_triggered
+        self._create_refactoring_analysis_ticket(now, use_backlog=use_backlog)
+
     # ------------------------------------------------------------------
     # Limit interruption handling
     # ------------------------------------------------------------------
@@ -1211,6 +1211,11 @@ Note: The supervisor handles status transitions automatically — do not move th
             enabled=thresholds.enabled,
         )
         return should_pause
+
+    def _compute_resume_after(self) -> str | None:
+        """Compute the earliest time to resume based on usage resets + buffer."""
+        from botfarm.supervisor_workers import PauseResumeManager
+        return PauseResumeManager.compute_resume_after(self._usage_poller)
 
     def _handle_limit_hit(self, wr: _WorkerResult) -> None:
         """Handle a worker result that indicates a usage limit hit."""
@@ -1267,11 +1272,6 @@ Note: The supervisor handles status transitions automatically — do not move th
             wr.project, wr.slot_id, wr.failure_stage, resume_after,
         )
 
-    def _compute_resume_after(self) -> str | None:
-        """Compute the earliest time to resume based on usage resets + buffer."""
-        from botfarm.supervisor_workers import PauseResumeManager
-        return PauseResumeManager.compute_resume_after(self._usage_poller)
-
     # ------------------------------------------------------------------
     # Stop slot
     # ------------------------------------------------------------------
@@ -1309,102 +1309,19 @@ Note: The supervisor handles status transitions automatically — do not move th
                     "Failed to stop slot %s/%d", project, slot_id,
                 )
 
-    def stop_slot(self, project: str, slot_id: int) -> StopSlotResult:
-        """Stop a single slot: kill worker, clean up git/PR/Linear, free slot."""
-        slot = self._slot_manager.get_slot(project, slot_id)
-        if slot is None:
-            return StopSlotResult(
-                success=False,
-                message=f"Slot {project}/{slot_id} not found",
-            )
-
-        if slot.status == "free":
-            return StopSlotResult(
-                success=False,
-                message=f"Slot {project}/{slot_id} is not busy",
-            )
-
-        if slot.status == "completed_pending_cleanup":
-            return StopSlotResult(
-                success=False,
-                message=f"Slot {project}/{slot_id} has completed work "
-                f"pending cleanup — use normal cleanup instead",
-            )
-
-        ticket_id = slot.ticket_id
-        branch = slot.branch
-        pr_was_merged = False
-        pr_closed = False
-
-        # --- Kill worker process ---
-        self._stop_slot_kill_worker(slot)
-
-        # --- PR cleanup ---
-        pr_was_merged, pr_closed = self._stop_slot_pr_cleanup(slot)
-
-        # --- Git cleanup ---
-        checkout_ok = self._stop_slot_git_cleanup(project, slot_id, branch)
-
-        # --- Linear + DB cleanup ---
-        task_id = self._find_task_id(ticket_id)
-        if pr_was_merged:
-            self._stop_slot_linear_done(slot)
-            if task_id is not None:
-                update_task(
-                    self._conn, task_id,
-                    status="completed",
-                    completed_at=datetime.now(timezone.utc).isoformat(),
-                )
-        else:
-            self._stop_slot_linear_cleanup(slot)
-            if task_id is not None:
-                update_task(
-                    self._conn, task_id,
-                    status="failed",
-                    failure_reason="stopped by user",
-                )
-        insert_event(
-            self._conn,
-            task_id=task_id,
-            event_type="slot_stopped",
-            detail=f"project={project}, slot={slot_id}, "
-            f"ticket={ticket_id}, branch={branch}, "
-            f"pr_merged={pr_was_merged}, pr_closed={pr_closed}, "
-            f"checkout_ok={checkout_ok}",
-        )
-        self._conn.commit()
-
-        if checkout_ok:
-            self._slot_manager.free_slot(project, slot_id)
-            self._cleanup_slot_db(project, slot_id)
-            self._pending_result_texts.pop((project, slot_id), None)
-        else:
-            self._slot_manager.mark_failed(
-                project, slot_id,
-                reason="stopped but checkout to placeholder failed",
-            )
-            logger.warning(
-                "Slot %s/%d not freed after stop — checkout to placeholder "
-                "branch failed, worktree may be dirty",
-                project, slot_id,
-            )
-
-        merged_note = " (PR was already merged)" if pr_was_merged else ""
-        closed_note = " (PR closed)" if pr_closed else ""
-        checkout_note = " (worktree dirty — slot not freed)" if not checkout_ok else ""
-        message = (
-            f"Stopped slot {project}/{slot_id} "
-            f"(ticket {ticket_id}){merged_note}{closed_note}{checkout_note}"
-        )
-        logger.info(message)
-
-        return StopSlotResult(
-            success=checkout_ok,
-            pr_was_merged=pr_was_merged,
-            pr_closed=pr_closed,
-            ticket_id=ticket_id,
-            message=message,
-        )
+    def _drain_results_for_slot(self, project: str, slot_id: int) -> None:
+        """Drain any pending _WorkerResult from the queue for this slot."""
+        drained: list[_WorkerResult] = []
+        while True:
+            try:
+                wr: _WorkerResult = self._result_queue.get(timeout=0.05)
+            except queue.Empty:
+                break
+            if wr.project == project and wr.slot_id == slot_id:
+                continue
+            drained.append(wr)
+        for wr in drained:
+            self._result_queue.put(wr)
 
     def _stop_slot_kill_worker(self, slot: SlotState) -> None:
         """Kill the worker process and its child process tree."""
@@ -1450,20 +1367,6 @@ Note: The supervisor handles status transitions automatically — do not move th
                 _kill_pids(descendant_pids, signal.SIGKILL)
 
         self._drain_results_for_slot(slot.project, slot.slot_id)
-
-    def _drain_results_for_slot(self, project: str, slot_id: int) -> None:
-        """Drain any pending _WorkerResult from the queue for this slot."""
-        drained: list[_WorkerResult] = []
-        while True:
-            try:
-                wr: _WorkerResult = self._result_queue.get(timeout=0.05)
-            except queue.Empty:
-                break
-            if wr.project == project and wr.slot_id == slot_id:
-                continue
-            drained.append(wr)
-        for wr in drained:
-            self._result_queue.put(wr)
 
     def _stop_slot_pr_cleanup(self, slot: SlotState) -> tuple[bool, bool]:
         """Close PR if open, detect if merged. Returns (pr_was_merged, pr_closed)."""
@@ -1638,6 +1541,103 @@ Note: The supervisor handles status transitions automatically — do not move th
                 "Failed to move %s to '%s' after stop (merged PR)",
                 slot.ticket_id, target_status,
             )
+
+    def stop_slot(self, project: str, slot_id: int) -> StopSlotResult:
+        """Stop a single slot: kill worker, clean up git/PR/Linear, free slot."""
+        slot = self._slot_manager.get_slot(project, slot_id)
+        if slot is None:
+            return StopSlotResult(
+                success=False,
+                message=f"Slot {project}/{slot_id} not found",
+            )
+
+        if slot.status == "free":
+            return StopSlotResult(
+                success=False,
+                message=f"Slot {project}/{slot_id} is not busy",
+            )
+
+        if slot.status == "completed_pending_cleanup":
+            return StopSlotResult(
+                success=False,
+                message=f"Slot {project}/{slot_id} has completed work "
+                f"pending cleanup — use normal cleanup instead",
+            )
+
+        ticket_id = slot.ticket_id
+        branch = slot.branch
+        pr_was_merged = False
+        pr_closed = False
+
+        # --- Kill worker process ---
+        self._stop_slot_kill_worker(slot)
+
+        # --- PR cleanup ---
+        pr_was_merged, pr_closed = self._stop_slot_pr_cleanup(slot)
+
+        # --- Git cleanup ---
+        checkout_ok = self._stop_slot_git_cleanup(project, slot_id, branch)
+
+        # --- Linear + DB cleanup ---
+        task_id = self._find_task_id(ticket_id)
+        if pr_was_merged:
+            self._stop_slot_linear_done(slot)
+            if task_id is not None:
+                update_task(
+                    self._conn, task_id,
+                    status="completed",
+                    completed_at=datetime.now(timezone.utc).isoformat(),
+                )
+        else:
+            self._stop_slot_linear_cleanup(slot)
+            if task_id is not None:
+                update_task(
+                    self._conn, task_id,
+                    status="failed",
+                    failure_reason="stopped by user",
+                )
+        insert_event(
+            self._conn,
+            task_id=task_id,
+            event_type="slot_stopped",
+            detail=f"project={project}, slot={slot_id}, "
+            f"ticket={ticket_id}, branch={branch}, "
+            f"pr_merged={pr_was_merged}, pr_closed={pr_closed}, "
+            f"checkout_ok={checkout_ok}",
+        )
+        self._conn.commit()
+
+        if checkout_ok:
+            self._slot_manager.free_slot(project, slot_id)
+            self._cleanup_slot_db(project, slot_id)
+            self._pending_result_texts.pop((project, slot_id), None)
+        else:
+            self._slot_manager.mark_failed(
+                project, slot_id,
+                reason="stopped but checkout to placeholder failed",
+            )
+            logger.warning(
+                "Slot %s/%d not freed after stop — checkout to placeholder "
+                "branch failed, worktree may be dirty",
+                project, slot_id,
+            )
+
+        merged_note = " (PR was already merged)" if pr_was_merged else ""
+        closed_note = " (PR closed)" if pr_closed else ""
+        checkout_note = " (worktree dirty — slot not freed)" if not checkout_ok else ""
+        message = (
+            f"Stopped slot {project}/{slot_id} "
+            f"(ticket {ticket_id}){merged_note}{closed_note}{checkout_note}"
+        )
+        logger.info(message)
+
+        return StopSlotResult(
+            success=checkout_ok,
+            pr_was_merged=pr_was_merged,
+            pr_closed=pr_closed,
+            ticket_id=ticket_id,
+            message=message,
+        )
 
     # ------------------------------------------------------------------
     # Add slot
@@ -2044,37 +2044,27 @@ Note: The supervisor handles status transitions automatically — do not move th
         self._update_event.set()
         self._wake_event.set()
 
-    # ------------------------------------------------------------------
-    # Daily work summary
-    # ------------------------------------------------------------------
+    def _send_fallback_daily_summary(self, summary_data: dict, ds_config: DailySummaryConfig) -> None:
+        """Send a simple non-Claude summary when Claude invocation fails."""
+        total_completed = summary_data["total_completed"]
+        total_failed = summary_data["total_failed"]
+        tasks = summary_data["tasks"]
+        duration_min = int(summary_data["total_duration_seconds"] // 60)
 
-    def _maybe_send_daily_summary(self) -> None:
-        """Check if it's time to send a daily work summary digest."""
-        ds_config = self._config.daily_summary
-        if not ds_config.enabled:
-            return
+        lines = [f"{total_completed} completed, {total_failed} failed | Total: {duration_min}m"]
+        for t in tasks[:10]:
+            status_icon = "+" if t["status"] == "completed" else "-"
+            pr_url = t.get("pr_url") or t.get("th_pr_url") or ""
+            pr_part = f" — {pr_url}" if pr_url else ""
+            lines.append(f"{status_icon} {t['ticket_id']}: {t['title']}{pr_part}")
+        if len(tasks) > 10:
+            lines.append(f"... and {len(tasks) - 10} more")
 
-        now = datetime.now(timezone.utc)
-        if now.hour != ds_config.send_hour:
-            return
-
-        # Check if we already sent a summary in the last 20 hours
-        recent_events = get_events(
-            self._conn, event_type="daily_summary_sent", limit=1,
+        self._notifier.notify_daily_summary(
+            "Daily Work Summary",
+            "\n".join(lines),
+            webhook_url=ds_config.webhook_url,
         )
-        if recent_events:
-            last_sent_str = recent_events[0]["created_at"]
-            try:
-                last_sent = datetime.fromisoformat(
-                    last_sent_str.replace("Z", "+00:00")
-                )
-                hours_since = (now - last_sent).total_seconds() / 3600
-                if hours_since < 20:
-                    return
-            except (ValueError, TypeError):
-                pass
-
-        self._send_daily_summary(ds_config)
 
     def _send_daily_summary(self, ds_config: DailySummaryConfig) -> None:
         """Gather data, invoke Claude for summarization, and send notification."""
@@ -2217,24 +2207,34 @@ Note: The supervisor handles status transitions automatically — do not move th
         )
         self._conn.commit()
 
-    def _send_fallback_daily_summary(self, summary_data: dict, ds_config: DailySummaryConfig) -> None:
-        """Send a simple non-Claude summary when Claude invocation fails."""
-        total_completed = summary_data["total_completed"]
-        total_failed = summary_data["total_failed"]
-        tasks = summary_data["tasks"]
-        duration_min = int(summary_data["total_duration_seconds"] // 60)
+    # ------------------------------------------------------------------
+    # Daily work summary
+    # ------------------------------------------------------------------
 
-        lines = [f"{total_completed} completed, {total_failed} failed | Total: {duration_min}m"]
-        for t in tasks[:10]:
-            status_icon = "+" if t["status"] == "completed" else "-"
-            pr_url = t.get("pr_url") or t.get("th_pr_url") or ""
-            pr_part = f" — {pr_url}" if pr_url else ""
-            lines.append(f"{status_icon} {t['ticket_id']}: {t['title']}{pr_part}")
-        if len(tasks) > 10:
-            lines.append(f"... and {len(tasks) - 10} more")
+    def _maybe_send_daily_summary(self) -> None:
+        """Check if it's time to send a daily work summary digest."""
+        ds_config = self._config.daily_summary
+        if not ds_config.enabled:
+            return
 
-        self._notifier.notify_daily_summary(
-            "Daily Work Summary",
-            "\n".join(lines),
-            webhook_url=ds_config.webhook_url,
+        now = datetime.now(timezone.utc)
+        if now.hour != ds_config.send_hour:
+            return
+
+        # Check if we already sent a summary in the last 20 hours
+        recent_events = get_events(
+            self._conn, event_type="daily_summary_sent", limit=1,
         )
+        if recent_events:
+            last_sent_str = recent_events[0]["created_at"]
+            try:
+                last_sent = datetime.fromisoformat(
+                    last_sent_str.replace("Z", "+00:00")
+                )
+                hours_since = (now - last_sent).total_seconds() / 3600
+                if hours_since < 20:
+                    return
+            except (ValueError, TypeError):
+                pass
+
+        self._send_daily_summary(ds_config)

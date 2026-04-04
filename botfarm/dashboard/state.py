@@ -41,6 +41,20 @@ def get_db(app: FastAPI) -> sqlite3.Connection | None:
         return None
 
 
+def _row_to_usage_dict(row) -> dict:
+    """Convert a usage_snapshots DB row to a usage dict."""
+    return {
+        "utilization_5h": row["utilization_5h"],
+        "utilization_7d": row["utilization_7d"],
+        "resets_at_5h": row["resets_at"],
+        "resets_at_7d": row["resets_at_7d"],
+        "extra_usage_enabled": bool(row["extra_usage_enabled"]) if row["extra_usage_enabled"] is not None else False,
+        "extra_usage_monthly_limit": row["extra_usage_monthly_limit"],
+        "extra_usage_used_credits": row["extra_usage_used_credits"],
+        "extra_usage_utilization": row["extra_usage_utilization"],
+    }
+
+
 def read_state(app: FastAPI) -> dict:
     """Read slot and dispatch state from the database."""
     conn = get_db(app)
@@ -332,20 +346,6 @@ def init_caches(app: FastAPI) -> None:
     app.state._update_check_lock = threading.Lock()
     app.state._last_update_check = {"time": None, "commits_behind": 0}
     app.state._usage_poller = UsagePoller()
-
-
-def _row_to_usage_dict(row) -> dict:
-    """Convert a usage_snapshots DB row to a usage dict."""
-    return {
-        "utilization_5h": row["utilization_5h"],
-        "utilization_7d": row["utilization_7d"],
-        "resets_at_5h": row["resets_at"],
-        "resets_at_7d": row["resets_at_7d"],
-        "extra_usage_enabled": bool(row["extra_usage_enabled"]) if row["extra_usage_enabled"] is not None else False,
-        "extra_usage_monthly_limit": row["extra_usage_monthly_limit"],
-        "extra_usage_used_credits": row["extra_usage_used_credits"],
-        "extra_usage_utilization": row["extra_usage_utilization"],
-    }
 
 
 def refresh_and_get_usage(app: FastAPI) -> tuple[dict | None, str | None]:

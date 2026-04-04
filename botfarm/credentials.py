@@ -84,100 +84,26 @@ class OAuthToken:
     refresh_token: str | None = None
 
 
-@dataclass
-class CredentialManager:
-    """Retrieves Claude Code OAuth tokens from the OS credential store.
-
-    Always re-reads credentials from disk to pick up tokens refreshed by
-    concurrent ``claude -p`` worker sessions.  This is called at most once
-    per usage poll (~10 min), so the I/O cost is negligible.
-    """
-
-    def get_token(self) -> str | None:
-        """Load and return the current OAuth access token.
-
-        Returns None if credentials are unavailable (logs a warning).
-        """
-        try:
-            token = _load_token()
-            return token.access_token
-        except CredentialError as exc:
-            logger.warning("Could not load OAuth credentials: %s", exc)
-            return None
-
-    def refresh_token(self) -> str | None:
-        """Perform an OAuth token refresh and return the new access token.
-
-        Attempts to use the refreshToken from the credential store to
-        obtain a new access token from the Anthropic OAuth endpoint.
-        On success, writes the new tokens back to the credential store.
-        On failure, falls back to re-reading from disk (in case a
-        concurrent Claude CLI session has already refreshed).
-        """
-        try:
-            token = _load_token()
-        except CredentialError as exc:
-            logger.warning("Could not load credentials for refresh: %s", exc)
-            return None
-
-        if not token.refresh_token:
-            logger.debug("No refresh token available — falling back to disk read")
-            return token.access_token
-
-        try:
-            new_token = _refresh_oauth_token(token.refresh_token)
-            _save_token(new_token)
-            logger.info("OAuth token refreshed successfully")
-            return new_token.access_token
-        except Exception as exc:
-            logger.warning(
-                "OAuth token refresh failed (%s) — falling back to disk read",
-                exc,
-            )
-            # Re-read from disk: a concurrent claude -p session may have
-            # refreshed the token while we were trying
-            return self.get_token()
-
-    def is_token_expired(self) -> bool:
-        """Check if the current token is expired or about to expire.
-
-        Returns True if the token expires within TOKEN_EXPIRY_BUFFER_MS.
-        Returns True if credentials cannot be loaded at all.
-        Returns False if expiry info is missing (assume valid).
-        """
-        try:
-            token = _load_token()
-        except CredentialError:
-            return True
-
-        if token.expires_at is None:
-            return False  # No expiry info — assume valid
-
-        try:
-            expires_at_ms = int(token.expires_at)
-        except (ValueError, TypeError):
-            return False  # Unparseable — don't trigger unnecessary refresh
-
-        now_ms = int(time.time() * 1000)
-        return now_ms >= (expires_at_ms - TOKEN_EXPIRY_BUFFER_MS)
-
-    def get_expires_at(self) -> int | str | None:
-        """Return the expiresAt field from the credential store, or None."""
-        try:
-            token = _load_token()
-            return token.expires_at
-        except CredentialError:
-            return None
-
-
-def _load_token() -> OAuthToken:
-    """Load the OAuth token from the OS-appropriate credential store."""
-    system = platform.system()
-    if system == "Darwin":
-        return _load_token_macos()
-    if system == "Linux":
-        return _load_token_linux()
-    raise CredentialError(f"Unsupported platform: {system}")
+def _extract_token(data: dict) -> OAuthToken:
+    """Extract the claudeAiOauth access token from the parsed credential data."""
+    oauth = data.get("claudeAiOauth")
+    if not isinstance(oauth, dict):
+        raise CredentialError(
+            "Credential data missing 'claudeAiOauth' section"
+        )
+    access_token = oauth.get("accessToken")
+    if not access_token or not isinstance(access_token, str):
+        raise CredentialError(
+            "No accessToken found in claudeAiOauth credentials"
+        )
+    refresh_token = oauth.get("refreshToken")
+    if isinstance(refresh_token, str) and not refresh_token:
+        refresh_token = None
+    return OAuthToken(
+        access_token=access_token,
+        expires_at=oauth.get("expiresAt"),
+        refresh_token=refresh_token if isinstance(refresh_token, str) else None,
+    )
 
 
 def _load_token_linux() -> OAuthToken:
@@ -227,26 +153,14 @@ def _load_token_macos() -> OAuthToken:
     return _extract_token(data)
 
 
-def _extract_token(data: dict) -> OAuthToken:
-    """Extract the claudeAiOauth access token from the parsed credential data."""
-    oauth = data.get("claudeAiOauth")
-    if not isinstance(oauth, dict):
-        raise CredentialError(
-            "Credential data missing 'claudeAiOauth' section"
-        )
-    access_token = oauth.get("accessToken")
-    if not access_token or not isinstance(access_token, str):
-        raise CredentialError(
-            "No accessToken found in claudeAiOauth credentials"
-        )
-    refresh_token = oauth.get("refreshToken")
-    if isinstance(refresh_token, str) and not refresh_token:
-        refresh_token = None
-    return OAuthToken(
-        access_token=access_token,
-        expires_at=oauth.get("expiresAt"),
-        refresh_token=refresh_token if isinstance(refresh_token, str) else None,
-    )
+def _load_token() -> OAuthToken:
+    """Load the OAuth token from the OS-appropriate credential store."""
+    system = platform.system()
+    if system == "Darwin":
+        return _load_token_macos()
+    if system == "Linux":
+        return _load_token_linux()
+    raise CredentialError(f"Unsupported platform: {system}")
 
 
 # ---------------------------------------------------------------------------
@@ -305,21 +219,6 @@ def _refresh_oauth_token(refresh_token_value: str) -> OAuthToken:
         expires_at=expires_at,
         refresh_token=new_refresh if isinstance(new_refresh, str) else None,
     )
-
-
-def _save_token(token: OAuthToken) -> None:
-    """Write the refreshed token back to the OS credential store.
-
-    On Linux, updates ~/.claude/.credentials.json atomically (temp + rename).
-    On macOS, updates the system keychain.
-    """
-    system = platform.system()
-    if system == "Linux":
-        _save_token_linux(token)
-    elif system == "Darwin":
-        _save_token_macos(token)
-    else:
-        logger.warning("Cannot save refreshed token on %s", system)
 
 
 def _save_token_linux(token: OAuthToken) -> None:
@@ -433,6 +332,107 @@ def _save_token_macos(token: OAuthToken) -> None:
         )
     except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as exc:
         logger.warning("Failed to update macOS keychain: %s", exc)
+
+
+def _save_token(token: OAuthToken) -> None:
+    """Write the refreshed token back to the OS credential store.
+
+    On Linux, updates ~/.claude/.credentials.json atomically (temp + rename).
+    On macOS, updates the system keychain.
+    """
+    system = platform.system()
+    if system == "Linux":
+        _save_token_linux(token)
+    elif system == "Darwin":
+        _save_token_macos(token)
+    else:
+        logger.warning("Cannot save refreshed token on %s", system)
+
+
+@dataclass
+class CredentialManager:
+    """Retrieves Claude Code OAuth tokens from the OS credential store.
+
+    Always re-reads credentials from disk to pick up tokens refreshed by
+    concurrent ``claude -p`` worker sessions.  This is called at most once
+    per usage poll (~10 min), so the I/O cost is negligible.
+    """
+
+    def get_token(self) -> str | None:
+        """Load and return the current OAuth access token.
+
+        Returns None if credentials are unavailable (logs a warning).
+        """
+        try:
+            token = _load_token()
+            return token.access_token
+        except CredentialError as exc:
+            logger.warning("Could not load OAuth credentials: %s", exc)
+            return None
+
+    def refresh_token(self) -> str | None:
+        """Perform an OAuth token refresh and return the new access token.
+
+        Attempts to use the refreshToken from the credential store to
+        obtain a new access token from the Anthropic OAuth endpoint.
+        On success, writes the new tokens back to the credential store.
+        On failure, falls back to re-reading from disk (in case a
+        concurrent Claude CLI session has already refreshed).
+        """
+        try:
+            token = _load_token()
+        except CredentialError as exc:
+            logger.warning("Could not load credentials for refresh: %s", exc)
+            return None
+
+        if not token.refresh_token:
+            logger.debug("No refresh token available — falling back to disk read")
+            return token.access_token
+
+        try:
+            new_token = _refresh_oauth_token(token.refresh_token)
+            _save_token(new_token)
+            logger.info("OAuth token refreshed successfully")
+            return new_token.access_token
+        except Exception as exc:
+            logger.warning(
+                "OAuth token refresh failed (%s) — falling back to disk read",
+                exc,
+            )
+            # Re-read from disk: a concurrent claude -p session may have
+            # refreshed the token while we were trying
+            return self.get_token()
+
+    def is_token_expired(self) -> bool:
+        """Check if the current token is expired or about to expire.
+
+        Returns True if the token expires within TOKEN_EXPIRY_BUFFER_MS.
+        Returns True if credentials cannot be loaded at all.
+        Returns False if expiry info is missing (assume valid).
+        """
+        try:
+            token = _load_token()
+        except CredentialError:
+            return True
+
+        if token.expires_at is None:
+            return False  # No expiry info — assume valid
+
+        try:
+            expires_at_ms = int(token.expires_at)
+        except (ValueError, TypeError):
+            return False  # Unparseable — don't trigger unnecessary refresh
+
+        now_ms = int(time.time() * 1000)
+        return now_ms >= (expires_at_ms - TOKEN_EXPIRY_BUFFER_MS)
+
+    def get_expires_at(self) -> int | str | None:
+        """Return the expiresAt field from the credential store, or None."""
+        try:
+            token = _load_token()
+            return token.expires_at
+        except CredentialError:
+            return None
 
 
 # ---------------------------------------------------------------------------

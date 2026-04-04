@@ -10,6 +10,27 @@ from botfarm.worker_claude import ClaudeResult, check_claude_available, run_clau
 _DEFAULT_MAX_TURNS = 200
 
 
+def _claude_result_to_agent_result(cr: ClaudeResult) -> AgentResult:
+    """Normalize a :class:`ClaudeResult` into an :class:`AgentResult`."""
+    return AgentResult(
+        session_id=cr.session_id,
+        num_turns=cr.num_turns,
+        duration_seconds=cr.duration_seconds,
+        result_text=cr.result_text,
+        is_error=cr.is_error,
+        input_tokens=cr.input_tokens,
+        output_tokens=cr.output_tokens,
+        cost_usd=cr.total_cost_usd,
+        context_fill_pct=cr.context_fill_pct,
+        extra={
+            "exit_subtype": cr.exit_subtype,
+            "model_usage_json": cr.model_usage_json,
+            "cache_creation_input_tokens": cr.cache_creation_input_tokens,
+            "cache_read_input_tokens": cr.cache_read_input_tokens,
+        },
+    )
+
+
 class ClaudeAdapter:
     """Adapter that wraps :func:`run_claude_streaming` as an :class:`AgentAdapter`."""
 
@@ -63,24 +84,3 @@ class ClaudeAdapter:
 
     def check_available(self) -> tuple[bool, str]:
         return check_claude_available()
-
-
-def _claude_result_to_agent_result(cr: ClaudeResult) -> AgentResult:
-    """Normalize a :class:`ClaudeResult` into an :class:`AgentResult`."""
-    return AgentResult(
-        session_id=cr.session_id,
-        num_turns=cr.num_turns,
-        duration_seconds=cr.duration_seconds,
-        result_text=cr.result_text,
-        is_error=cr.is_error,
-        input_tokens=cr.input_tokens,
-        output_tokens=cr.output_tokens,
-        cost_usd=cr.total_cost_usd,
-        context_fill_pct=cr.context_fill_pct,
-        extra={
-            "exit_subtype": cr.exit_subtype,
-            "model_usage_json": cr.model_usage_json,
-            "cache_creation_input_tokens": cr.cache_creation_input_tokens,
-            "cache_read_input_tokens": cr.cache_read_input_tokens,
-        },
-    )

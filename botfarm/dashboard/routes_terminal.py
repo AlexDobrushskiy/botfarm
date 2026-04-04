@@ -73,6 +73,27 @@ def _cleanup_child(child_pid: int, master_fd: int) -> None:
         pass
 
 
+def _pty_read(fd: int) -> str | None:
+    """Blocking read from pty master fd. Returns None on EOF."""
+    ready, _, _ = select.select([fd], [], [], 0.1)
+    if not ready:
+        return ""
+    try:
+        data = os.read(fd, 4096)
+        if not data:
+            return None
+        return data.decode("utf-8", errors="replace")
+    except OSError:
+        return None
+
+
+def _pty_write(fd: int, data: bytes) -> None:
+    """Write data to pty master fd."""
+    while data:
+        n = os.write(fd, data)
+        data = data[n:]
+
+
 @router.websocket("/ws/terminal")
 async def ws_terminal(ws: WebSocket):
     """WebSocket endpoint that spawns a pty-backed shell session."""
@@ -192,27 +213,6 @@ async def ws_terminal(ws: WebSocket):
         if child_pid > 0:
             await asyncio.to_thread(_cleanup_child, child_pid, master_fd)
         await _decrement_sessions()
-
-
-def _pty_read(fd: int) -> str | None:
-    """Blocking read from pty master fd. Returns None on EOF."""
-    ready, _, _ = select.select([fd], [], [], 0.1)
-    if not ready:
-        return ""
-    try:
-        data = os.read(fd, 4096)
-        if not data:
-            return None
-        return data.decode("utf-8", errors="replace")
-    except OSError:
-        return None
-
-
-def _pty_write(fd: int, data: bytes) -> None:
-    """Write data to pty master fd."""
-    while data:
-        n = os.write(fd, data)
-        data = data[n:]
 
 
 @router.get("/terminal")

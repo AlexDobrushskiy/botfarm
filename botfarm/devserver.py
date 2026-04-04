@@ -76,6 +76,64 @@ class DevServerManager:
         """Remove a project registration (e.g. during rollback)."""
         self._projects.pop(project_name, None)
 
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _close_log_file(info: _ServerInfo) -> None:
+        """Close the log file handle on a _ServerInfo if present."""
+        if info.log_file is not None:
+            try:
+                info.log_file.close()
+            except Exception:
+                pass
+
+    def _do_start(self, project: ProjectConfig, restart_count: int) -> None:
+        """Launch the dev server subprocess."""
+        self._log_dir.mkdir(parents=True, exist_ok=True)
+
+        log_path = self._log_dir / f"{project.name}.log"
+        # Rotate: rename current log to .log.1
+        if log_path.exists():
+            rotated = self._log_dir / f"{project.name}.log.1"
+            try:
+                log_path.rename(rotated)
+            except OSError:
+                logger.warning("Failed to rotate dev server log for %s", project.name)
+
+        # Build environment: inherit current env + run_env + PORT
+        env = dict(os.environ)
+        if project.run_env:
+            env.update(project.run_env)
+        if project.run_port:
+            env["PORT"] = str(project.run_port)
+
+        cwd = str(Path(project.base_dir).expanduser())
+
+        log_file = open(log_path, "w")  # noqa: SIM115
+        try:
+            proc = subprocess.Popen(
+                project.run_command,
+                shell=True,
+                cwd=cwd,
+                env=env,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+        except Exception:
+            log_file.close()
+            raise
+
+        info = _ServerInfo(proc, restart_count=restart_count)
+        info.log_file = log_file
+        self._servers[project.name] = info
+        logger.info(
+            "Started dev server for %s (PID %d, cmd=%r, cwd=%s)",
+            project.name, proc.pid, project.run_command, cwd,
+        )
+
     def start(self, project_name: str) -> None:
         """Start the dev server for *project_name*.
 
@@ -95,6 +153,30 @@ class DevServerManager:
         if existing is not None:
             self._close_log_file(existing)
         self._do_start(project, restart_count)
+
+    def _do_stop(self, info: _ServerInfo, project_name: str) -> None:
+        """Terminate a dev server process group."""
+        self._close_log_file(info)
+
+        if info.proc.poll() is not None:
+            logger.info("Dev server for %s already exited (PID %d)", project_name, info.pid)
+            return
+
+        logger.info("Stopping dev server for %s (PID %d)", project_name, info.pid)
+        try:
+            pgid = os.getpgid(info.proc.pid)
+            os.killpg(pgid, signal.SIGTERM)
+        except OSError:
+            return
+        try:
+            info.proc.wait(timeout=_STOP_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            logger.warning("Dev server for %s did not stop gracefully — sending SIGKILL", project_name)
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+                info.proc.wait()  # reap the zombie
+            except OSError:
+                pass
 
     def stop(self, project_name: str) -> None:
         """Stop the dev server for *project_name*.
@@ -186,85 +268,3 @@ class DevServerManager:
             name for name, info in self._servers.items()
             if info.proc.poll() is None
         ]
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _close_log_file(info: _ServerInfo) -> None:
-        """Close the log file handle on a _ServerInfo if present."""
-        if info.log_file is not None:
-            try:
-                info.log_file.close()
-            except Exception:
-                pass
-
-    def _do_start(self, project: ProjectConfig, restart_count: int) -> None:
-        """Launch the dev server subprocess."""
-        self._log_dir.mkdir(parents=True, exist_ok=True)
-
-        log_path = self._log_dir / f"{project.name}.log"
-        # Rotate: rename current log to .log.1
-        if log_path.exists():
-            rotated = self._log_dir / f"{project.name}.log.1"
-            try:
-                log_path.rename(rotated)
-            except OSError:
-                logger.warning("Failed to rotate dev server log for %s", project.name)
-
-        # Build environment: inherit current env + run_env + PORT
-        env = dict(os.environ)
-        if project.run_env:
-            env.update(project.run_env)
-        if project.run_port:
-            env["PORT"] = str(project.run_port)
-
-        cwd = str(Path(project.base_dir).expanduser())
-
-        log_file = open(log_path, "w")  # noqa: SIM115
-        try:
-            proc = subprocess.Popen(
-                project.run_command,
-                shell=True,
-                cwd=cwd,
-                env=env,
-                stdout=log_file,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-            )
-        except Exception:
-            log_file.close()
-            raise
-
-        info = _ServerInfo(proc, restart_count=restart_count)
-        info.log_file = log_file
-        self._servers[project.name] = info
-        logger.info(
-            "Started dev server for %s (PID %d, cmd=%r, cwd=%s)",
-            project.name, proc.pid, project.run_command, cwd,
-        )
-
-    def _do_stop(self, info: _ServerInfo, project_name: str) -> None:
-        """Terminate a dev server process group."""
-        self._close_log_file(info)
-
-        if info.proc.poll() is not None:
-            logger.info("Dev server for %s already exited (PID %d)", project_name, info.pid)
-            return
-
-        logger.info("Stopping dev server for %s (PID %d)", project_name, info.pid)
-        try:
-            pgid = os.getpgid(info.proc.pid)
-            os.killpg(pgid, signal.SIGTERM)
-        except OSError:
-            return
-        try:
-            info.proc.wait(timeout=_STOP_GRACE_SECONDS)
-        except subprocess.TimeoutExpired:
-            logger.warning("Dev server for %s did not stop gracefully — sending SIGKILL", project_name)
-            try:
-                os.killpg(pgid, signal.SIGKILL)
-                info.proc.wait()  # reap the zombie
-            except OSError:
-                pass

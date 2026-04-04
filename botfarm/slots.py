@@ -116,6 +116,14 @@ def _is_pid_alive(pid: int) -> bool:
         return False
 
 
+class SlotError(Exception):
+    """Raised for invalid slot operations."""
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
 class SlotManager:
     """Manages slot lifecycle, state transitions, and persistence.
 
@@ -163,6 +171,18 @@ class SlotManager:
         key = (project, slot_id)
         if key not in self._slots:
             self._slots[key] = SlotState(project=project, slot_id=slot_id)
+
+    def _save(self) -> None:
+        """Persist slot and dispatch state to the database."""
+        for slot in self._slots.values():
+            upsert_slot(self._conn, slot.to_dict())
+        save_dispatch_state(
+            self._conn,
+            paused=self._dispatch_paused,
+            reason=self._dispatch_pause_reason,
+            supervisor_heartbeat=_now_iso(),
+        )
+        self._conn.commit()
 
     def remove_project_slots(self, project: str) -> int:
         """Remove all slots for a project and persist the change.
@@ -213,6 +233,17 @@ class SlotManager:
 
     def all_slots(self) -> list[SlotState]:
         return list(self._slots.values())
+
+    # ------------------------------------------------------------------
+    # Internal
+    # ------------------------------------------------------------------
+
+    def _require_slot(self, project: str, slot_id: int) -> SlotState:
+        key = (project, slot_id)
+        slot = self._slots.get(key)
+        if slot is None:
+            raise SlotError(f"Slot ({project}, {slot_id}) not registered")
+        return slot
 
     # ------------------------------------------------------------------
     # State transitions
@@ -406,39 +437,6 @@ class SlotManager:
                 if db_val is not None:
                     setattr(slot, fld, db_val)
 
-    def _save(self) -> None:
-        """Persist slot and dispatch state to the database."""
-        for slot in self._slots.values():
-            upsert_slot(self._conn, slot.to_dict())
-        save_dispatch_state(
-            self._conn,
-            paused=self._dispatch_paused,
-            reason=self._dispatch_pause_reason,
-            supervisor_heartbeat=_now_iso(),
-        )
-        self._conn.commit()
-
-    def load(self) -> None:
-        """Load state from DB if it exists. Falls back to state.json migration."""
-        # Always load per-project pause state (may exist even without slots)
-        self._project_pauses = load_all_project_pause_states(self._conn)
-
-        # Try loading from database first
-        rows = load_all_slots(self._conn)
-        if rows:
-            self._load_from_db(rows)
-            return
-
-        # DB is empty — check for state.json to auto-migrate
-        if self._state_path and self._state_path.exists():
-            logger.info(
-                "Migrating slot state from %s to database", self._state_path,
-            )
-            self._migrate_from_state_json()
-            return
-
-        logger.info("No existing state found — starting fresh")
-
     def _load_from_db(self, rows: list[sqlite3.Row]) -> None:
         """Populate in-memory slots from database rows."""
         for row in rows:
@@ -487,6 +485,27 @@ class SlotManager:
         # Persist migrated state to DB
         self._save()
         logger.info("Migration from state.json to database complete")
+
+    def load(self) -> None:
+        """Load state from DB if it exists. Falls back to state.json migration."""
+        # Always load per-project pause state (may exist even without slots)
+        self._project_pauses = load_all_project_pause_states(self._conn)
+
+        # Try loading from database first
+        rows = load_all_slots(self._conn)
+        if rows:
+            self._load_from_db(rows)
+            return
+
+        # DB is empty — check for state.json to auto-migrate
+        if self._state_path and self._state_path.exists():
+            logger.info(
+                "Migrating slot state from %s to database", self._state_path,
+            )
+            self._migrate_from_state_json()
+            return
+
+        logger.info("No existing state found — starting fresh")
 
     def reconcile(self) -> list[str]:
         """Check persisted state against reality after a restart.
@@ -624,25 +643,6 @@ class SlotManager:
                 if slot.slot_id == preferred_slot_id:
                     return slot
         return free[0]
-
-    # ------------------------------------------------------------------
-    # Internal
-    # ------------------------------------------------------------------
-
-    def _require_slot(self, project: str, slot_id: int) -> SlotState:
-        key = (project, slot_id)
-        slot = self._slots.get(key)
-        if slot is None:
-            raise SlotError(f"Slot ({project}, {slot_id}) not registered")
-        return slot
-
-
-class SlotError(Exception):
-    """Raised for invalid slot operations."""
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
 def update_slot_stage(

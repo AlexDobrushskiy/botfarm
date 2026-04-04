@@ -34,6 +34,397 @@ class RecoveryMixin:
     """Recovery, reconciliation, and state-inspection methods for Supervisor."""
 
     # ------------------------------------------------------------------
+    # DB helpers (shared by recovery and operations)
+    # ------------------------------------------------------------------
+
+    def _find_task_id(self, ticket_id: str | None) -> int | None:
+        """Look up the task_id for a ticket identifier."""
+        if not ticket_id:
+            return None
+        row = get_task_by_ticket(self._conn, ticket_id)
+        return row["id"] if row else None
+
+    # ------------------------------------------------------------------
+    # Recovery helpers
+    # ------------------------------------------------------------------
+
+    def _mark_recovery_completed(self, slot: SlotState, *, reason: str) -> None:
+        """Mark a recovered slot as completed and record the event."""
+        self._slot_manager.mark_completed(slot.project, slot.slot_id)
+        task_id = self._find_task_id(slot.ticket_id)
+        if task_id is not None:
+            update_task(self._conn, task_id, status="completed")
+        insert_event(
+            self._conn,
+            task_id=task_id,
+            event_type="recovery_completed",
+            detail=f"project={slot.project}, slot={slot.slot_id}, "
+            f"pid={slot.pid}, reason={reason}",
+        )
+
+    # ------------------------------------------------------------------
+    # Ticket external state check
+    # ------------------------------------------------------------------
+
+    def _is_ticket_externally_done(self, slot: SlotState) -> bool:
+        """Check if a ticket was moved to Done/Cancelled in Linear externally.
+
+        If the ticket is in a terminal state, marks the slot as completed,
+        kills the worker process if still alive, and returns ``True``.
+        Returns ``False`` when the ticket is still active or when the
+        status cannot be determined (API error).
+        """
+        if not slot.ticket_id:
+            return False
+
+        poller = self._pollers.get(slot.project)
+        if not poller:
+            return False
+
+        if not poller.is_issue_terminal(slot.ticket_id):
+            return False
+
+        logger.info(
+            "Ticket %s in slot %s/%d was moved to a terminal state "
+            "externally — clearing slot instead of recovering",
+            slot.ticket_id, slot.project, slot.slot_id,
+        )
+
+        if slot.pid and _is_pid_alive(slot.pid):
+            logger.info(
+                "Sending SIGTERM to worker PID %d for externally-done ticket %s",
+                slot.pid, slot.ticket_id,
+            )
+            try:
+                os.kill(slot.pid, signal.SIGTERM)
+            except OSError:
+                pass
+
+        self._mark_recovery_completed(slot, reason="ticket_externally_done")
+        return True
+
+    # ------------------------------------------------------------------
+    # Worker reattach / dead worker recovery
+    # ------------------------------------------------------------------
+
+    def _reattach_worker(self, slot: SlotState) -> None:
+        """Re-attach monitoring for a still-alive worker process."""
+        logger.info(
+            "Re-attaching to alive worker PID %d for %s/%d (ticket %s, stage %s)",
+            slot.pid, slot.project, slot.slot_id, slot.ticket_id, slot.stage,
+        )
+        insert_event(
+            self._conn,
+            event_type="worker_reattached",
+            detail=f"project={slot.project}, slot={slot.slot_id}, "
+            f"pid={slot.pid}, ticket={slot.ticket_id}, stage={slot.stage}",
+        )
+
+    def _mark_recovery_failed(
+        self, slot: SlotState, *, reason: str, failure_msg: str,
+    ) -> None:
+        """Mark a recovered slot as failed and record the event."""
+        from botfarm.supervisor_workers import _classify_failure
+
+        self._slot_manager.mark_failed(slot.project, slot.slot_id, reason=failure_msg)
+        task_id = self._find_task_id(slot.ticket_id)
+        if task_id is not None:
+            update_task(
+                self._conn, task_id,
+                status="failed",
+                failure_reason=failure_msg,
+                failure_category=_classify_failure(failure_msg),
+            )
+        insert_event(
+            self._conn,
+            task_id=task_id,
+            event_type="recovery_failed",
+            detail=f"project={slot.project}, slot={slot.slot_id}, "
+            f"pid={slot.pid}, reason={reason}",
+        )
+
+    @staticmethod
+    def _next_stage_after(stages_completed: list[str]) -> str | None:
+        """Return the first stage in STAGES not in *stages_completed*.
+
+        Returns ``None`` when all stages have been completed.
+        """
+        completed_set = set(stages_completed)
+        for stage in STAGES:
+            if stage not in completed_set:
+                return stage
+        return None
+
+    def _resume_recovered_worker(
+        self, slot: SlotState, *, resume_from_stage: str,
+    ) -> None:
+        """Resume a crash-recovered worker by spawning a new subprocess."""
+        self._worker_mgr.resume_recovered_worker(slot, resume_from_stage=resume_from_stage)
+
+    @staticmethod
+    def _gh_pr_url_for_branch(
+        branch: str | None, cwd: str,
+        *, env: dict[str, str] | None = None,
+    ) -> str | None:
+        """Get the open PR URL for a branch.
+
+        Delegates to :func:`~botfarm.worker_claude._find_open_pr_url`.
+        """
+        if not branch:
+            return None
+        return _find_open_pr_url(branch, cwd, env=env)
+
+    @staticmethod
+    def _gh_pr_state(
+        pr_ref: str,
+        *, env: dict[str, str] | None = None,
+    ) -> str | None:
+        """Query a PR's state (``OPEN``, ``MERGED``, ``CLOSED``)."""
+        subprocess_env = {**os.environ, **env} if env else None
+        try:
+            proc = subprocess.run(
+                ["gh", "pr", "view", pr_ref, "--json", "state", "--jq", ".state"],
+                capture_output=True, text=True, timeout=15,
+                env=subprocess_env,
+            )
+            if proc.returncode == 0:
+                state = proc.stdout.strip().upper()
+                if state == "MERGED":
+                    return "merged"
+                if state == "OPEN":
+                    return "open"
+                if state == "CLOSED":
+                    return "closed"
+        except Exception as exc:
+            logger.debug("gh pr view failed for %s: %s", pr_ref, exc)
+        return None
+
+    # ------------------------------------------------------------------
+    # PR status checking
+    # ------------------------------------------------------------------
+
+    def _check_pr_status(
+        self, slot: SlotState,
+    ) -> tuple[str | None, str | None]:
+        """Check whether a PR exists for the slot's branch.
+
+        Returns ``(state, pr_url)`` where *state* is ``"merged"``,
+        ``"open"``, ``"closed"``, or ``None`` (no PR found), and *pr_url*
+        is the resolved PR URL (or ``None``).
+
+        PR URL resolution order:
+        1. Tasks DB record (persisted by worker cross-process)
+        2. Slot state (``slot.pr_url``)
+        3. ``gh pr view`` branch lookup in the project working directory
+        """
+        pr_ref: str | None = None
+        source: str | None = None
+
+        # 1. Try tasks DB
+        if slot.ticket_id:
+            task_id = self._find_task_id(slot.ticket_id)
+            if task_id is not None:
+                task = get_task(self._conn, task_id)
+                if task and task["pr_url"]:
+                    pr_ref = task["pr_url"]
+                    source = "tasks_db"
+
+        # 2. Fall back to slot state
+        if not pr_ref and slot.pr_url:
+            pr_ref = slot.pr_url
+            source = "slot_state"
+
+        # 3. Fall back to gh pr view branch lookup
+        if not pr_ref:
+            project_cfg = self._projects.get(slot.project)
+            if project_cfg:
+                cwd = self._slot_worktree_cwd(project_cfg, slot.slot_id)
+                pr_ref = self._gh_pr_url_for_branch(slot.branch, cwd, env=self._git_env)
+                if pr_ref:
+                    source = "gh_branch_lookup"
+
+        if not pr_ref:
+            logger.debug(
+                "No PR URL found for %s/%d (ticket %s)",
+                slot.project, slot.slot_id, slot.ticket_id,
+            )
+            return None, None
+
+        state = self._gh_pr_state(pr_ref, env=self._git_env)
+        logger.info(
+            "PR status for %s/%d: url=%s, source=%s, state=%s",
+            slot.project, slot.slot_id, pr_ref, source, state,
+        )
+        return state, pr_ref
+
+    def _recover_dead_worker(self, slot: SlotState) -> None:
+        """Determine outcome for a dead worker and update slot state.
+
+        Uses stage-aware recovery when the worker made progress
+        (``stages_completed`` is non-empty). Falls back to PR-status-only
+        logic for workers that died before completing any stage.
+        """
+        project = slot.project
+        slot_id = slot.slot_id
+        ticket_id = slot.ticket_id
+        old_pid = slot.pid
+        pr_status, _pr_url = self._check_pr_status(slot)
+
+        # --- Stage-aware recovery ---
+        if slot.stages_completed:
+            next_stage = self._next_stage_after(slot.stages_completed)
+            if next_stage == "merge" and pr_status == "merged":
+                logger.info(
+                    "Dead worker PID %d for %s/%d: PR already merged — marking completed",
+                    old_pid, project, slot_id,
+                )
+                self._mark_recovery_completed(slot, reason="pr_merged_during_merge")
+                return
+            if next_stage == "merge":
+                task_row = self._conn.execute(
+                    "SELECT merge_conflict_retries FROM tasks WHERE ticket_id = ?",
+                    (ticket_id,),
+                ).fetchone()
+                if task_row and task_row["merge_conflict_retries"] and task_row["merge_conflict_retries"] > 0:
+                    if slot.stage == "resolve_conflict":
+                        next_stage = "resolve_conflict"
+                        logger.info(
+                            "Dead worker PID %d for %s/%d: crashed during "
+                            "resolve_conflict (retries=%d) — resuming from "
+                            "'resolve_conflict'",
+                            old_pid, project, slot_id,
+                            task_row["merge_conflict_retries"],
+                        )
+                    else:
+                        next_stage = "review"
+                        logger.info(
+                            "Dead worker PID %d for %s/%d: mid-merge-conflict-loop "
+                            "(retries=%d) — resuming from 'review' to re-run review/CI",
+                            old_pid, project, slot_id,
+                            task_row["merge_conflict_retries"],
+                        )
+            if next_stage:
+                logger.info(
+                    "Dead worker PID %d for %s/%d: resuming from stage '%s' "
+                    "(completed: %s)",
+                    old_pid, project, slot_id, next_stage,
+                    ", ".join(slot.stages_completed),
+                )
+                self._resume_recovered_worker(slot, resume_from_stage=next_stage)
+                return
+            logger.info(
+                "Dead worker PID %d for %s/%d: all stages completed — marking completed",
+                old_pid, project, slot_id,
+            )
+            self._mark_recovery_completed(slot, reason="all_stages_completed")
+            return
+
+        # --- No stages completed: check if implement produced a PR ---
+        if pr_status == "merged":
+            logger.info(
+                "Dead worker PID %d for %s/%d: PR was merged — marking completed",
+                old_pid, project, slot_id,
+            )
+            self._mark_recovery_completed(slot, reason="pr_merged")
+            return
+
+        if pr_status == "open":
+            logger.info(
+                "Dead worker PID %d for %s/%d: PR is open (no stages completed) "
+                "— resuming from review",
+                old_pid, project, slot_id,
+            )
+            self._resume_recovered_worker(slot, resume_from_stage="review")
+            return
+
+        if pr_status == "closed":
+            logger.warning(
+                "Dead worker PID %d for %s/%d: PR was closed without merging — marking failed",
+                old_pid, project, slot_id,
+            )
+            self._mark_recovery_failed(
+                slot, reason="pr_closed",
+                failure_msg=f"worker PID {old_pid} died (PR closed without merging)",
+            )
+            return
+
+        logger.warning(
+            "Dead worker PID %d for %s/%d: no PR found — marking failed",
+            old_pid, project, slot_id,
+        )
+        self._mark_recovery_failed(
+            slot, reason="no_pr",
+            failure_msg=f"worker PID {old_pid} died (no PR found)",
+        )
+
+    def _recover_timed_out_slot(self, slot: SlotState) -> None:
+        """Handle a slot that had a SIGTERM sent before the supervisor crashed."""
+        project = slot.project
+        slot_id = slot.slot_id
+        old_pid = slot.pid
+
+        if _is_pid_alive(old_pid):
+            logger.warning(
+                "Timed-out worker PID %d for %s/%d is still alive — sending SIGKILL",
+                old_pid, project, slot_id,
+            )
+            try:
+                os.kill(old_pid, signal.SIGKILL)
+            except OSError:
+                pass
+
+        reason = f"timeout in stage {slot.stage} (recovered after restart)"
+        self._slot_manager.mark_failed(project, slot_id, reason=reason)
+
+        task_id = self._find_task_id(slot.ticket_id)
+        if task_id is not None:
+            update_task(
+                self._conn, task_id,
+                status="failed",
+                failure_reason=reason,
+                failure_category="timeout",
+            )
+        insert_event(
+            self._conn,
+            task_id=task_id,
+            event_type="recovery_timeout",
+            detail=f"project={project}, slot={slot_id}, "
+            f"pid={old_pid}, stage={slot.stage}",
+        )
+        logger.warning(
+            "Recovered timed-out slot %s/%d (PID %s, stage %s) — marked failed",
+            project, slot_id, old_pid, slot.stage,
+        )
+
+    # ------------------------------------------------------------------
+    # DB reconciliation
+    # ------------------------------------------------------------------
+
+    def _reconcile_db_tasks(self) -> None:
+        """Ensure SQLite task records are consistent with slot state."""
+        for slot in self._slot_manager.all_slots():
+            if not slot.ticket_id:
+                continue
+            row = get_task_by_ticket(self._conn, slot.ticket_id)
+            if row is None:
+                continue
+
+            db_status = row["status"]
+            slot_status = slot.status
+
+            if db_status == "in_progress" and slot_status == "failed":
+                update_task(self._conn, row["id"], status="failed",
+                            failure_reason="marked failed during recovery")
+                logger.info(
+                    "Reconciled task %s: DB in_progress -> failed", slot.ticket_id,
+                )
+            elif db_status == "in_progress" and slot_status == "completed_pending_cleanup":
+                update_task(self._conn, row["id"], status="completed")
+                logger.info(
+                    "Reconciled task %s: DB in_progress -> completed", slot.ticket_id,
+                )
+
+    # ------------------------------------------------------------------
     # Crash recovery on startup
     # ------------------------------------------------------------------
 
@@ -167,386 +558,6 @@ class RecoveryMixin:
             self._startup_paused = True
 
     # ------------------------------------------------------------------
-    # Ticket external state check
-    # ------------------------------------------------------------------
-
-    def _is_ticket_externally_done(self, slot: SlotState) -> bool:
-        """Check if a ticket was moved to Done/Cancelled in Linear externally.
-
-        If the ticket is in a terminal state, marks the slot as completed,
-        kills the worker process if still alive, and returns ``True``.
-        Returns ``False`` when the ticket is still active or when the
-        status cannot be determined (API error).
-        """
-        if not slot.ticket_id:
-            return False
-
-        poller = self._pollers.get(slot.project)
-        if not poller:
-            return False
-
-        if not poller.is_issue_terminal(slot.ticket_id):
-            return False
-
-        logger.info(
-            "Ticket %s in slot %s/%d was moved to a terminal state "
-            "externally — clearing slot instead of recovering",
-            slot.ticket_id, slot.project, slot.slot_id,
-        )
-
-        if slot.pid and _is_pid_alive(slot.pid):
-            logger.info(
-                "Sending SIGTERM to worker PID %d for externally-done ticket %s",
-                slot.pid, slot.ticket_id,
-            )
-            try:
-                os.kill(slot.pid, signal.SIGTERM)
-            except OSError:
-                pass
-
-        self._mark_recovery_completed(slot, reason="ticket_externally_done")
-        return True
-
-    # ------------------------------------------------------------------
-    # Worker reattach / dead worker recovery
-    # ------------------------------------------------------------------
-
-    def _reattach_worker(self, slot: SlotState) -> None:
-        """Re-attach monitoring for a still-alive worker process."""
-        logger.info(
-            "Re-attaching to alive worker PID %d for %s/%d (ticket %s, stage %s)",
-            slot.pid, slot.project, slot.slot_id, slot.ticket_id, slot.stage,
-        )
-        insert_event(
-            self._conn,
-            event_type="worker_reattached",
-            detail=f"project={slot.project}, slot={slot.slot_id}, "
-            f"pid={slot.pid}, ticket={slot.ticket_id}, stage={slot.stage}",
-        )
-
-    def _recover_dead_worker(self, slot: SlotState) -> None:
-        """Determine outcome for a dead worker and update slot state.
-
-        Uses stage-aware recovery when the worker made progress
-        (``stages_completed`` is non-empty). Falls back to PR-status-only
-        logic for workers that died before completing any stage.
-        """
-        project = slot.project
-        slot_id = slot.slot_id
-        ticket_id = slot.ticket_id
-        old_pid = slot.pid
-        pr_status, _pr_url = self._check_pr_status(slot)
-
-        # --- Stage-aware recovery ---
-        if slot.stages_completed:
-            next_stage = self._next_stage_after(slot.stages_completed)
-            if next_stage == "merge" and pr_status == "merged":
-                logger.info(
-                    "Dead worker PID %d for %s/%d: PR already merged — marking completed",
-                    old_pid, project, slot_id,
-                )
-                self._mark_recovery_completed(slot, reason="pr_merged_during_merge")
-                return
-            if next_stage == "merge":
-                task_row = self._conn.execute(
-                    "SELECT merge_conflict_retries FROM tasks WHERE ticket_id = ?",
-                    (ticket_id,),
-                ).fetchone()
-                if task_row and task_row["merge_conflict_retries"] and task_row["merge_conflict_retries"] > 0:
-                    if slot.stage == "resolve_conflict":
-                        next_stage = "resolve_conflict"
-                        logger.info(
-                            "Dead worker PID %d for %s/%d: crashed during "
-                            "resolve_conflict (retries=%d) — resuming from "
-                            "'resolve_conflict'",
-                            old_pid, project, slot_id,
-                            task_row["merge_conflict_retries"],
-                        )
-                    else:
-                        next_stage = "review"
-                        logger.info(
-                            "Dead worker PID %d for %s/%d: mid-merge-conflict-loop "
-                            "(retries=%d) — resuming from 'review' to re-run review/CI",
-                            old_pid, project, slot_id,
-                            task_row["merge_conflict_retries"],
-                        )
-            if next_stage:
-                logger.info(
-                    "Dead worker PID %d for %s/%d: resuming from stage '%s' "
-                    "(completed: %s)",
-                    old_pid, project, slot_id, next_stage,
-                    ", ".join(slot.stages_completed),
-                )
-                self._resume_recovered_worker(slot, resume_from_stage=next_stage)
-                return
-            logger.info(
-                "Dead worker PID %d for %s/%d: all stages completed — marking completed",
-                old_pid, project, slot_id,
-            )
-            self._mark_recovery_completed(slot, reason="all_stages_completed")
-            return
-
-        # --- No stages completed: check if implement produced a PR ---
-        if pr_status == "merged":
-            logger.info(
-                "Dead worker PID %d for %s/%d: PR was merged — marking completed",
-                old_pid, project, slot_id,
-            )
-            self._mark_recovery_completed(slot, reason="pr_merged")
-            return
-
-        if pr_status == "open":
-            logger.info(
-                "Dead worker PID %d for %s/%d: PR is open (no stages completed) "
-                "— resuming from review",
-                old_pid, project, slot_id,
-            )
-            self._resume_recovered_worker(slot, resume_from_stage="review")
-            return
-
-        if pr_status == "closed":
-            logger.warning(
-                "Dead worker PID %d for %s/%d: PR was closed without merging — marking failed",
-                old_pid, project, slot_id,
-            )
-            self._mark_recovery_failed(
-                slot, reason="pr_closed",
-                failure_msg=f"worker PID {old_pid} died (PR closed without merging)",
-            )
-            return
-
-        logger.warning(
-            "Dead worker PID %d for %s/%d: no PR found — marking failed",
-            old_pid, project, slot_id,
-        )
-        self._mark_recovery_failed(
-            slot, reason="no_pr",
-            failure_msg=f"worker PID {old_pid} died (no PR found)",
-        )
-
-    # ------------------------------------------------------------------
-    # Recovery helpers
-    # ------------------------------------------------------------------
-
-    def _mark_recovery_completed(self, slot: SlotState, *, reason: str) -> None:
-        """Mark a recovered slot as completed and record the event."""
-        self._slot_manager.mark_completed(slot.project, slot.slot_id)
-        task_id = self._find_task_id(slot.ticket_id)
-        if task_id is not None:
-            update_task(self._conn, task_id, status="completed")
-        insert_event(
-            self._conn,
-            task_id=task_id,
-            event_type="recovery_completed",
-            detail=f"project={slot.project}, slot={slot.slot_id}, "
-            f"pid={slot.pid}, reason={reason}",
-        )
-
-    def _mark_recovery_failed(
-        self, slot: SlotState, *, reason: str, failure_msg: str,
-    ) -> None:
-        """Mark a recovered slot as failed and record the event."""
-        from botfarm.supervisor_workers import _classify_failure
-
-        self._slot_manager.mark_failed(slot.project, slot.slot_id, reason=failure_msg)
-        task_id = self._find_task_id(slot.ticket_id)
-        if task_id is not None:
-            update_task(
-                self._conn, task_id,
-                status="failed",
-                failure_reason=failure_msg,
-                failure_category=_classify_failure(failure_msg),
-            )
-        insert_event(
-            self._conn,
-            task_id=task_id,
-            event_type="recovery_failed",
-            detail=f"project={slot.project}, slot={slot.slot_id}, "
-            f"pid={slot.pid}, reason={reason}",
-        )
-
-    @staticmethod
-    def _next_stage_after(stages_completed: list[str]) -> str | None:
-        """Return the first stage in STAGES not in *stages_completed*.
-
-        Returns ``None`` when all stages have been completed.
-        """
-        completed_set = set(stages_completed)
-        for stage in STAGES:
-            if stage not in completed_set:
-                return stage
-        return None
-
-    def _resume_recovered_worker(
-        self, slot: SlotState, *, resume_from_stage: str,
-    ) -> None:
-        """Resume a crash-recovered worker by spawning a new subprocess."""
-        self._worker_mgr.resume_recovered_worker(slot, resume_from_stage=resume_from_stage)
-
-    def _recover_timed_out_slot(self, slot: SlotState) -> None:
-        """Handle a slot that had a SIGTERM sent before the supervisor crashed."""
-        project = slot.project
-        slot_id = slot.slot_id
-        old_pid = slot.pid
-
-        if _is_pid_alive(old_pid):
-            logger.warning(
-                "Timed-out worker PID %d for %s/%d is still alive — sending SIGKILL",
-                old_pid, project, slot_id,
-            )
-            try:
-                os.kill(old_pid, signal.SIGKILL)
-            except OSError:
-                pass
-
-        reason = f"timeout in stage {slot.stage} (recovered after restart)"
-        self._slot_manager.mark_failed(project, slot_id, reason=reason)
-
-        task_id = self._find_task_id(slot.ticket_id)
-        if task_id is not None:
-            update_task(
-                self._conn, task_id,
-                status="failed",
-                failure_reason=reason,
-                failure_category="timeout",
-            )
-        insert_event(
-            self._conn,
-            task_id=task_id,
-            event_type="recovery_timeout",
-            detail=f"project={project}, slot={slot_id}, "
-            f"pid={old_pid}, stage={slot.stage}",
-        )
-        logger.warning(
-            "Recovered timed-out slot %s/%d (PID %s, stage %s) — marked failed",
-            project, slot_id, old_pid, slot.stage,
-        )
-
-    # ------------------------------------------------------------------
-    # PR status checking
-    # ------------------------------------------------------------------
-
-    def _check_pr_status(
-        self, slot: SlotState,
-    ) -> tuple[str | None, str | None]:
-        """Check whether a PR exists for the slot's branch.
-
-        Returns ``(state, pr_url)`` where *state* is ``"merged"``,
-        ``"open"``, ``"closed"``, or ``None`` (no PR found), and *pr_url*
-        is the resolved PR URL (or ``None``).
-
-        PR URL resolution order:
-        1. Tasks DB record (persisted by worker cross-process)
-        2. Slot state (``slot.pr_url``)
-        3. ``gh pr view`` branch lookup in the project working directory
-        """
-        pr_ref: str | None = None
-        source: str | None = None
-
-        # 1. Try tasks DB
-        if slot.ticket_id:
-            task_id = self._find_task_id(slot.ticket_id)
-            if task_id is not None:
-                task = get_task(self._conn, task_id)
-                if task and task["pr_url"]:
-                    pr_ref = task["pr_url"]
-                    source = "tasks_db"
-
-        # 2. Fall back to slot state
-        if not pr_ref and slot.pr_url:
-            pr_ref = slot.pr_url
-            source = "slot_state"
-
-        # 3. Fall back to gh pr view branch lookup
-        if not pr_ref:
-            project_cfg = self._projects.get(slot.project)
-            if project_cfg:
-                cwd = self._slot_worktree_cwd(project_cfg, slot.slot_id)
-                pr_ref = self._gh_pr_url_for_branch(slot.branch, cwd, env=self._git_env)
-                if pr_ref:
-                    source = "gh_branch_lookup"
-
-        if not pr_ref:
-            logger.debug(
-                "No PR URL found for %s/%d (ticket %s)",
-                slot.project, slot.slot_id, slot.ticket_id,
-            )
-            return None, None
-
-        state = self._gh_pr_state(pr_ref, env=self._git_env)
-        logger.info(
-            "PR status for %s/%d: url=%s, source=%s, state=%s",
-            slot.project, slot.slot_id, pr_ref, source, state,
-        )
-        return state, pr_ref
-
-    @staticmethod
-    def _gh_pr_url_for_branch(
-        branch: str | None, cwd: str,
-        *, env: dict[str, str] | None = None,
-    ) -> str | None:
-        """Get the open PR URL for a branch.
-
-        Delegates to :func:`~botfarm.worker_claude._find_open_pr_url`.
-        """
-        if not branch:
-            return None
-        return _find_open_pr_url(branch, cwd, env=env)
-
-    @staticmethod
-    def _gh_pr_state(
-        pr_ref: str,
-        *, env: dict[str, str] | None = None,
-    ) -> str | None:
-        """Query a PR's state (``OPEN``, ``MERGED``, ``CLOSED``)."""
-        subprocess_env = {**os.environ, **env} if env else None
-        try:
-            proc = subprocess.run(
-                ["gh", "pr", "view", pr_ref, "--json", "state", "--jq", ".state"],
-                capture_output=True, text=True, timeout=15,
-                env=subprocess_env,
-            )
-            if proc.returncode == 0:
-                state = proc.stdout.strip().upper()
-                if state == "MERGED":
-                    return "merged"
-                if state == "OPEN":
-                    return "open"
-                if state == "CLOSED":
-                    return "closed"
-        except Exception as exc:
-            logger.debug("gh pr view failed for %s: %s", pr_ref, exc)
-        return None
-
-    # ------------------------------------------------------------------
-    # DB reconciliation
-    # ------------------------------------------------------------------
-
-    def _reconcile_db_tasks(self) -> None:
-        """Ensure SQLite task records are consistent with slot state."""
-        for slot in self._slot_manager.all_slots():
-            if not slot.ticket_id:
-                continue
-            row = get_task_by_ticket(self._conn, slot.ticket_id)
-            if row is None:
-                continue
-
-            db_status = row["status"]
-            slot_status = slot.status
-
-            if db_status == "in_progress" and slot_status == "failed":
-                update_task(self._conn, row["id"], status="failed",
-                            failure_reason="marked failed during recovery")
-                logger.info(
-                    "Reconciled task %s: DB in_progress -> failed", slot.ticket_id,
-                )
-            elif db_status == "in_progress" and slot_status == "completed_pending_cleanup":
-                update_task(self._conn, row["id"], status="completed")
-                logger.info(
-                    "Reconciled task %s: DB in_progress -> completed", slot.ticket_id,
-                )
-
-    # ------------------------------------------------------------------
     # Worker reconciliation (per-tick)
     # ------------------------------------------------------------------
 
@@ -673,17 +684,6 @@ class RecoveryMixin:
     def _check_timeouts(self) -> None:
         """Kill worker processes that have exceeded their stage timeout."""
         self._worker_mgr.check_timeouts()
-
-    # ------------------------------------------------------------------
-    # DB helpers (shared by recovery and operations)
-    # ------------------------------------------------------------------
-
-    def _find_task_id(self, ticket_id: str | None) -> int | None:
-        """Look up the task_id for a ticket identifier."""
-        if not ticket_id:
-            return None
-        row = get_task_by_ticket(self._conn, ticket_id)
-        return row["id"] if row else None
 
     def _increment_limit_interruptions(self, task_id: int) -> None:
         """Atomically increment the limit_interruptions counter on a task."""

@@ -95,6 +95,15 @@ class CodexUsageState:
         }
 
 
+def _unix_to_iso(ts: int | None) -> str | None:
+    """Convert a unix timestamp to an ISO 8601 string, or None."""
+    if ts is None:
+        return None
+    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+
+
 @dataclass
 class CodexUsagePoller:
     """Polls the ChatGPT backend API for Codex rate-limit status.
@@ -120,55 +129,6 @@ class CodexUsagePoller:
     @property
     def enabled(self) -> bool:
         return bool(self.config.enabled)
-
-    def poll(self, conn: sqlite3.Connection) -> CodexUsageState:
-        """Poll if the interval has elapsed.  Returns current state."""
-        if not self.enabled:
-            self._last_polled_fresh = False
-            return self._state
-
-        now = time.monotonic()
-        interval = self.config.poll_interval_seconds or DEFAULT_POLL_INTERVAL
-        if self._last_poll > 0 and now - self._last_poll < interval:
-            self._last_polled_fresh = False
-            return self._state
-
-        self._last_poll = now
-        self._last_polled_fresh = True
-        self._do_poll(conn)
-        return self._state
-
-    def force_poll(self, conn: sqlite3.Connection) -> CodexUsageState:
-        """Poll immediately, ignoring the interval timer."""
-        if not self.enabled:
-            self._last_polled_fresh = False
-            return self._state
-
-        self._last_poll = time.monotonic()
-        self._last_polled_fresh = True
-        self._do_poll(conn)
-        return self._state
-
-    def close(self) -> None:
-        """No-op — curl_cffi sessions are not persistent."""
-
-    def _do_poll(self, conn: sqlite3.Connection) -> None:
-        """Execute one poll cycle: fetch → parse → store → purge."""
-        try:
-            creds = load_codex_credentials()
-        except CredentialError as exc:
-            logger.warning("Codex credentials unavailable — skipping poll: %s", exc)
-            return
-
-        try:
-            data = self._fetch(creds.access_token, creds.account_id)
-        except Exception:
-            logger.exception("Codex usage API call failed — using last known values")
-            return
-
-        self._parse_and_store(data, conn)
-        self._purge_old_snapshots(conn)
-        conn.commit()
 
     def _fetch(self, access_token: str, account_id: str) -> dict:
         """Call the ChatGPT backend usage API.
@@ -242,11 +202,51 @@ class CodexUsagePoller:
             (f"-{self.retention_days} days",),
         )
 
+    def _do_poll(self, conn: sqlite3.Connection) -> None:
+        """Execute one poll cycle: fetch → parse → store → purge."""
+        try:
+            creds = load_codex_credentials()
+        except CredentialError as exc:
+            logger.warning("Codex credentials unavailable — skipping poll: %s", exc)
+            return
 
-def _unix_to_iso(ts: int | None) -> str | None:
-    """Convert a unix timestamp to an ISO 8601 string, or None."""
-    if ts is None:
-        return None
-    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"
-    )
+        try:
+            data = self._fetch(creds.access_token, creds.account_id)
+        except Exception:
+            logger.exception("Codex usage API call failed — using last known values")
+            return
+
+        self._parse_and_store(data, conn)
+        self._purge_old_snapshots(conn)
+        conn.commit()
+
+    def poll(self, conn: sqlite3.Connection) -> CodexUsageState:
+        """Poll if the interval has elapsed.  Returns current state."""
+        if not self.enabled:
+            self._last_polled_fresh = False
+            return self._state
+
+        now = time.monotonic()
+        interval = self.config.poll_interval_seconds or DEFAULT_POLL_INTERVAL
+        if self._last_poll > 0 and now - self._last_poll < interval:
+            self._last_polled_fresh = False
+            return self._state
+
+        self._last_poll = now
+        self._last_polled_fresh = True
+        self._do_poll(conn)
+        return self._state
+
+    def force_poll(self, conn: sqlite3.Connection) -> CodexUsageState:
+        """Poll immediately, ignoring the interval timer."""
+        if not self.enabled:
+            self._last_polled_fresh = False
+            return self._state
+
+        self._last_poll = time.monotonic()
+        self._last_polled_fresh = True
+        self._do_poll(conn)
+        return self._state
+
+    def close(self) -> None:
+        """No-op — curl_cffi sessions are not persistent."""

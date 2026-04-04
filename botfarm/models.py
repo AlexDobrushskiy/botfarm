@@ -61,6 +61,22 @@ class CachedModel:
     fetched_at: str
 
 
+def _row_to_model(row: sqlite3.Row) -> CachedModel:
+    """Convert a DB row to a CachedModel."""
+    efforts_raw = row["supported_efforts"]
+    efforts = json.loads(efforts_raw) if efforts_raw else None
+    return CachedModel(
+        id=row["id"],
+        display_name=row["display_name"],
+        max_input_tokens=row["max_input_tokens"],
+        max_output_tokens=row["max_output_tokens"],
+        supported_efforts=efforts,
+        executor_type=row["executor_type"],
+        is_alias=bool(row["is_alias"]),
+        fetched_at=row["fetched_at"],
+    )
+
+
 def get_cached_models(
     conn: sqlite3.Connection, executor_type: str = "claude"
 ) -> list[CachedModel]:
@@ -70,24 +86,6 @@ def get_cached_models(
         (executor_type,),
     ).fetchall()
     return [_row_to_model(r) for r in rows]
-
-
-def refresh_models(conn: sqlite3.Connection, api_key: str) -> list[CachedModel]:
-    """Fetch the model list from the Anthropic API and upsert into the DB.
-
-    Returns the updated list of cached models.
-    """
-    raw_models = _fetch_models_from_api(api_key)
-    _upsert_models(conn, raw_models)
-    return get_cached_models(conn)
-
-
-def ensure_seed_data(conn: sqlite3.Connection) -> None:
-    """Insert seed models if the available_models table is empty."""
-    count = conn.execute("SELECT COUNT(*) AS cnt FROM available_models").fetchone()["cnt"]
-    if count > 0:
-        return
-    _upsert_models(conn, SEED_MODELS)
 
 
 def _fetch_models_from_api(api_key: str) -> list[dict[str, Any]]:
@@ -157,17 +155,19 @@ def _upsert_models(conn: sqlite3.Connection, models: list[dict[str, Any]]) -> No
     conn.commit()
 
 
-def _row_to_model(row: sqlite3.Row) -> CachedModel:
-    """Convert a DB row to a CachedModel."""
-    efforts_raw = row["supported_efforts"]
-    efforts = json.loads(efforts_raw) if efforts_raw else None
-    return CachedModel(
-        id=row["id"],
-        display_name=row["display_name"],
-        max_input_tokens=row["max_input_tokens"],
-        max_output_tokens=row["max_output_tokens"],
-        supported_efforts=efforts,
-        executor_type=row["executor_type"],
-        is_alias=bool(row["is_alias"]),
-        fetched_at=row["fetched_at"],
-    )
+def refresh_models(conn: sqlite3.Connection, api_key: str) -> list[CachedModel]:
+    """Fetch the model list from the Anthropic API and upsert into the DB.
+
+    Returns the updated list of cached models.
+    """
+    raw_models = _fetch_models_from_api(api_key)
+    _upsert_models(conn, raw_models)
+    return get_cached_models(conn)
+
+
+def ensure_seed_data(conn: sqlite3.Connection) -> None:
+    """Insert seed models if the available_models table is empty."""
+    count = conn.execute("SELECT COUNT(*) AS cnt FROM available_models").fetchone()["cnt"]
+    if count > 0:
+        return
+    _upsert_models(conn, SEED_MODELS)

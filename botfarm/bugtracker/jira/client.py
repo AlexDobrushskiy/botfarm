@@ -26,6 +26,8 @@ class JiraClient(BugtrackerClient):
     Jira Server/Data Center (Bearer auth with personal access token).
     """
 
+    _MAX_RETRIES = 3
+
     def __init__(
         self,
         url: str,
@@ -46,8 +48,6 @@ class JiraClient(BugtrackerClient):
         else:
             # Jira Server/DC: Bearer auth
             self._auth_header = f"Bearer {api_token}"
-
-    _MAX_RETRIES = 3
 
     def _request(
         self,
@@ -130,6 +130,27 @@ class JiraClient(BugtrackerClient):
             logger.info("Rank field not found; using fallback ordering")
         except JiraAPIError:
             logger.warning("Failed to discover Rank field; using fallback ordering")
+
+    # --- Helpers ---
+
+    @staticmethod
+    def _map_status_category(
+        category_key: str, status_name: str = ""
+    ) -> str:
+        """Map Jira statusCategory.key to the canonical state type.
+
+        Jira has no native "canceled" state — detect it by checking
+        the status name for common canceled variants.
+        """
+        if category_key == "done":
+            if status_name and status_name.lower() in ("canceled", "cancelled"):
+                return "canceled"
+            return "completed"
+        if category_key == "new":
+            return "unstarted"
+        if category_key == "indeterminate":
+            return "started"
+        return category_key
 
     # --- Required BugtrackerClient methods ---
 
@@ -498,24 +519,3 @@ class JiraClient(BugtrackerClient):
             identifier=issue_key,
             url=f"{self._base_url}/browse/{issue_key}",
         )
-
-    # --- Helpers ---
-
-    @staticmethod
-    def _map_status_category(
-        category_key: str, status_name: str = ""
-    ) -> str:
-        """Map Jira statusCategory.key to the canonical state type.
-
-        Jira has no native "canceled" state — detect it by checking
-        the status name for common canceled variants.
-        """
-        if category_key == "done":
-            if status_name and status_name.lower() in ("canceled", "cancelled"):
-                return "canceled"
-            return "completed"
-        if category_key == "new":
-            return "unstarted"
-        if category_key == "indeterminate":
-            return "started"
-        return category_key

@@ -1421,69 +1421,6 @@ _CODEX_LEGACY_FIELD_MAP: dict[str, str] = {
 }
 
 
-def validate_config_updates(
-    updates: dict, config: BotfarmConfig | None = None,
-) -> list[str]:
-    """Validate a partial config update dict.
-
-    ``updates`` is a nested dict like ``{"bugtracker": {"poll_interval_seconds": 60}}``.
-    When ``config`` is provided, cross-field invariants are checked against the
-    current in-memory values for fields not present in the update.
-    Returns a list of error messages (empty means valid).
-    """
-    errors: list[str] = []
-    for section, fields in updates.items():
-        if not isinstance(fields, dict):
-            errors.append(f"'{section}' must be a mapping")
-            continue
-        for key, value in fields.items():
-            path = (section, key)
-            spec = EDITABLE_FIELDS.get(path)
-            if spec is None:
-                errors.append(f"'{section}.{key}' is not an editable field")
-                continue
-            errors.extend(_validate_field(section, key, value, spec))
-
-    # Cross-field invariants for capacity monitoring thresholds
-    cap_fields = updates.get("bugtracker.capacity_monitoring", {})
-    if isinstance(cap_fields, dict):
-        # Resolve effective values: use update if present, fall back to config
-        cap_cfg = getattr(config.bugtracker, "capacity_monitoring", None) if config else None
-
-        def _resolve(field: str) -> float | None:
-            val = cap_fields.get(field)
-            if val is not None and isinstance(val, (int, float)) and not isinstance(val, bool):
-                return float(val)
-            if cap_cfg is not None:
-                return float(getattr(cap_cfg, field))
-            return None
-
-        resume = _resolve("resume_threshold")
-        pause = _resolve("pause_threshold")
-        warning = _resolve("warning_threshold")
-        critical = _resolve("critical_threshold")
-
-        # resume_threshold must be less than pause_threshold
-        if resume is not None and pause is not None and resume >= pause:
-            errors.append(
-                "bugtracker.capacity_monitoring.resume_threshold must be less than pause_threshold"
-            )
-
-        # warning_threshold <= critical_threshold <= pause_threshold
-        if warning is not None and critical is not None and warning > critical:
-            errors.append(
-                "bugtracker.capacity_monitoring.warning_threshold must be "
-                "less than or equal to critical_threshold"
-            )
-        if critical is not None and pause is not None and critical > pause:
-            errors.append(
-                "bugtracker.capacity_monitoring.critical_threshold must be "
-                "less than or equal to pause_threshold"
-            )
-
-    return errors
-
-
 def _validate_field(
     section: str, key: str, value: object, spec: dict,
 ) -> list[str]:
@@ -1549,6 +1486,69 @@ def _validate_field(
     return errors
 
 
+def validate_config_updates(
+    updates: dict, config: BotfarmConfig | None = None,
+) -> list[str]:
+    """Validate a partial config update dict.
+
+    ``updates`` is a nested dict like ``{"bugtracker": {"poll_interval_seconds": 60}}``.
+    When ``config`` is provided, cross-field invariants are checked against the
+    current in-memory values for fields not present in the update.
+    Returns a list of error messages (empty means valid).
+    """
+    errors: list[str] = []
+    for section, fields in updates.items():
+        if not isinstance(fields, dict):
+            errors.append(f"'{section}' must be a mapping")
+            continue
+        for key, value in fields.items():
+            path = (section, key)
+            spec = EDITABLE_FIELDS.get(path)
+            if spec is None:
+                errors.append(f"'{section}.{key}' is not an editable field")
+                continue
+            errors.extend(_validate_field(section, key, value, spec))
+
+    # Cross-field invariants for capacity monitoring thresholds
+    cap_fields = updates.get("bugtracker.capacity_monitoring", {})
+    if isinstance(cap_fields, dict):
+        # Resolve effective values: use update if present, fall back to config
+        cap_cfg = getattr(config.bugtracker, "capacity_monitoring", None) if config else None
+
+        def _resolve(field: str) -> float | None:
+            val = cap_fields.get(field)
+            if val is not None and isinstance(val, (int, float)) and not isinstance(val, bool):
+                return float(val)
+            if cap_cfg is not None:
+                return float(getattr(cap_cfg, field))
+            return None
+
+        resume = _resolve("resume_threshold")
+        pause = _resolve("pause_threshold")
+        warning = _resolve("warning_threshold")
+        critical = _resolve("critical_threshold")
+
+        # resume_threshold must be less than pause_threshold
+        if resume is not None and pause is not None and resume >= pause:
+            errors.append(
+                "bugtracker.capacity_monitoring.resume_threshold must be less than pause_threshold"
+            )
+
+        # warning_threshold <= critical_threshold <= pause_threshold
+        if warning is not None and critical is not None and warning > critical:
+            errors.append(
+                "bugtracker.capacity_monitoring.warning_threshold must be "
+                "less than or equal to critical_threshold"
+            )
+        if critical is not None and pause is not None and critical > pause:
+            errors.append(
+                "bugtracker.capacity_monitoring.critical_threshold must be "
+                "less than or equal to pause_threshold"
+            )
+
+    return errors
+
+
 def apply_config_updates(config: BotfarmConfig, updates: dict) -> None:
     """Apply validated updates to the in-memory config object.
 
@@ -1599,6 +1599,24 @@ def apply_config_updates(config: BotfarmConfig, updates: dict) -> None:
                 setattr(obj, key, value)
 
 
+def write_yaml_atomic(config_path: Path, data: dict) -> None:
+    """Write a dict to a YAML file atomically via temp file + rename."""
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(config_path.parent), suffix=".yaml.tmp",
+    )
+    try:
+        with os.fdopen(fd, "w") as f:
+            yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+        os.replace(tmp_path, str(config_path))
+    except BaseException:
+        # Clean up temp file on failure
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 def write_config_updates(config_path: Path, updates: dict) -> None:
     """Read the raw YAML config, apply updates, and write back atomically.
 
@@ -1640,45 +1658,6 @@ def write_config_updates(config_path: Path, updates: dict) -> None:
                 target[key] = value
 
     write_yaml_atomic(config_path, data)
-
-
-def write_yaml_atomic(config_path: Path, data: dict) -> None:
-    """Write a dict to a YAML file atomically via temp file + rename."""
-    fd, tmp_path = tempfile.mkstemp(
-        dir=str(config_path.parent), suffix=".yaml.tmp",
-    )
-    try:
-        with os.fdopen(fd, "w") as f:
-            yaml.dump(data, f, default_flow_style=False, sort_keys=False)
-        os.replace(tmp_path, str(config_path))
-    except BaseException:
-        # Clean up temp file on failure
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
-
-
-# ---------------------------------------------------------------------------
-# Structural config editing (restart required)
-# ---------------------------------------------------------------------------
-
-
-def validate_structural_config_updates(
-    updates: dict, config: BotfarmConfig,
-) -> list[str]:
-    """Validate structural config updates (projects).
-
-    ``updates`` may contain a ``"projects"`` list.
-    Returns a list of error messages (empty = valid).
-    """
-    errors: list[str] = []
-
-    if "projects" in updates:
-        errors.extend(_validate_project_updates(updates["projects"], config))
-
-    return errors
 
 
 def _validate_project_updates(
@@ -1868,6 +1847,27 @@ def _validate_project_updates(
                         f"Each project must have a unique tracker_project filter"
                     )
                 seen_lp[lp] = np["name"]
+
+    return errors
+
+
+# ---------------------------------------------------------------------------
+# Structural config editing (restart required)
+# ---------------------------------------------------------------------------
+
+
+def validate_structural_config_updates(
+    updates: dict, config: BotfarmConfig,
+) -> list[str]:
+    """Validate structural config updates (projects).
+
+    ``updates`` may contain a ``"projects"`` list.
+    Returns a list of error messages (empty = valid).
+    """
+    errors: list[str] = []
+
+    if "projects" in updates:
+        errors.extend(_validate_project_updates(updates["projects"], config))
 
     return errors
 

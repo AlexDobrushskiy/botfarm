@@ -13,6 +13,35 @@ from botfarm.codex import (
 )
 
 
+def _codex_result_to_agent_result(
+    cr: CodexResult, model: str | None
+) -> AgentResult:
+    """Normalize a :class:`CodexResult` into an :class:`AgentResult`."""
+    cost = calculate_codex_cost(
+        model=model or cr.model or "",
+        input_tokens=cr.input_tokens,
+        output_tokens=cr.output_tokens,
+        cached_input_tokens=cr.cached_input_tokens,
+    )
+    return AgentResult(
+        session_id=cr.thread_id,
+        num_turns=cr.num_turns,
+        duration_seconds=cr.duration_seconds,
+        result_text=cr.result_text,
+        is_error=cr.is_error,
+        input_tokens=cr.input_tokens,
+        output_tokens=cr.output_tokens,
+        cost_usd=cost if cost is not None else 0.0,
+        context_fill_pct=None,
+        extra={
+            "thread_id": cr.thread_id,
+            "cache_read_input_tokens": cr.cached_input_tokens,
+            "cache_creation_input_tokens": 0,
+            "model": model or cr.model or "",
+        },
+    )
+
+
 class CodexAdapter:
     """Adapter that wraps :func:`run_codex_streaming` as an :class:`AgentAdapter`.
 
@@ -77,32 +106,3 @@ class CodexAdapter:
 
     def check_available(self) -> tuple[bool, str]:
         return check_codex_available()
-
-
-def _codex_result_to_agent_result(
-    cr: CodexResult, model: str | None
-) -> AgentResult:
-    """Normalize a :class:`CodexResult` into an :class:`AgentResult`."""
-    cost = calculate_codex_cost(
-        model=model or cr.model or "",
-        input_tokens=cr.input_tokens,
-        output_tokens=cr.output_tokens,
-        cached_input_tokens=cr.cached_input_tokens,
-    )
-    return AgentResult(
-        session_id=cr.thread_id,
-        num_turns=cr.num_turns,
-        duration_seconds=cr.duration_seconds,
-        result_text=cr.result_text,
-        is_error=cr.is_error,
-        input_tokens=cr.input_tokens,
-        output_tokens=cr.output_tokens,
-        cost_usd=cost if cost is not None else 0.0,
-        context_fill_pct=None,
-        extra={
-            "thread_id": cr.thread_id,
-            "cache_read_input_tokens": cr.cached_input_tokens,
-            "cache_creation_input_tokens": 0,
-            "model": model or cr.model or "",
-        },
-    )

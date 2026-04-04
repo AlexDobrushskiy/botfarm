@@ -187,6 +187,20 @@ class UsageState:
         }
 
 
+def _get_or_create_event_loop() -> asyncio.AbstractEventLoop:
+    """Return the running event loop, or create a new one if none exists."""
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_closed():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        return loop
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        return loop
+
+
 @dataclass
 class UsagePoller:
     """Polls the Anthropic usage API and stores snapshots.
@@ -226,6 +240,433 @@ class UsagePoller:
     def effective_poll_interval(self) -> int:
         """Return the current poll interval, which may be inflated due to 429s."""
         return self._active_poll_interval if self._active_poll_interval is not None else self.poll_interval
+
+    def _get_client(self) -> httpx.AsyncClient:
+        """Return the persistent HTTP client, creating it on first use."""
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(timeout=USAGE_API_TIMEOUT)
+        return self._client
+
+    def _handle_429(
+        self, conn: sqlite3.Connection, retry_after_header: str | None = None,
+    ) -> None:
+        """Handle a 429 rate-limit response by increasing the poll interval.
+
+        If the response includes a ``Retry-After`` header, the backoff is at
+        least that many seconds.  The final interval is the greater of the
+        parsed header value and the exponential backoff formula.
+
+        The backoff state is persisted to the database so that it survives
+        supervisor restarts.
+        """
+        self._consecutive_429s += 1
+        exponential = self.poll_interval * (2 ** self._consecutive_429s)
+        retry_after = parse_retry_after(retry_after_header)
+        if retry_after is not None:
+            # Server-specified Retry-After is authoritative — never cap it.
+            # Only cap the exponential backoff component.
+            new_interval = max(retry_after, min(exponential, MAX_ADAPTIVE_POLL_INTERVAL))
+            jittered = new_interval * (1 + random.uniform(0, BACKOFF_JITTER_FRACTION))
+            self._active_poll_interval = math.ceil(jittered)
+        else:
+            new_interval = min(exponential, MAX_ADAPTIVE_POLL_INTERVAL)
+            jittered = new_interval * (1 + random.uniform(0, BACKOFF_JITTER_FRACTION))
+            self._active_poll_interval = math.ceil(
+                min(jittered, MAX_ADAPTIVE_POLL_INTERVAL)
+            )
+        logger.warning(
+            "Usage API returned 429 (consecutive: %d, retry-after: %s) — "
+            "increasing poll interval to %ds",
+            self._consecutive_429s,
+            retry_after_header or "absent",
+            self._active_poll_interval,
+        )
+        save_backoff_state(
+            conn,
+            consecutive_429s=self._consecutive_429s,
+            backoff_until=time.time() + self._active_poll_interval,
+        )
+
+    def _handle_401(self, conn: sqlite3.Connection) -> None:
+        """Handle a 401 auth error by applying progressive linear backoff
+        and sending webhook notifications after repeated failures.
+
+        Uses a gentler curve than 429 (linear vs exponential) because 401
+        failures are self-inflicted — we're waiting for token refresh, not
+        for rate limit clearance.
+
+        The backoff state is persisted to the database so that it survives
+        supervisor restarts.
+        """
+        self._consecutive_401s += 1
+        if self._first_401_time is None:
+            self._first_401_time = time.monotonic()
+        new_interval = self.poll_interval * (1 + self._consecutive_401s)
+        new_interval = min(new_interval, MAX_401_BACKOFF_INTERVAL)
+        # Don't reduce interval if 429 backoff is active and larger
+        current = self._active_poll_interval or 0
+        self._active_poll_interval = max(current, new_interval)
+        logger.warning(
+            "Usage API 401 backoff (consecutive: %d) — "
+            "poll interval now %ds",
+            self._consecutive_401s,
+            self._active_poll_interval,
+        )
+        save_401_backoff_state(
+            conn,
+            consecutive_401s=self._consecutive_401s,
+            backoff_until=time.time() + self._active_poll_interval,
+        )
+        if (
+            self._consecutive_401s >= AUTH_FAILURE_NOTIFY_THRESHOLD
+            and self.notifier is not None
+        ):
+            minutes_since = int(
+                (time.monotonic() - self._first_401_time) / 60,
+            )
+            self.notifier.notify_auth_failure(
+                consecutive_failures=self._consecutive_401s,
+                minutes_since_success=minutes_since if minutes_since > 0 else None,
+            )
+
+    def _reset_rate_limit_state(self, conn: sqlite3.Connection) -> None:
+        """Reset 429 rate-limit backoff after a successful API response."""
+        if self._consecutive_429s > 0:
+            logger.info(
+                "Usage API recovered after %d consecutive 429(s) — "
+                "resetting poll interval to %ds",
+                self._consecutive_429s,
+                self.poll_interval,
+            )
+            self._consecutive_429s = 0
+            clear_backoff_state(conn)
+            self._active_poll_interval = None
+
+    def _reset_auth_failure_state(self, conn: sqlite3.Connection) -> None:
+        """Reset auth failure tracking after a successful poll.
+
+        Clears 401 backoff (both in-memory and persisted) and sends a
+        recovery notification if we were in a 401 outage.
+        """
+        if self._consecutive_401s > 0:
+            logger.info(
+                "Usage API auth recovered after %d consecutive 401(s) — "
+                "resetting poll interval to %ds",
+                self._consecutive_401s,
+                self.poll_interval,
+            )
+            if (
+                self._consecutive_401s >= AUTH_FAILURE_NOTIFY_THRESHOLD
+                and self.notifier is not None
+            ):
+                self.notifier.notify_auth_recovered()
+            self._consecutive_401s = 0
+            self._first_401_time = None
+            clear_401_backoff_state(conn)
+            self._active_poll_interval = None
+
+    async def _fetch_with_retry(self, token: str) -> dict:
+        """Fetch usage data, retrying on transient connection errors only.
+
+        429 responses are NOT retried here — they are raised immediately
+        so that ``_do_poll`` can handle them via ``_handle_429()``.
+
+        Each attempt (success or failure) is recorded in
+        ``self._attempt_records`` for audit logging by ``_do_poll``.
+        """
+        client = self._get_client()
+        last_exc: Exception | None = None
+        for attempt in range(MAX_RETRIES):
+            start_time = time.monotonic()
+            try:
+                result = await fetch_usage(token, client=client)
+                elapsed_ms = (time.monotonic() - start_time) * 1000
+                self._attempt_records.append({
+                    "status_code": 200,
+                    "success": True,
+                    "error_type": None,
+                    "error_detail": None,
+                    "response_time_ms": elapsed_ms,
+                    "retry_after": None,
+                })
+                return result
+            except httpx.HTTPStatusError as exc:
+                elapsed_ms = (time.monotonic() - start_time) * 1000
+                retry_after = exc.response.headers.get("retry-after")
+                self._attempt_records.append({
+                    "status_code": exc.response.status_code,
+                    "success": False,
+                    "error_type": _categorize_error(exc),
+                    "error_detail": str(exc)[:500],
+                    "response_time_ms": elapsed_ms,
+                    "retry_after": retry_after,
+                })
+                if exc.response.status_code == 429:
+                    raise  # Let _do_poll handle 429 via _handle_429()
+                raise
+            except TRANSIENT_EXCEPTIONS as exc:
+                elapsed_ms = (time.monotonic() - start_time) * 1000
+                self._attempt_records.append({
+                    "status_code": None,
+                    "success": False,
+                    "error_type": _categorize_error(exc),
+                    "error_detail": str(exc)[:500],
+                    "response_time_ms": elapsed_ms,
+                    "retry_after": None,
+                })
+                last_exc = exc
+                if attempt < MAX_RETRIES - 1:
+                    delay = RETRY_BACKOFF_SECONDS[attempt]
+                    logger.warning(
+                        "Transient error on usage API (attempt %d/%d): %s — "
+                        "retrying in %ds",
+                        attempt + 1,
+                        MAX_RETRIES,
+                        exc,
+                        delay,
+                    )
+                    await _async_sleep(delay)
+                else:
+                    logger.warning(
+                        "Transient error on usage API (attempt %d/%d): %s — "
+                        "all retries exhausted",
+                        attempt + 1,
+                        MAX_RETRIES,
+                        exc,
+                    )
+        raise last_exc  # type: ignore[misc]
+
+    def _fetch(self, token: str) -> dict:
+        """Call the usage API synchronously via asyncio, with retry for transient errors."""
+        loop = _get_or_create_event_loop()
+        return loop.run_until_complete(self._fetch_with_retry(token))
+
+    def _parse_and_store(self, data: dict, conn: sqlite3.Connection) -> None:
+        """Parse the API response and update in-memory state + database."""
+        five_hour = data.get("five_hour") or {}
+        seven_day = data.get("seven_day") or {}
+
+        raw_5h = five_hour.get("utilization")
+        self._state.utilization_5h = raw_5h / 100 if raw_5h is not None else None
+        raw_7d = seven_day.get("utilization")
+        self._state.utilization_7d = raw_7d / 100 if raw_7d is not None else None
+        self._state.resets_at_5h = five_hour.get("resets_at")
+        self._state.resets_at_7d = seven_day.get("resets_at")
+
+        extra = data.get("extra_usage") or {}
+        self._state.extra_usage_enabled = bool(extra.get("is_enabled"))
+        raw_limit = extra.get("monthly_limit")
+        self._state.extra_usage_monthly_limit = raw_limit / 100 if raw_limit is not None else None
+        raw_credits = extra.get("used_credits")
+        self._state.extra_usage_used_credits = raw_credits / 100 if raw_credits is not None else None
+        self._state.extra_usage_utilization = extra.get("utilization")
+
+        insert_usage_snapshot(
+            conn,
+            utilization_5h=self._state.utilization_5h,
+            utilization_7d=self._state.utilization_7d,
+            resets_at=self._state.resets_at_5h,
+            resets_at_7d=self._state.resets_at_7d,
+            extra_usage_enabled=self._state.extra_usage_enabled,
+            extra_usage_monthly_limit=self._state.extra_usage_monthly_limit,
+            extra_usage_used_credits=self._state.extra_usage_used_credits,
+            extra_usage_utilization=self._state.extra_usage_utilization,
+        )
+
+        extra_msg = ""
+        if self._state.extra_usage_enabled:
+            extra_msg = (
+                f", extra_usage=${self._state.extra_usage_used_credits or 0:.2f}"
+                f"/${self._state.extra_usage_monthly_limit or 0:.2f}"
+            )
+        logger.info(
+            "Usage snapshot: 5h=%.1f%%, 7d=%.1f%%, resets=%s%s",
+            (self._state.utilization_5h or 0) * 100,
+            (self._state.utilization_7d or 0) * 100,
+            self._state.resets_at_5h or "unknown",
+            extra_msg,
+        )
+
+    def _check_key_rotation(self, conn: sqlite3.Connection, fingerprint: str) -> None:
+        """Detect and record when the API token has been rotated."""
+        try:
+            active = get_active_key_session(conn)
+            if active and active["token_fingerprint"] != fingerprint:
+                mark_key_session_replaced(
+                    conn, token_fingerprint=active["token_fingerprint"],
+                )
+                conn.commit()
+        except Exception:
+            logger.warning("Failed to check key rotation", exc_info=True)
+
+    def _flush_audit_records(self, conn: sqlite3.Connection, fingerprint: str) -> None:
+        """Write collected attempt records to the audit tables."""
+        for rec in self._attempt_records:
+            try:
+                insert_usage_api_call(
+                    conn,
+                    token_fingerprint=fingerprint,
+                    status_code=rec["status_code"],
+                    success=rec["success"],
+                    error_type=rec["error_type"],
+                    error_detail=rec["error_detail"],
+                    response_time_ms=rec["response_time_ms"],
+                    retry_after=rec["retry_after"],
+                    caller=self._current_caller,
+                )
+                upsert_usage_api_key_session(
+                    conn,
+                    token_fingerprint=fingerprint,
+                    success=rec["success"],
+                )
+            except Exception:
+                logger.warning("Failed to write usage API audit record", exc_info=True)
+        try:
+            conn.commit()
+        except Exception:
+            logger.warning("Failed to commit usage API audit records", exc_info=True)
+        self._attempt_records = []
+
+    def _purge_old_snapshots(self, conn: sqlite3.Connection) -> None:
+        """Delete usage snapshots and old audit rows beyond the retention period."""
+        conn.execute(
+            "DELETE FROM usage_snapshots "
+            "WHERE created_at < datetime('now', ?)",
+            (f"-{self.retention_days} days",),
+        )
+        try:
+            purge_old_usage_api_calls(conn, retention_days=self.retention_days)
+        except Exception:
+            logger.warning("Failed to purge old usage API audit rows", exc_info=True)
+
+    def _do_poll(self, conn: sqlite3.Connection) -> None:
+        """Execute one poll cycle: fetch → parse → store → purge."""
+        # Proactive token refresh: if the token is expired or about to expire,
+        # attempt refresh before making the API call to avoid a 401 round-trip
+        if self.credential_manager.is_token_expired():
+            logger.info("Token expired or expiring soon — attempting proactive refresh")
+            refreshed = self.credential_manager.refresh_token()
+            if refreshed:
+                logger.info("Proactive token refresh succeeded")
+            else:
+                logger.warning("Proactive token refresh failed — proceeding with current token")
+
+        token = self.credential_manager.get_token()
+        if token is None:
+            logger.warning("No OAuth token available — skipping usage poll")
+            return
+
+        fp = token_fingerprint(token)
+        self._check_key_rotation(conn, fp)
+        self._attempt_records = []
+
+        try:
+            data = self._fetch(token)
+        except httpx.HTTPStatusError as exc:
+            self._flush_audit_records(conn, fp)
+            if exc.response.status_code == 429:
+                retry_after_header = exc.response.headers.get("retry-after")
+                retry_after = parse_retry_after(retry_after_header)
+                # 429 with retry_after=0 or absent is often an expired OAuth
+                # token masquerading as a rate limit.  Attempt a token refresh
+                # before falling back to normal backoff.
+                if retry_after is None or retry_after == 0:
+                    original_fp = fp
+                    refreshed_token = self.credential_manager.refresh_token()
+                    if refreshed_token is not None:
+                        new_fp = token_fingerprint(refreshed_token)
+                        if new_fp != original_fp:
+                            logger.info(
+                                "429 with retry_after=%s — token refresh produced new fingerprint, retrying",
+                                retry_after_header or "absent",
+                            )
+                            fp = new_fp
+                            self._check_key_rotation(conn, fp)
+                            self._attempt_records = []
+                            try:
+                                data = self._fetch(refreshed_token)
+                            except httpx.HTTPStatusError as retry_exc:
+                                self._flush_audit_records(conn, fp)
+                                if retry_exc.response.status_code == 401:
+                                    logger.warning(
+                                        "Usage API returned 401 after 429-triggered token refresh",
+                                    )
+                                    self._handle_401(conn)
+                                else:
+                                    logger.warning(
+                                        "Usage API returned %d after 429-triggered token refresh — "
+                                        "falling back to backoff",
+                                        retry_exc.response.status_code,
+                                    )
+                                    self._handle_429(conn, retry_after_header)
+                                return
+                            except Exception:
+                                self._flush_audit_records(conn, fp)
+                                logger.warning(
+                                    "Usage API call failed after 429-triggered token refresh — "
+                                    "falling back to backoff",
+                                )
+                                self._handle_429(conn, retry_after_header)
+                                return
+                            self._flush_audit_records(conn, fp)
+                            # Refresh+retry succeeded — skip backoff, proceed to parse
+                            self._reset_rate_limit_state(conn)
+                            self._reset_auth_failure_state(conn)
+                            self._parse_and_store(data, conn)
+                            self._purge_old_snapshots(conn)
+                            conn.commit()
+                            return
+                self._handle_429(conn, retry_after_header)
+                return
+            elif exc.response.status_code == 401:
+                expires_at = self.credential_manager.get_expires_at()
+                logger.warning(
+                    "Usage API returned 401 — token expiresAt: %s, refreshing",
+                    expires_at or "unknown",
+                )
+                original_fp = fp
+                token = self.credential_manager.refresh_token()
+                if token is None:
+                    logger.warning("Token refresh failed — skipping usage poll")
+                    self._handle_401(conn)
+                    return
+                new_fp = token_fingerprint(token)
+                if new_fp == original_fp:
+                    logger.warning(
+                        "Token fingerprint unchanged after refresh — "
+                        "skipping retry (token not yet rotated)",
+                    )
+                    self._handle_401(conn)
+                    return
+                fp = new_fp
+                self._check_key_rotation(conn, fp)
+                self._attempt_records = []
+                try:
+                    data = self._fetch(token)
+                except Exception:
+                    self._flush_audit_records(conn, fp)
+                    logger.exception("Usage API call failed after token refresh")
+                    self._handle_401(conn)
+                    return
+                self._flush_audit_records(conn, fp)
+            else:
+                logger.warning(
+                    "Usage API returned HTTP %d — using last known values",
+                    exc.response.status_code,
+                )
+                return
+        except Exception:
+            self._flush_audit_records(conn, fp)
+            logger.exception("Usage API call failed — using last known values")
+            return
+        else:
+            self._flush_audit_records(conn, fp)
+
+        self._reset_rate_limit_state(conn)
+        self._reset_auth_failure_state(conn)
+        self._parse_and_store(data, conn)
+        self._purge_old_snapshots(conn)
+        conn.commit()
 
     def poll(self, conn: sqlite3.Connection) -> UsageState:
         """Poll the usage API if the interval has elapsed.
@@ -365,12 +806,6 @@ class UsagePoller:
         conn.commit()
         return self._state
 
-    def _get_client(self) -> httpx.AsyncClient:
-        """Return the persistent HTTP client, creating it on first use."""
-        if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(timeout=USAGE_API_TIMEOUT)
-        return self._client
-
     def close(self) -> None:
         """Clean up the persistent HTTP client."""
         if self._client is not None and not self._client.is_closed:
@@ -428,427 +863,6 @@ class UsagePoller:
                     int(remaining),
                 )
 
-    def _do_poll(self, conn: sqlite3.Connection) -> None:
-        """Execute one poll cycle: fetch → parse → store → purge."""
-        # Proactive token refresh: if the token is expired or about to expire,
-        # attempt refresh before making the API call to avoid a 401 round-trip
-        if self.credential_manager.is_token_expired():
-            logger.info("Token expired or expiring soon — attempting proactive refresh")
-            refreshed = self.credential_manager.refresh_token()
-            if refreshed:
-                logger.info("Proactive token refresh succeeded")
-            else:
-                logger.warning("Proactive token refresh failed — proceeding with current token")
-
-        token = self.credential_manager.get_token()
-        if token is None:
-            logger.warning("No OAuth token available — skipping usage poll")
-            return
-
-        fp = token_fingerprint(token)
-        self._check_key_rotation(conn, fp)
-        self._attempt_records = []
-
-        try:
-            data = self._fetch(token)
-        except httpx.HTTPStatusError as exc:
-            self._flush_audit_records(conn, fp)
-            if exc.response.status_code == 429:
-                retry_after_header = exc.response.headers.get("retry-after")
-                retry_after = parse_retry_after(retry_after_header)
-                # 429 with retry_after=0 or absent is often an expired OAuth
-                # token masquerading as a rate limit.  Attempt a token refresh
-                # before falling back to normal backoff.
-                if retry_after is None or retry_after == 0:
-                    original_fp = fp
-                    refreshed_token = self.credential_manager.refresh_token()
-                    if refreshed_token is not None:
-                        new_fp = token_fingerprint(refreshed_token)
-                        if new_fp != original_fp:
-                            logger.info(
-                                "429 with retry_after=%s — token refresh produced new fingerprint, retrying",
-                                retry_after_header or "absent",
-                            )
-                            fp = new_fp
-                            self._check_key_rotation(conn, fp)
-                            self._attempt_records = []
-                            try:
-                                data = self._fetch(refreshed_token)
-                            except httpx.HTTPStatusError as retry_exc:
-                                self._flush_audit_records(conn, fp)
-                                if retry_exc.response.status_code == 401:
-                                    logger.warning(
-                                        "Usage API returned 401 after 429-triggered token refresh",
-                                    )
-                                    self._handle_401(conn)
-                                else:
-                                    logger.warning(
-                                        "Usage API returned %d after 429-triggered token refresh — "
-                                        "falling back to backoff",
-                                        retry_exc.response.status_code,
-                                    )
-                                    self._handle_429(conn, retry_after_header)
-                                return
-                            except Exception:
-                                self._flush_audit_records(conn, fp)
-                                logger.warning(
-                                    "Usage API call failed after 429-triggered token refresh — "
-                                    "falling back to backoff",
-                                )
-                                self._handle_429(conn, retry_after_header)
-                                return
-                            self._flush_audit_records(conn, fp)
-                            # Refresh+retry succeeded — skip backoff, proceed to parse
-                            self._reset_rate_limit_state(conn)
-                            self._reset_auth_failure_state(conn)
-                            self._parse_and_store(data, conn)
-                            self._purge_old_snapshots(conn)
-                            conn.commit()
-                            return
-                self._handle_429(conn, retry_after_header)
-                return
-            elif exc.response.status_code == 401:
-                expires_at = self.credential_manager.get_expires_at()
-                logger.warning(
-                    "Usage API returned 401 — token expiresAt: %s, refreshing",
-                    expires_at or "unknown",
-                )
-                original_fp = fp
-                token = self.credential_manager.refresh_token()
-                if token is None:
-                    logger.warning("Token refresh failed — skipping usage poll")
-                    self._handle_401(conn)
-                    return
-                new_fp = token_fingerprint(token)
-                if new_fp == original_fp:
-                    logger.warning(
-                        "Token fingerprint unchanged after refresh — "
-                        "skipping retry (token not yet rotated)",
-                    )
-                    self._handle_401(conn)
-                    return
-                fp = new_fp
-                self._check_key_rotation(conn, fp)
-                self._attempt_records = []
-                try:
-                    data = self._fetch(token)
-                except Exception:
-                    self._flush_audit_records(conn, fp)
-                    logger.exception("Usage API call failed after token refresh")
-                    self._handle_401(conn)
-                    return
-                self._flush_audit_records(conn, fp)
-            else:
-                logger.warning(
-                    "Usage API returned HTTP %d — using last known values",
-                    exc.response.status_code,
-                )
-                return
-        except Exception:
-            self._flush_audit_records(conn, fp)
-            logger.exception("Usage API call failed — using last known values")
-            return
-        else:
-            self._flush_audit_records(conn, fp)
-
-        self._reset_rate_limit_state(conn)
-        self._reset_auth_failure_state(conn)
-        self._parse_and_store(data, conn)
-        self._purge_old_snapshots(conn)
-        conn.commit()
-
-    def _handle_429(
-        self, conn: sqlite3.Connection, retry_after_header: str | None = None,
-    ) -> None:
-        """Handle a 429 rate-limit response by increasing the poll interval.
-
-        If the response includes a ``Retry-After`` header, the backoff is at
-        least that many seconds.  The final interval is the greater of the
-        parsed header value and the exponential backoff formula.
-
-        The backoff state is persisted to the database so that it survives
-        supervisor restarts.
-        """
-        self._consecutive_429s += 1
-        exponential = self.poll_interval * (2 ** self._consecutive_429s)
-        retry_after = parse_retry_after(retry_after_header)
-        if retry_after is not None:
-            # Server-specified Retry-After is authoritative — never cap it.
-            # Only cap the exponential backoff component.
-            new_interval = max(retry_after, min(exponential, MAX_ADAPTIVE_POLL_INTERVAL))
-            jittered = new_interval * (1 + random.uniform(0, BACKOFF_JITTER_FRACTION))
-            self._active_poll_interval = math.ceil(jittered)
-        else:
-            new_interval = min(exponential, MAX_ADAPTIVE_POLL_INTERVAL)
-            jittered = new_interval * (1 + random.uniform(0, BACKOFF_JITTER_FRACTION))
-            self._active_poll_interval = math.ceil(
-                min(jittered, MAX_ADAPTIVE_POLL_INTERVAL)
-            )
-        logger.warning(
-            "Usage API returned 429 (consecutive: %d, retry-after: %s) — "
-            "increasing poll interval to %ds",
-            self._consecutive_429s,
-            retry_after_header or "absent",
-            self._active_poll_interval,
-        )
-        save_backoff_state(
-            conn,
-            consecutive_429s=self._consecutive_429s,
-            backoff_until=time.time() + self._active_poll_interval,
-        )
-
-    def _handle_401(self, conn: sqlite3.Connection) -> None:
-        """Handle a 401 auth error by applying progressive linear backoff
-        and sending webhook notifications after repeated failures.
-
-        Uses a gentler curve than 429 (linear vs exponential) because 401
-        failures are self-inflicted — we're waiting for token refresh, not
-        for rate limit clearance.
-
-        The backoff state is persisted to the database so that it survives
-        supervisor restarts.
-        """
-        self._consecutive_401s += 1
-        if self._first_401_time is None:
-            self._first_401_time = time.monotonic()
-        new_interval = self.poll_interval * (1 + self._consecutive_401s)
-        new_interval = min(new_interval, MAX_401_BACKOFF_INTERVAL)
-        # Don't reduce interval if 429 backoff is active and larger
-        current = self._active_poll_interval or 0
-        self._active_poll_interval = max(current, new_interval)
-        logger.warning(
-            "Usage API 401 backoff (consecutive: %d) — "
-            "poll interval now %ds",
-            self._consecutive_401s,
-            self._active_poll_interval,
-        )
-        save_401_backoff_state(
-            conn,
-            consecutive_401s=self._consecutive_401s,
-            backoff_until=time.time() + self._active_poll_interval,
-        )
-        if (
-            self._consecutive_401s >= AUTH_FAILURE_NOTIFY_THRESHOLD
-            and self.notifier is not None
-        ):
-            minutes_since = int(
-                (time.monotonic() - self._first_401_time) / 60,
-            )
-            self.notifier.notify_auth_failure(
-                consecutive_failures=self._consecutive_401s,
-                minutes_since_success=minutes_since if minutes_since > 0 else None,
-            )
-
-    def _reset_rate_limit_state(self, conn: sqlite3.Connection) -> None:
-        """Reset 429 rate-limit backoff after a successful API response."""
-        if self._consecutive_429s > 0:
-            logger.info(
-                "Usage API recovered after %d consecutive 429(s) — "
-                "resetting poll interval to %ds",
-                self._consecutive_429s,
-                self.poll_interval,
-            )
-            self._consecutive_429s = 0
-            clear_backoff_state(conn)
-            self._active_poll_interval = None
-
-    def _reset_auth_failure_state(self, conn: sqlite3.Connection) -> None:
-        """Reset auth failure tracking after a successful poll.
-
-        Clears 401 backoff (both in-memory and persisted) and sends a
-        recovery notification if we were in a 401 outage.
-        """
-        if self._consecutive_401s > 0:
-            logger.info(
-                "Usage API auth recovered after %d consecutive 401(s) — "
-                "resetting poll interval to %ds",
-                self._consecutive_401s,
-                self.poll_interval,
-            )
-            if (
-                self._consecutive_401s >= AUTH_FAILURE_NOTIFY_THRESHOLD
-                and self.notifier is not None
-            ):
-                self.notifier.notify_auth_recovered()
-            self._consecutive_401s = 0
-            self._first_401_time = None
-            clear_401_backoff_state(conn)
-            self._active_poll_interval = None
-
-    def _fetch(self, token: str) -> dict:
-        """Call the usage API synchronously via asyncio, with retry for transient errors."""
-        loop = _get_or_create_event_loop()
-        return loop.run_until_complete(self._fetch_with_retry(token))
-
-    async def _fetch_with_retry(self, token: str) -> dict:
-        """Fetch usage data, retrying on transient connection errors only.
-
-        429 responses are NOT retried here — they are raised immediately
-        so that ``_do_poll`` can handle them via ``_handle_429()``.
-
-        Each attempt (success or failure) is recorded in
-        ``self._attempt_records`` for audit logging by ``_do_poll``.
-        """
-        client = self._get_client()
-        last_exc: Exception | None = None
-        for attempt in range(MAX_RETRIES):
-            start_time = time.monotonic()
-            try:
-                result = await fetch_usage(token, client=client)
-                elapsed_ms = (time.monotonic() - start_time) * 1000
-                self._attempt_records.append({
-                    "status_code": 200,
-                    "success": True,
-                    "error_type": None,
-                    "error_detail": None,
-                    "response_time_ms": elapsed_ms,
-                    "retry_after": None,
-                })
-                return result
-            except httpx.HTTPStatusError as exc:
-                elapsed_ms = (time.monotonic() - start_time) * 1000
-                retry_after = exc.response.headers.get("retry-after")
-                self._attempt_records.append({
-                    "status_code": exc.response.status_code,
-                    "success": False,
-                    "error_type": _categorize_error(exc),
-                    "error_detail": str(exc)[:500],
-                    "response_time_ms": elapsed_ms,
-                    "retry_after": retry_after,
-                })
-                if exc.response.status_code == 429:
-                    raise  # Let _do_poll handle 429 via _handle_429()
-                raise
-            except TRANSIENT_EXCEPTIONS as exc:
-                elapsed_ms = (time.monotonic() - start_time) * 1000
-                self._attempt_records.append({
-                    "status_code": None,
-                    "success": False,
-                    "error_type": _categorize_error(exc),
-                    "error_detail": str(exc)[:500],
-                    "response_time_ms": elapsed_ms,
-                    "retry_after": None,
-                })
-                last_exc = exc
-                if attempt < MAX_RETRIES - 1:
-                    delay = RETRY_BACKOFF_SECONDS[attempt]
-                    logger.warning(
-                        "Transient error on usage API (attempt %d/%d): %s — "
-                        "retrying in %ds",
-                        attempt + 1,
-                        MAX_RETRIES,
-                        exc,
-                        delay,
-                    )
-                    await _async_sleep(delay)
-                else:
-                    logger.warning(
-                        "Transient error on usage API (attempt %d/%d): %s — "
-                        "all retries exhausted",
-                        attempt + 1,
-                        MAX_RETRIES,
-                        exc,
-                    )
-        raise last_exc  # type: ignore[misc]
-
-    def _parse_and_store(self, data: dict, conn: sqlite3.Connection) -> None:
-        """Parse the API response and update in-memory state + database."""
-        five_hour = data.get("five_hour") or {}
-        seven_day = data.get("seven_day") or {}
-
-        raw_5h = five_hour.get("utilization")
-        self._state.utilization_5h = raw_5h / 100 if raw_5h is not None else None
-        raw_7d = seven_day.get("utilization")
-        self._state.utilization_7d = raw_7d / 100 if raw_7d is not None else None
-        self._state.resets_at_5h = five_hour.get("resets_at")
-        self._state.resets_at_7d = seven_day.get("resets_at")
-
-        extra = data.get("extra_usage") or {}
-        self._state.extra_usage_enabled = bool(extra.get("is_enabled"))
-        raw_limit = extra.get("monthly_limit")
-        self._state.extra_usage_monthly_limit = raw_limit / 100 if raw_limit is not None else None
-        raw_credits = extra.get("used_credits")
-        self._state.extra_usage_used_credits = raw_credits / 100 if raw_credits is not None else None
-        self._state.extra_usage_utilization = extra.get("utilization")
-
-        insert_usage_snapshot(
-            conn,
-            utilization_5h=self._state.utilization_5h,
-            utilization_7d=self._state.utilization_7d,
-            resets_at=self._state.resets_at_5h,
-            resets_at_7d=self._state.resets_at_7d,
-            extra_usage_enabled=self._state.extra_usage_enabled,
-            extra_usage_monthly_limit=self._state.extra_usage_monthly_limit,
-            extra_usage_used_credits=self._state.extra_usage_used_credits,
-            extra_usage_utilization=self._state.extra_usage_utilization,
-        )
-
-        extra_msg = ""
-        if self._state.extra_usage_enabled:
-            extra_msg = (
-                f", extra_usage=${self._state.extra_usage_used_credits or 0:.2f}"
-                f"/${self._state.extra_usage_monthly_limit or 0:.2f}"
-            )
-        logger.info(
-            "Usage snapshot: 5h=%.1f%%, 7d=%.1f%%, resets=%s%s",
-            (self._state.utilization_5h or 0) * 100,
-            (self._state.utilization_7d or 0) * 100,
-            self._state.resets_at_5h or "unknown",
-            extra_msg,
-        )
-
-    def _check_key_rotation(self, conn: sqlite3.Connection, fingerprint: str) -> None:
-        """Detect and record when the API token has been rotated."""
-        try:
-            active = get_active_key_session(conn)
-            if active and active["token_fingerprint"] != fingerprint:
-                mark_key_session_replaced(
-                    conn, token_fingerprint=active["token_fingerprint"],
-                )
-                conn.commit()
-        except Exception:
-            logger.warning("Failed to check key rotation", exc_info=True)
-
-    def _flush_audit_records(self, conn: sqlite3.Connection, fingerprint: str) -> None:
-        """Write collected attempt records to the audit tables."""
-        for rec in self._attempt_records:
-            try:
-                insert_usage_api_call(
-                    conn,
-                    token_fingerprint=fingerprint,
-                    status_code=rec["status_code"],
-                    success=rec["success"],
-                    error_type=rec["error_type"],
-                    error_detail=rec["error_detail"],
-                    response_time_ms=rec["response_time_ms"],
-                    retry_after=rec["retry_after"],
-                    caller=self._current_caller,
-                )
-                upsert_usage_api_key_session(
-                    conn,
-                    token_fingerprint=fingerprint,
-                    success=rec["success"],
-                )
-            except Exception:
-                logger.warning("Failed to write usage API audit record", exc_info=True)
-        try:
-            conn.commit()
-        except Exception:
-            logger.warning("Failed to commit usage API audit records", exc_info=True)
-        self._attempt_records = []
-
-    def _purge_old_snapshots(self, conn: sqlite3.Connection) -> None:
-        """Delete usage snapshots and old audit rows beyond the retention period."""
-        conn.execute(
-            "DELETE FROM usage_snapshots "
-            "WHERE created_at < datetime('now', ?)",
-            (f"-{self.retention_days} days",),
-        )
-        try:
-            purge_old_usage_api_calls(conn, retention_days=self.retention_days)
-        except Exception:
-            logger.warning("Failed to purge old usage API audit rows", exc_info=True)
-
 
 def refresh_usage_snapshot(
     conn: sqlite3.Connection,
@@ -882,17 +896,3 @@ def refresh_usage_snapshot(
     if poller.last_polled_fresh and poller.state.utilization_5h is not None:
         return poller.state
     return None
-
-
-def _get_or_create_event_loop() -> asyncio.AbstractEventLoop:
-    """Return the running event loop, or create a new one if none exists."""
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_closed():
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        return loop
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        return loop

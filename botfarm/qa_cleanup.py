@@ -20,41 +20,6 @@ from botfarm.config import ProjectConfig
 logger = logging.getLogger(__name__)
 
 
-def cleanup_qa_environment(
-    project_cfg: ProjectConfig,
-    slot_id: int,
-    *,
-    worktree_cwd: str | None = None,
-) -> None:
-    """Run all QA cleanup steps for a slot. Failures are logged, never raised.
-
-    Parameters
-    ----------
-    project_cfg:
-        The project configuration (used for ``run_port``, ``qa_teardown_command``).
-    slot_id:
-        Slot ID (for logging).
-    worktree_cwd:
-        Working directory of the slot's worktree.  Used as ``cwd`` for the
-        teardown command and for docker-compose down.
-    """
-    label = f"{project_cfg.name}/{slot_id}"
-
-    if project_cfg.run_port:
-        _kill_port_holder(project_cfg.run_port, label=label, worktree_cwd=worktree_cwd)
-
-    if worktree_cwd:
-        _kill_docker_compose(worktree_cwd, label=label)
-        _kill_orphan_browsers(worktree_cwd, label=label)
-
-    if project_cfg.qa_teardown_command:
-        _run_teardown_command(
-            project_cfg.qa_teardown_command,
-            cwd=worktree_cwd,
-            label=label,
-        )
-
-
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
@@ -179,3 +144,38 @@ def _run_teardown_command(command: str, *, cwd: str | None, label: str) -> None:
         logger.warning("[%s] qa_teardown_command timed out after 30s: %s", label, command)
     except Exception:
         logger.debug("[%s] qa_teardown_command failed: %s", label, command, exc_info=True)
+
+
+def cleanup_qa_environment(
+    project_cfg: ProjectConfig,
+    slot_id: int,
+    *,
+    worktree_cwd: str | None = None,
+) -> None:
+    """Run all QA cleanup steps for a slot. Failures are logged, never raised.
+
+    Parameters
+    ----------
+    project_cfg:
+        The project configuration (used for ``run_port``, ``qa_teardown_command``).
+    slot_id:
+        Slot ID (for logging).
+    worktree_cwd:
+        Working directory of the slot's worktree.  Used as ``cwd`` for the
+        teardown command and for docker-compose down.
+    """
+    label = f"{project_cfg.name}/{slot_id}"
+
+    if project_cfg.run_port:
+        _kill_port_holder(project_cfg.run_port, label=label, worktree_cwd=worktree_cwd)
+
+    if worktree_cwd:
+        _kill_docker_compose(worktree_cwd, label=label)
+        _kill_orphan_browsers(worktree_cwd, label=label)
+
+    if project_cfg.qa_teardown_command:
+        _run_teardown_command(
+            project_cfg.qa_teardown_command,
+            cwd=worktree_cwd,
+            label=label,
+        )

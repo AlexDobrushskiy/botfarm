@@ -54,6 +54,67 @@ class _SafeDict(dict):
         return "{" + key + "}"
 
 
+def _build_pipeline(conn: sqlite3.Connection, row: sqlite3.Row) -> PipelineTemplate:
+    """Build a PipelineTemplate from a DB row, loading stages and loops."""
+    pipeline_id = row["id"]
+
+    stage_rows = conn.execute(
+        "SELECT * FROM stage_templates WHERE pipeline_id = ? ORDER BY stage_order",
+        (pipeline_id,),
+    ).fetchall()
+
+    stages = [
+        StageTemplate(
+            id=s["id"],
+            name=s["name"],
+            stage_order=s["stage_order"],
+            executor_type=s["executor_type"],
+            identity=s["identity"],
+            prompt_template=s["prompt_template"],
+            max_turns=s["max_turns"],
+            timeout_minutes=s["timeout_minutes"],
+            shell_command=s["shell_command"],
+            result_parser=s["result_parser"],
+            model=s["model"],
+            effort=s["effort"],
+        )
+        for s in stage_rows
+    ]
+
+    loop_rows = conn.execute(
+        "SELECT * FROM stage_loops WHERE pipeline_id = ?",
+        (pipeline_id,),
+    ).fetchall()
+
+    loops = [
+        StageLoop(
+            id=lp["id"],
+            name=lp["name"],
+            start_stage=lp["start_stage"],
+            end_stage=lp["end_stage"],
+            max_iterations=lp["max_iterations"],
+            config_key=lp["config_key"],
+            exit_condition=lp["exit_condition"],
+            on_failure_stage=lp["on_failure_stage"],
+        )
+        for lp in loop_rows
+    ]
+
+    raw_mcp = row["mcp_servers"]
+    mcp_servers = json.loads(raw_mcp) if raw_mcp else None
+
+    return PipelineTemplate(
+        id=pipeline_id,
+        name=row["name"],
+        description=row["description"],
+        ticket_label=row["ticket_label"],
+        is_default=bool(row["is_default"]),
+        mcp_servers=mcp_servers,
+        stages=stages,
+        loops=loops,
+    )
+
+
 def load_pipeline(conn: sqlite3.Connection, ticket_labels: list[str]) -> PipelineTemplate:
     """Load the appropriate pipeline template based on ticket labels.
 
@@ -133,67 +194,6 @@ def load_all_pipelines(conn: sqlite3.Connection) -> list[PipelineTemplate]:
         "SELECT * FROM pipeline_templates ORDER BY is_default DESC, name"
     ).fetchall()
     return [_build_pipeline(conn, row) for row in rows]
-
-
-def _build_pipeline(conn: sqlite3.Connection, row: sqlite3.Row) -> PipelineTemplate:
-    """Build a PipelineTemplate from a DB row, loading stages and loops."""
-    pipeline_id = row["id"]
-
-    stage_rows = conn.execute(
-        "SELECT * FROM stage_templates WHERE pipeline_id = ? ORDER BY stage_order",
-        (pipeline_id,),
-    ).fetchall()
-
-    stages = [
-        StageTemplate(
-            id=s["id"],
-            name=s["name"],
-            stage_order=s["stage_order"],
-            executor_type=s["executor_type"],
-            identity=s["identity"],
-            prompt_template=s["prompt_template"],
-            max_turns=s["max_turns"],
-            timeout_minutes=s["timeout_minutes"],
-            shell_command=s["shell_command"],
-            result_parser=s["result_parser"],
-            model=s["model"],
-            effort=s["effort"],
-        )
-        for s in stage_rows
-    ]
-
-    loop_rows = conn.execute(
-        "SELECT * FROM stage_loops WHERE pipeline_id = ?",
-        (pipeline_id,),
-    ).fetchall()
-
-    loops = [
-        StageLoop(
-            id=lp["id"],
-            name=lp["name"],
-            start_stage=lp["start_stage"],
-            end_stage=lp["end_stage"],
-            max_iterations=lp["max_iterations"],
-            config_key=lp["config_key"],
-            exit_condition=lp["exit_condition"],
-            on_failure_stage=lp["on_failure_stage"],
-        )
-        for lp in loop_rows
-    ]
-
-    raw_mcp = row["mcp_servers"]
-    mcp_servers = json.loads(raw_mcp) if raw_mcp else None
-
-    return PipelineTemplate(
-        id=pipeline_id,
-        name=row["name"],
-        description=row["description"],
-        ticket_label=row["ticket_label"],
-        is_default=bool(row["is_default"]),
-        mcp_servers=mcp_servers,
-        stages=stages,
-        loops=loops,
-    )
 
 
 # ---------------------------------------------------------------------------

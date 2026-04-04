@@ -494,6 +494,69 @@ def _submit_aggregate_review(
         return False
 
 
+def _run_codex_review(
+    pr_url: str,
+    *,
+    cwd: str | Path,
+    log_file: Path | None = None,
+    env: dict[str, str] | None = None,
+    timeout: float | None = None,
+    registry: AdapterRegistry | None = None,
+    codex_model: str | None = None,
+    codex_reasoning_effort: str | None = None,
+) -> StageResult:
+    """CODEX_REVIEW stage — Codex reviews the PR and posts inline comments.
+
+    When *registry* is provided, resolves the Codex adapter from it;
+    in that case *codex_reasoning_effort* is ignored because reasoning
+    effort is baked into the adapter at construction time.
+    Otherwise falls back to direct ``run_codex_streaming()`` invocation.
+    """
+    owner, repo, number = _parse_pr_url(pr_url)
+    prompt = _build_codex_review_prompt(pr_url, owner, repo, number)
+
+    if registry is not None and "codex" in registry:
+        adapter = registry["codex"]
+        ar = adapter.run(
+            prompt,
+            cwd=Path(cwd),
+            model=codex_model,
+            log_file=log_file,
+            env=env,
+            timeout=timeout,
+        )
+    else:
+        from botfarm.codex import run_codex_streaming
+        from botfarm.agent_codex import _codex_result_to_agent_result
+        codex_result = run_codex_streaming(
+            prompt,
+            cwd=cwd,
+            model=codex_model,
+            reasoning_effort=codex_reasoning_effort,
+            log_file=log_file,
+            env=env,
+            timeout=timeout,
+        )
+        ar = _codex_result_to_agent_result(codex_result, codex_model)
+
+    if ar.is_error:
+        return StageResult(
+            stage="codex_review",
+            success=False,
+            agent_result=ar,
+            error=f"Codex reported error: {ar.result_text[:RESULT_TRUNCATE_CHARS]}",
+        )
+
+    approved = _parse_review_approved(ar.result_text)
+
+    return StageResult(
+        stage="codex_review",
+        success=True,
+        agent_result=ar,
+        review_approved=approved,
+    )
+
+
 def _run_review(
     pr_url: str,
     *,
@@ -716,69 +779,6 @@ def _run_review(
     )
 
 
-def _run_codex_review(
-    pr_url: str,
-    *,
-    cwd: str | Path,
-    log_file: Path | None = None,
-    env: dict[str, str] | None = None,
-    timeout: float | None = None,
-    registry: AdapterRegistry | None = None,
-    codex_model: str | None = None,
-    codex_reasoning_effort: str | None = None,
-) -> StageResult:
-    """CODEX_REVIEW stage — Codex reviews the PR and posts inline comments.
-
-    When *registry* is provided, resolves the Codex adapter from it;
-    in that case *codex_reasoning_effort* is ignored because reasoning
-    effort is baked into the adapter at construction time.
-    Otherwise falls back to direct ``run_codex_streaming()`` invocation.
-    """
-    owner, repo, number = _parse_pr_url(pr_url)
-    prompt = _build_codex_review_prompt(pr_url, owner, repo, number)
-
-    if registry is not None and "codex" in registry:
-        adapter = registry["codex"]
-        ar = adapter.run(
-            prompt,
-            cwd=Path(cwd),
-            model=codex_model,
-            log_file=log_file,
-            env=env,
-            timeout=timeout,
-        )
-    else:
-        from botfarm.codex import run_codex_streaming
-        from botfarm.agent_codex import _codex_result_to_agent_result
-        codex_result = run_codex_streaming(
-            prompt,
-            cwd=cwd,
-            model=codex_model,
-            reasoning_effort=codex_reasoning_effort,
-            log_file=log_file,
-            env=env,
-            timeout=timeout,
-        )
-        ar = _codex_result_to_agent_result(codex_result, codex_model)
-
-    if ar.is_error:
-        return StageResult(
-            stage="codex_review",
-            success=False,
-            agent_result=ar,
-            error=f"Codex reported error: {ar.result_text[:RESULT_TRUNCATE_CHARS]}",
-        )
-
-    approved = _parse_review_approved(ar.result_text)
-
-    return StageResult(
-        stage="codex_review",
-        success=True,
-        agent_result=ar,
-        review_approved=approved,
-    )
-
-
 def _run_fix(
     pr_url: str,
     *,
@@ -919,6 +919,34 @@ def _all_checks_queued(checks: list[dict]) -> bool:
     if not checks:
         return False
     return all(c.get("bucket", "").lower() in ("queued", "pending") for c in checks)
+
+
+def _check_pr_has_merge_conflict(
+    pr_url: str,
+    cwd: str | Path,
+    *,
+    env: dict[str, str] | None = None,
+) -> bool:
+    """Check whether a PR has merge conflicts via the GitHub API.
+
+    Queries ``gh pr view --json mergeable`` and returns ``True`` when the
+    PR state is ``CONFLICTING``.  Returns ``False`` on any other state or
+    on errors (conservative — avoids false positives).
+    """
+    try:
+        proc = subprocess.run(
+            ["gh", "pr", "view", pr_url, "--json", "mergeable", "--jq", ".mergeable"],
+            capture_output=True,
+            text=True,
+            cwd=str(cwd),
+            timeout=30,
+            env=env,
+        )
+        if proc.returncode == 0:
+            return proc.stdout.strip().upper() == "CONFLICTING"
+    except (subprocess.TimeoutExpired, OSError):
+        logger.debug("Could not check PR mergeable state for %s", pr_url, exc_info=True)
+    return False
 
 
 def _run_pr_checks(
@@ -1079,34 +1107,6 @@ def _run_ci_fix(
 # ---------------------------------------------------------------------------
 
 _CONFLICT_RE = re.compile(r"conflict|isn't mergeable|not mergeable", re.IGNORECASE)
-
-
-def _check_pr_has_merge_conflict(
-    pr_url: str,
-    cwd: str | Path,
-    *,
-    env: dict[str, str] | None = None,
-) -> bool:
-    """Check whether a PR has merge conflicts via the GitHub API.
-
-    Queries ``gh pr view --json mergeable`` and returns ``True`` when the
-    PR state is ``CONFLICTING``.  Returns ``False`` on any other state or
-    on errors (conservative — avoids false positives).
-    """
-    try:
-        proc = subprocess.run(
-            ["gh", "pr", "view", pr_url, "--json", "mergeable", "--jq", ".mergeable"],
-            capture_output=True,
-            text=True,
-            cwd=str(cwd),
-            timeout=30,
-            env=env,
-        )
-        if proc.returncode == 0:
-            return proc.stdout.strip().upper() == "CONFLICTING"
-    except (subprocess.TimeoutExpired, OSError):
-        logger.debug("Could not check PR mergeable state for %s", pr_url, exc_info=True)
-    return False
 
 
 def _is_merge_conflict(

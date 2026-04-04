@@ -290,6 +290,120 @@ def _determine_resume_stage(failed_stage: str | None) -> str | None:
     return None
 
 
+def _setup_worker_logging(
+    log_dir: Path,
+    *,
+    max_bytes: int = 10 * 1024 * 1024,
+    backup_count: int = 5,
+) -> None:
+    """Configure a rotating file handler for the worker subprocess.
+
+    Writes worker-level Python log messages to ``<log_dir>/worker.log``
+    so they persist alongside the per-stage subprocess logs.  Uses
+    :class:`~logging.handlers.RotatingFileHandler` to cap disk usage.
+    """
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / "worker.log"
+
+    fmt = logging.Formatter(
+        "%(asctime)s %(levelname)-8s [%(name)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    handler = logging.handlers.RotatingFileHandler(
+        str(log_file),
+        maxBytes=max_bytes,
+        backupCount=backup_count,
+    )
+    handler.setFormatter(fmt)
+    handler.setLevel(logging.DEBUG)
+
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG)
+    root.addHandler(handler)
+
+
+def _classify_failure(failure_reason: str | None) -> str:
+    """Classify a pipeline failure reason into a category.
+
+    Categories:
+    - ``limit_hit``: Usage or rate limit errors
+    - ``timeout``: Timeout errors
+    - ``env_missing_runtime``: Missing runtime binaries
+    - ``env_missing_package``: Missing Python/Node packages
+    - ``env_missing_service``: Database or service connection errors
+    - ``env_missing_config``: Missing environment variables or config files
+    - ``auth_failure``: Authentication / token errors (401, expired token)
+    - ``code_failure``: Default for non-environment failures
+    """
+    reason = (failure_reason or "").lower()
+
+    # Limit hit patterns (existing _check_limit_hit logic)
+    limit_indicators = [
+        "rate limit",
+        "usage limit",
+        "max_tokens_exceeded",
+    ]
+    if any(indicator in reason for indicator in limit_indicators):
+        return "limit_hit"
+
+    # Timeout patterns
+    timeout_indicators = [
+        "timeouterror",
+        "timed out",
+        "timeout in stage",
+    ]
+    if any(indicator in reason for indicator in timeout_indicators):
+        return "timeout"
+
+    # Environment: missing runtime binaries
+    if "command not found" in reason or "no such file or directory" in reason:
+        return "env_missing_runtime"
+
+    # Environment: missing packages
+    package_indicators = [
+        "modulenotfounderror",
+        "cannot find module",
+        "importerror",
+        "no module named",
+    ]
+    if any(indicator in reason for indicator in package_indicators):
+        return "env_missing_package"
+
+    # Environment: missing services (databases, connections)
+    if any(ind in reason for ind in ["econnrefused", "connection refused"]):
+        return "env_missing_service"
+    if ("role \"" in reason or "database \"" in reason) and "does not exist" in reason:
+        return "env_missing_service"
+
+    # Environment: missing config
+    if ".env file not found" in reason:
+        return "env_missing_config"
+    if ("environment variable" in reason or "env var" in reason) and "not set" in reason:
+        return "env_missing_config"
+
+    # Authentication errors (Claude subprocess 401 / expired token)
+    auth_indicators = [
+        "authentication_error",
+        "invalid authentication",
+        "401 unauthorized",
+        "http 401",
+        "status 401",
+    ]
+    if any(indicator in reason for indicator in auth_indicators):
+        return "auth_failure"
+
+    return "code_failure"
+
+
+def _check_limit_hit(result: PipelineResult) -> bool:
+    """Heuristic: detect if a pipeline failure was caused by a usage limit.
+
+    Delegates to :func:`_classify_failure` and checks for the ``limit_hit`` category.
+    """
+    return _classify_failure(result.failure_reason) == "limit_hit"
+
+
 # ---------------------------------------------------------------------------
 # Worker subprocess entry point
 # ---------------------------------------------------------------------------
@@ -496,112 +610,6 @@ def _worker_entry(
         conn.close()
 
 
-def _setup_worker_logging(
-    log_dir: Path,
-    *,
-    max_bytes: int = 10 * 1024 * 1024,
-    backup_count: int = 5,
-) -> None:
-    """Configure a rotating file handler for the worker subprocess.
-
-    Writes worker-level Python log messages to ``<log_dir>/worker.log``
-    so they persist alongside the per-stage subprocess logs.  Uses
-    :class:`~logging.handlers.RotatingFileHandler` to cap disk usage.
-    """
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_file = log_dir / "worker.log"
-
-    fmt = logging.Formatter(
-        "%(asctime)s %(levelname)-8s [%(name)s] %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
-
-    handler = logging.handlers.RotatingFileHandler(
-        str(log_file),
-        maxBytes=max_bytes,
-        backupCount=backup_count,
-    )
-    handler.setFormatter(fmt)
-    handler.setLevel(logging.DEBUG)
-
-    root = logging.getLogger()
-    root.setLevel(logging.DEBUG)
-    root.addHandler(handler)
-
-
-def _classify_failure(failure_reason: str | None) -> str:
-    """Classify a pipeline failure reason into a category.
-
-    Categories:
-    - ``limit_hit``: Usage or rate limit errors
-    - ``timeout``: Timeout errors
-    - ``env_missing_runtime``: Missing runtime binaries
-    - ``env_missing_package``: Missing Python/Node packages
-    - ``env_missing_service``: Database or service connection errors
-    - ``env_missing_config``: Missing environment variables or config files
-    - ``auth_failure``: Authentication / token errors (401, expired token)
-    - ``code_failure``: Default for non-environment failures
-    """
-    reason = (failure_reason or "").lower()
-
-    # Limit hit patterns (existing _check_limit_hit logic)
-    limit_indicators = [
-        "rate limit",
-        "usage limit",
-        "max_tokens_exceeded",
-    ]
-    if any(indicator in reason for indicator in limit_indicators):
-        return "limit_hit"
-
-    # Timeout patterns
-    timeout_indicators = [
-        "timeouterror",
-        "timed out",
-        "timeout in stage",
-    ]
-    if any(indicator in reason for indicator in timeout_indicators):
-        return "timeout"
-
-    # Environment: missing runtime binaries
-    if "command not found" in reason or "no such file or directory" in reason:
-        return "env_missing_runtime"
-
-    # Environment: missing packages
-    package_indicators = [
-        "modulenotfounderror",
-        "cannot find module",
-        "importerror",
-        "no module named",
-    ]
-    if any(indicator in reason for indicator in package_indicators):
-        return "env_missing_package"
-
-    # Environment: missing services (databases, connections)
-    if any(ind in reason for ind in ["econnrefused", "connection refused"]):
-        return "env_missing_service"
-    if ("role \"" in reason or "database \"" in reason) and "does not exist" in reason:
-        return "env_missing_service"
-
-    # Environment: missing config
-    if ".env file not found" in reason:
-        return "env_missing_config"
-    if ("environment variable" in reason or "env var" in reason) and "not set" in reason:
-        return "env_missing_config"
-
-    # Authentication errors (Claude subprocess 401 / expired token)
-    auth_indicators = [
-        "authentication_error",
-        "invalid authentication",
-        "401 unauthorized",
-        "http 401",
-        "status 401",
-    ]
-    if any(indicator in reason for indicator in auth_indicators):
-        return "auth_failure"
-
-    return "code_failure"
-
-
 # Valid failure categories for reference
 FAILURE_CATEGORIES = (
     "code_failure",
@@ -613,14 +621,6 @@ FAILURE_CATEGORIES = (
     "timeout",
     "auth_failure",
 )
-
-
-def _check_limit_hit(result: PipelineResult) -> bool:
-    """Heuristic: detect if a pipeline failure was caused by a usage limit.
-
-    Delegates to :func:`_classify_failure` and checks for the ``limit_hit`` category.
-    """
-    return _classify_failure(result.failure_reason) == "limit_hit"
 
 
 # Patterns that indicate a usage/rate limit in Claude output text.
@@ -1113,49 +1113,6 @@ class WorkerLifecycleManager:
             proc.pid, slot.ticket_id, project_name, slot.slot_id, resume_stage,
         )
 
-    # -- Timeout enforcement -----------------------------------------------
-
-    def check_timeouts(self) -> None:
-        """Kill worker processes that have exceeded their stage timeout."""
-        agents_cfg = self._config.agents
-        grace = agents_cfg.timeout_grace_seconds
-        now = datetime.now(timezone.utc)
-
-        for slot in self._slot_manager.busy_slots():
-            if slot.pid is None or slot.stage is None:
-                continue
-
-            if slot.sigterm_sent_at:
-                self._maybe_escalate_kill(slot, now=now, grace=grace)
-                continue
-
-            if not slot.stage_started_at:
-                continue
-
-            limit_minutes = resolve_stage_timeout(
-                agents_cfg, slot.stage, slot.ticket_labels,
-            )
-            if limit_minutes is None:
-                continue
-
-            try:
-                stage_start = datetime.fromisoformat(
-                    slot.stage_started_at.replace("Z", "+00:00"),
-                )
-            except (ValueError, TypeError):
-                logger.warning(
-                    "Failed to parse stage_started_at for %s/%d: %r",
-                    slot.project, slot.slot_id, slot.stage_started_at,
-                )
-                continue
-
-            elapsed = (now - stage_start).total_seconds()
-            limit_seconds = limit_minutes * 60
-            if elapsed < limit_seconds:
-                continue
-
-            self._send_sigterm(slot, elapsed=elapsed, limit=limit_seconds)
-
     def _send_sigterm(
         self,
         slot: SlotState,
@@ -1278,6 +1235,49 @@ class WorkerLifecycleManager:
                 failure_category="timeout",
             )
         self._conn.commit()
+
+    # -- Timeout enforcement -----------------------------------------------
+
+    def check_timeouts(self) -> None:
+        """Kill worker processes that have exceeded their stage timeout."""
+        agents_cfg = self._config.agents
+        grace = agents_cfg.timeout_grace_seconds
+        now = datetime.now(timezone.utc)
+
+        for slot in self._slot_manager.busy_slots():
+            if slot.pid is None or slot.stage is None:
+                continue
+
+            if slot.sigterm_sent_at:
+                self._maybe_escalate_kill(slot, now=now, grace=grace)
+                continue
+
+            if not slot.stage_started_at:
+                continue
+
+            limit_minutes = resolve_stage_timeout(
+                agents_cfg, slot.stage, slot.ticket_labels,
+            )
+            if limit_minutes is None:
+                continue
+
+            try:
+                stage_start = datetime.fromisoformat(
+                    slot.stage_started_at.replace("Z", "+00:00"),
+                )
+            except (ValueError, TypeError):
+                logger.warning(
+                    "Failed to parse stage_started_at for %s/%d: %r",
+                    slot.project, slot.slot_id, slot.stage_started_at,
+                )
+                continue
+
+            elapsed = (now - stage_start).total_seconds()
+            limit_seconds = limit_minutes * 60
+            if elapsed < limit_seconds:
+                continue
+
+            self._send_sigterm(slot, elapsed=elapsed, limit=limit_seconds)
 
 
 # ---------------------------------------------------------------------------

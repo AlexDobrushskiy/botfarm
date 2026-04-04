@@ -5,47 +5,25 @@ from __future__ import annotations
 import json
 
 
-# ---------------------------------------------------------------------------
-# NDJSON line formatting for SSE log streaming
-# ---------------------------------------------------------------------------
-
-
-def format_ndjson_line(raw_line: str) -> tuple[str, str]:
-    """Parse a raw NDJSON line and return ``(event_type, formatted_text)``.
-
-    *event_type* is one of: ``assistant``, ``tool_use``, ``tool_result``,
-    ``result``, ``system``, or ``log`` (fallback for non-JSON lines).
-
-    *formatted_text* is a human-readable summary of the event suitable for
-    display in a terminal-style log viewer.
-    """
-    stripped = raw_line.strip()
-    if not stripped:
-        return ("log", "")
-
-    try:
-        event = json.loads(stripped)
-    except (json.JSONDecodeError, ValueError):
-        # Not JSON — pass through as-is
-        return ("log", stripped)
-
-    if not isinstance(event, dict):
-        return ("log", stripped)
-
-    msg_type = event.get("type", "")
-
-    if msg_type == "assistant":
-        return _format_assistant(event)
-    if msg_type == "user":
-        return _format_user(event)
-    if msg_type == "result":
-        return _format_result(event)
-
-    # Other NDJSON event types (e.g. system messages) — show type as prefix
-    if msg_type:
-        return ("system", f"[{msg_type}]")
-
-    return ("log", stripped)
+def _summarize_tool_input(tool_name: str, tool_input: dict) -> str:
+    """Produce a short summary of tool input for display."""
+    if tool_name in ("Read", "Glob"):
+        return tool_input.get("file_path") or tool_input.get("pattern", "")
+    if tool_name == "Edit":
+        fp = tool_input.get("file_path", "")
+        return fp
+    if tool_name == "Write":
+        return tool_input.get("file_path", "")
+    if tool_name == "Bash":
+        cmd = tool_input.get("command", "")
+        return cmd[:80] if cmd else ""
+    if tool_name == "Grep":
+        return tool_input.get("pattern", "")
+    # Generic: show first key=value
+    for k, v in tool_input.items():
+        sv = str(v)[:60]
+        return f"{k}={sv}"
+    return ""
 
 
 def _format_assistant(event: dict) -> tuple[str, str]:
@@ -136,25 +114,47 @@ def _format_result(event: dict) -> tuple[str, str]:
     return ("result", "\n".join(parts))
 
 
-def _summarize_tool_input(tool_name: str, tool_input: dict) -> str:
-    """Produce a short summary of tool input for display."""
-    if tool_name in ("Read", "Glob"):
-        return tool_input.get("file_path") or tool_input.get("pattern", "")
-    if tool_name == "Edit":
-        fp = tool_input.get("file_path", "")
-        return fp
-    if tool_name == "Write":
-        return tool_input.get("file_path", "")
-    if tool_name == "Bash":
-        cmd = tool_input.get("command", "")
-        return cmd[:80] if cmd else ""
-    if tool_name == "Grep":
-        return tool_input.get("pattern", "")
-    # Generic: show first key=value
-    for k, v in tool_input.items():
-        sv = str(v)[:60]
-        return f"{k}={sv}"
-    return ""
+# ---------------------------------------------------------------------------
+# NDJSON line formatting for SSE log streaming
+# ---------------------------------------------------------------------------
+
+
+def format_ndjson_line(raw_line: str) -> tuple[str, str]:
+    """Parse a raw NDJSON line and return ``(event_type, formatted_text)``.
+
+    *event_type* is one of: ``assistant``, ``tool_use``, ``tool_result``,
+    ``result``, ``system``, or ``log`` (fallback for non-JSON lines).
+
+    *formatted_text* is a human-readable summary of the event suitable for
+    display in a terminal-style log viewer.
+    """
+    stripped = raw_line.strip()
+    if not stripped:
+        return ("log", "")
+
+    try:
+        event = json.loads(stripped)
+    except (json.JSONDecodeError, ValueError):
+        # Not JSON — pass through as-is
+        return ("log", stripped)
+
+    if not isinstance(event, dict):
+        return ("log", stripped)
+
+    msg_type = event.get("type", "")
+
+    if msg_type == "assistant":
+        return _format_assistant(event)
+    if msg_type == "user":
+        return _format_user(event)
+    if msg_type == "result":
+        return _format_result(event)
+
+    # Other NDJSON event types (e.g. system messages) — show type as prefix
+    if msg_type:
+        return ("system", f"[{msg_type}]")
+
+    return ("log", stripped)
 
 
 def format_codex_ndjson_line(raw_line: str) -> tuple[str, str]:
