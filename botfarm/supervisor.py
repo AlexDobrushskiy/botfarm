@@ -930,6 +930,15 @@ class Supervisor(RecoveryMixin, OperationsMixin):
             self._persist_queue_entries(project_name, poll_result)
             self._auto_close_parent_issues(poller, poll_result, project_name)
 
+            project_cfg = self._projects.get(project_name)
+            if project_cfg and project_cfg.dispatch_mode == "semi-auto":
+                n = len(poll_result.candidates)
+                logger.info(
+                    "Project %s: semi-auto mode, %d candidate(s) available, awaiting manual dispatch",
+                    project_name, n,
+                )
+                continue
+
             candidates = poll_result.candidates
             if not candidates:
                 slot = self._slot_manager.find_free_slot_for_project(project_name)

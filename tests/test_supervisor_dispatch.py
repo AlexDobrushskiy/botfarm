@@ -756,6 +756,113 @@ class TestPerProjectPause:
             poller.poll.assert_not_called()
 
 
+# ---------------------------------------------------------------------------
+# Semi-auto dispatch mode
+# ---------------------------------------------------------------------------
+
+
+class TestSemiAutoDispatchMode:
+    def test_semi_auto_polls_but_does_not_dispatch(self, supervisor):
+        """semi-auto mode should poll (for queue visibility) but not dispatch."""
+        supervisor._projects["test-project"].dispatch_mode = "semi-auto"
+        issue = make_issue()
+        poller = supervisor._pollers["test-project"]
+        poller.poll.return_value = PollResult(
+            candidates=[issue], blocked=[], auto_close_parents=[],
+        )
+
+        with patch.object(supervisor, "_dispatch_worker") as mock_dispatch:
+            supervisor._poll_and_dispatch()
+            poller.poll.assert_called_once()
+            mock_dispatch.assert_not_called()
+
+    def test_semi_auto_persists_queue_entries(self, supervisor):
+        """semi-auto mode should still persist queue entries for dashboard."""
+        supervisor._projects["test-project"].dispatch_mode = "semi-auto"
+        issue = make_issue()
+        poller = supervisor._pollers["test-project"]
+        poller.poll.return_value = PollResult(
+            candidates=[issue], blocked=[], auto_close_parents=[],
+        )
+
+        with patch.object(supervisor, "_persist_queue_entries") as mock_persist:
+            supervisor._poll_and_dispatch()
+            mock_persist.assert_called_once()
+
+    def test_semi_auto_logs_candidate_count(self, supervisor, caplog):
+        """semi-auto mode should log the number of available candidates."""
+        supervisor._projects["test-project"].dispatch_mode = "semi-auto"
+        issue = make_issue()
+        poller = supervisor._pollers["test-project"]
+        poller.poll.return_value = PollResult(
+            candidates=[issue], blocked=[], auto_close_parents=[],
+        )
+
+        with caplog.at_level(logging.INFO, logger="botfarm.supervisor"):
+            supervisor._poll_and_dispatch()
+
+        semi_auto_msgs = [r for r in caplog.records if "semi-auto" in r.message]
+        assert len(semi_auto_msgs) == 1
+        assert "1 candidate(s) available" in semi_auto_msgs[0].message
+
+    def test_auto_mode_dispatches_normally(self, supervisor):
+        """dispatch_mode: auto (default) should dispatch as before."""
+        assert supervisor._projects["test-project"].dispatch_mode == "auto"
+        issue = make_issue()
+        poller = supervisor._pollers["test-project"]
+        poller.poll.return_value = PollResult(
+            candidates=[issue], blocked=[], auto_close_parents=[],
+        )
+
+        with patch.object(supervisor, "_dispatch_worker") as mock_dispatch:
+            supervisor._poll_and_dispatch()
+            mock_dispatch.assert_called_once()
+
+    def test_switch_from_semi_auto_to_auto_dispatches(self, supervisor):
+        """Switching from semi-auto to auto mid-session should dispatch on next tick."""
+        supervisor._projects["test-project"].dispatch_mode = "semi-auto"
+        issue = make_issue()
+        poller = supervisor._pollers["test-project"]
+        poller.poll.return_value = PollResult(
+            candidates=[issue], blocked=[], auto_close_parents=[],
+        )
+
+        with patch.object(supervisor, "_dispatch_worker") as mock_dispatch:
+            supervisor._poll_and_dispatch()
+            mock_dispatch.assert_not_called()
+
+        # Switch to auto
+        supervisor._projects["test-project"].dispatch_mode = "auto"
+        with patch.object(supervisor, "_dispatch_worker") as mock_dispatch:
+            supervisor._poll_and_dispatch()
+            mock_dispatch.assert_called_once()
+
+    def test_semi_auto_with_no_candidates_logs_zero(self, supervisor, caplog):
+        """semi-auto with empty queue logs 0 candidates."""
+        supervisor._projects["test-project"].dispatch_mode = "semi-auto"
+        poller = supervisor._pollers["test-project"]
+        poller.poll.return_value = PollResult(
+            candidates=[], blocked=[], auto_close_parents=[],
+        )
+
+        with caplog.at_level(logging.INFO, logger="botfarm.supervisor"):
+            supervisor._poll_and_dispatch()
+
+        semi_auto_msgs = [r for r in caplog.records if "semi-auto" in r.message]
+        assert len(semi_auto_msgs) == 1
+        assert "0 candidate(s) available" in semi_auto_msgs[0].message
+
+    def test_semi_auto_runs_auto_close_parents(self, supervisor):
+        """semi-auto mode should still auto-close parent issues."""
+        supervisor._projects["test-project"].dispatch_mode = "semi-auto"
+        poller = supervisor._pollers["test-project"]
+        poller.poll.return_value = PollResult(
+            candidates=[], blocked=[], auto_close_parents=[],
+        )
+
+        with patch.object(supervisor, "_auto_close_parent_issues") as mock_close:
+            supervisor._poll_and_dispatch()
+            mock_close.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
