@@ -522,6 +522,44 @@ def get_codex_review_stats(
     }
 
 
+def get_comparable_tickets(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Return tickets that have 2+ task runs (for A/B comparison)."""
+    return conn.execute(
+        "SELECT ticket_id, MAX(title) as title, COUNT(*) as run_count "
+        "FROM tasks "
+        "GROUP BY ticket_id "
+        "HAVING run_count >= 2 "
+        "ORDER BY MAX(created_at) DESC"
+    ).fetchall()
+
+
+def get_tasks_for_comparison(
+    conn: sqlite3.Connection, task_ids: list[int],
+) -> list[sqlite3.Row]:
+    """Return full task rows for the given IDs, preserving order."""
+    if not task_ids:
+        return []
+    placeholders = ",".join("?" for _ in task_ids)
+    rows = conn.execute(
+        f"SELECT * FROM tasks WHERE id IN ({placeholders})",
+        task_ids,
+    ).fetchall()
+    # Preserve requested order
+    by_id = {r["id"]: r for r in rows}
+    return [by_id[tid] for tid in task_ids if tid in by_id]
+
+
+def get_recent_tasks_for_picker(
+    conn: sqlite3.Connection, limit: int = 50,
+) -> list[sqlite3.Row]:
+    """Return recent tasks for the comparison task picker."""
+    return conn.execute(
+        "SELECT id, ticket_id, title, project, status, created_at "
+        "FROM tasks ORDER BY created_at DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+
+
 def get_stage_run_aggregates(
     conn: sqlite3.Connection, task_ids: list[int],
 ) -> dict[int, dict]:

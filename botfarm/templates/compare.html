@@ -1,0 +1,229 @@
+{% extends "base.html" %}
+{% set active_page = "compare" %}
+{% block title %}A/B Comparison - Botfarm{% endblock %}
+{% block content %}
+
+<h1>A/B Pipeline Comparison</h1>
+
+<!-- Ticket selector (tickets with multiple runs) -->
+{% if comparable_tickets %}
+<details{% if not runs %} open{% endif %}>
+    <summary><strong>Compare by Ticket</strong> ({{ comparable_tickets|length }} tickets with multiple runs)</summary>
+    <figure>
+    <table>
+        <thead><tr><th>Ticket</th><th>Title</th><th>Runs</th><th></th></tr></thead>
+        <tbody>
+        {% for t in comparable_tickets %}
+        <tr>
+            <td><a href="{{ linear_url(t.ticket_id) }}" target="_blank">{{ t.ticket_id }}</a></td>
+            <td>{{ t.title }}</td>
+            <td>{{ t.run_count }}</td>
+            <td><a href="/compare?ticket={{ t.ticket_id }}" role="button" class="outline secondary" style="padding: 0.25rem 0.75rem; font-size: 0.8rem;">Compare</a></td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    </figure>
+</details>
+{% endif %}
+
+<!-- Manual task picker -->
+<details{% if not runs and not comparable_tickets %} open{% endif %}>
+    <summary><strong>Compare by Task</strong> (select 2+ tasks manually)</summary>
+    <form method="get" action="/compare" id="task-picker-form">
+        <p style="margin-bottom: 0.5rem; color: var(--pico-muted-color); font-size: 0.85rem;">
+            Select tasks to compare side-by-side. Hold Ctrl/Cmd to select multiple.
+        </p>
+        <select name="tasks" multiple size="8" id="task-picker-select" style="margin-bottom: 0.75rem;">
+            {% for t in recent_tasks %}
+            <option value="{{ t.id }}"{% if t.id in selected_task_ids %} selected{% endif %}>
+                {{ t.ticket_id }} &mdash; {{ t.title[:60] }} ({{ t.status }}, {{ t.project }})
+            </option>
+            {% endfor %}
+        </select>
+        <button type="submit" class="outline" style="padding: 0.3rem 1rem; font-size: 0.85rem;">Compare Selected</button>
+    </form>
+    <script>
+    document.getElementById('task-picker-form').addEventListener('submit', function(e) {
+        e.preventDefault();
+        var sel = document.getElementById('task-picker-select');
+        var ids = Array.from(sel.selectedOptions).map(function(o) { return o.value; });
+        if (ids.length < 2) { alert('Select at least 2 tasks to compare.'); return; }
+        window.location.href = '/compare?tasks=' + ids.join(',');
+    });
+    </script>
+</details>
+
+{% if runs %}
+<!-- Export buttons -->
+<div style="display: flex; gap: 0.5rem; margin-bottom: 1rem;">
+    <a href="/compare/export?{{ 'ticket=' ~ selected_ticket if selected_ticket else 'tasks=' ~ selected_task_ids|join(',') }}&format=json"
+       role="button" class="outline secondary" style="padding: 0.3rem 0.75rem; font-size: 0.8rem;">Export JSON</a>
+    <a href="/compare/export?{{ 'ticket=' ~ selected_ticket if selected_ticket else 'tasks=' ~ selected_task_ids|join(',') }}&format=csv"
+       role="button" class="outline secondary" style="padding: 0.3rem 0.75rem; font-size: 0.8rem;">Export CSV</a>
+</div>
+
+<!-- Summary comparison cards -->
+<h2>Summary</h2>
+<figure>
+<table class="compare-table">
+    <thead>
+        <tr>
+            <th>Metric</th>
+            {% for run in runs %}
+            <th>
+                <a href="/task/{{ run.task.id }}">{{ run.task.ticket_id }}</a>
+                {% if run.pipeline_name %}<br><small style="color: var(--pico-muted-color);">{{ run.pipeline_name }}</small>{% endif %}
+            </th>
+            {% endfor %}
+        </tr>
+    </thead>
+    <tbody>
+        <tr>
+            <td><strong>Status</strong></td>
+            {% for run in runs %}
+            <td>
+                {% if run.task.status == "completed" %}<span class="status-free">completed</span>
+                {% elif run.task.status == "failed" %}<span class="status-failed">failed</span>
+                {% elif run.task.status == "in_progress" %}<span class="status-busy">in progress</span>
+                {% else %}{{ run.task.status | replace("_", " ") }}{% endif %}
+            </td>
+            {% endfor %}
+        </tr>
+        <tr>
+            <td><strong>Pipeline</strong></td>
+            {% for run in runs %}
+            <td>{{ run.pipeline_name or "default" }}</td>
+            {% endfor %}
+        </tr>
+        <tr>
+            <td><strong>Total Cost</strong></td>
+            {% for run in runs %}
+            <td class="{{ 'compare-better' if run.winners is defined and run.winners.cost is defined and run.winners.cost == 'better' else 'compare-worse' if run.winners is defined and run.winners.cost is defined and run.winners.cost == 'worse' else '' }}">
+                ${{ "%.4f"|format(run.totals.total_cost) }}
+            </td>
+            {% endfor %}
+        </tr>
+        <tr>
+            <td><strong>Wall Time</strong></td>
+            {% for run in runs %}
+            <td class="{{ 'compare-better' if run.winners is defined and run.winners.duration is defined and run.winners.duration == 'better' else 'compare-worse' if run.winners is defined and run.winners.duration is defined and run.winners.duration == 'worse' else '' }}">
+                {{ run.duration_display }}
+            </td>
+            {% endfor %}
+        </tr>
+        <tr>
+            <td><strong>Total Tokens</strong></td>
+            {% for run in runs %}
+            <td>
+                {{ "{:,}".format(run.totals.total_input_tokens + run.totals.total_output_tokens) }}
+                <br><small style="color: var(--pico-muted-color);">{{ "{:,}".format(run.totals.total_input_tokens) }} in / {{ "{:,}".format(run.totals.total_output_tokens) }} out</small>
+            </td>
+            {% endfor %}
+        </tr>
+        <tr>
+            <td><strong>Max Context Fill</strong></td>
+            {% for run in runs %}
+            <td class="{{ 'compare-better' if run.winners is defined and run.winners.context_fill is defined and run.winners.context_fill == 'better' else 'compare-worse' if run.winners is defined and run.winners.context_fill is defined and run.winners.context_fill == 'worse' else '' }}">
+                {% if run.totals.max_context_fill is not none %}
+                <span class="{{ context_fill_class(run.totals.max_context_fill) }}">{{ "%.1f"|format(run.totals.max_context_fill) }}%</span>
+                {% else %}-{% endif %}
+            </td>
+            {% endfor %}
+        </tr>
+        <tr>
+            <td><strong>Review Cycles</strong></td>
+            {% for run in runs %}
+            <td class="{{ 'compare-better' if run.winners is defined and run.winners.reviews is defined and run.winners.reviews == 'better' else 'compare-worse' if run.winners is defined and run.winners.reviews is defined and run.winners.reviews == 'worse' else '' }}">
+                {{ run.review_cycles }}
+            </td>
+            {% endfor %}
+        </tr>
+        <tr>
+            <td><strong>PR</strong></td>
+            {% for run in runs %}
+            <td>
+                {% if run.task.pr_url %}
+                <a href="{{ run.task.pr_url }}" target="_blank">View PR</a>
+                {% else %}-{% endif %}
+            </td>
+            {% endfor %}
+        </tr>
+        {% if runs|selectattr("totals.codex_runs", "gt", 0)|list %}
+        <tr>
+            <td><strong>Codex Reviews</strong></td>
+            {% for run in runs %}
+            <td>{{ run.totals.codex_runs }} run{{ "s" if run.totals.codex_runs != 1 else "" }}{% if run.totals.codex_cost_usd %} (${{ "%.4f"|format(run.totals.codex_cost_usd) }}){% endif %}</td>
+            {% endfor %}
+        </tr>
+        {% endif %}
+    </tbody>
+</table>
+</figure>
+
+<!-- Per-stage breakdown -->
+<h2>Stage Breakdown</h2>
+{% for run in runs %}
+<details>
+    <summary>
+        <strong>{{ run.task.ticket_id }}</strong>
+        {% if run.pipeline_name %} ({{ run.pipeline_name }}){% endif %}
+        &mdash; {{ run.stages|length }} stages
+    </summary>
+    <figure>
+    <table>
+        <thead>
+            <tr>
+                <th>Stage</th>
+                <th>Iter</th>
+                <th>Cost</th>
+                <th>Duration</th>
+                <th>Input Tokens</th>
+                <th>Output Tokens</th>
+                <th>Context Fill</th>
+                <th>Exit</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for stage in run.stages %}
+            <tr>
+                <td>{{ stage.stage }}</td>
+                <td>{{ stage.iteration }}</td>
+                <td>${{ "%.4f"|format(stage.total_cost_usd or 0) }}</td>
+                <td>{{ format_duration(stage.duration_seconds|int) if stage.duration_seconds else "-" }}</td>
+                <td>{{ "{:,}".format(stage.input_tokens or 0) }}</td>
+                <td>{{ "{:,}".format(stage.output_tokens or 0) }}</td>
+                <td>
+                    {% if stage.context_fill_pct is not none %}
+                    <span class="{{ context_fill_class(stage.context_fill_pct) }}">{{ "%.1f"|format(stage.context_fill_pct) }}%</span>
+                    {% else %}-{% endif %}
+                </td>
+                <td>{{ stage.exit_subtype or "-" }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    </figure>
+</details>
+{% endfor %}
+
+{% elif not comparable_tickets and not recent_tasks %}
+<p style="color: var(--pico-muted-color);">No tasks found in the database. Run some pipelines first to compare results.</p>
+{% endif %}
+
+<style>
+.compare-table td, .compare-table th {
+    text-align: center;
+    vertical-align: middle;
+}
+.compare-table td:first-child, .compare-table th:first-child {
+    text-align: left;
+}
+.compare-better {
+    background: rgba(34, 197, 94, 0.12);
+}
+.compare-worse {
+    background: rgba(239, 68, 68, 0.12);
+}
+</style>
+{% endblock %}
