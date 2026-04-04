@@ -517,6 +517,11 @@ def run_pipeline(
         max_review_iterations, max_ci_retries, max_merge_conflict_retries,
     )
 
+    # Persist the resolved pipeline_id on the task for later querying.
+    if pipeline_tpl is not None:
+        update_task(conn, task_id, pipeline_id=pipeline_tpl.id)
+        conn.commit()
+
     # Extend MCP config with any extra servers declared on the pipeline template.
     if pipeline_tpl is not None and pipeline_tpl.mcp_servers:
         mcp_config = _merge_mcp_configs(mcp_config, pipeline_tpl.mcp_servers)
@@ -1380,6 +1385,11 @@ class _PipelineContext:
     bugtracker_type: str = "Linear"
     auth_mode: str = "oauth"
 
+    @property
+    def _pipeline_id(self) -> int | None:
+        """Return the pipeline template id, or None if no template loaded."""
+        return self.pipeline_tpl.id if self.pipeline_tpl is not None else None
+
     def _refresh_runtime_config(self) -> None:
         """Re-read runtime config from DB and update mutable fields.
 
@@ -1539,6 +1549,7 @@ class _PipelineContext:
             total_cost_usd=codex_ar.cost_usd,
             log_file_path=str(codex_log_file) if codex_log_file else None,
             on_extra_usage=on_extra_usage,
+            pipeline_id=self._pipeline_id,
         )
         self.conn.commit()
 
@@ -1599,6 +1610,7 @@ class _PipelineContext:
                 iteration=iteration,
                 log_file_path=str(log_file) if log_file else None,
                 on_extra_usage=extra_usage,
+                pipeline_id=self._pipeline_id,
             )
             self.conn.commit()
 
@@ -1828,6 +1840,7 @@ class _PipelineContext:
                 stage_run_id=stage_run_id,
                 log_file_path=str(log_file) if log_file else None,
                 on_extra_usage=extra_usage,
+                pipeline_id=self._pipeline_id,
             )
 
         # Create a fresh placeholder for the retry (always an agent stage
@@ -1840,6 +1853,7 @@ class _PipelineContext:
             iteration=iteration,
             log_file_path=str(retry_log_file) if retry_log_file else None,
             on_extra_usage=extra_usage,
+            pipeline_id=self._pipeline_id,
         )
         self.conn.commit()
 
@@ -1915,6 +1929,7 @@ class _PipelineContext:
             stage_run_id=stage_run_id,
             log_file_path=str(log_file) if log_file else None,
             on_extra_usage=on_extra_usage,
+            pipeline_id=self._pipeline_id,
         )
 
         if result.agent_result:
@@ -2089,6 +2104,7 @@ def _run_ci_retry_loop(
             iteration=retry,
             log_file_path=str(log_file) if log_file else None,
             on_extra_usage=ci_fix_extra_usage,
+            pipeline_id=ctx._pipeline_id,
         )
         ctx.conn.commit()
 
@@ -2177,6 +2193,7 @@ def _record_stage_run(
     stage_run_id: int | None = None,
     log_file_path: str | None = None,
     on_extra_usage: bool = False,
+    pipeline_id: int | None = None,
 ) -> None:
     """Insert or update a stage_run row from the result.
 
@@ -2233,6 +2250,7 @@ def _record_stage_run(
             model_usage_json=ar.extra.get("model_usage_json") if ar else None,
             log_file_path=log_file_path,
             on_extra_usage=on_extra_usage,
+            pipeline_id=pipeline_id,
         )
     conn.commit()
 

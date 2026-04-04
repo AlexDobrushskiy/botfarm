@@ -20,6 +20,7 @@ from botfarm.db import (
     get_downsampled_usage_snapshots,
     get_events,
     get_latest_context_fill_by_ticket,
+    get_pipeline_names,
     get_stage_run_aggregates,
     get_stage_runs,
     get_task,
@@ -181,11 +182,18 @@ def _enrich_tasks(
 ) -> list[dict]:
     """Add computed fields to task dicts."""
     aggregates: dict[int, dict] = {}
+    pipeline_names: dict[int, str] = {}
     if conn is not None:
         task_ids = [t["id"] for t in tasks if t.get("id") is not None]
         if task_ids:
             try:
                 aggregates = get_stage_run_aggregates(conn, task_ids)
+            except sqlite3.OperationalError:
+                pass
+        p_ids = list({t["pipeline_id"] for t in tasks if t.get("pipeline_id") is not None})
+        if p_ids:
+            try:
+                pipeline_names = get_pipeline_names(conn, p_ids)
             except sqlite3.OperationalError:
                 pass
     for task in tasks:
@@ -207,6 +215,8 @@ def _enrich_tasks(
         task["total_cost_usd"] = agg["total_cost_usd"]
         task["max_context_fill_pct"] = agg["max_context_fill_pct"]
         task["extra_usage_cost_usd"] = agg["extra_usage_cost_usd"]
+        pid = task.get("pipeline_id")
+        task["pipeline_name"] = pipeline_names.get(pid, "") if pid else ""
     return tasks
 
 

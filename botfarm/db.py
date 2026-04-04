@@ -143,6 +143,7 @@ def insert_task(
     project: str,
     slot: int,
     status: str = "pending",
+    pipeline_id: int | None = None,
 ) -> int:
     """Insert a new task (or reset an existing one for retries) and return its id.
 
@@ -152,8 +153,9 @@ def insert_task(
     """
     conn.execute(
         """
-        INSERT INTO tasks (ticket_id, title, project, slot, status, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO tasks (ticket_id, title, project, slot, status, created_at,
+                           pipeline_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(ticket_id) DO UPDATE SET
             title = excluded.title,
             project = excluded.project,
@@ -171,9 +173,10 @@ def insert_task(
             pr_url = NULL,
             pipeline_stage = NULL,
             review_state = NULL,
-            merge_conflict_retries = 0
+            merge_conflict_retries = 0,
+            pipeline_id = excluded.pipeline_id
         """,
-        (ticket_id, title, project, slot, status, _now_iso()),
+        (ticket_id, title, project, slot, status, _now_iso(), pipeline_id),
     )
     # cursor.lastrowid is unreliable for ON CONFLICT DO UPDATE — when
     # the UPDATE branch fires it may return a stale value from a prior
@@ -194,7 +197,8 @@ def update_task(
     Only the columns passed as keyword arguments are updated.
     Allowed columns: status, started_at, completed_at, turns,
     review_iterations, comments, limit_interruptions, failure_reason,
-    failure_category, pr_url, pipeline_stage, review_state, result_text.
+    failure_category, pr_url, pipeline_stage, review_state, result_text,
+    pipeline_id.
     """
     allowed = {
         "status",
@@ -212,6 +216,7 @@ def update_task(
         "started_on_extra_usage",
         "merge_conflict_retries",
         "result_text",
+        "pipeline_id",
     }
     bad = set(fields) - allowed
     if bad:
@@ -337,6 +342,7 @@ def insert_stage_run(
     model_usage_json: str | None = None,
     log_file_path: str | None = None,
     on_extra_usage: bool = False,
+    pipeline_id: int | None = None,
 ) -> int:
     """Insert a stage run record and return its id."""
     cur = conn.execute(
@@ -347,8 +353,8 @@ def insert_stage_run(
              input_tokens, output_tokens, cache_read_input_tokens,
              cache_creation_input_tokens, total_cost_usd,
              context_fill_pct, model_usage_json, log_file_path,
-             on_extra_usage, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             on_extra_usage, pipeline_id, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             task_id,
@@ -368,6 +374,7 @@ def insert_stage_run(
             model_usage_json,
             log_file_path,
             int(on_extra_usage),
+            pipeline_id,
             _now_iso(),
         ),
     )
@@ -514,6 +521,20 @@ def get_stage_run_aggregates(
         }
         for r in rows
     }
+
+
+def get_pipeline_names(
+    conn: sqlite3.Connection, pipeline_ids: list[int],
+) -> dict[int, str]:
+    """Return a mapping of pipeline_id -> pipeline name for the given IDs."""
+    if not pipeline_ids:
+        return {}
+    placeholders = ",".join("?" for _ in pipeline_ids)
+    rows = conn.execute(
+        f"SELECT id, name FROM pipeline_templates WHERE id IN ({placeholders})",  # noqa: S608
+        pipeline_ids,
+    ).fetchall()
+    return {r["id"]: r["name"] for r in rows}
 
 
 # ---------------------------------------------------------------------------
