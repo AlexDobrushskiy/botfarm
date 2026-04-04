@@ -1020,6 +1020,7 @@ def workflow_page(request: Request):
             try:
                 models_list = get_cached_models(conn)
             except Exception:
+                logger.warning("Failed to load cached models for workflow page", exc_info=True)
                 models_list = []
 
             for m in models_list:
