@@ -145,6 +145,22 @@ def create_app(
     # Initialise per-app rate-limit caches (isolated per app instance)
     init_caches(app)
 
+    # Seed the available_models table if empty (runs once at startup, not on
+    # every GET /api/models request).  Only attempt when the DB file already
+    # exists — we must not create it here (the supervisor owns creation).
+    _db_file = Path(db_path).expanduser()
+    if _db_file.exists():
+        try:
+            from botfarm.db import init_db
+            from botfarm.models import ensure_seed_data
+            _seed_conn = init_db(db_path)
+            try:
+                ensure_seed_data(_seed_conn)
+            finally:
+                _seed_conn.close()
+        except Exception:
+            logger.debug("Could not seed available_models at startup", exc_info=True)
+
     # Include all route modules
     app.include_router(main_router)
     app.include_router(partials_router)

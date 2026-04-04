@@ -116,8 +116,8 @@ def _fetch_models_from_api(api_key: str) -> list[dict[str, Any]]:
         for m in data.get("data", []):
             efforts = None
             caps = m.get("capabilities", {})
-            if caps.get("effort"):
-                efforts = json.dumps(caps["effort"])
+            if caps.get("extended_thinking"):
+                efforts = json.dumps(["low", "medium", "high", "max"])
 
             all_models.append({
                 "id": m["id"],

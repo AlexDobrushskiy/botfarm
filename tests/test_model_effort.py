@@ -345,7 +345,7 @@ class TestModelCaching:
                         "max_input_tokens": 50000,
                         "max_output_tokens": 4096,
                         "capabilities": {
-                            "effort": ["low", "high"],
+                            "extended_thinking": True,
                         },
                     },
                 ],
@@ -358,7 +358,7 @@ class TestModelCaching:
         assert any(m.id == "claude-test-model" for m in models)
         test_model = next(m for m in models if m.id == "claude-test-model")
         assert test_model.display_name == "Test Model"
-        assert test_model.supported_efforts == ["low", "high"]
+        assert test_model.supported_efforts == ["low", "medium", "high", "max"]
 
     @patch("botfarm.models.httpx.get")
     def test_refresh_models_pagination(self, mock_get, conn):

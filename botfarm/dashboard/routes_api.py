@@ -1119,14 +1119,18 @@ def api_cleanup_batch_detail(request: Request, batch_id: str):
 # --- Model list API ---
 
 @router.get("/api/models")
-def api_list_models(request: Request):
+async def api_list_models(request: Request):
     """Return cached models from the available_models table, grouped by executor_type."""
-    conn = None
     try:
-        conn = init_db(request.app.state.db_path)
-        from botfarm.models import ensure_seed_data, get_cached_models
-        ensure_seed_data(conn)
-        models = get_cached_models(conn)
+        def _read():
+            conn = init_db(request.app.state.db_path)
+            try:
+                from botfarm.models import get_cached_models
+                return get_cached_models(conn)
+            finally:
+                conn.close()
+
+        models = await asyncio.to_thread(_read)
         grouped: dict[str, list[dict]] = {}
         for m in models:
             entry = {
@@ -1143,9 +1147,6 @@ def api_list_models(request: Request):
     except Exception as exc:
         logger.exception("Failed to list models")
         return JSONResponse({"ok": False, "errors": [str(exc)]}, status_code=500)
-    finally:
-        if conn is not None:
-            conn.close()
 
 
 @router.post("/api/models/refresh")
