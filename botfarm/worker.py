@@ -514,7 +514,7 @@ def run_pipeline(
     # A/B comparison), honour it instead of resolving from ticket labels.
     task_row = get_task(conn, task_id)
     pre_assigned_pipeline_id = (
-        task_row["pipeline_id"] if task_row and task_row["pipeline_id"] else None
+        task_row["pipeline_id"] if task_row and task_row["pipeline_id"] is not None else None
     )
 
     # Load pipeline template and derive configuration

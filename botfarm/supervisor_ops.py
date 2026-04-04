@@ -2258,7 +2258,12 @@ Note: The supervisor handles status transitions automatically — do not move th
     def _execute_redispatch(
         self, ticket_id: str, project: str, pipeline_id: int | None,
     ) -> dict:
-        """Validate conditions and re-dispatch a completed ticket for A/B comparison."""
+        """Validate conditions and re-dispatch a completed ticket for A/B comparison.
+
+        Intentionally skips dispatch-pause checks, usage-limit checks, and
+        bugtracker status transitions that ``_execute_dispatch_ticket`` performs —
+        re-dispatch is an explicit user action on an already-completed ticket.
+        """
         # 1. Project exists in config
         project_cfg = self._projects.get(project)
         if project_cfg is None:
