@@ -217,6 +217,12 @@ class TestExecuteDispatchTicket:
         usage_poller.state = usage_state
         sup._usage_poller = usage_poller
 
+        codex_usage_state = MagicMock()
+        codex_usage_state.should_pause.return_value = (False, None)
+        codex_usage_poller = MagicMock()
+        codex_usage_poller.state = codex_usage_state
+        sup._codex_usage_poller = codex_usage_poller
+
         poller = MagicMock()
         poll_result = MagicMock()
         issue = Issue(
@@ -300,6 +306,15 @@ class TestExecuteDispatchTicket:
         _seed_queue(self.db_path, "my-project", "TST-1")
         self.sup._usage_poller.state.should_pause_with_thresholds.return_value = (
             True, "5-hour utilization 90% >= 85% threshold",
+        )
+        result = self._execute("my-project", "TST-1")
+        assert "error" in result
+        assert "Usage limits exceeded" in result["error"]
+
+    def test_codex_usage_limits_exceeded(self, _mock_supervisor):
+        _seed_queue(self.db_path, "my-project", "TST-1")
+        self.sup._codex_usage_poller.state.should_pause.return_value = (
+            True, "primary budget 90% >= 85% threshold",
         )
         result = self._execute("my-project", "TST-1")
         assert "error" in result

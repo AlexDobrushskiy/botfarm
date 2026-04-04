@@ -2128,20 +2128,12 @@ Note: The supervisor handles status transitions automatically — do not move th
                     f"{', '.join(blockers)}",
                 }
 
-        # 5. A free slot exists
-        prior = build_prior_context(self._conn, ticket_id)
-        slot = self._slot_manager.find_free_slot_for_project(
-            project, preferred_slot_id=prior.prior_slot,
-        )
-        if slot is None:
-            return {"error": f"No free slot available for project '{project}'"}
-
-        # 6. Global dispatch is not paused
+        # 5. Global dispatch is not paused
         if self._slot_manager.dispatch_paused:
             reason = self._slot_manager.dispatch_pause_reason or "unknown"
             return {"error": f"Global dispatch is paused ({reason})"}
 
-        # 7. Project is not paused
+        # 6. Project is not paused
         if self._slot_manager.is_project_paused(project):
             reason = (
                 self._slot_manager.get_project_pause_reason(project)
@@ -2149,7 +2141,7 @@ Note: The supervisor handles status transitions automatically — do not move th
             )
             return {"error": f"Project '{project}' is paused ({reason})"}
 
-        # 8. Usage limits are not exceeded
+        # 7. Usage limits are not exceeded (Anthropic)
         thresholds = self._config.usage_limits
         should_pause, usage_reason = (
             self._usage_poller.state.should_pause_with_thresholds(
@@ -2160,6 +2152,24 @@ Note: The supervisor handles status transitions automatically — do not move th
         )
         if should_pause:
             return {"error": f"Usage limits exceeded ({usage_reason})"}
+
+        # 8. Usage limits are not exceeded (Codex budget)
+        cu = self._config.codex_usage
+        codex_pause, codex_reason = self._codex_usage_poller.state.should_pause(
+            primary_threshold=cu.pause_primary_threshold,
+            secondary_threshold=cu.pause_secondary_threshold,
+            enabled=cu.enabled,
+        )
+        if codex_pause:
+            return {"error": f"Usage limits exceeded ({codex_reason})"}
+
+        # 9. A free slot exists
+        prior = build_prior_context(self._conn, ticket_id)
+        slot = self._slot_manager.find_free_slot_for_project(
+            project, preferred_slot_id=prior.prior_slot,
+        )
+        if slot is None:
+            return {"error": f"No free slot available for project '{project}'"}
 
         # Fetch the ticket from the poller
         poller = self._pollers.get(project)
