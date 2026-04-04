@@ -33,13 +33,16 @@ from botfarm.db import (
     get_last_refactoring_analysis_date,
     get_last_scheduled_refactoring_ticket,
     get_task,
+    get_task_by_ticket,
     insert_event,
+    insert_redispatch_task,
     record_refactoring_analysis_created,
     update_task,
 )
 from botfarm.slots import SlotState, _is_pid_alive
 from botfarm.supervisor_workers import (
     StopSlotResult,
+    _StallInfo,
     _WorkerResult,
     _collect_descendant_pids,
     _kill_pids,
@@ -2256,8 +2259,6 @@ Note: The supervisor handles status transitions automatically — do not move th
         self, ticket_id: str, project: str, pipeline_id: int | None,
     ) -> dict:
         """Validate conditions and re-dispatch a completed ticket for A/B comparison."""
-        from botfarm.db import get_task_by_ticket, insert_redispatch_task
-
         # 1. Project exists in config
         project_cfg = self._projects.get(project)
         if project_cfg is None:
@@ -2324,7 +2325,6 @@ Note: The supervisor handles status transitions automatically — do not move th
             pipeline_id=pipeline_id,
             status="in_progress",
         )
-        from botfarm.db import update_task
         on_extra = self._usage_poller.state.is_on_extra_usage
         update_task(
             self._conn, task_id,
@@ -2367,8 +2367,6 @@ Note: The supervisor handles status transitions automatically — do not move th
         )
 
         # 11. Stall tracking so hung redispatched workers are detected
-        import time
-        from botfarm.supervisor_workers import _StallInfo
         self._stall_tracking[(project, slot.slot_id)] = _StallInfo(
             dispatch_usage_5h=self._usage_poller.state.utilization_5h,
             dispatch_time=time.time(),

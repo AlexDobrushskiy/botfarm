@@ -79,6 +79,7 @@ from botfarm.workflow import (
     get_loop_for_stage,
     get_stage,
     load_pipeline,
+    load_pipeline_by_id,
     render_prompt as render_prompt,
     resolve_max_iterations,
 )
@@ -509,16 +510,25 @@ def run_pipeline(
         bugtracker_url=bugtracker_url, jira_username=effective_email,
     ) if effective_tracker_key else ""
 
+    # If the supervisor pre-assigned a pipeline_id (e.g. re-dispatch for
+    # A/B comparison), honour it instead of resolving from ticket labels.
+    task_row = get_task(conn, task_id)
+    pre_assigned_pipeline_id = (
+        task_row["pipeline_id"] if task_row and task_row["pipeline_id"] else None
+    )
+
     # Load pipeline template and derive configuration
     (stages, turns_cfg, eff_max_review_iterations, eff_max_ci_retries,
      eff_max_merge_conflict_retries, loop_managed_stages,
      pipeline_tpl) = _load_pipeline_config(
         conn, ticket_id, ticket_labels or [], max_turns,
         max_review_iterations, max_ci_retries, max_merge_conflict_retries,
+        task_pipeline_id=pre_assigned_pipeline_id,
     )
 
     # Persist the resolved pipeline_id on the task for later querying.
-    if pipeline_tpl is not None:
+    # Skip if already pre-assigned (re-dispatch) to avoid overwriting.
+    if pipeline_tpl is not None and not pre_assigned_pipeline_id:
         update_task(conn, task_id, pipeline_id=pipeline_tpl.id)
         conn.commit()
 
@@ -691,6 +701,7 @@ def _load_pipeline_config(
     max_review_iterations: int,
     max_ci_retries: int,
     max_merge_conflict_retries: int = 2,
+    task_pipeline_id: int | None = None,
 ) -> tuple[
     tuple[str, ...],
     dict[str, int],
@@ -702,13 +713,20 @@ def _load_pipeline_config(
 ]:
     """Load pipeline template from DB and derive all configuration.
 
+    When *task_pipeline_id* is set (e.g. supervisor pre-assigned it for a
+    re-dispatch), that specific pipeline is loaded directly.  Otherwise
+    the pipeline is resolved from *ticket_labels* (label-based routing).
+
     Returns ``(stages, turns_cfg, eff_max_review_iterations,
     eff_max_ci_retries, eff_max_merge_conflict_retries,
     loop_managed_stages, pipeline_tpl)``.
     """
     pipeline_tpl: PipelineTemplate | None = None
     try:
-        pipeline_tpl = load_pipeline(conn, ticket_labels)
+        if task_pipeline_id is not None:
+            pipeline_tpl = load_pipeline_by_id(conn, task_pipeline_id)
+        else:
+            pipeline_tpl = load_pipeline(conn, ticket_labels)
         logger.info(
             "Loaded pipeline '%s' for %s (stages: %s)",
             pipeline_tpl.name, ticket_id,

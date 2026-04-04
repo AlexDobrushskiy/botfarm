@@ -81,6 +81,16 @@ def load_pipeline(conn: sqlite3.Connection, ticket_labels: list[str]) -> Pipelin
     return _build_pipeline(conn, row)
 
 
+def load_pipeline_by_id(conn: sqlite3.Connection, pipeline_id: int) -> PipelineTemplate:
+    """Load a specific pipeline template by its database ID."""
+    row = conn.execute(
+        "SELECT * FROM pipeline_templates WHERE id = ?", (pipeline_id,)
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"Pipeline with id={pipeline_id} not found")
+    return _build_pipeline(conn, row)
+
+
 def load_pipeline_by_name(conn: sqlite3.Connection, name: str) -> PipelineTemplate:
     """Load a specific pipeline template by name."""
     row = conn.execute(
