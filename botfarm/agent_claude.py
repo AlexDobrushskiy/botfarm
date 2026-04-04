@@ -30,7 +30,7 @@ class ClaudeAdapter:
 
     @property
     def supports_model_override(self) -> bool:
-        return False
+        return True
 
     def run(
         self,
@@ -39,6 +39,7 @@ class ClaudeAdapter:
         cwd: Path,
         max_turns: int | None = None,
         model: str | None = None,
+        effort: str | None = None,
         log_file: Path | None = None,
         env: dict[str, str] | None = None,
         timeout: float | None = None,
@@ -55,6 +56,8 @@ class ClaudeAdapter:
             timeout=timeout,
             mcp_config=mcp_config,
             auth_mode=self._auth_mode,
+            model=model,
+            effort=effort,
         )
         return _claude_result_to_agent_result(claude_result)
 

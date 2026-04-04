@@ -877,6 +877,10 @@ class TestMigrationInfrastructure:
         c.execute("ALTER TABLE cleanup_batch_items RENAME COLUMN tracker_uuid TO linear_uuid")
         # Reverse migration 033 (mcp_servers column on pipeline_templates)
         c.execute("ALTER TABLE pipeline_templates DROP COLUMN mcp_servers")
+        # Reverse migration 035 (model/effort columns on stage_templates, available_models table)
+        c.execute("ALTER TABLE stage_templates DROP COLUMN model")
+        c.execute("ALTER TABLE stage_templates DROP COLUMN effort")
+        c.execute("DROP TABLE IF EXISTS available_models")
         c.commit()
 
         # Now run migrations 030+
@@ -924,6 +928,10 @@ class TestMigrationInfrastructure:
         c.execute("ALTER TABLE cleanup_batch_items RENAME COLUMN tracker_uuid TO linear_uuid")
         # Reverse migration 033 (mcp_servers column on pipeline_templates)
         c.execute("ALTER TABLE pipeline_templates DROP COLUMN mcp_servers")
+        # Reverse migration 035 (model/effort columns on stage_templates, available_models table)
+        c.execute("ALTER TABLE stage_templates DROP COLUMN model")
+        c.execute("ALTER TABLE stage_templates DROP COLUMN effort")
+        c.execute("DROP TABLE IF EXISTS available_models")
         c.commit()
 
         # Running migrations 030+ must not fail on pre-existing tables

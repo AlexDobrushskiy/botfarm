@@ -317,6 +317,8 @@ def run_claude_streaming(
     timeout: float | None = None,
     mcp_config: str | None = None,
     auth_mode: str = "oauth",
+    model: str | None = None,
+    effort: str | None = None,
 ) -> ClaudeResult:
     """Run ``claude`` with streaming output and per-turn context fill callbacks.
 
@@ -352,6 +354,10 @@ def run_claude_streaming(
         "--dangerously-skip-permissions",
         "--max-turns", str(max_turns),
     ]
+    if model:
+        cmd.extend(["--model", model])
+    if effort:
+        cmd.extend(["--effort", effort])
     # In --bare mode, Claude Code skips hooks, auto-memory, and CLAUDE.md
     # auto-discovery; --add-dir compensates for the last of these.
     if auth_mode == "api_key":

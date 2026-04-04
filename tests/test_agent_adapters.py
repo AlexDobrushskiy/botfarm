@@ -38,7 +38,7 @@ class TestClaudeAdapter:
         assert adapter.name == "claude"
         assert adapter.supports_context_fill is True
         assert adapter.supports_max_turns is True
-        assert adapter.supports_model_override is False
+        assert adapter.supports_model_override is True
 
     @patch("botfarm.agent_claude.run_claude_streaming")
     def test_run_delegates_to_run_claude_streaming(self, mock_run, tmp_path: Path):
@@ -77,6 +77,8 @@ class TestClaudeAdapter:
             timeout=300.0,
             mcp_config=None,
             auth_mode="oauth",
+            model=None,
+            effort=None,
         )
 
         assert isinstance(result, AgentResult)
