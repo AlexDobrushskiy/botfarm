@@ -1309,7 +1309,8 @@ def compare_export(request: Request):
         if not export_rows:
             return HTMLResponse("", media_type="text/csv")
         buf = io.StringIO()
-        writer = csv.DictWriter(buf, fieldnames=export_rows[0].keys())
+        all_keys = dict.fromkeys(k for row in export_rows for k in row)
+        writer = csv.DictWriter(buf, fieldnames=all_keys, restval="")
         writer.writeheader()
         writer.writerows(export_rows)
         return HTMLResponse(

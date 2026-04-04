@@ -241,6 +241,16 @@ class TestCompareExport:
         assert len(lines) == 3  # header + 2 data rows
         assert "ticket_id" in lines[0]
 
+    def test_export_csv_unequal_stage_counts(self, compare_client):
+        # Task 3 has 1 stage, task 2 has 3 — first row has fewer columns
+        resp = compare_client.get("/compare/export?tasks=3,2&format=csv")
+        assert resp.status_code == 200
+        lines = resp.text.strip().split("\n")
+        assert len(lines) == 3  # header + 2 data rows
+        header = lines[0]
+        # Header should contain stage columns from the task with more stages
+        assert "stage_2_name" in header
+
     def test_export_json_default_format(self, compare_client):
         resp = compare_client.get("/compare/export?ticket=CMP-1")
         assert resp.status_code == 200
