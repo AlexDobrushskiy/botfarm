@@ -93,7 +93,7 @@ def create_app(
     on_redispatch:
         Callback invoked when the user re-dispatches a completed ticket
         with a different pipeline for A/B comparison. Takes
-        ``(ticket_id, project, pipeline_id)`` and returns a result dict.
+        ``(project, ticket_id, pipeline_id)`` and returns a result dict.
     on_add_slot:
         Callback invoked when the user requests adding a new slot. Takes
         ``(project,)`` argument (e.g. ``supervisor.request_add_slot``).
