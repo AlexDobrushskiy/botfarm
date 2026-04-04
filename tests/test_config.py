@@ -4046,3 +4046,35 @@ def test_load_config_dispatch_mode_hot_reload(tmp_path):
     config_path.write_text(yaml.dump(data))
     config2 = load_config(config_path)
     assert config2.projects[0].dispatch_mode == "semi-auto"
+
+
+def test_structural_update_dispatch_mode(tmp_path):
+    """dispatch_mode can be updated via structural config updates."""
+    config_path = _write_config(tmp_path, MINIMAL_CONFIG)
+    config = load_config(config_path)
+    assert config.projects[0].dispatch_mode == "auto"
+
+    errors = validate_structural_config_updates(
+        {"projects": [{"name": "test-project", "dispatch_mode": "semi-auto"}]},
+        config,
+    )
+    assert errors == []
+
+    write_structural_config_updates(config_path, {
+        "projects": [{"name": "test-project", "dispatch_mode": "semi-auto"}],
+    })
+    data = yaml.safe_load(config_path.read_text())
+    assert data["projects"][0]["dispatch_mode"] == "semi-auto"
+
+
+def test_structural_update_dispatch_mode_invalid(tmp_path):
+    """Invalid dispatch_mode value is rejected by structural validation."""
+    config_path = _write_config(tmp_path, MINIMAL_CONFIG)
+    config = load_config(config_path)
+
+    errors = validate_structural_config_updates(
+        {"projects": [{"name": "test-project", "dispatch_mode": "invalid"}]},
+        config,
+    )
+    assert len(errors) == 1
+    assert "invalid dispatch_mode" in errors[0]

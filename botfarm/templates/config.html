@@ -214,6 +214,10 @@
                     </td>
                 </tr>
                 {% endif %}
+                <tr>
+                    <td>Dispatch mode</td>
+                    <td>{{ "Automatic" if project.dispatch_mode == "auto" else "Semi-automatic" }}</td>
+                </tr>
             </tbody>
         </table>
         </figure>
@@ -661,6 +665,15 @@
                    value="{{ project.include_tags | join(', ') }}" placeholder="Leave empty to use global setting">
         </label>
 
+        <label for="project-{{ loop.index0 }}-dispatch_mode">
+            Dispatch mode
+            <small>(Auto: supervisor dispatches automatically. Semi-auto: choose which tickets to run from the queue.)</small>
+            <select id="project-{{ loop.index0 }}-dispatch_mode" class="project-dispatch-mode">
+                <option value="auto" {% if project.dispatch_mode == "auto" %}selected{% endif %}>Automatic</option>
+                <option value="semi-auto" {% if project.dispatch_mode == "semi-auto" %}selected{% endif %}>Semi-automatic</option>
+            </select>
+        </label>
+
         <label>Slots</label>
         <div class="slot-chips" id="slots-{{ loop.index0 }}">
             {% for slot in project.slots %}
@@ -890,6 +903,9 @@ function saveProjects() {
             includeTags = tagsInput.value.split(",").map(function(t) { return t.trim(); }).filter(function(t) { return t !== ""; });
         }
 
+        var dispatchSelect = card.querySelector("select.project-dispatch-mode");
+        var dispatchMode = dispatchSelect ? dispatchSelect.value : "auto";
+
         var slotsContainer = document.getElementById("slots-" + i);
         var chips = slotsContainer.querySelectorAll(".slot-chip");
         var slots = [];
@@ -901,7 +917,8 @@ function saveProjects() {
             name: name,
             slots: slots,
             tracker_project: trackerProject,
-            include_tags: includeTags
+            include_tags: includeTags,
+            dispatch_mode: dispatchMode
         });
     }
 

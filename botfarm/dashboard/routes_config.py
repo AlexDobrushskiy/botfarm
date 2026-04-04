@@ -53,6 +53,7 @@ def _full_config_values(app) -> dict:
                 "worktree_prefix": p.worktree_prefix,
                 "slots": list(p.slots),
                 "include_tags": list(p.include_tags) if p.include_tags else [],
+                "dispatch_mode": p.dispatch_mode,
             }
             for p in cfg.projects
         ],
@@ -178,6 +179,7 @@ def _config_values(app) -> dict:
                 "slots": list(p.slots),
                 "tracker_project": p.tracker_project,
                 "include_tags": list(p.include_tags) if p.include_tags else [],
+                "dispatch_mode": p.dispatch_mode,
             }
             for p in cfg.projects
         ],
