@@ -82,7 +82,7 @@ def load_pipeline(conn: sqlite3.Connection, ticket_labels: list[str]) -> Pipelin
 
 
 def load_pipeline_by_id(conn: sqlite3.Connection, pipeline_id: int) -> PipelineTemplate:
-    """Load a specific pipeline template by its database ID."""
+    """Load a specific pipeline template by database ID."""
     row = conn.execute(
         "SELECT * FROM pipeline_templates WHERE id = ?", (pipeline_id,)
     ).fetchone()

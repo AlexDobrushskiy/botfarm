@@ -1064,10 +1064,12 @@ class Supervisor(RecoveryMixin, OperationsMixin):
         issue,
         poller: BugtrackerPoller,
         prior: PriorContext | None = None,
+        pipeline_id: int | None = None,
     ) -> None:
         """Assign a ticket to a slot and spawn a worker subprocess."""
         self._worker_mgr.dispatch_worker(
             project_name, slot, issue, poller, prior=prior,
+            pipeline_id=pipeline_id,
         )
 
     def _spawn_worker(self, **kwargs) -> multiprocessing.Process:

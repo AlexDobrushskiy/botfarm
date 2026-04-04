@@ -2052,18 +2052,23 @@ Note: The supervisor handles status transitions automatically — do not move th
     # Dispatch ticket (manual / semi-auto)
     # ------------------------------------------------------------------
 
-    def request_dispatch_ticket(self, project: str, ticket_id: str) -> dict:
+    def request_dispatch_ticket(
+        self, project: str, ticket_id: str, pipeline_id: int | None = None,
+    ) -> dict:
         """Thread-safe request to dispatch a specific ticket.
 
         Called from the dashboard thread.  Queues the request and blocks
         until the supervisor tick processes it, then returns a result dict.
+
+        When *pipeline_id* is provided, the worker uses that pipeline
+        instead of auto-selecting based on ticket labels.
         """
         done_event = threading.Event()
         result_holder: list[dict] = []
 
         with self._dispatch_ticket_lock:
             self._dispatch_ticket_requests.append(
-                (project, ticket_id, result_holder, done_event),
+                (project, ticket_id, pipeline_id, result_holder, done_event),
             )
         self._wake_event.set()
 
@@ -2078,9 +2083,11 @@ Note: The supervisor handles status transitions automatically — do not move th
             requests = list(self._dispatch_ticket_requests)
             self._dispatch_ticket_requests.clear()
 
-        for project, ticket_id, result_holder, done_event in requests:
+        for project, ticket_id, pipeline_id, result_holder, done_event in requests:
             try:
-                result = self._execute_dispatch_ticket(project, ticket_id)
+                result = self._execute_dispatch_ticket(
+                    project, ticket_id, pipeline_id=pipeline_id,
+                )
                 result_holder.append(result)
             except Exception as exc:
                 logger.exception(
@@ -2090,7 +2097,9 @@ Note: The supervisor handles status transitions automatically — do not move th
             finally:
                 done_event.set()
 
-    def _execute_dispatch_ticket(self, project: str, ticket_id: str) -> dict:
+    def _execute_dispatch_ticket(
+        self, project: str, ticket_id: str, *, pipeline_id: int | None = None,
+    ) -> dict:
         """Validate conditions and dispatch a manually-selected ticket."""
         from botfarm.supervisor_workers import build_prior_context
 
@@ -2196,7 +2205,10 @@ Note: The supervisor handles status transitions automatically — do not move th
             }
 
         # Dispatch through the same code path as auto-dispatch
-        self._dispatch_worker(project, slot, issue, poller, prior=prior)
+        self._dispatch_worker(
+            project, slot, issue, poller, prior=prior,
+            pipeline_id=pipeline_id,
+        )
 
         logger.info(
             "Manual dispatch: %s → %s/slot-%d",
