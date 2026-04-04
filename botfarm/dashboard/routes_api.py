@@ -263,7 +263,7 @@ async def api_redispatch(request: Request):
                 {"error": "pipeline_id must be an integer"}, status_code=400,
             )
 
-    result = await asyncio.to_thread(cb, ticket_id, project, pipeline_id)
+    result = await asyncio.to_thread(cb, project, ticket_id, pipeline_id)
 
     if "error" in result:
         return JSONResponse(result, status_code=409)

@@ -2190,7 +2190,7 @@ class TestApiRedispatch:
     def test_redispatch_missing_fields_returns_400(self, db_file):
         app = create_app(
             db_path=db_file,
-            on_redispatch=lambda t, p, pid: {"success": True},
+            on_redispatch=lambda p, t, pid: {"success": True},
         )
         client = TestClient(app)
         # Missing ticket_id
@@ -2204,7 +2204,7 @@ class TestApiRedispatch:
     def test_redispatch_success(self, db_file):
         app = create_app(
             db_path=db_file,
-            on_redispatch=lambda t, p, pid: {"success": True, "slot_id": 2},
+            on_redispatch=lambda p, t, pid: {"success": True, "slot_id": 2},
         )
         client = TestClient(app)
         resp = client.post("/api/redispatch", json={
@@ -2216,7 +2216,7 @@ class TestApiRedispatch:
     def test_redispatch_error_returns_409(self, db_file):
         app = create_app(
             db_path=db_file,
-            on_redispatch=lambda t, p, pid: {"error": "Not in terminal state"},
+            on_redispatch=lambda p, t, pid: {"error": "Not in terminal state"},
         )
         client = TestClient(app)
         resp = client.post("/api/redispatch", json={
@@ -2227,7 +2227,7 @@ class TestApiRedispatch:
     def test_redispatch_invalid_pipeline_id_type(self, db_file):
         app = create_app(
             db_path=db_file,
-            on_redispatch=lambda t, p, pid: {"success": True},
+            on_redispatch=lambda p, t, pid: {"success": True},
         )
         client = TestClient(app)
         resp = client.post("/api/redispatch", json={

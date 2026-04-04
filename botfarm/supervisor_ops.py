@@ -2228,7 +2228,7 @@ Note: The supervisor handles status transitions automatically — do not move th
     # ------------------------------------------------------------------
 
     def request_redispatch(
-        self, ticket_id: str, project: str, pipeline_id: int | None,
+        self, project: str, ticket_id: str, pipeline_id: int | None,
     ) -> dict:
         """Thread-safe request to re-dispatch a completed ticket with a different pipeline.
 
@@ -2240,7 +2240,7 @@ Note: The supervisor handles status transitions automatically — do not move th
 
         with self._redispatch_lock:
             self._redispatch_requests.append(
-                (ticket_id, project, pipeline_id, result_holder, done_event),
+                (project, ticket_id, pipeline_id, result_holder, done_event),
             )
         self._wake_event.set()
 
@@ -2255,9 +2255,9 @@ Note: The supervisor handles status transitions automatically — do not move th
             requests = list(self._redispatch_requests)
             self._redispatch_requests.clear()
 
-        for ticket_id, project, pipeline_id, result_holder, done_event in requests:
+        for project, ticket_id, pipeline_id, result_holder, done_event in requests:
             try:
-                result = self._execute_redispatch(ticket_id, project, pipeline_id)
+                result = self._execute_redispatch(project, ticket_id, pipeline_id)
                 result_holder.append(result)
             except Exception as exc:
                 logger.exception(
@@ -2268,7 +2268,7 @@ Note: The supervisor handles status transitions automatically — do not move th
                 done_event.set()
 
     def _execute_redispatch(
-        self, ticket_id: str, project: str, pipeline_id: int | None,
+        self, project: str, ticket_id: str, pipeline_id: int | None,
     ) -> dict:
         """Validate conditions and re-dispatch a completed ticket for A/B comparison.
 

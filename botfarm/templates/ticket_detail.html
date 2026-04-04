@@ -211,8 +211,8 @@ document.getElementById('redispatch-form').addEventListener('submit', async func
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({
-                ticket_id: '{{ task.ticket_id }}',
-                project: '{{ task.project }}',
+                ticket_id: {{ task.ticket_id|tojson }},
+                project: {{ task.project|tojson }},
                 pipeline_id: parseInt(document.getElementById('redispatch-pipeline').value),
             }),
         });
