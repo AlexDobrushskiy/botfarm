@@ -423,6 +423,8 @@ def _pipeline_to_dict(conn: sqlite3.Connection, pipeline_id: int) -> dict | None
             "timeout_minutes": s["timeout_minutes"],
             "shell_command": s["shell_command"],
             "result_parser": s["result_parser"],
+            "model": s["model"],
+            "effort": s["effort"],
         }
         for s in conn.execute(
             "SELECT * FROM stage_templates WHERE pipeline_id = ? ORDER BY stage_order",
@@ -628,6 +630,8 @@ async def api_create_stage(request: Request, pipeline_id: int):
             timeout_minutes=body.get("timeout_minutes"),
             shell_command=body.get("shell_command"),
             result_parser=body.get("result_parser"),
+            model=body.get("model"),
+            effort=body.get("effort"),
         )
         errors = validate_pipeline(conn, pipeline_id)
         if errors:
@@ -647,6 +651,8 @@ async def api_create_stage(request: Request, pipeline_id: int):
             "timeout_minutes": stage_row["timeout_minutes"],
             "shell_command": stage_row["shell_command"],
             "result_parser": stage_row["result_parser"],
+            "model": stage_row["model"],
+            "effort": stage_row["effort"],
         }
         return JSONResponse({"ok": True, "data": data})
     except Exception as exc:
@@ -688,6 +694,8 @@ async def api_update_stage(request: Request, stage_id: int):
             "timeout_minutes": stage_row["timeout_minutes"],
             "shell_command": stage_row["shell_command"],
             "result_parser": stage_row["result_parser"],
+            "model": stage_row["model"],
+            "effort": stage_row["effort"],
         }
         resp: dict = {"ok": True, "data": data}
         if warnings:
@@ -1106,3 +1114,74 @@ def api_cleanup_batch_detail(request: Request, batch_id: str):
         return JSONResponse({"error": str(exc)}, status_code=500)
     finally:
         conn.close()
+
+
+# --- Model list API ---
+
+@router.get("/api/models")
+async def api_list_models(request: Request):
+    """Return cached models from the available_models table, grouped by executor_type."""
+    try:
+        def _read():
+            conn = init_db(request.app.state.db_path)
+            try:
+                from botfarm.models import get_cached_models
+                return get_cached_models(conn)
+            finally:
+                conn.close()
+
+        models = await asyncio.to_thread(_read)
+        grouped: dict[str, list[dict]] = {}
+        for m in models:
+            entry = {
+                "id": m.id,
+                "display_name": m.display_name,
+                "max_input_tokens": m.max_input_tokens,
+                "max_output_tokens": m.max_output_tokens,
+                "supported_efforts": m.supported_efforts,
+                "is_alias": m.is_alias,
+                "fetched_at": m.fetched_at,
+            }
+            grouped.setdefault(m.executor_type, []).append(entry)
+        return JSONResponse({"ok": True, "data": grouped})
+    except Exception as exc:
+        logger.exception("Failed to list models")
+        return JSONResponse({"ok": False, "errors": [str(exc)]}, status_code=500)
+
+
+@router.post("/api/models/refresh")
+async def api_refresh_models(request: Request):
+    """Fetch fresh model list from Anthropic API and cache in DB."""
+    try:
+        body = await request.json()
+        api_key = body.get("api_key", "")
+        if not api_key:
+            return JSONResponse(
+                {"ok": False, "errors": ["api_key is required"]}, status_code=400
+            )
+
+        def _refresh():
+            from botfarm.models import refresh_models
+            conn = init_db(request.app.state.db_path)
+            try:
+                return refresh_models(conn, api_key)
+            finally:
+                conn.close()
+
+        models = await asyncio.to_thread(_refresh)
+        data = [
+            {
+                "id": m.id,
+                "display_name": m.display_name,
+                "max_input_tokens": m.max_input_tokens,
+                "max_output_tokens": m.max_output_tokens,
+                "supported_efforts": m.supported_efforts,
+                "is_alias": m.is_alias,
+                "fetched_at": m.fetched_at,
+            }
+            for m in models
+        ]
+        return JSONResponse({"ok": True, "data": data})
+    except Exception as exc:
+        logger.exception("Failed to refresh models")
+        return JSONResponse({"ok": False, "errors": [str(exc)]}, status_code=500)
