@@ -1237,7 +1237,12 @@ Note: The supervisor handles status transitions automatically — do not move th
         self._conn.commit()
 
         limit_bt_cfg = self._resolve_project_bt(wr.project)
-        if limit_bt_cfg.comment_on_limit_pause and slot and slot.ticket_id:
+        if (
+            limit_bt_cfg.comment_on_limit_pause
+            and slot
+            and slot.ticket_id
+            and not slot.limit_comment_posted
+        ):
             poller = self._pollers.get(wr.project)
             if poller:
                 try:
@@ -1246,6 +1251,9 @@ Note: The supervisor handles status transitions automatically — do not move th
                         f"Botfarm worker paused due to usage limit hit "
                         f"at stage `{wr.failure_stage}`. "
                         f"Will resume automatically after limits reset.",
+                    )
+                    self._slot_manager.set_limit_comment_posted(
+                        wr.project, wr.slot_id, True,
                     )
                 except Exception:
                     logger.exception(

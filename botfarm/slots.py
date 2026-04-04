@@ -57,6 +57,7 @@ class SlotState:
     sigterm_sent_at: str | None = None
     pid: int | None = None
     interrupted_by_limit: bool = False
+    limit_comment_posted: bool = False
     resume_after: str | None = None
     stages_completed: list[str] = field(default_factory=list)
     ticket_labels: list[str] = field(default_factory=list)
@@ -299,6 +300,14 @@ class SlotManager:
         slot.sigterm_sent_at = None
         self._save()
 
+    def set_limit_comment_posted(
+        self, project: str, slot_id: int, posted: bool,
+    ) -> None:
+        """Track whether a limit-pause comment was posted for the current pause."""
+        slot = self._require_slot(project, slot_id)
+        slot.limit_comment_posted = posted
+        self._save()
+
     def mark_paused_manual(self, project: str, slot_id: int) -> None:
         """Pause a slot due to a user-initiated manual pause."""
         slot = self._require_slot(project, slot_id)
@@ -341,6 +350,7 @@ class SlotManager:
         slot.sigterm_sent_at = None
         slot.pid = None
         slot.interrupted_by_limit = False
+        slot.limit_comment_posted = False
         slot.resume_after = None
         slot.stages_completed = []
         slot.ticket_labels = []
@@ -359,6 +369,7 @@ class SlotManager:
         slot.status = "busy"
         slot.resume_after = None
         slot.interrupted_by_limit = False
+        slot.limit_comment_posted = False
         self._save()
 
     # ------------------------------------------------------------------
