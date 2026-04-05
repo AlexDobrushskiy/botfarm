@@ -12,7 +12,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, ClassVar, Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +35,38 @@ class AgentResult:
     cost_usd: float = 0.0
     context_fill_pct: float | None = None
     extra: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ConfigFieldSchema:
+    """Describes a single configuration field for an adapter."""
+
+    name: str
+    field_type: type  # str, int, bool
+    default: Any = None
+    required: bool = False
+    description: str = ""
+
+
+@dataclass
+class AdapterConfigSchema:
+    """Schema describing an adapter's configuration and environment requirements."""
+
+    fields: list[ConfigFieldSchema] = field(default_factory=list)
+    required_env_vars: list[tuple[str, str]] = field(default_factory=list)
+    description: str = ""
+
+
+# Default schema returned by adapters that don't override config_schema().
+_DEFAULT_ADAPTER_SCHEMA = AdapterConfigSchema(
+    fields=[
+        ConfigFieldSchema("enabled", bool, default=False, description="Enable this adapter"),
+        ConfigFieldSchema("model", str, default="", description="Model name override"),
+        ConfigFieldSchema("timeout_minutes", int, default=None, description="Per-stage timeout in minutes"),
+        ConfigFieldSchema("reasoning_effort", str, default="", description="Reasoning effort level"),
+        ConfigFieldSchema("skip_on_reiteration", bool, default=True, description="Skip on review iterations 2+"),
+    ],
+)
 
 
 @runtime_checkable
@@ -96,6 +128,16 @@ class AgentAdapter(Protocol):
         Implementations should delegate to :meth:`check_available` for the
         binary probe and add any adapter-specific checks (auth, tooling)
         on top.
+        """
+        ...
+
+    @classmethod
+    def config_schema(cls) -> AdapterConfigSchema:
+        """Return the configuration schema for this adapter type.
+
+        The schema declares supported config fields, their types and defaults,
+        and any required environment variables.  Used for config validation
+        and dynamic template generation.
         """
         ...
 
@@ -165,3 +207,30 @@ def build_adapter_registry(
         registry[ep.name] = adapter
 
     return registry
+
+
+def discover_adapter_schemas() -> dict[str, AdapterConfigSchema]:
+    """Discover adapter config schemas via setuptools entry points.
+
+    Loads each ``botfarm.adapters`` entry point, looks for a
+    ``config_schema`` attribute on the factory function, and calls it.
+    Returns a mapping of adapter name to schema.
+    """
+    eps = importlib.metadata.entry_points(group="botfarm.adapters")
+    schemas: dict[str, AdapterConfigSchema] = {}
+    for ep in eps:
+        try:
+            factory = ep.load()
+        except Exception:
+            continue
+        schema_fn = getattr(factory, "config_schema", None)
+        if schema_fn is not None:
+            try:
+                schemas[ep.name] = schema_fn()
+            except Exception:
+                logger.warning(
+                    "Failed to get config schema from adapter %r",
+                    ep.name,
+                    exc_info=True,
+                )
+    return schemas

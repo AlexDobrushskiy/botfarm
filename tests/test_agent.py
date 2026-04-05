@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from botfarm.agent import AgentAdapter, AgentResult, ContextFillCallback
+from botfarm.agent import AdapterConfigSchema, AgentAdapter, AgentResult, ContextFillCallback
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +112,10 @@ class _DummyAdapter:
 
     def preflight_checks(self) -> list[tuple[str, bool, str]]:
         return [("available", True, "OK")]
+
+    @classmethod
+    def config_schema(cls) -> AdapterConfigSchema:
+        return AdapterConfigSchema(description="dummy adapter")
 
 
 class _IncompleteAdapter:
