@@ -28,6 +28,7 @@ botfarm = "botfarm.cli:main"
 [project.entry-points."botfarm.adapters"]
 claude = "botfarm.agent_claude:create_adapter"
 codex = "botfarm.agent_codex:create_adapter"
+aider = "botfarm.agent_aider:create_adapter"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
