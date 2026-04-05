@@ -431,7 +431,7 @@ def run_claude_streaming(
         try:
             stdout_lines, claude_result = _parse_ndjson_stream(
                 proc.stdout, on_context_fill=on_context_fill, log_fh=log_fh,
-                context_window=context_window or DEFAULT_CONTEXT_WINDOW,
+                context_window=context_window if context_window is not None else DEFAULT_CONTEXT_WINDOW,
             )
         finally:
             cancel_watchdog.set()

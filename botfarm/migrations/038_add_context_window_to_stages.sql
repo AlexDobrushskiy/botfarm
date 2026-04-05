@@ -1,3 +1,3 @@
 -- Add per-stage context window override (nullable INTEGER, tokens).
--- When NULL, falls back to the model's max_input_tokens from available_models.
+-- When NULL, falls back to DEFAULT_CONTEXT_WINDOW (200k tokens).
 ALTER TABLE stage_templates ADD COLUMN context_window INTEGER;
