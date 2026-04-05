@@ -40,6 +40,7 @@ class ClaudeAdapter:
         max_turns: int | None = None,
         model: str | None = None,
         effort: str | None = None,
+        context_window: int | None = None,
         log_file: Path | None = None,
         env: dict[str, str] | None = None,
         timeout: float | None = None,
@@ -58,6 +59,7 @@ class ClaudeAdapter:
             auth_mode=self._auth_mode,
             model=model,
             effort=effort,
+            context_window=context_window,
         )
         return _claude_result_to_agent_result(claude_result)
 

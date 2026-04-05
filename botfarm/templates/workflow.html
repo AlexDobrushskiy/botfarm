@@ -56,6 +56,16 @@
             </select>
         </div>
 
+        <div class="stage-prop-row stage-field-claude" data-stage-id="{{ stage.id }}"
+             {% if stage.executor_type != 'claude' %}style="display:none"{% endif %}>
+            <label class="stage-prop-label" for="prop-context_window-{{ stage.id }}">Context window</label>
+            <div class="stage-prop-with-unit">
+                <input type="number" class="stage-prop-input" id="prop-context_window-{{ stage.id }}"
+                       value="{{ stage.context_window if stage.context_window is not none else '' }}" min="1" placeholder="Model default">
+                <span class="stage-prop-unit">tokens</span>
+            </div>
+        </div>
+
         <div class="stage-prop-row stage-field-shell" data-stage-id="{{ stage.id }}"
              {% if stage.executor_type != 'shell' %}style="display:none"{% endif %}>
             <label class="stage-prop-label" for="prop-shell_command-{{ stage.id }}">Shell command</label>
@@ -1536,6 +1546,8 @@ function saveStageProperties(stageId) {
         body.max_turns = maxTurns ? parseInt(maxTurns, 10) : null;
         body.model = document.getElementById('prop-model-' + stageId).value || null;
         body.effort = document.getElementById('prop-effort-' + stageId).value || null;
+        var ctxWin = document.getElementById('prop-context_window-' + stageId).value;
+        body.context_window = ctxWin ? parseInt(ctxWin, 10) : null;
         body.shell_command = null;
     } else if (execType === 'shell') {
         body.shell_command = document.getElementById('prop-shell_command-' + stageId).value || null;
@@ -1543,6 +1555,7 @@ function saveStageProperties(stageId) {
         body.max_turns = null;
         body.model = null;
         body.effort = null;
+        body.context_window = null;
     } else {
         // internal
         body.identity = null;
@@ -1551,6 +1564,7 @@ function saveStageProperties(stageId) {
         body.result_parser = null;
         body.model = null;
         body.effort = null;
+        body.context_window = null;
     }
 
     var timeout = document.getElementById('prop-timeout_minutes-' + stageId).value;

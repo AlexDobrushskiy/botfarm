@@ -188,6 +188,7 @@ def _parse_ndjson_stream(
     *,
     on_context_fill: ContextFillCallback | None = None,
     log_fh=None,
+    context_window: int = DEFAULT_CONTEXT_WINDOW,
 ) -> tuple[list[str], ClaudeResult | None]:
     """Read NDJSON lines from Claude's stdout stream.
 
@@ -227,7 +228,7 @@ def _parse_ndjson_stream(
             turn_number += 1
             usage = (event.get("message") or {}).get("usage")
             if usage and on_context_fill is not None:
-                fill_pct = _compute_turn_context_fill(usage, DEFAULT_CONTEXT_WINDOW)
+                fill_pct = _compute_turn_context_fill(usage, context_window)
                 if fill_pct is not None:
                     try:
                         on_context_fill(turn_number, fill_pct)
@@ -319,6 +320,7 @@ def run_claude_streaming(
     auth_mode: str = "oauth",
     model: str | None = None,
     effort: str | None = None,
+    context_window: int | None = None,
 ) -> ClaudeResult:
     """Run ``claude`` with streaming output and per-turn context fill callbacks.
 
@@ -429,6 +431,7 @@ def run_claude_streaming(
         try:
             stdout_lines, claude_result = _parse_ndjson_stream(
                 proc.stdout, on_context_fill=on_context_fill, log_fh=log_fh,
+                context_window=context_window or DEFAULT_CONTEXT_WINDOW,
             )
         finally:
             cancel_watchdog.set()
