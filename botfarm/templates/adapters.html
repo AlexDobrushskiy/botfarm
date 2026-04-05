@@ -1,0 +1,298 @@
+{% extends "base.html" %}
+{% set active_page = "adapters" %}
+{% block title %}Adapters - Botfarm{% endblock %}
+{% block content %}
+<style>
+    .adapter-card {
+        border: 1px solid var(--pico-muted-border-color);
+        border-radius: var(--pico-border-radius);
+        padding: 1.25rem;
+        margin-bottom: 1.25rem;
+    }
+    .adapter-card.enabled {
+        border-left: 3px solid var(--pico-ins-color);
+    }
+    .adapter-card.disabled {
+        border-left: 3px solid var(--pico-muted-color);
+        opacity: 0.75;
+    }
+    .adapter-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 0.75rem;
+    }
+    .adapter-header h3 {
+        margin: 0;
+        font-size: 1.15rem;
+    }
+    .adapter-badge {
+        display: inline-block;
+        padding: 0.15rem 0.6rem;
+        border-radius: 1rem;
+        font-size: 0.8rem;
+        font-weight: 600;
+    }
+    .badge-enabled {
+        background: rgba(34, 197, 94, 0.15);
+        color: var(--pico-ins-color);
+    }
+    .badge-disabled {
+        background: rgba(150, 150, 150, 0.15);
+        color: var(--pico-muted-color);
+    }
+    .badge-missing {
+        background: rgba(239, 68, 68, 0.15);
+        color: var(--pico-del-color);
+    }
+    .cap-tag {
+        display: inline-block;
+        background: var(--pico-card-background-color);
+        border: 1px solid var(--pico-muted-border-color);
+        border-radius: 1rem;
+        padding: 0.1rem 0.55rem;
+        font-size: 0.78rem;
+        margin-right: 0.3rem;
+        margin-bottom: 0.3rem;
+    }
+    .cap-tag.yes { border-color: var(--pico-ins-color); color: var(--pico-ins-color); }
+    .cap-tag.no { border-color: var(--pico-muted-border-color); color: var(--pico-muted-color); text-decoration: line-through; }
+    .adapter-form fieldset {
+        margin-bottom: 0.5rem;
+    }
+    .adapter-form label {
+        font-size: 0.85rem;
+        margin-bottom: 0.2rem;
+    }
+    .adapter-form input, .adapter-form select {
+        font-size: 0.9rem;
+        padding: 0.4rem 0.6rem;
+    }
+    .adapter-form .row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 0.75rem;
+    }
+    .preflight-table {
+        font-size: 0.85rem;
+        margin-top: 0.75rem;
+    }
+    .preflight-table th, .preflight-table td {
+        padding: 0.3rem 0.5rem;
+    }
+    .config-feedback {
+        padding: 0.75rem 1rem;
+        border-radius: var(--pico-border-radius);
+        margin-bottom: 1rem;
+    }
+    .config-feedback.success {
+        background: rgba(34, 197, 94, 0.15);
+        color: var(--pico-ins-color);
+    }
+    .config-feedback.error {
+        background: rgba(239, 68, 68, 0.15);
+        color: var(--pico-del-color);
+    }
+    .config-feedback ul { margin: 0.25rem 0 0 1.25rem; padding: 0; }
+    .env-vars {
+        font-size: 0.82rem;
+        color: var(--pico-muted-color);
+        margin-top: 0.5rem;
+    }
+    .env-vars code {
+        font-size: 0.8rem;
+    }
+</style>
+
+<div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem;">
+    <h1 style="margin-bottom: 0;">Adapters</h1>
+    <button class="pause-btn"
+            style="background: var(--pico-primary); color: #fff;"
+            hx-post="/api/adapter-preflight"
+            hx-swap="none"
+            onclick="showToast('Preflight recheck triggered', 'success')">
+        Re-run Preflight
+    </button>
+</div>
+
+{% if not config_enabled %}
+<p style="color: var(--pico-muted-color);">
+    Configuration is not available. Start the supervisor to manage adapters.
+</p>
+{% else %}
+
+<div id="adapter-feedback"></div>
+
+{% for adapter in adapters %}
+<article class="adapter-card {{ 'enabled' if adapter.enabled else 'disabled' }}" id="adapter-{{ adapter.name }}">
+    <div class="adapter-header">
+        <div>
+            <h3>{{ adapter.name }}</h3>
+            {% if adapter.description %}
+            <small style="color: var(--pico-muted-color);">{{ adapter.description }}</small>
+            {% endif %}
+        </div>
+        <div>
+            {% if adapter.enabled %}
+                <span class="adapter-badge badge-enabled">Enabled</span>
+            {% else %}
+                <span class="adapter-badge badge-disabled">Disabled</span>
+            {% endif %}
+            {% if not adapter.in_registry %}
+                <span class="adapter-badge badge-missing">Not installed</span>
+            {% endif %}
+        </div>
+    </div>
+
+    {% if adapter.capabilities %}
+    <div style="margin-bottom: 0.75rem;">
+        <span class="cap-tag {{ 'yes' if adapter.capabilities.context_fill else 'no' }}">context fill</span>
+        <span class="cap-tag {{ 'yes' if adapter.capabilities.max_turns else 'no' }}">max turns</span>
+        <span class="cap-tag {{ 'yes' if adapter.capabilities.model_override else 'no' }}">model override</span>
+    </div>
+    {% endif %}
+
+    <form class="adapter-form" onsubmit="return saveAdapter(event, '{{ adapter.name }}')">
+        <div class="row">
+            <fieldset>
+                <label for="{{ adapter.name }}-enabled">
+                    <input type="checkbox" id="{{ adapter.name }}-enabled"
+                           name="enabled" role="switch"
+                           {{ 'checked' if adapter.enabled }}>
+                    Enabled
+                </label>
+            </fieldset>
+            <fieldset>
+                <label for="{{ adapter.name }}-skip">
+                    <input type="checkbox" id="{{ adapter.name }}-skip"
+                           name="skip_on_reiteration" role="switch"
+                           {{ 'checked' if adapter.skip_on_reiteration }}>
+                    Skip on re-iteration
+                </label>
+            </fieldset>
+        </div>
+        <div class="row">
+            <fieldset>
+                <label for="{{ adapter.name }}-model">Model</label>
+                <input type="text" id="{{ adapter.name }}-model" name="model"
+                       value="{{ adapter.model }}"
+                       placeholder="(default)">
+            </fieldset>
+            <fieldset>
+                <label for="{{ adapter.name }}-timeout">Timeout (minutes)</label>
+                <input type="number" id="{{ adapter.name }}-timeout" name="timeout_minutes"
+                       value="{{ adapter.timeout_minutes if adapter.timeout_minutes is not none else '' }}"
+                       placeholder="(inherit)" min="1">
+            </fieldset>
+        </div>
+        <div class="row">
+            <fieldset>
+                <label for="{{ adapter.name }}-effort">Reasoning effort</label>
+                <select id="{{ adapter.name }}-effort" name="reasoning_effort">
+                    <option value="" {{ 'selected' if not adapter.reasoning_effort }}>Default</option>
+                    <option value="none" {{ 'selected' if adapter.reasoning_effort == 'none' }}>none</option>
+                    <option value="low" {{ 'selected' if adapter.reasoning_effort == 'low' }}>low</option>
+                    <option value="medium" {{ 'selected' if adapter.reasoning_effort == 'medium' }}>medium</option>
+                    <option value="high" {{ 'selected' if adapter.reasoning_effort == 'high' }}>high</option>
+                    <option value="xhigh" {{ 'selected' if adapter.reasoning_effort == 'xhigh' }}>xhigh</option>
+                </select>
+            </fieldset>
+            <fieldset style="display: flex; align-items: flex-end;">
+                <button type="submit" style="width: 100%;">Save</button>
+            </fieldset>
+        </div>
+    </form>
+
+    {% if adapter.required_env_vars %}
+    <div class="env-vars">
+        Required env vars:
+        {% for var_name, var_desc in adapter.required_env_vars %}
+            <code>{{ var_name }}</code>{% if var_desc %} ({{ var_desc }}){% endif %}{% if not loop.last %}, {% endif %}
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if adapter.preflight %}
+    <table class="preflight-table">
+        <thead>
+            <tr>
+                <th style="width: 2rem;">Status</th>
+                <th>Check</th>
+                <th>Message</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for check in adapter.preflight %}
+            <tr>
+                <td style="text-align: center;">
+                    {% if check.passed %}
+                        <span style="color: #22c55e;">&#10003;</span>
+                    {% elif check.critical %}
+                        <span style="color: #ef4444;">&#10007;</span>
+                    {% else %}
+                        <span style="color: #eab308;">&#9888;</span>
+                    {% endif %}
+                </td>
+                <td style="font-family: var(--pico-font-family-monospace, monospace);">{{ check.check }}</td>
+                <td>{{ check.message }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% elif adapter.enabled %}
+    <small style="color: var(--pico-muted-color);">No preflight results yet. Click "Re-run Preflight" to check.</small>
+    {% endif %}
+</article>
+{% endfor %}
+
+{% if not adapters %}
+<p style="color: var(--pico-muted-color);">
+    No adapters discovered. Install adapter packages and restart.
+</p>
+{% endif %}
+
+{% endif %}
+
+<script>
+function saveAdapter(event, adapterName) {
+    event.preventDefault();
+    const form = event.target;
+    const data = {};
+    data[adapterName] = {
+        enabled: form.querySelector('[name="enabled"]').checked,
+        model: form.querySelector('[name="model"]').value,
+        timeout_minutes: form.querySelector('[name="timeout_minutes"]').value || null,
+        reasoning_effort: form.querySelector('[name="reasoning_effort"]').value,
+        skip_on_reiteration: form.querySelector('[name="skip_on_reiteration"]').checked,
+    };
+    const feedback = document.getElementById('adapter-feedback');
+    fetch('/config/adapters', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(data),
+    })
+    .then(resp => resp.text().then(html => ({status: resp.status, html})))
+    .then(({status, html}) => {
+        feedback.innerHTML = html;
+        if (status >= 200 && status < 300) {
+            // Update visual state
+            const card = document.getElementById('adapter-' + adapterName);
+            const enabled = data[adapterName].enabled;
+            card.classList.toggle('enabled', enabled);
+            card.classList.toggle('disabled', !enabled);
+            const badge = card.querySelector('.adapter-badge');
+            if (badge) {
+                badge.className = 'adapter-badge ' + (enabled ? 'badge-enabled' : 'badge-disabled');
+                badge.textContent = enabled ? 'Enabled' : 'Disabled';
+            }
+        }
+        // Auto-clear feedback after 5s
+        setTimeout(() => { feedback.innerHTML = ''; }, 5000);
+    })
+    .catch(() => {
+        feedback.innerHTML = '<div class="config-feedback error" role="alert">Network error.</div>';
+    });
+    return false;
+}
+</script>
+{% endblock %}
