@@ -318,6 +318,7 @@ def default_adapters() -> dict[str, AdapterConfig]:
     return {
         "claude": AdapterConfig(enabled=True),
         "codex": replace(CODEX_ADAPTER_DEFAULTS),
+        "aider": AdapterConfig(),
     }
 
 
@@ -336,7 +337,7 @@ def generate_adapters_yaml(indent: int = 4) -> str:
     prefix = " " * indent
 
     # Ensure stable ordering: known adapters first, then any extras.
-    known_order = ["claude", "codex"]
+    known_order = ["claude", "codex", "aider"]
     ordered_names = [n for n in known_order if n in schemas]
     ordered_names += sorted(n for n in schemas if n not in known_order)
 

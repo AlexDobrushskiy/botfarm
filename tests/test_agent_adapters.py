@@ -1,4 +1,4 @@
-"""Tests for ClaudeAdapter and CodexAdapter."""
+"""Tests for ClaudeAdapter, CodexAdapter, and AiderAdapter."""
 
 from __future__ import annotations
 
@@ -8,8 +8,10 @@ from unittest.mock import patch
 import pytest
 
 from botfarm.agent import AgentAdapter, AgentResult
+from botfarm.agent_aider import AiderAdapter, _aider_result_to_agent_result
 from botfarm.agent_claude import ClaudeAdapter, _claude_result_to_agent_result
 from botfarm.agent_codex import CodexAdapter, _codex_result_to_agent_result
+from botfarm.aider import AiderResult
 from botfarm.codex import CodexResult
 from botfarm.worker_claude import ClaudeResult
 
@@ -25,6 +27,9 @@ class TestProtocolConformance:
 
     def test_codex_adapter_is_agent_adapter(self):
         assert isinstance(CodexAdapter(), AgentAdapter)
+
+    def test_aider_adapter_is_agent_adapter(self):
+        assert isinstance(AiderAdapter(), AgentAdapter)
 
 
 # ---------------------------------------------------------------------------
@@ -424,3 +429,335 @@ class TestCodexCalculateCost:
             extra={"model": "o4-mini", "cache_read_input_tokens": 50_000},
         )
         assert adapter.calculate_cost(cached) < adapter.calculate_cost(full)
+
+
+# ---------------------------------------------------------------------------
+# AiderAdapter
+# ---------------------------------------------------------------------------
+
+
+class TestAiderAdapter:
+    def test_properties(self):
+        adapter = AiderAdapter()
+        assert adapter.name == "aider"
+        assert adapter.supports_context_fill is False
+        assert adapter.supports_max_turns is False
+        assert adapter.supports_model_override is True
+
+    @patch("botfarm.agent_aider.run_aider")
+    def test_run_delegates_to_run_aider(self, mock_run, tmp_path: Path):
+        mock_run.return_value = AiderResult(
+            duration_seconds=20.0,
+            result_text="aider done",
+            input_tokens=4200,
+            output_tokens=892,
+            cost_usd=0.05,
+            model="gpt-4o",
+        )
+
+        adapter = AiderAdapter(model="gpt-4o")
+        result = adapter.run(
+            "test prompt",
+            cwd=tmp_path,
+            log_file=tmp_path / "log.txt",
+            env={"KEY": "val"},
+            timeout=300.0,
+        )
+
+        mock_run.assert_called_once_with(
+            "test prompt",
+            cwd=tmp_path,
+            model="gpt-4o",
+            log_file=tmp_path / "log.txt",
+            env={"KEY": "val"},
+            timeout=300.0,
+        )
+
+        assert isinstance(result, AgentResult)
+        assert result.num_turns == 1  # Aider is single-pass
+        assert result.duration_seconds == 20.0
+        assert result.result_text == "aider done"
+        assert result.is_error is False
+        assert result.input_tokens == 4200
+        assert result.output_tokens == 892
+        assert result.cost_usd == pytest.approx(0.05)
+        assert result.context_fill_pct is None
+        assert result.extra["model"] == "gpt-4o"
+
+    @patch("botfarm.agent_aider.run_aider")
+    def test_run_model_override(self, mock_run, tmp_path: Path):
+        """Runtime model param overrides constructor model."""
+        mock_run.return_value = AiderResult(
+            duration_seconds=1.0,
+            result_text="",
+            model="claude-3-5-sonnet",
+        )
+
+        adapter = AiderAdapter(model="gpt-4o")
+        adapter.run("prompt", cwd=tmp_path, model="claude-3-5-sonnet")
+
+        _, kwargs = mock_run.call_args
+        assert kwargs["model"] == "claude-3-5-sonnet"
+
+    @patch("botfarm.agent_aider.run_aider")
+    def test_run_uses_constructor_model_when_no_override(self, mock_run, tmp_path: Path):
+        mock_run.return_value = AiderResult(
+            duration_seconds=1.0,
+            result_text="",
+            model="gpt-4o",
+        )
+
+        adapter = AiderAdapter(model="gpt-4o")
+        adapter.run("prompt", cwd=tmp_path)
+
+        _, kwargs = mock_run.call_args
+        assert kwargs["model"] == "gpt-4o"
+
+    @patch("botfarm.agent_aider.run_aider")
+    def test_run_no_model(self, mock_run, tmp_path: Path):
+        """No model at construction or runtime passes None."""
+        mock_run.return_value = AiderResult(
+            duration_seconds=1.0,
+            result_text="",
+        )
+
+        adapter = AiderAdapter()
+        adapter.run("prompt", cwd=tmp_path)
+
+        _, kwargs = mock_run.call_args
+        assert kwargs["model"] is None
+
+    @patch("botfarm.agent_aider.check_aider_available")
+    def test_check_available_delegates(self, mock_check):
+        mock_check.return_value = (True, "aider v0.82.1")
+        ok, msg = AiderAdapter().check_available()
+        assert ok is True
+        assert "0.82.1" in msg
+        mock_check.assert_called_once()
+
+    @patch("botfarm.agent_aider.check_aider_available")
+    def test_check_available_not_found(self, mock_check):
+        mock_check.return_value = (False, "aider binary not found on PATH")
+        ok, msg = AiderAdapter().check_available()
+        assert ok is False
+        assert "not found" in msg
+
+
+# ---------------------------------------------------------------------------
+# AiderAdapter preflight_checks
+# ---------------------------------------------------------------------------
+
+
+class TestAiderPreflightChecks:
+    @patch("botfarm.agent_aider.check_aider_available")
+    def test_binary_available(self, mock_check, monkeypatch):
+        mock_check.return_value = (True, "aider v0.82.1")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+        results = AiderAdapter().preflight_checks()
+
+        names = [r[0] for r in results]
+        assert "available" in names
+        assert "auth" in names
+        avail = next(r for r in results if r[0] == "available")
+        assert avail[1] is True
+
+    @patch("botfarm.agent_aider.check_aider_available")
+    def test_binary_not_available(self, mock_check, monkeypatch):
+        mock_check.return_value = (False, "aider binary not found on PATH")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+        results = AiderAdapter().preflight_checks()
+
+        avail = next(r for r in results if r[0] == "available")
+        assert avail[1] is False
+        assert "pip install aider-chat" in avail[2]
+
+    @patch("botfarm.agent_aider.check_aider_available")
+    def test_no_api_key(self, mock_check, monkeypatch):
+        mock_check.return_value = (True, "aider v0.82.1")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+        results = AiderAdapter().preflight_checks()
+
+        auth = next(r for r in results if r[0] == "auth")
+        assert auth[1] is False
+        assert "OPENAI_API_KEY" in auth[2]
+
+    @patch("botfarm.agent_aider.check_aider_available")
+    def test_openai_key_sufficient(self, mock_check, monkeypatch):
+        mock_check.return_value = (True, "aider v0.82.1")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+        results = AiderAdapter().preflight_checks()
+
+        auth = next(r for r in results if r[0] == "auth")
+        assert auth[1] is True
+        assert "OpenAI" in auth[2]
+
+    @patch("botfarm.agent_aider.check_aider_available")
+    def test_anthropic_key_sufficient(self, mock_check, monkeypatch):
+        mock_check.return_value = (True, "aider v0.82.1")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+        results = AiderAdapter().preflight_checks()
+
+        auth = next(r for r in results if r[0] == "auth")
+        assert auth[1] is True
+        assert "Anthropic" in auth[2]
+
+    @patch("botfarm.agent_aider.check_aider_available")
+    def test_multiple_keys_listed(self, mock_check, monkeypatch):
+        mock_check.return_value = (True, "aider v0.82.1")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+
+        results = AiderAdapter().preflight_checks()
+
+        auth = next(r for r in results if r[0] == "auth")
+        assert auth[1] is True
+        assert "OpenAI" in auth[2]
+        assert "Anthropic" in auth[2]
+        assert "OpenRouter" in auth[2]
+
+
+# ---------------------------------------------------------------------------
+# AiderResult normalization
+# ---------------------------------------------------------------------------
+
+
+class TestAiderResultNormalization:
+    def test_full_normalization(self):
+        ar = AiderResult(
+            duration_seconds=25.0,
+            result_text="all done",
+            input_tokens=4200,
+            output_tokens=892,
+            cost_usd=0.05,
+            model="gpt-4o",
+        )
+        result = _aider_result_to_agent_result(ar, "gpt-4o")
+
+        assert result.num_turns == 1
+        assert result.duration_seconds == 25.0
+        assert result.result_text == "all done"
+        assert result.is_error is False
+        assert result.input_tokens == 4200
+        assert result.output_tokens == 892
+        assert result.cost_usd == pytest.approx(0.05)
+        assert result.context_fill_pct is None
+        assert result.extra["model"] == "gpt-4o"
+        # session_id should be a short hex string
+        assert len(result.session_id) == 12
+
+    def test_error_normalization(self):
+        ar = AiderResult(
+            duration_seconds=2.0,
+            result_text="boom",
+            is_error=True,
+        )
+        result = _aider_result_to_agent_result(ar, None)
+
+        assert result.is_error is True
+        assert result.cost_usd == 0.0
+        assert result.extra["model"] == ""
+
+    def test_model_from_result_when_no_override(self):
+        ar = AiderResult(
+            duration_seconds=1.0,
+            result_text="ok",
+            model="claude-3-5-sonnet",
+        )
+        result = _aider_result_to_agent_result(ar, None)
+
+        assert result.extra["model"] == "claude-3-5-sonnet"
+
+
+# ---------------------------------------------------------------------------
+# AiderAdapter.calculate_cost
+# ---------------------------------------------------------------------------
+
+
+class TestAiderCalculateCost:
+    def test_returns_result_cost_usd(self):
+        adapter = AiderAdapter()
+        result = AgentResult(
+            session_id="s", num_turns=1, duration_seconds=1.0,
+            result_text="", cost_usd=0.42,
+        )
+        assert adapter.calculate_cost(result) == 0.42
+
+    def test_zero_cost(self):
+        adapter = AiderAdapter()
+        result = AgentResult(
+            session_id="s", num_turns=1, duration_seconds=1.0,
+            result_text="", cost_usd=0.0,
+        )
+        assert adapter.calculate_cost(result) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# AiderAdapter config_schema
+# ---------------------------------------------------------------------------
+
+
+class TestAiderConfigSchema:
+    def test_config_schema_classmethod(self):
+        schema = AiderAdapter.config_schema()
+        assert schema.description
+        field_names = [f.name for f in schema.fields]
+        assert "enabled" in field_names
+        assert "model" in field_names
+        assert "timeout_minutes" in field_names
+        assert "skip_on_reiteration" in field_names
+        assert schema.required_env_vars == []
+
+    def test_config_schema_on_instance(self):
+        adapter = AiderAdapter()
+        schema = adapter.config_schema()
+        assert len(schema.fields) > 0
+
+    def test_factory_config_schema_attribute(self):
+        from botfarm.agent_aider import create_adapter as aider_factory
+
+        assert hasattr(aider_factory, "config_schema")
+        assert aider_factory.config_schema().description
+
+
+# ---------------------------------------------------------------------------
+# create_adapter factory
+# ---------------------------------------------------------------------------
+
+
+class TestAiderCreateAdapter:
+    def test_factory_creates_adapter(self):
+        from botfarm.agent_aider import create_adapter
+
+        adapter = create_adapter()
+        assert isinstance(adapter, AiderAdapter)
+        assert adapter._model is None
+
+    def test_factory_with_model(self):
+        from botfarm.agent_aider import create_adapter
+
+        adapter = create_adapter(model="gpt-4o")
+        assert adapter._model == "gpt-4o"
+
+    def test_factory_empty_model_becomes_none(self):
+        from botfarm.agent_aider import create_adapter
+
+        adapter = create_adapter(model="")
+        assert adapter._model is None
+
+    def test_factory_ignores_extra_kwargs(self):
+        from botfarm.agent_aider import create_adapter
+
+        adapter = create_adapter(model="gpt-4o", unknown_param="ignored")
+        assert isinstance(adapter, AiderAdapter)

@@ -24,6 +24,7 @@ from botfarm.agent import (
     AgentResult,
     build_adapter_registry,
 )
+from botfarm.agent_aider import AiderAdapter
 from botfarm.agent_claude import ClaudeAdapter
 from botfarm.agent_codex import CodexAdapter
 from botfarm.codex import CodexResult
@@ -53,10 +54,11 @@ class TestBuildAdapterRegistry:
         reg = build_adapter_registry()
         assert isinstance(reg, dict)
 
-    def test_has_claude_and_codex(self):
+    def test_has_claude_and_codex_and_aider(self):
         reg = build_adapter_registry()
         assert "claude" in reg
         assert "codex" in reg
+        assert "aider" in reg
 
     def test_claude_adapter_type(self):
         reg = build_adapter_registry()
@@ -67,6 +69,11 @@ class TestBuildAdapterRegistry:
         reg = build_adapter_registry()
         assert isinstance(reg["codex"], CodexAdapter)
         assert isinstance(reg["codex"], AgentAdapter)
+
+    def test_aider_adapter_type(self):
+        reg = build_adapter_registry()
+        assert isinstance(reg["aider"], AiderAdapter)
+        assert isinstance(reg["aider"], AgentAdapter)
 
     def test_codex_model_passed(self):
         reg = build_adapter_registry(codex_model="o3")
@@ -107,6 +114,15 @@ class TestBuildAdapterRegistry:
         reg = build_adapter_registry(adapter_configs={"codex": {"model": ""}})
         assert reg["codex"]._model is None
 
+    def test_aider_model_passed(self):
+        reg = build_adapter_registry(adapter_configs={"aider": {"model": "gpt-4o"}})
+        adapter = reg["aider"]
+        assert adapter._model == "gpt-4o"
+
+    def test_aider_empty_model_becomes_none(self):
+        reg = build_adapter_registry(adapter_configs={"aider": {"model": ""}})
+        assert reg["aider"]._model is None
+
     def test_entry_point_discovery(self):
         """Built-in entry points are discovered dynamically."""
         import importlib.metadata
@@ -114,6 +130,7 @@ class TestBuildAdapterRegistry:
         names = {ep.name for ep in eps}
         assert "claude" in names
         assert "codex" in names
+        assert "aider" in names
 
     def test_unknown_adapter_config_ignored(self):
         """Config for an unregistered adapter name is silently ignored."""
@@ -152,15 +169,26 @@ class TestConfigSchema:
         schema = adapter.config_schema()
         assert len(schema.fields) > 0
 
+    def test_aider_config_schema_classmethod(self):
+        schema = AiderAdapter.config_schema()
+        assert schema.description
+        field_names = [f.name for f in schema.fields]
+        assert "enabled" in field_names
+        assert "model" in field_names
+        assert schema.required_env_vars == []
+
     def test_factory_config_schema_attribute(self):
         """Factory functions expose config_schema for entry-point discovery."""
+        from botfarm.agent_aider import create_adapter as aider_factory
         from botfarm.agent_claude import create_adapter as claude_factory
         from botfarm.agent_codex import create_adapter as codex_factory
 
         assert hasattr(claude_factory, "config_schema")
         assert hasattr(codex_factory, "config_schema")
+        assert hasattr(aider_factory, "config_schema")
         assert claude_factory.config_schema().description
         assert codex_factory.config_schema().description
+        assert aider_factory.config_schema().description
 
     def test_discover_adapter_schemas(self):
         from botfarm.agent import discover_adapter_schemas
