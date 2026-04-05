@@ -85,6 +85,7 @@ class TestClaudeAdapter:
             model=None,
             effort=None,
             context_window=None,
+            thinking_mode=None,
         )
 
         assert isinstance(result, AgentResult)

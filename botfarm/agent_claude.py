@@ -46,6 +46,7 @@ class ClaudeAdapter:
         model: str | None = None,
         effort: str | None = None,
         context_window: int | None = None,
+        thinking_mode: str | None = None,
         log_file: Path | None = None,
         env: dict[str, str] | None = None,
         timeout: float | None = None,
@@ -65,6 +66,7 @@ class ClaudeAdapter:
             model=model,
             effort=effort,
             context_window=context_window,
+            thinking_mode=thinking_mode,
         )
         return _claude_result_to_agent_result(claude_result)
 

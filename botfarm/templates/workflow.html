@@ -58,6 +58,17 @@
 
         <div class="stage-prop-row stage-field-claude" data-stage-id="{{ stage.id }}"
              {% if stage.executor_type != 'claude' %}style="display:none"{% endif %}>
+            <label class="stage-prop-label" for="prop-thinking_mode-{{ stage.id }}">Thinking</label>
+            <select class="stage-prop-input" id="prop-thinking_mode-{{ stage.id }}">
+                <option value="" {% if not stage.thinking_mode %}selected{% endif %}>(default)</option>
+                <option value="enabled" {% if stage.thinking_mode == 'enabled' %}selected{% endif %}>enabled</option>
+                <option value="adaptive" {% if stage.thinking_mode == 'adaptive' %}selected{% endif %}>adaptive</option>
+                <option value="disabled" {% if stage.thinking_mode == 'disabled' %}selected{% endif %}>disabled</option>
+            </select>
+        </div>
+
+        <div class="stage-prop-row stage-field-claude" data-stage-id="{{ stage.id }}"
+             {% if stage.executor_type != 'claude' %}style="display:none"{% endif %}>
             <label class="stage-prop-label" for="prop-context_window-{{ stage.id }}">Context window</label>
             <div class="stage-prop-with-unit">
                 <input type="number" class="stage-prop-input" id="prop-context_window-{{ stage.id }}"
@@ -1546,6 +1557,7 @@ function saveStageProperties(stageId) {
         body.max_turns = maxTurns ? parseInt(maxTurns, 10) : null;
         body.model = document.getElementById('prop-model-' + stageId).value || null;
         body.effort = document.getElementById('prop-effort-' + stageId).value || null;
+        body.thinking_mode = document.getElementById('prop-thinking_mode-' + stageId).value || null;
         var ctxWin = document.getElementById('prop-context_window-' + stageId).value;
         body.context_window = ctxWin ? parseInt(ctxWin, 10) : null;
         body.shell_command = null;
@@ -1555,6 +1567,7 @@ function saveStageProperties(stageId) {
         body.max_turns = null;
         body.model = null;
         body.effort = null;
+        body.thinking_mode = null;
         body.context_window = null;
     } else {
         // internal
@@ -1564,6 +1577,7 @@ function saveStageProperties(stageId) {
         body.result_parser = null;
         body.model = null;
         body.effort = null;
+        body.thinking_mode = null;
         body.context_window = null;
     }
 

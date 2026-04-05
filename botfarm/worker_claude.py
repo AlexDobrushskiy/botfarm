@@ -321,6 +321,7 @@ def run_claude_streaming(
     model: str | None = None,
     effort: str | None = None,
     context_window: int | None = None,
+    thinking_mode: str | None = None,
 ) -> ClaudeResult:
     """Run ``claude`` with streaming output and per-turn context fill callbacks.
 
@@ -360,6 +361,8 @@ def run_claude_streaming(
         cmd.extend(["--model", model])
     if effort:
         cmd.extend(["--effort", effort])
+    if thinking_mode:
+        cmd.extend(["--thinking", thinking_mode])
     # In --bare mode, Claude Code skips hooks, auto-memory, and CLAUDE.md
     # auto-discovery; --add-dir compensates for the last of these.
     if auth_mode == "api_key":
