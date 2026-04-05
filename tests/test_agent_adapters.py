@@ -339,3 +339,87 @@ class TestCodexResultNormalization:
         ar = _codex_result_to_agent_result(cr, None)
         # Falls back to DEFAULT_CODEX_MODEL ("o4-mini") → $1.10/M input
         assert ar.cost_usd == pytest.approx(1.10)
+
+
+# ---------------------------------------------------------------------------
+# calculate_cost() method tests
+# ---------------------------------------------------------------------------
+
+
+class TestClaudeCalculateCost:
+    def test_returns_result_cost_usd(self):
+        adapter = ClaudeAdapter()
+        result = AgentResult(
+            session_id="s", num_turns=1, duration_seconds=1.0,
+            result_text="", cost_usd=0.42,
+        )
+        assert adapter.calculate_cost(result) == 0.42
+
+    def test_zero_cost(self):
+        adapter = ClaudeAdapter()
+        result = AgentResult(
+            session_id="s", num_turns=1, duration_seconds=1.0,
+            result_text="", cost_usd=0.0,
+        )
+        assert adapter.calculate_cost(result) == 0.0
+
+
+class TestCodexCalculateCost:
+    def test_uses_model_from_extra(self):
+        adapter = CodexAdapter()
+        result = AgentResult(
+            session_id="s", num_turns=1, duration_seconds=1.0,
+            result_text="",
+            input_tokens=1_000_000, output_tokens=1_000_000,
+            extra={"model": "o4-mini", "cache_read_input_tokens": 0},
+        )
+        # 1M input @ $1.10 + 1M output @ $4.40 = $5.50
+        assert adapter.calculate_cost(result) == pytest.approx(5.50)
+
+    def test_falls_back_to_constructor_model(self):
+        adapter = CodexAdapter(model="o3")
+        result = AgentResult(
+            session_id="s", num_turns=1, duration_seconds=1.0,
+            result_text="",
+            input_tokens=1_000_000, output_tokens=0,
+            extra={"model": "", "cache_read_input_tokens": 0},
+        )
+        # 1M input @ $2.00/M = $2.00
+        assert adapter.calculate_cost(result) == pytest.approx(2.00)
+
+    def test_falls_back_to_default_model(self):
+        adapter = CodexAdapter()
+        result = AgentResult(
+            session_id="s", num_turns=1, duration_seconds=1.0,
+            result_text="",
+            input_tokens=1_000_000, output_tokens=0,
+            extra={"model": "", "cache_read_input_tokens": 0},
+        )
+        # Falls back to DEFAULT_CODEX_MODEL ("o4-mini") → $1.10/M input
+        assert adapter.calculate_cost(result) == pytest.approx(1.10)
+
+    def test_unknown_model_returns_zero(self):
+        adapter = CodexAdapter()
+        result = AgentResult(
+            session_id="s", num_turns=1, duration_seconds=1.0,
+            result_text="",
+            input_tokens=1_000, output_tokens=500,
+            extra={"model": "unknown-xyz", "cache_read_input_tokens": 0},
+        )
+        assert adapter.calculate_cost(result) == 0.0
+
+    def test_cached_tokens_reduce_cost(self):
+        adapter = CodexAdapter()
+        full = AgentResult(
+            session_id="s", num_turns=1, duration_seconds=1.0,
+            result_text="",
+            input_tokens=100_000, output_tokens=10_000,
+            extra={"model": "o4-mini", "cache_read_input_tokens": 0},
+        )
+        cached = AgentResult(
+            session_id="s", num_turns=1, duration_seconds=1.0,
+            result_text="",
+            input_tokens=100_000, output_tokens=10_000,
+            extra={"model": "o4-mini", "cache_read_input_tokens": 50_000},
+        )
+        assert adapter.calculate_cost(cached) < adapter.calculate_cost(full)

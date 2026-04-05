@@ -78,6 +78,15 @@ class AgentAdapter(Protocol):
         """Execute the agent with the given prompt and return a unified result."""
         ...
 
+    def calculate_cost(self, result: AgentResult) -> float:
+        """Calculate cost in USD from an :class:`AgentResult`.
+
+        Each adapter owns its pricing logic.  Token-based adapters should
+        use :func:`calculate_cost_from_table`; adapters whose CLI already
+        reports cost can simply return ``result.cost_usd``.
+        """
+        ...
+
     def check_available(self) -> tuple[bool, str]:
         """Preflight availability check.
 
@@ -85,6 +94,32 @@ class AgentAdapter(Protocol):
         adapter is unavailable when available is False.
         """
         ...
+
+
+def calculate_cost_from_table(
+    pricing: dict[str, dict[str, float]],
+    *,
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    cached_input_tokens: int = 0,
+) -> float | None:
+    """Calculate USD cost from a pricing table and token counts.
+
+    *pricing* maps model names to dicts with ``"input"``, ``"output"``,
+    and optionally ``"cached_input"`` keys (prices per 1 M tokens).
+
+    Returns ``None`` if *model* is not in the pricing table.
+    """
+    prices = pricing.get(model)
+    if prices is None:
+        return None
+    non_cached = input_tokens - cached_input_tokens
+    return (
+        non_cached * prices["input"] / 1_000_000
+        + cached_input_tokens * prices.get("cached_input", prices["input"]) / 1_000_000
+        + output_tokens * prices["output"] / 1_000_000
+    )
 
 
 # Type alias: maps executor_type names (e.g. "claude", "codex") to adapter instances.

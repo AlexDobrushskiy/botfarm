@@ -20,7 +20,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from botfarm.agent import AdapterRegistry, build_adapter_registry
+from botfarm.agent import AdapterRegistry, AgentAdapter, build_adapter_registry
 from botfarm.codex import run_codex_streaming as run_codex_streaming
 from botfarm.config import CODEX_ADAPTER_DEFAULTS, AdapterConfig, IdentitiesConfig
 from botfarm.db import delete_stage_run, get_task, insert_event, insert_stage_run, is_extra_usage_active, read_runtime_config, update_stage_run_context_fill, update_task
@@ -1861,6 +1861,9 @@ class _PipelineContext:
         # Finalize the original stage_run with the auth failure result
         # so that any turns/tokens/cost from the failed attempt are preserved.
         if stage_run_id is not None:
+            retry_adapter: AgentAdapter | None = None
+            if stage_tpl and self.registry:
+                retry_adapter = self.registry.get(stage_tpl.executor_type)
             _record_stage_run(
                 self.conn,
                 task_id=self.task_id,
@@ -1872,6 +1875,7 @@ class _PipelineContext:
                 log_file_path=str(log_file) if log_file else None,
                 on_extra_usage=extra_usage,
                 pipeline_id=self._pipeline_id,
+                adapter=retry_adapter,
             )
 
         # Create a fresh placeholder for the retry (always an agent stage
@@ -1950,6 +1954,12 @@ class _PipelineContext:
         """
         wall_elapsed = time.monotonic() - wall_start
 
+        # Resolve adapter for cost calculation.
+        adapter: AgentAdapter | None = None
+        stage_tpl = self._get_stage_tpl(stage)
+        if stage_tpl and self.registry:
+            adapter = self.registry.get(stage_tpl.executor_type)
+
         _record_stage_run(
             self.conn,
             task_id=self.task_id,
@@ -1961,6 +1971,7 @@ class _PipelineContext:
             log_file_path=str(log_file) if log_file else None,
             on_extra_usage=on_extra_usage,
             pipeline_id=self._pipeline_id,
+            adapter=adapter,
         )
 
         if result.agent_result:
@@ -2225,6 +2236,7 @@ def _record_stage_run(
     log_file_path: str | None = None,
     on_extra_usage: bool = False,
     pipeline_id: int | None = None,
+    adapter: AgentAdapter | None = None,
 ) -> None:
     """Insert or update a stage_run row from the result.
 
@@ -2232,8 +2244,16 @@ def _record_stage_run(
     When *stage_run_id* is provided (streaming path), the existing
     placeholder row is updated with final metrics.  Otherwise a new
     row is inserted (non-streaming path).
+
+    When *adapter* is provided, cost is calculated via
+    ``adapter.calculate_cost()`` instead of using the pre-computed
+    ``cost_usd`` on the agent result.
     """
     ar = result.agent_result
+    if ar and adapter is not None:
+        cost = adapter.calculate_cost(ar)
+    else:
+        cost = ar.cost_usd if ar else 0.0
     if stage_run_id is not None:
         # Update the placeholder row created before streaming execution
         conn.execute(
@@ -2256,7 +2276,7 @@ def _record_stage_run(
                 ar.output_tokens if ar else 0,
                 ar.extra.get("cache_read_input_tokens", 0) if ar else 0,
                 ar.extra.get("cache_creation_input_tokens", 0) if ar else 0,
-                ar.cost_usd if ar else 0.0,
+                cost,
                 ar.context_fill_pct if ar else None,
                 ar.extra.get("model_usage_json") if ar else None,
                 stage_run_id,
@@ -2276,7 +2296,7 @@ def _record_stage_run(
             output_tokens=ar.output_tokens if ar else 0,
             cache_read_input_tokens=ar.extra.get("cache_read_input_tokens", 0) if ar else 0,
             cache_creation_input_tokens=ar.extra.get("cache_creation_input_tokens", 0) if ar else 0,
-            total_cost_usd=ar.cost_usd if ar else 0.0,
+            total_cost_usd=cost,
             context_fill_pct=ar.context_fill_pct if ar else None,
             model_usage_json=ar.extra.get("model_usage_json") if ar else None,
             log_file_path=log_file_path,
