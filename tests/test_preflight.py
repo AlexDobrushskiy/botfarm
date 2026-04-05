@@ -30,8 +30,7 @@ from botfarm.preflight import (
     _LANGUAGE_MARKERS,
     _describe_identity,
     _resolve_remote_url,
-    check_claude_binary,
-    check_codex_reviewer,
+    check_adapters,
     check_config_consistency,
     check_core_bare,
     check_credentials,
@@ -1168,6 +1167,22 @@ class TestLogPreflightSummary:
         ]
         assert log_preflight_summary(results) is True
 
+    def test_adapter_results_grouped_in_log(self, caplog):
+        """Adapter results are logged under per-adapter headers."""
+        results = [
+            CheckResult(name="database", passed=True, message="ok"),
+            CheckResult(name="adapter:claude:available", passed=True, message="OK — claude 1.0.30"),
+            CheckResult(name="adapter:codex:available", passed=True, message="OK — codex 0.106.0"),
+            CheckResult(name="adapter:codex:auth", passed=False, message="no key", critical=False),
+        ]
+        import logging
+        with caplog.at_level(logging.DEBUG):
+            result = log_preflight_summary(results)
+        assert result is True  # no critical failures
+        # Verify adapter group headers appear in log output
+        assert any("adapter: claude" in rec.message for rec in caplog.records)
+        assert any("adapter: codex" in rec.message for rec in caplog.records)
+
 
 # ---------------------------------------------------------------------------
 # run_preflight_checks integration
@@ -1192,6 +1207,12 @@ class TestRunPreflightChecks:
         }
         token = OAuthToken(access_token="tok")
 
+        # Stub adapter whose preflight_checks returns a passing result.
+        class _StubAdapter:
+            name = "claude"
+            def preflight_checks(self):
+                return [("available", True, "OK — claude 1.0.30")]
+
         with patch("botfarm.preflight.subprocess.run") as mock_run, \
              patch.object(
                  __import__("botfarm.bugtracker.linear.client", fromlist=["LinearClient"]).LinearClient,
@@ -1200,7 +1221,8 @@ class TestRunPreflightChecks:
              ), \
              patch("botfarm.preflight._load_token", return_value=token), \
              patch("botfarm.preflight.check_installed_unit_stale", return_value=(False, "OK")), \
-             patch("botfarm.preflight.check_claude_available", return_value=(True, "claude 1.0.30")):
+             patch("botfarm.agent.build_adapter_registry",
+                   return_value={"claude": _StubAdapter()}):
             mock_run.return_value.returncode = 0
             mock_run.return_value.stdout = "git@github.com:org/repo.git\n"
             mock_run.return_value.stderr = ""
@@ -1215,129 +1237,137 @@ class TestRunPreflightChecks:
         assert "worktree_dir" in names
         assert "linear_team" in names
         assert "claude_credentials" in names
-        assert "claude_binary" in names
+        assert "adapter" in names
         assert "project_claude_md" in names
 
         # All should pass
         assert all(r.passed for r in results)
 
 
-# --- check_claude_binary ---
+# --- check_adapters ---
 
 
-class TestCheckClaudeBinary:
-    def test_pass_when_claude_available(self):
-        with patch("botfarm.preflight.check_claude_available",
-                    return_value=(True, "/usr/local/bin/claude (1.0.0)")):
-            results = check_claude_binary()
+class TestCheckAdapters:
+    """Tests for the auto-discovering adapter preflight check."""
+
+    def _make_config_with_adapters(self, tmp_path, adapters=None):
+        if adapters is None:
+            adapters = {"claude": AdapterConfig(enabled=True)}
+        return _make_config(
+            tmp_path,
+            agents=AgentsConfig(adapters=adapters),
+        )
+
+    def test_enabled_adapter_passes(self, tmp_path):
+        """Enabled adapter with passing preflight_checks produces pass results."""
+        config = self._make_config_with_adapters(tmp_path)
+
+        class _StubAdapter:
+            def preflight_checks(self):
+                return [("available", True, "OK — claude 1.0.30")]
+
+        with patch("botfarm.agent.build_adapter_registry",
+                   return_value={"claude": _StubAdapter()}):
+            results = check_adapters(config)
+
         assert len(results) == 1
+        assert results[0].name == "adapter:claude:available"
         assert results[0].passed
         assert "OK" in results[0].message
 
-    def test_fail_not_installed(self, tmp_path):
-        """claude not on PATH and not at ~/.local/bin/claude."""
-        with patch("botfarm.preflight.check_claude_available",
-                    return_value=(False, "claude binary not found on PATH")), \
-             patch("botfarm.preflight.Path.expanduser",
-                   return_value=tmp_path / ".local" / "bin"):
-            results = check_claude_binary()
+    def test_enabled_adapter_fails(self, tmp_path):
+        """Enabled adapter with failing check produces fail results."""
+        config = self._make_config_with_adapters(tmp_path)
+
+        class _StubAdapter:
+            def preflight_checks(self):
+                return [("available", False, "binary not found")]
+
+        with patch("botfarm.agent.build_adapter_registry",
+                   return_value={"claude": _StubAdapter()}):
+            results = check_adapters(config)
+
         assert len(results) == 1
+        assert results[0].name == "adapter:claude:available"
         assert not results[0].passed
-        assert "not present at" in results[0].message
-        assert "Install Claude Code" in results[0].message
 
-    def test_fail_installed_but_not_in_path(self, tmp_path):
-        """claude exists at ~/.local/bin/claude but ~/.local/bin is not in PATH."""
-        local_bin = tmp_path / ".local" / "bin"
-        local_bin.mkdir(parents=True)
-        (local_bin / "claude").touch()
-        with patch("botfarm.preflight.check_claude_available",
-                    return_value=(False, "claude binary not found on PATH")), \
-             patch("botfarm.preflight.Path.expanduser",
-                   return_value=local_bin):
-            results = check_claude_binary()
-        assert len(results) == 1
-        assert not results[0].passed
-        assert "not in PATH" in results[0].message
-        assert ".bashrc" in results[0].message
+    def test_disabled_adapter_skipped(self, tmp_path):
+        """Disabled adapters are not checked."""
+        config = self._make_config_with_adapters(tmp_path, adapters={
+            "claude": AdapterConfig(enabled=True),
+            "codex": AdapterConfig(enabled=False),
+        })
 
-    def test_non_not_found_error_unchanged(self):
-        """Errors like timeout should pass through without PATH advice."""
-        with patch("botfarm.preflight.check_claude_available",
-                    return_value=(False, "claude --version timed out")):
-            results = check_claude_binary()
-        assert len(results) == 1
-        assert not results[0].passed
-        assert "timed out" in results[0].message
+        class _StubAdapter:
+            def preflight_checks(self):
+                return [("available", True, "OK")]
 
+        with patch("botfarm.agent.build_adapter_registry",
+                   return_value={"claude": _StubAdapter(), "codex": _StubAdapter()}):
+            results = check_adapters(config)
 
-# --- check_codex_reviewer ---
+        # Only claude should be checked
+        adapter_names = {r.name.split(":")[1] for r in results}
+        assert "claude" in adapter_names
+        assert "codex" not in adapter_names
 
+    def test_enabled_but_not_in_registry(self, tmp_path):
+        """Enabled adapter not found in registry produces a registry error."""
+        config = self._make_config_with_adapters(tmp_path, adapters={
+            "claude": AdapterConfig(enabled=True),
+            "missing": AdapterConfig(enabled=True),
+        })
 
-class TestCheckCodexReviewer:
-    def _make_config_with_codex(self, tmp_path, enabled=True):
-        return _make_config(
-            tmp_path,
-            agents=AgentsConfig(adapters={
-                "claude": AdapterConfig(enabled=True),
-                "codex": AdapterConfig(enabled=enabled, timeout_minutes=15, reasoning_effort="medium"),
-            }),
-        )
+        class _StubAdapter:
+            def preflight_checks(self):
+                return [("available", True, "OK")]
 
-    def test_disabled_returns_empty(self, tmp_path):
-        config = _make_config(tmp_path)
-        results = check_codex_reviewer(config)
-        assert results == []
+        with patch("botfarm.agent.build_adapter_registry",
+                   return_value={"claude": _StubAdapter()}):
+            results = check_adapters(config)
 
-    def test_missing_binary(self, tmp_path):
-        config = self._make_config_with_codex(tmp_path)
-        with patch("botfarm.preflight.check_codex_available", return_value=(False, "codex binary not found on PATH")):
-            results = check_codex_reviewer(config)
-        binary_results = [r for r in results if r.name == "codex_reviewer:binary"]
-        assert len(binary_results) == 1
-        assert not binary_results[0].passed
-        assert "not found on PATH" in binary_results[0].message
+        registry_fails = [r for r in results if "registry" in r.name]
+        assert len(registry_fails) == 1
+        assert not registry_fails[0].passed
+        assert "not found in registry" in registry_fails[0].message
 
-    def test_binary_found(self, tmp_path, monkeypatch):
-        config = self._make_config_with_codex(tmp_path)
-        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-        with patch("botfarm.preflight.check_codex_available", return_value=(True, "codex 0.106.0")):
-            results = check_codex_reviewer(config)
-        binary_results = [r for r in results if r.name == "codex_reviewer:binary"]
-        assert len(binary_results) == 1
-        assert binary_results[0].passed
+    def test_multi_adapter_preflight(self, tmp_path):
+        """Multiple enabled adapters each produce their own namespaced results."""
+        config = self._make_config_with_adapters(tmp_path, adapters={
+            "claude": AdapterConfig(enabled=True),
+            "codex": AdapterConfig(enabled=True, timeout_minutes=15, reasoning_effort="medium"),
+        })
 
-    def test_missing_auth(self, tmp_path, monkeypatch):
-        config = self._make_config_with_codex(tmp_path)
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        with patch("botfarm.preflight.check_codex_available", return_value=(True, "codex 0.106.0")), \
-             patch("botfarm.preflight.Path.expanduser") as mock_expand:
-            mock_expand.return_value.exists.return_value = False
-            results = check_codex_reviewer(config)
-        auth_results = [r for r in results if r.name == "codex_reviewer:auth"]
-        assert len(auth_results) == 1
-        assert not auth_results[0].passed
-        assert "OPENAI_API_KEY" in auth_results[0].message
+        class _ClaudeStub:
+            def preflight_checks(self):
+                return [("available", True, "OK — claude 1.0.30")]
 
-    def test_auth_with_api_key(self, tmp_path, monkeypatch):
-        config = self._make_config_with_codex(tmp_path)
-        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-        with patch("botfarm.preflight.check_codex_available", return_value=(True, "codex 0.106.0")):
-            results = check_codex_reviewer(config)
-        auth_results = [r for r in results if r.name == "codex_reviewer:auth"]
-        assert len(auth_results) == 1
-        assert auth_results[0].passed
+        class _CodexStub:
+            def preflight_checks(self):
+                return [
+                    ("available", True, "OK — codex 0.106.0"),
+                    ("auth", False, "OPENAI_API_KEY is not set"),
+                ]
 
-    def test_auth_with_auth_file_only(self, tmp_path, monkeypatch):
-        config = self._make_config_with_codex(tmp_path)
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        with patch("botfarm.preflight.check_codex_available", return_value=(True, "codex 0.106.0")), \
-             patch("botfarm.preflight.Path.expanduser") as mock_expand:
-            mock_expand.return_value.exists.return_value = True
-            results = check_codex_reviewer(config)
-        auth_results = [r for r in results if r.name == "codex_reviewer:auth"]
-        assert len(auth_results) == 1
-        assert auth_results[0].passed
+        with patch("botfarm.agent.build_adapter_registry",
+                   return_value={"claude": _ClaudeStub(), "codex": _CodexStub()}):
+            results = check_adapters(config)
+
+        # Should have 3 results total: 1 from claude, 2 from codex
+        assert len(results) == 3
+
+        claude_results = [r for r in results if r.name.startswith("adapter:claude:")]
+        codex_results = [r for r in results if r.name.startswith("adapter:codex:")]
+        assert len(claude_results) == 1
+        assert len(codex_results) == 2
+
+        assert claude_results[0].passed
+        assert claude_results[0].name == "adapter:claude:available"
+
+        codex_available = [r for r in codex_results if r.name == "adapter:codex:available"]
+        codex_auth = [r for r in codex_results if r.name == "adapter:codex:auth"]
+        assert codex_available[0].passed
+        assert not codex_auth[0].passed
 
 
 class TestCheckJiraMcpServer:

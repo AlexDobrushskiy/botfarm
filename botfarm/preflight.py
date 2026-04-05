@@ -16,8 +16,6 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from botfarm.codex import check_codex_available
-from botfarm.worker_claude import check_claude_available
 from botfarm.config import BotfarmConfig, JiraBugtrackerConfig
 from botfarm.credentials import CredentialError, _load_token
 from botfarm.db import SCHEMA_VERSION, resolve_db_path
@@ -356,38 +354,6 @@ def _check_long_lived_token_credentials() -> list[CheckResult]:
         passed=True,
         message=f"OK — {LONG_LIVED_TOKEN_ENV_VAR} set ({preview}), using long-lived token mode",
     )]
-
-
-def check_claude_binary() -> list[CheckResult]:
-    """Check that the ``claude`` binary is available on PATH.
-
-    When ``claude`` is not found, probes ``~/.local/bin/claude`` (the
-    default install location) to distinguish "not installed" from
-    "installed but PATH not configured".
-    """
-    ok, msg = check_claude_available()
-    if not ok:
-        # Augment the message with recovery guidance when binary is missing.
-        # Note: string coupling — relies on "not found" wording from check_claude_available().
-        if "not found" in msg:
-            local_bin = Path("~/.local/bin").expanduser()
-            if (local_bin / "claude").exists():
-                msg = (
-                    "'claude' found at ~/.local/bin/claude but ~/.local/bin "
-                    "is not in PATH. "
-                    "Add it permanently: "
-                    "echo 'export PATH=\"$HOME/.local/bin:$PATH\"' >> ~/.bashrc && source ~/.bashrc — "
-                    "Or for nohup: PATH=$HOME/.local/bin:$PATH nohup botfarm run &"
-                )
-            else:
-                msg = (
-                    "'claude' not found on PATH and not present at "
-                    "~/.local/bin/claude. "
-                    "Install Claude Code: curl -fsSL https://claude.ai/install.sh | bash — "
-                    "Then add ~/.local/bin to PATH if needed."
-                )
-        return [CheckResult(name="claude_binary", passed=False, message=msg)]
-    return [CheckResult(name="claude_binary", passed=True, message=f"OK — {msg}")]
 
 
 def check_database(config: BotfarmConfig) -> list[CheckResult]:
@@ -794,45 +760,39 @@ def repair_core_bare(config: BotfarmConfig) -> list[str]:
     return repaired
 
 
-def check_codex_reviewer(config: BotfarmConfig) -> list[CheckResult]:
-    """Validate Codex reviewer prerequisites when enabled."""
-    if not config.agents.codex_reviewer_enabled:
-        return []
+def check_adapters(config: BotfarmConfig) -> list[CheckResult]:
+    """Auto-discover and check all enabled adapters in the registry.
+
+    Loops over ``config.agents.adapters``, builds the corresponding adapter
+    objects, and calls :meth:`~AgentAdapter.preflight_checks` on each enabled
+    one.  Results are namespaced as ``adapter:<name>:<check>``.
+    """
+    from botfarm.agent import build_adapter_registry
+
+    registry = build_adapter_registry(
+        codex_model=config.agents.codex_reviewer_model,
+        codex_reasoning_effort=config.agents.codex_reviewer_reasoning_effort,
+        auth_mode=config.auth_mode,
+    )
 
     results: list[CheckResult] = []
-
-    codex_ok, codex_msg = check_codex_available()
-    if not codex_ok:
-        results.append(CheckResult(
-            name="codex_reviewer:binary",
-            passed=False,
-            message=f"{codex_msg} — install Codex or disable codex_reviewer_enabled",
-        ))
-    else:
-        results.append(CheckResult(
-            name="codex_reviewer:binary",
-            passed=True,
-            message=f"OK — {codex_msg}",
-        ))
-
-    has_api_key = bool(os.environ.get("OPENAI_API_KEY"))
-    has_auth_file = Path("~/.codex/auth.json").expanduser().exists()
-    if not has_api_key and not has_auth_file:
-        results.append(CheckResult(
-            name="codex_reviewer:auth",
-            passed=False,
-            message=(
-                "OPENAI_API_KEY is not set and ~/.codex/auth.json not found — "
-                "Codex requires one of these for authentication"
-            ),
-        ))
-    else:
-        results.append(CheckResult(
-            name="codex_reviewer:auth",
-            passed=True,
-            message="OK — Codex authentication available",
-        ))
-
+    for adapter_name, adapter_cfg in config.agents.adapters.items():
+        if not adapter_cfg.enabled:
+            continue
+        adapter = registry.get(adapter_name)
+        if adapter is None:
+            results.append(CheckResult(
+                name=f"adapter:{adapter_name}:registry",
+                passed=False,
+                message=f"adapter '{adapter_name}' is enabled in config but not found in registry",
+            ))
+            continue
+        for check_name, passed, message in adapter.preflight_checks():
+            results.append(CheckResult(
+                name=f"adapter:{adapter_name}:{check_name}",
+                passed=passed,
+                message=message,
+            ))
     return results
 
 
@@ -1043,7 +1003,7 @@ def run_preflight_checks(
     results.extend(check_worktree_dirs(config))
     results.extend(check_linear_api(config))
     results.extend(check_credentials(auth_mode=config.auth_mode))
-    results.extend(check_claude_binary())
+    results.extend(check_adapters(config))
     results.extend(check_notifications_webhook(config))
     results.extend(check_identity_ssh_key(config))
     results.extend(check_identity_github_tokens(config))
@@ -1051,14 +1011,26 @@ def run_preflight_checks(
     results.extend(check_identity_cross_validation(config))
     results.extend(check_project_claude_md(config))
     results.extend(check_project_runtimes(config))
-    results.extend(check_codex_reviewer(config))
     results.extend(check_jira_mcp_server(config))
     results.extend(check_systemd_unit())
     return results
 
 
+def _log_check_result(r: CheckResult) -> None:
+    """Log a single check result with appropriate level."""
+    if r.passed:
+        logger.info("  [PASS] %-40s %s", r.name, r.message)
+    elif r.critical:
+        logger.error("  [FAIL] %-40s %s", r.name, r.message)
+    else:
+        logger.warning("  [WARN] %-40s %s", r.name, r.message)
+
+
 def log_preflight_summary(results: list[CheckResult]) -> bool:
     """Log a summary of pre-flight check results.
+
+    Adapter results (names starting with ``adapter:``) are grouped under
+    a per-adapter header for readability.
 
     Returns True if all critical checks passed (startup can proceed).
     """
@@ -1069,13 +1041,23 @@ def log_preflight_summary(results: list[CheckResult]) -> bool:
     logger.info("Pre-flight checks: %d passed, %d failed, %d warnings",
                 len(passed), len(critical_failures), len(warnings))
 
+    # Partition into non-adapter and adapter results.
+    general: list[CheckResult] = []
+    adapter_groups: dict[str, list[CheckResult]] = {}
     for r in results:
-        if r.passed:
-            logger.info("  [PASS] %-40s %s", r.name, r.message)
-        elif r.critical:
-            logger.error("  [FAIL] %-40s %s", r.name, r.message)
+        parts = r.name.split(":")
+        if parts[0] == "adapter" and len(parts) >= 2:
+            adapter_groups.setdefault(parts[1], []).append(r)
         else:
-            logger.warning("  [WARN] %-40s %s", r.name, r.message)
+            general.append(r)
+
+    for r in general:
+        _log_check_result(r)
+
+    for adapter_name, adapter_results in adapter_groups.items():
+        logger.info("  --- adapter: %s ---", adapter_name)
+        for r in adapter_results:
+            _log_check_result(r)
 
     if critical_failures:
         logger.error(

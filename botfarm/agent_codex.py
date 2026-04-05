@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 from botfarm.agent import AgentResult, ContextFillCallback, calculate_cost_from_table
@@ -69,6 +70,7 @@ class CodexAdapter:
         max_turns: int | None = None,
         model: str | None = None,
         effort: str | None = None,
+        context_window: int | None = None,
         log_file: Path | None = None,
         env: dict[str, str] | None = None,
         timeout: float | None = None,
@@ -105,6 +107,33 @@ class CodexAdapter:
 
     def check_available(self) -> tuple[bool, str]:
         return check_codex_available()
+
+    def preflight_checks(self) -> list[tuple[str, bool, str]]:
+        results: list[tuple[str, bool, str]] = []
+
+        ok, msg = self.check_available()
+        if ok:
+            results.append(("available", True, f"OK — {msg}"))
+        else:
+            results.append((
+                "available",
+                False,
+                f"{msg} — install Codex or disable the codex adapter",
+            ))
+
+        has_api_key = bool(os.environ.get("OPENAI_API_KEY"))
+        has_auth_file = Path("~/.codex/auth.json").expanduser().exists()
+        if not has_api_key and not has_auth_file:
+            results.append((
+                "auth",
+                False,
+                "OPENAI_API_KEY is not set and ~/.codex/auth.json not found — "
+                "Codex requires one of these for authentication",
+            ))
+        else:
+            results.append(("auth", True, "OK — Codex authentication available"))
+
+        return results
 
 
 def create_adapter(

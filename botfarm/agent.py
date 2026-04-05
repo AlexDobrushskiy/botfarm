@@ -69,6 +69,7 @@ class AgentAdapter(Protocol):
         max_turns: int | None = None,
         model: str | None = None,
         effort: str | None = None,
+        context_window: int | None = None,
         log_file: Path | None = None,
         env: dict[str, str] | None = None,
         timeout: float | None = None,
@@ -92,6 +93,18 @@ class AgentAdapter(Protocol):
 
         Returns (available, message) where message explains why the
         adapter is unavailable when available is False.
+        """
+        ...
+
+    def preflight_checks(self) -> list[tuple[str, bool, str]]:
+        """Return adapter-specific preflight check results.
+
+        Each tuple is ``(check_name, passed, message)`` where *check_name*
+        is a short suffix like ``"available"`` or ``"auth"``.
+
+        Implementations should delegate to :meth:`check_available` for the
+        binary probe and add any adapter-specific checks (auth, tooling)
+        on top.
         """
         ...
 
