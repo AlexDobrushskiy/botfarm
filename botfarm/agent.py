@@ -7,10 +7,14 @@ type names to adapter instances), and the :data:`ContextFillCallback` type alias
 
 from __future__ import annotations
 
+import importlib.metadata
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
+
+logger = logging.getLogger(__name__)
 
 # Type alias for the per-turn context fill callback.
 # Called with (turn_number, fill_percentage).
@@ -88,24 +92,63 @@ AdapterRegistry = dict[str, AgentAdapter]
 
 
 def build_adapter_registry(
+    adapter_configs: dict[str, dict[str, Any]] | None = None,
     *,
+    # Legacy kwargs — prefer adapter_configs instead.
     codex_model: str | None = None,
     codex_reasoning_effort: str | None = None,
     auth_mode: str = "oauth",
 ) -> AdapterRegistry:
-    """Build the default adapter registry.
+    """Build the adapter registry via setuptools entry-point discovery.
 
-    Returns a dict with ``"claude"`` and ``"codex"`` entries.
-    Adapter modules are imported lazily so this function is safe to call
-    even when one CLI is not installed.
+    Discovers adapters registered under the ``botfarm.adapters`` entry-point
+    group.  Each entry point must resolve to a factory callable that accepts
+    ``**kwargs`` and returns an :class:`AgentAdapter` instance.
+
+    Parameters
+    ----------
+    adapter_configs:
+        Optional mapping of adapter names to config keyword-argument dicts.
+        Each dict is passed as keyword arguments to the corresponding
+        adapter factory.
+    auth_mode:
+        Authentication mode, forwarded to all adapter factories.
+    codex_model, codex_reasoning_effort:
+        Legacy keyword arguments.  Use ``adapter_configs`` instead.
     """
-    from botfarm.agent_claude import ClaudeAdapter
-    from botfarm.agent_codex import CodexAdapter
+    eps = importlib.metadata.entry_points(group="botfarm.adapters")
 
-    return {
-        "claude": ClaudeAdapter(auth_mode=auth_mode),
-        "codex": CodexAdapter(
-            model=codex_model,
-            reasoning_effort=codex_reasoning_effort,
-        ),
-    }
+    # Merge legacy kwargs into adapter_configs for backward compatibility.
+    configs: dict[str, dict[str, Any]] = dict(adapter_configs or {})
+    if "codex" not in configs and (codex_model is not None or codex_reasoning_effort is not None):
+        configs["codex"] = {
+            k: v
+            for k, v in [("model", codex_model), ("reasoning_effort", codex_reasoning_effort)]
+            if v is not None
+        }
+
+    # Global kwargs forwarded to every factory.
+    global_kwargs: dict[str, Any] = {"auth_mode": auth_mode}
+
+    registry: AdapterRegistry = {}
+    for ep in eps:
+        try:
+            factory = ep.load()
+        except Exception:
+            logger.warning(
+                "Failed to load adapter entry point %r (%s)",
+                ep.name, ep.value, exc_info=True,
+            )
+            continue
+        kwargs = {**global_kwargs, **configs.get(ep.name, {})}
+        try:
+            adapter = factory(**kwargs)
+        except Exception:
+            logger.warning(
+                "Failed to create adapter %r from entry point %s",
+                ep.name, ep.value, exc_info=True,
+            )
+            continue
+        registry[ep.name] = adapter
+
+    return registry

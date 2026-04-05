@@ -65,6 +65,11 @@ class ClaudeAdapter:
         return check_claude_available()
 
 
+def create_adapter(*, auth_mode: str = "oauth", **_kwargs: object) -> ClaudeAdapter:
+    """Entry-point factory for the Claude adapter."""
+    return ClaudeAdapter(auth_mode=auth_mode)
+
+
 def _claude_result_to_agent_result(cr: ClaudeResult) -> AgentResult:
     """Normalize a :class:`ClaudeResult` into an :class:`AgentResult`."""
     return AgentResult(
