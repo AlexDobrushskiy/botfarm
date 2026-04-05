@@ -85,7 +85,6 @@ class AiderAdapter:
                 ConfigFieldSchema("enabled", bool, default=False, description="Enable this adapter"),
                 ConfigFieldSchema("model", str, default="", description='Model name (e.g. "gpt-4o", "claude-3-5-sonnet")'),
                 ConfigFieldSchema("timeout_minutes", int, default=None, description="Per-stage timeout in minutes"),
-                ConfigFieldSchema("reasoning_effort", str, default="", description="Reasoning effort level"),
                 ConfigFieldSchema("skip_on_reiteration", bool, default=True, description="Skip on review iterations 2+"),
             ],
             required_env_vars=[],
