@@ -357,7 +357,7 @@ def generate_adapters_yaml(indent: int = 4) -> str:
             elif val is None or val == "":
                 yaml_val = '""' if fld.field_type is str else ""
             elif isinstance(val, str):
-                yaml_val = f'"{val}"' if " " in val else str(val)
+                yaml_val = f'"{val}"'
             else:
                 yaml_val = str(val)
             comment = f"  # {fld.description}" if fld.description else ""

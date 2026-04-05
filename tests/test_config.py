@@ -2292,9 +2292,8 @@ def test_load_config_identities_env_var_expansion(tmp_path, monkeypatch):
 # --- Codex reviewer config ---
 
 
-def test_config_codex_fields(tmp_path, monkeypatch):
+def test_config_codex_fields(tmp_path):
     """Parse YAML with codex reviewer fields."""
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     data = {
         **MINIMAL_CONFIG,
         "agents": {
@@ -2412,9 +2411,8 @@ def test_default_config_template_includes_adapter_fields():
     assert "timeout_minutes:" in template
 
 
-def test_config_adapters_new_format(tmp_path, monkeypatch):
+def test_config_adapters_new_format(tmp_path):
     """New adapters: format parses correctly."""
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     data = {
         **MINIMAL_CONFIG,
         "agents": {
@@ -2444,8 +2442,7 @@ def test_config_adapters_new_format(tmp_path, monkeypatch):
     assert config.agents.codex_reviewer_timeout_minutes == 20
 
 
-def test_config_adapters_backward_compat_migration(tmp_path, monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+def test_config_adapters_backward_compat_migration(tmp_path):
     """Legacy codex_reviewer_* fields are migrated to adapters.codex."""
     data = {
         **MINIMAL_CONFIG,

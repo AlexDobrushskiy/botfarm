@@ -93,9 +93,7 @@ class CodexAdapter:
                 ConfigFieldSchema("reasoning_effort", str, default="medium", description="none, low, medium, high, xhigh"),
                 ConfigFieldSchema("skip_on_reiteration", bool, default=True, description="Skip on review iterations 2+"),
             ],
-            required_env_vars=[
-                ("OPENAI_API_KEY", "OpenAI API key (alternative: ~/.codex/auth.json)"),
-            ],
+            required_env_vars=[],
         )
 
     def check_available(self) -> tuple[bool, str]:

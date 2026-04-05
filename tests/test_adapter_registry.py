@@ -144,9 +144,7 @@ class TestConfigSchema:
         field_names = [f.name for f in schema.fields]
         assert "enabled" in field_names
         assert "model" in field_names
-        assert len(schema.required_env_vars) > 0
-        env_names = [name for name, _ in schema.required_env_vars]
-        assert "OPENAI_API_KEY" in env_names
+        assert schema.required_env_vars == []
 
     def test_config_schema_on_instance(self):
         """config_schema() is callable on adapter instances too."""
