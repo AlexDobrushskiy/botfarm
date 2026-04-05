@@ -307,7 +307,7 @@ class TestRecordStageRunWithAgentResult:
         row = rows[0]
         assert row["session_id"] == "t-test"
         assert row["turns"] == 3
-        # Codex results have cost_usd set during normalization
+        # Without adapter, falls back to result.cost_usd (0.0 for Codex)
         assert row["total_cost_usd"] >= 0
 
     def test_adapter_calculate_cost_used_when_provided(self, conn, task_id):

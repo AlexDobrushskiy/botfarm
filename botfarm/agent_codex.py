@@ -117,20 +117,12 @@ def create_adapter(
 def _codex_result_to_agent_result(
     cr: CodexResult, model: str | None
 ) -> AgentResult:
-    """Normalize a :class:`CodexResult` into an :class:`AgentResult`."""
+    """Normalize a :class:`CodexResult` into an :class:`AgentResult`.
+
+    Cost is left at 0.0 here — :meth:`CodexAdapter.calculate_cost` is the
+    single authoritative pricing path, called from ``_record_stage_run``.
+    """
     effective_model = model or cr.model or ""
-    cost = calculate_cost_from_table(
-        OPENAI_PRICING,
-        model=effective_model or DEFAULT_CODEX_MODEL,
-        input_tokens=cr.input_tokens,
-        output_tokens=cr.output_tokens,
-        cached_input_tokens=cr.cached_input_tokens,
-    )
-    if cost is None:
-        logger.warning(
-            "Unknown OpenAI model %r — skipping cost calculation",
-            effective_model or DEFAULT_CODEX_MODEL,
-        )
     return AgentResult(
         session_id=cr.thread_id,
         num_turns=cr.num_turns,
@@ -139,7 +131,7 @@ def _codex_result_to_agent_result(
         is_error=cr.is_error,
         input_tokens=cr.input_tokens,
         output_tokens=cr.output_tokens,
-        cost_usd=cost if cost is not None else 0.0,
+        cost_usd=0.0,
         context_fill_pct=None,
         extra={
             "thread_id": cr.thread_id,

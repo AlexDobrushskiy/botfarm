@@ -308,8 +308,8 @@ class TestCodexResultNormalization:
         assert ar.context_fill_pct is None
         assert ar.extra["thread_id"] == "thread-1"
         assert ar.extra["cache_read_input_tokens"] == 200
-        # Cost should be calculated from pricing table
-        assert ar.cost_usd > 0.0
+        # Cost is 0 here — CodexAdapter.calculate_cost() is the single pricing path
+        assert ar.cost_usd == 0.0
 
     def test_unknown_model_cost_zero(self):
         cr = CodexResult(
@@ -337,8 +337,8 @@ class TestCodexResultNormalization:
             model="",
         )
         ar = _codex_result_to_agent_result(cr, None)
-        # Falls back to DEFAULT_CODEX_MODEL ("o4-mini") → $1.10/M input
-        assert ar.cost_usd == pytest.approx(1.10)
+        # Cost is 0 here — CodexAdapter.calculate_cost() is the single pricing path
+        assert ar.cost_usd == 0.0
 
 
 # ---------------------------------------------------------------------------
