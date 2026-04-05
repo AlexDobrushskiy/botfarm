@@ -379,8 +379,63 @@ class TestRecordStageRunWithAgentResult:
         row = rows[0]
         assert row["session_id"] == "t-test"
         assert row["turns"] == 3
-        # Codex results have cost_usd set during normalization
+        # Without adapter, falls back to result.cost_usd (0.0 for Codex)
         assert row["total_cost_usd"] >= 0
+
+    def test_adapter_calculate_cost_used_when_provided(self, conn, task_id):
+        """When an adapter is passed, _record_stage_run uses adapter.calculate_cost()."""
+        ar = AgentResult(
+            session_id="sess-cost",
+            num_turns=1,
+            duration_seconds=5.0,
+            result_text="done",
+            input_tokens=100,
+            output_tokens=50,
+            cost_usd=0.99,  # pre-computed cost on result
+        )
+        sr = StageResult(stage="implement", success=True, agent_result=ar)
+
+        mock_adapter = MagicMock(spec=AgentAdapter)
+        mock_adapter.calculate_cost.return_value = 0.42
+
+        _record_stage_run(
+            conn,
+            task_id=task_id,
+            stage="implement",
+            result=sr,
+            wall_elapsed=10.0,
+            adapter=mock_adapter,
+        )
+
+        mock_adapter.calculate_cost.assert_called_once_with(ar)
+        rows = get_stage_runs(conn, task_id)
+        assert len(rows) == 1
+        # Should use adapter's cost (0.42), not result's pre-computed cost (0.99)
+        assert rows[0]["total_cost_usd"] == pytest.approx(0.42)
+
+    def test_no_adapter_uses_result_cost(self, conn, task_id):
+        """Without an adapter, _record_stage_run falls back to result.cost_usd."""
+        ar = AgentResult(
+            session_id="sess-fallback",
+            num_turns=1,
+            duration_seconds=5.0,
+            result_text="done",
+            cost_usd=0.77,
+        )
+        sr = StageResult(stage="implement", success=True, agent_result=ar)
+
+        _record_stage_run(
+            conn,
+            task_id=task_id,
+            stage="implement",
+            result=sr,
+            wall_elapsed=10.0,
+            # adapter intentionally omitted
+        )
+
+        rows = get_stage_runs(conn, task_id)
+        assert len(rows) == 1
+        assert rows[0]["total_cost_usd"] == pytest.approx(0.77)
 
 
 # ---------------------------------------------------------------------------

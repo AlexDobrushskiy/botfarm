@@ -107,6 +107,9 @@ class _DummyAdapter:
             result_text="ok",
         )
 
+    def calculate_cost(self, result: AgentResult) -> float:
+        return result.cost_usd
+
     def check_available(self) -> tuple[bool, str]:
         return (True, "")
 
