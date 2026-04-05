@@ -108,9 +108,7 @@
     <h1 style="margin-bottom: 0;">Adapters</h1>
     <button class="pause-btn"
             style="background: var(--pico-primary); color: #fff;"
-            hx-post="/api/adapter-preflight"
-            hx-swap="none"
-            onclick="showToast('Preflight recheck triggered', 'success')">
+            onclick="rerunPreflight(this)">
         Re-run Preflight
     </button>
 </div>
@@ -152,7 +150,7 @@
     </div>
     {% endif %}
 
-    <form class="adapter-form" onsubmit="return saveAdapter(event, '{{ adapter.name }}')">
+    <form class="adapter-form" onsubmit="return saveAdapter(event, {{ adapter.name | tojson }})">
         <div class="row">
             <fieldset>
                 <label for="{{ adapter.name }}-enabled">
@@ -254,6 +252,22 @@
 {% endif %}
 
 <script>
+function rerunPreflight(btn) {
+    btn.disabled = true;
+    btn.setAttribute("aria-busy", "true");
+    fetch("/api/adapter-preflight", {method: "POST"})
+        .then(function(resp) {
+            if (!resp.ok) throw new Error("Request failed");
+            showToast("Preflight recheck triggered", "success");
+        })
+        .catch(function(err) {
+            showToast("Preflight failed: " + err.message, "error");
+        })
+        .finally(function() {
+            btn.disabled = false;
+            btn.removeAttribute("aria-busy");
+        });
+}
 function saveAdapter(event, adapterName) {
     event.preventDefault();
     const form = event.target;
