@@ -105,6 +105,47 @@ class TestStageTemplateModelEffort:
 # ---------------------------------------------------------------------------
 
 
+class TestStageTemplateContextWindow:
+    def test_create_stage_with_context_window(self, conn):
+        pid = create_pipeline(conn, "ctx_test")
+        create_stage(
+            conn, pid, "implement", 1, "claude",
+            context_window=500_000,
+        )
+        pipeline = load_pipeline_by_name(conn, "ctx_test")
+        assert pipeline.stages[0].context_window == 500_000
+
+    def test_context_window_none_by_default(self, conn):
+        pid = create_pipeline(conn, "ctx_default")
+        create_stage(conn, pid, "step", 1, "claude")
+        pipeline = load_pipeline_by_name(conn, "ctx_default")
+        assert pipeline.stages[0].context_window is None
+
+    def test_update_stage_context_window(self, conn):
+        pid = create_pipeline(conn, "ctx_update")
+        sid = create_stage(conn, pid, "step", 1, "claude")
+        update_stage(conn, sid, context_window=1_000_000)
+        pipeline = load_pipeline_by_name(conn, "ctx_update")
+        assert pipeline.stages[0].context_window == 1_000_000
+
+    def test_update_stage_clear_context_window(self, conn):
+        pid = create_pipeline(conn, "ctx_clear")
+        sid = create_stage(conn, pid, "step", 1, "claude", context_window=500_000)
+        update_stage(conn, sid, context_window=None)
+        pipeline = load_pipeline_by_name(conn, "ctx_clear")
+        assert pipeline.stages[0].context_window is None
+
+    def test_duplicate_pipeline_copies_context_window(self, conn):
+        pid = create_pipeline(conn, "ctx_dup_src")
+        create_stage(
+            conn, pid, "step", 1, "claude",
+            context_window=500_000,
+        )
+        duplicate_pipeline(conn, pid, "ctx_dup_dst")
+        copy = load_pipeline_by_name(conn, "ctx_dup_dst")
+        assert copy.stages[0].context_window == 500_000
+
+
 class TestClaudeStreamingModelEffort:
     @patch("botfarm.worker_claude.subprocess.Popen")
     @patch("botfarm.worker_claude.shutil.which", return_value="/usr/bin/claude")
@@ -185,6 +226,51 @@ class TestClaudeStreamingModelEffort:
 # ---------------------------------------------------------------------------
 
 
+class TestClaudeStreamingContextWindow:
+    @patch("botfarm.worker_claude.subprocess.Popen")
+    @patch("botfarm.worker_claude.shutil.which", return_value="/usr/bin/claude")
+    def test_context_window_passed_to_parse_ndjson(self, mock_which, mock_popen, tmp_path):
+        """When context_window is set, it is used instead of DEFAULT_CONTEXT_WINDOW."""
+        from botfarm.worker_claude import run_claude_streaming, _parse_ndjson_stream
+
+        proc = MagicMock()
+        proc.stdin = MagicMock()
+        proc.stdout = iter([])
+        proc.stderr = iter([])
+        proc.wait.return_value = 0
+        proc.returncode = 0
+        mock_popen.return_value = proc
+
+        with patch("botfarm.worker_claude._parse_ndjson_stream", wraps=_parse_ndjson_stream) as mock_parse:
+            with pytest.raises(RuntimeError):
+                run_claude_streaming(
+                    "test", cwd=tmp_path, max_turns=10,
+                    context_window=500_000,
+                )
+            _, kwargs = mock_parse.call_args
+            assert kwargs["context_window"] == 500_000
+
+    @patch("botfarm.worker_claude.subprocess.Popen")
+    @patch("botfarm.worker_claude.shutil.which", return_value="/usr/bin/claude")
+    def test_context_window_defaults_when_none(self, mock_which, mock_popen, tmp_path):
+        """When context_window is None, DEFAULT_CONTEXT_WINDOW is used."""
+        from botfarm.worker_claude import run_claude_streaming, _parse_ndjson_stream, DEFAULT_CONTEXT_WINDOW
+
+        proc = MagicMock()
+        proc.stdin = MagicMock()
+        proc.stdout = iter([])
+        proc.stderr = iter([])
+        proc.wait.return_value = 0
+        proc.returncode = 0
+        mock_popen.return_value = proc
+
+        with patch("botfarm.worker_claude._parse_ndjson_stream", wraps=_parse_ndjson_stream) as mock_parse:
+            with pytest.raises(RuntimeError):
+                run_claude_streaming("test", cwd=tmp_path, max_turns=10)
+            _, kwargs = mock_parse.call_args
+            assert kwargs["context_window"] == DEFAULT_CONTEXT_WINDOW
+
+
 class TestClaudeAdapterModelEffort:
     def test_supports_model_override_is_true(self):
         adapter = ClaudeAdapter()
@@ -228,14 +314,14 @@ class TestClaudeAdapterModelEffort:
 
 
 class TestRunAgentStageModelEffort:
-    def _make_stage_tpl(self, model=None, effort=None):
+    def _make_stage_tpl(self, model=None, effort=None, context_window=None):
         return StageTemplate(
             id=1, name="implement", stage_order=1,
             executor_type="claude", identity="coder",
             prompt_template="Do {ticket_id}",
             max_turns=100, timeout_minutes=60,
             shell_command=None, result_parser="pr_url",
-            model=model, effort=effort,
+            model=model, effort=effort, context_window=context_window,
         )
 
     def test_passes_model_effort_to_adapter(self, tmp_path):
@@ -285,6 +371,52 @@ class TestRunAgentStageModelEffort:
         _, kwargs = mock_adapter.run.call_args
         assert kwargs["model"] is None  # model suppressed when not supported
         assert kwargs["effort"] is None  # effort suppressed when not supported
+
+    def test_passes_context_window_to_adapter(self, tmp_path):
+        from botfarm.worker_stages import _run_agent_stage
+
+        mock_adapter = MagicMock()
+        mock_adapter.name = "claude"
+        mock_adapter.supports_max_turns = True
+        mock_adapter.supports_context_fill = True
+        mock_adapter.supports_model_override = True
+        mock_adapter.run.return_value = AgentResult(
+            session_id="s", num_turns=1, duration_seconds=1.0,
+            result_text="PR: https://github.com/o/r/pull/1",
+        )
+
+        stage_tpl = self._make_stage_tpl(context_window=500_000)
+        _run_agent_stage(
+            stage_tpl, mock_adapter,
+            cwd=tmp_path, max_turns=100,
+            prompt_vars={"ticket_id": "SMA-1"},
+        )
+
+        _, kwargs = mock_adapter.run.call_args
+        assert kwargs["context_window"] == 500_000
+
+    def test_context_window_none_when_no_context_fill_support(self, tmp_path):
+        from botfarm.worker_stages import _run_agent_stage
+
+        mock_adapter = MagicMock()
+        mock_adapter.name = "codex"
+        mock_adapter.supports_max_turns = False
+        mock_adapter.supports_context_fill = False
+        mock_adapter.supports_model_override = False
+        mock_adapter.run.return_value = AgentResult(
+            session_id="s", num_turns=1, duration_seconds=1.0,
+            result_text="done",
+        )
+
+        stage_tpl = self._make_stage_tpl(context_window=500_000)
+        _run_agent_stage(
+            stage_tpl, mock_adapter,
+            cwd=tmp_path, max_turns=100,
+            prompt_vars={"ticket_id": "SMA-1"},
+        )
+
+        _, kwargs = mock_adapter.run.call_args
+        assert kwargs["context_window"] is None  # suppressed when adapter doesn't support context fill
 
 
 # ---------------------------------------------------------------------------

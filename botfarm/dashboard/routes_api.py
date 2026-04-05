@@ -515,6 +515,7 @@ def _pipeline_to_dict(conn: sqlite3.Connection, pipeline_id: int) -> dict | None
             "result_parser": s["result_parser"],
             "model": s["model"],
             "effort": s["effort"],
+            "context_window": s["context_window"],
         }
         for s in conn.execute(
             "SELECT * FROM stage_templates WHERE pipeline_id = ? ORDER BY stage_order",
@@ -722,6 +723,7 @@ async def api_create_stage(request: Request, pipeline_id: int):
             result_parser=body.get("result_parser"),
             model=body.get("model"),
             effort=body.get("effort"),
+            context_window=body.get("context_window"),
         )
         errors = validate_pipeline(conn, pipeline_id)
         if errors:
@@ -743,6 +745,7 @@ async def api_create_stage(request: Request, pipeline_id: int):
             "result_parser": stage_row["result_parser"],
             "model": stage_row["model"],
             "effort": stage_row["effort"],
+            "context_window": stage_row["context_window"],
         }
         return JSONResponse({"ok": True, "data": data})
     except Exception as exc:
@@ -786,6 +789,7 @@ async def api_update_stage(request: Request, stage_id: int):
             "result_parser": stage_row["result_parser"],
             "model": stage_row["model"],
             "effort": stage_row["effort"],
+            "context_window": stage_row["context_window"],
         }
         resp: dict = {"ok": True, "data": data}
         if warnings:

@@ -126,6 +126,7 @@ def _run_agent_stage(
         max_turns=max_turns if adapter.supports_max_turns else None,
         model=stage_tpl.model if adapter.supports_model_override else None,
         effort=stage_tpl.effort if adapter.supports_model_override else None,
+        context_window=stage_tpl.context_window if adapter.supports_context_fill else None,
         log_file=log_file,
         env=env,
         timeout=timeout,

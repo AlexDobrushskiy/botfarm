@@ -79,6 +79,7 @@ class TestClaudeAdapter:
             auth_mode="oauth",
             model=None,
             effort=None,
+            context_window=None,
         )
 
         assert isinstance(result, AgentResult)
