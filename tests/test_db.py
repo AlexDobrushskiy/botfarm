@@ -889,6 +889,8 @@ class TestMigrationInfrastructure:
         c.execute("ALTER TABLE stage_runs DROP COLUMN pipeline_id")
         # Reverse migration 038 (context_window column on stage_templates)
         c.execute("ALTER TABLE stage_templates DROP COLUMN context_window")
+        # Reverse migration 039 (thinking_mode column on stage_templates)
+        c.execute("ALTER TABLE stage_templates DROP COLUMN thinking_mode")
         c.commit()
 
         # Now run migrations 030+
@@ -945,6 +947,8 @@ class TestMigrationInfrastructure:
         c.execute("ALTER TABLE stage_runs DROP COLUMN pipeline_id")
         # Reverse migration 038 (context_window column on stage_templates)
         c.execute("ALTER TABLE stage_templates DROP COLUMN context_window")
+        # Reverse migration 039 (thinking_mode column on stage_templates)
+        c.execute("ALTER TABLE stage_templates DROP COLUMN thinking_mode")
         c.commit()
 
         # Running migrations 030+ must not fail on pre-existing tables

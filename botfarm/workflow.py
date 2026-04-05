@@ -22,6 +22,7 @@ class StageTemplate:
     model: str | None = None  # e.g. "claude-opus-4-6", None = use default
     effort: str | None = None  # "low"/"medium"/"high"/"max", None = use default
     context_window: int | None = None  # Override context window (tokens), None = use model default
+    thinking_mode: str | None = None  # "enabled"/"adaptive"/"disabled", None = inherit user default
 
 
 @dataclass
@@ -184,6 +185,7 @@ def _build_pipeline(conn: sqlite3.Connection, row: sqlite3.Row) -> PipelineTempl
             model=s["model"],
             effort=s["effort"],
             context_window=s["context_window"],
+            thinking_mode=s["thinking_mode"],
         )
         for s in stage_rows
     ]
@@ -326,13 +328,13 @@ def duplicate_pipeline(
             "INSERT INTO stage_templates "
             "(pipeline_id, name, stage_order, executor_type, identity, "
             "prompt_template, max_turns, timeout_minutes, shell_command, result_parser, "
-            "model, effort, context_window) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "model, effort, context_window, thinking_mode) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 new_id, s["name"], s["stage_order"], s["executor_type"], s["identity"],
                 s["prompt_template"], s["max_turns"], s["timeout_minutes"],
                 s["shell_command"], s["result_parser"], s["model"], s["effort"],
-                s["context_window"],
+                s["context_window"], s["thinking_mode"],
             ),
         )
 
@@ -376,6 +378,7 @@ def create_stage(
     model: str | None = None,
     effort: str | None = None,
     context_window: int | None = None,
+    thinking_mode: str | None = None,
 ) -> int:
     """Insert a new stage. Shifts existing stage_order values up if inserting in the middle."""
     conn.execute(
@@ -387,12 +390,12 @@ def create_stage(
         "INSERT INTO stage_templates "
         "(pipeline_id, name, stage_order, executor_type, identity, "
         "prompt_template, max_turns, timeout_minutes, shell_command, result_parser, "
-        "model, effort, context_window) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "model, effort, context_window, thinking_mode) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             pipeline_id, name, stage_order, executor_type, identity,
             prompt_template, max_turns, timeout_minutes, shell_command, result_parser,
-            model, effort, context_window,
+            model, effort, context_window, thinking_mode,
         ),
     )
     conn.commit()
@@ -405,7 +408,7 @@ def update_stage(conn: sqlite3.Connection, stage_id: int, **kwargs: object) -> N
         "name", "executor_type", "identity",
         "prompt_template", "max_turns", "timeout_minutes",
         "shell_command", "result_parser", "model", "effort",
-        "context_window",
+        "context_window", "thinking_mode",
     }
     unknown = set(kwargs) - allowed
     if unknown:

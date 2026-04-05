@@ -724,6 +724,7 @@ async def api_create_stage(request: Request, pipeline_id: int):
             model=body.get("model"),
             effort=body.get("effort"),
             context_window=body.get("context_window"),
+            thinking_mode=body.get("thinking_mode"),
         )
         errors = validate_pipeline(conn, pipeline_id)
         if errors:
@@ -746,6 +747,7 @@ async def api_create_stage(request: Request, pipeline_id: int):
             "model": stage_row["model"],
             "effort": stage_row["effort"],
             "context_window": stage_row["context_window"],
+            "thinking_mode": stage_row["thinking_mode"],
         }
         return JSONResponse({"ok": True, "data": data})
     except Exception as exc:
@@ -790,6 +792,7 @@ async def api_update_stage(request: Request, stage_id: int):
             "model": stage_row["model"],
             "effort": stage_row["effort"],
             "context_window": stage_row["context_window"],
+            "thinking_mode": stage_row["thinking_mode"],
         }
         resp: dict = {"ok": True, "data": data}
         if warnings:

@@ -146,6 +146,47 @@ class TestStageTemplateContextWindow:
         assert copy.stages[0].context_window == 500_000
 
 
+class TestStageTemplateThinkingMode:
+    def test_create_stage_with_thinking_mode(self, conn):
+        pid = create_pipeline(conn, "think_test")
+        create_stage(
+            conn, pid, "implement", 1, "claude",
+            thinking_mode="enabled",
+        )
+        pipeline = load_pipeline_by_name(conn, "think_test")
+        assert pipeline.stages[0].thinking_mode == "enabled"
+
+    def test_thinking_mode_none_by_default(self, conn):
+        pid = create_pipeline(conn, "think_default")
+        create_stage(conn, pid, "step", 1, "claude")
+        pipeline = load_pipeline_by_name(conn, "think_default")
+        assert pipeline.stages[0].thinking_mode is None
+
+    def test_update_stage_thinking_mode(self, conn):
+        pid = create_pipeline(conn, "think_update")
+        sid = create_stage(conn, pid, "step", 1, "claude")
+        update_stage(conn, sid, thinking_mode="adaptive")
+        pipeline = load_pipeline_by_name(conn, "think_update")
+        assert pipeline.stages[0].thinking_mode == "adaptive"
+
+    def test_update_stage_clear_thinking_mode(self, conn):
+        pid = create_pipeline(conn, "think_clear")
+        sid = create_stage(conn, pid, "step", 1, "claude", thinking_mode="disabled")
+        update_stage(conn, sid, thinking_mode=None)
+        pipeline = load_pipeline_by_name(conn, "think_clear")
+        assert pipeline.stages[0].thinking_mode is None
+
+    def test_duplicate_pipeline_copies_thinking_mode(self, conn):
+        pid = create_pipeline(conn, "think_dup_src")
+        create_stage(
+            conn, pid, "step", 1, "claude",
+            thinking_mode="enabled",
+        )
+        duplicate_pipeline(conn, pid, "think_dup_dst")
+        copy = load_pipeline_by_name(conn, "think_dup_dst")
+        assert copy.stages[0].thinking_mode == "enabled"
+
+
 class TestClaudeStreamingModelEffort:
     @patch("botfarm.worker_claude.subprocess.Popen")
     @patch("botfarm.worker_claude.shutil.which", return_value="/usr/bin/claude")
@@ -201,8 +242,33 @@ class TestClaudeStreamingModelEffort:
 
     @patch("botfarm.worker_claude.subprocess.Popen")
     @patch("botfarm.worker_claude.shutil.which", return_value="/usr/bin/claude")
+    def test_thinking_flag_in_cmd(self, mock_which, mock_popen, tmp_path):
+        """When thinking_mode is set, --thinking <mode> appears in the command."""
+        from botfarm.worker_claude import run_claude_streaming
+
+        proc = MagicMock()
+        proc.stdin = MagicMock()
+        proc.stdout = iter([])
+        proc.stderr = iter([])
+        proc.wait.return_value = 0
+        proc.returncode = 0
+        mock_popen.return_value = proc
+
+        with pytest.raises(RuntimeError):
+            run_claude_streaming(
+                "test", cwd=tmp_path, max_turns=10,
+                thinking_mode="enabled",
+            )
+
+        cmd = mock_popen.call_args[0][0]
+        assert "--thinking" in cmd
+        idx = cmd.index("--thinking")
+        assert cmd[idx + 1] == "enabled"
+
+    @patch("botfarm.worker_claude.subprocess.Popen")
+    @patch("botfarm.worker_claude.shutil.which", return_value="/usr/bin/claude")
     def test_no_flags_when_none(self, mock_which, mock_popen, tmp_path):
-        """When model/effort are None, neither flag appears in the command."""
+        """When model/effort/thinking_mode are None, no flags appear in the command."""
         from botfarm.worker_claude import run_claude_streaming
 
         proc = MagicMock()
@@ -219,6 +285,7 @@ class TestClaudeStreamingModelEffort:
         cmd = mock_popen.call_args[0][0]
         assert "--model" not in cmd
         assert "--effort" not in cmd
+        assert "--thinking" not in cmd
 
 
 # ---------------------------------------------------------------------------
@@ -314,7 +381,7 @@ class TestClaudeAdapterModelEffort:
 
 
 class TestRunAgentStageModelEffort:
-    def _make_stage_tpl(self, model=None, effort=None, context_window=None):
+    def _make_stage_tpl(self, model=None, effort=None, context_window=None, thinking_mode=None):
         return StageTemplate(
             id=1, name="implement", stage_order=1,
             executor_type="claude", identity="coder",
@@ -322,6 +389,7 @@ class TestRunAgentStageModelEffort:
             max_turns=100, timeout_minutes=60,
             shell_command=None, result_parser="pr_url",
             model=model, effort=effort, context_window=context_window,
+            thinking_mode=thinking_mode,
         )
 
     def test_passes_model_effort_to_adapter(self, tmp_path):
@@ -417,6 +485,52 @@ class TestRunAgentStageModelEffort:
 
         _, kwargs = mock_adapter.run.call_args
         assert kwargs["context_window"] is None  # suppressed when adapter doesn't support context fill
+
+    def test_passes_thinking_mode_to_adapter(self, tmp_path):
+        from botfarm.worker_stages import _run_agent_stage
+
+        mock_adapter = MagicMock()
+        mock_adapter.name = "claude"
+        mock_adapter.supports_max_turns = True
+        mock_adapter.supports_context_fill = True
+        mock_adapter.supports_model_override = True
+        mock_adapter.run.return_value = AgentResult(
+            session_id="s", num_turns=1, duration_seconds=1.0,
+            result_text="PR: https://github.com/o/r/pull/1",
+        )
+
+        stage_tpl = self._make_stage_tpl(thinking_mode="enabled")
+        _run_agent_stage(
+            stage_tpl, mock_adapter,
+            cwd=tmp_path, max_turns=100,
+            prompt_vars={"ticket_id": "SMA-1"},
+        )
+
+        _, kwargs = mock_adapter.run.call_args
+        assert kwargs["thinking_mode"] == "enabled"
+
+    def test_thinking_mode_none_when_adapter_does_not_support(self, tmp_path):
+        from botfarm.worker_stages import _run_agent_stage
+
+        mock_adapter = MagicMock()
+        mock_adapter.name = "codex"
+        mock_adapter.supports_max_turns = False
+        mock_adapter.supports_context_fill = False
+        mock_adapter.supports_model_override = False
+        mock_adapter.run.return_value = AgentResult(
+            session_id="s", num_turns=1, duration_seconds=1.0,
+            result_text="done",
+        )
+
+        stage_tpl = self._make_stage_tpl(thinking_mode="enabled")
+        _run_agent_stage(
+            stage_tpl, mock_adapter,
+            cwd=tmp_path, max_turns=100,
+            prompt_vars={"ticket_id": "SMA-1"},
+        )
+
+        _, kwargs = mock_adapter.run.call_args
+        assert kwargs["thinking_mode"] is None  # suppressed when adapter doesn't support
 
 
 # ---------------------------------------------------------------------------

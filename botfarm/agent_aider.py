@@ -60,6 +60,7 @@ class AiderAdapter:
         model: str | None = None,
         effort: str | None = None,
         context_window: int | None = None,
+        thinking_mode: str | None = None,
         log_file: Path | None = None,
         env: dict[str, str] | None = None,
         timeout: float | None = None,
