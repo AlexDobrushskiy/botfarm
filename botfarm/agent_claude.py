@@ -66,6 +66,32 @@ class ClaudeAdapter:
     def check_available(self) -> tuple[bool, str]:
         return check_claude_available()
 
+    def preflight_checks(self) -> list[tuple[str, bool, str]]:
+        ok, msg = self.check_available()
+        if ok:
+            return [("available", True, f"OK — {msg}")]
+
+        # Augment with recovery guidance when binary is missing.
+        if "not found" in msg:
+            local_bin = Path("~/.local/bin").expanduser()
+            if (local_bin / "claude").exists():
+                msg = (
+                    "'claude' found at ~/.local/bin/claude but ~/.local/bin "
+                    "is not in PATH. "
+                    "Add it permanently: "
+                    "echo 'export PATH=\"$HOME/.local/bin:$PATH\"' >> ~/.bashrc "
+                    "&& source ~/.bashrc — "
+                    "Or for nohup: PATH=$HOME/.local/bin:$PATH nohup botfarm run &"
+                )
+            else:
+                msg = (
+                    "'claude' not found on PATH and not present at "
+                    "~/.local/bin/claude. "
+                    "Install Claude Code: curl -fsSL https://claude.ai/install.sh "
+                    "| bash — Then add ~/.local/bin to PATH if needed."
+                )
+        return [("available", False, msg)]
+
 
 def create_adapter(*, auth_mode: str = "oauth", **_kwargs: object) -> ClaudeAdapter:
     """Entry-point factory for the Claude adapter."""

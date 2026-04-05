@@ -87,6 +87,18 @@ class AgentAdapter(Protocol):
         """
         ...
 
+    def preflight_checks(self) -> list[tuple[str, bool, str]]:
+        """Return adapter-specific preflight check results.
+
+        Each tuple is ``(check_name, passed, message)`` where *check_name*
+        is a short suffix like ``"available"`` or ``"auth"``.
+
+        Implementations should delegate to :meth:`check_available` for the
+        binary probe and add any adapter-specific checks (auth, tooling)
+        on top.
+        """
+        ...
+
 
 # Type alias: maps executor_type names (e.g. "claude", "codex") to adapter instances.
 AdapterRegistry = dict[str, AgentAdapter]
