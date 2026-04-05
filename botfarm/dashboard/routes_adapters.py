@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import html
 import logging
-from dataclasses import asdict
 from pathlib import Path
 
 import yaml
@@ -13,7 +12,6 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 from botfarm.agent import build_adapter_registry, discover_adapter_schemas
 from botfarm.config import AdapterConfig, write_yaml_atomic
-from botfarm.preflight import check_adapters
 
 from .state import manual_pause_state, read_state, supervisor_status
 
@@ -202,10 +200,14 @@ async def adapters_update(request: Request):
             if isinstance(data, dict):
                 agents_block = data.setdefault("agents", {})
                 adapters_block = agents_block.setdefault("adapters", {})
-                for adapter_name, fields in updates.items():
+                for adapter_name in updates:
+                    acfg = cfg.agents.adapters[adapter_name]
                     adapter_yaml = adapters_block.setdefault(adapter_name, {})
-                    for key, value in fields.items():
-                        adapter_yaml[key] = value
+                    adapter_yaml["enabled"] = acfg.enabled
+                    adapter_yaml["model"] = acfg.model
+                    adapter_yaml["timeout_minutes"] = acfg.timeout_minutes
+                    adapter_yaml["reasoning_effort"] = acfg.reasoning_effort
+                    adapter_yaml["skip_on_reiteration"] = acfg.skip_on_reiteration
                 write_yaml_atomic(config_path, data)
         except Exception:
             logger.warning("Failed to persist adapter config to YAML", exc_info=True)
