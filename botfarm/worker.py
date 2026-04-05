@@ -1564,7 +1564,14 @@ class _PipelineContext:
             )
         self.conn.commit()
 
-        # Record separate codex_review stage_runs row
+        # Record separate codex_review stage_runs row.
+        # Resolve codex adapter for accurate cost calculation — codex_ar.cost_usd
+        # is 0.0 by design (cost lives in adapter.calculate_cost()).
+        codex_adapter = self.registry.get("codex") if self.registry else None
+        if codex_adapter is not None:
+            codex_cost = codex_adapter.calculate_cost(codex_ar)
+        else:
+            codex_cost = codex_ar.cost_usd
         insert_stage_run(
             self.conn,
             task_id=self.task_id,
@@ -1577,7 +1584,7 @@ class _PipelineContext:
             output_tokens=codex_ar.output_tokens,
             cache_read_input_tokens=codex_ar.extra.get("cache_read_input_tokens", 0),
             cache_creation_input_tokens=0,
-            total_cost_usd=codex_ar.cost_usd,
+            total_cost_usd=codex_cost,
             log_file_path=str(codex_log_file) if codex_log_file else None,
             on_extra_usage=on_extra_usage,
             pipeline_id=self._pipeline_id,
