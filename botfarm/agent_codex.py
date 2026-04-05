@@ -6,7 +6,13 @@ import logging
 import os
 from pathlib import Path
 
-from botfarm.agent import AgentResult, ContextFillCallback, calculate_cost_from_table
+from botfarm.agent import (
+    AdapterConfigSchema,
+    AgentResult,
+    ConfigFieldSchema,
+    ContextFillCallback,
+    calculate_cost_from_table,
+)
 from botfarm.codex import (
     CodexResult,
     check_codex_available,
@@ -89,6 +95,20 @@ class CodexAdapter:
         )
         return _codex_result_to_agent_result(codex_result, effective_model)
 
+    @classmethod
+    def config_schema(cls) -> AdapterConfigSchema:
+        return AdapterConfigSchema(
+            description="OpenAI Codex agent via Codex CLI",
+            fields=[
+                ConfigFieldSchema("enabled", bool, default=False, description="Enable this adapter"),
+                ConfigFieldSchema("model", str, default="", description='Model name (e.g. "o3", "o4-mini")'),
+                ConfigFieldSchema("timeout_minutes", int, default=15, description="Per-stage timeout in minutes"),
+                ConfigFieldSchema("reasoning_effort", str, default="medium", description="none, low, medium, high, xhigh"),
+                ConfigFieldSchema("skip_on_reiteration", bool, default=True, description="Skip on review iterations 2+"),
+            ],
+            required_env_vars=[],
+        )
+
     def calculate_cost(self, result: AgentResult) -> float:
         model = result.extra.get("model", "") or self._model or DEFAULT_CODEX_MODEL
         cost = calculate_cost_from_table(
@@ -141,6 +161,9 @@ def create_adapter(
 ) -> CodexAdapter:
     """Entry-point factory for the Codex adapter."""
     return CodexAdapter(model=model or None, reasoning_effort=reasoning_effort or None)
+
+
+create_adapter.config_schema = CodexAdapter.config_schema  # type: ignore[attr-defined]
 
 
 def _codex_result_to_agent_result(

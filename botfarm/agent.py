@@ -37,6 +37,26 @@ class AgentResult:
     extra: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass
+class ConfigFieldSchema:
+    """Describes a single configuration field for an adapter."""
+
+    name: str
+    field_type: type  # str, int, bool
+    default: Any = None
+    required: bool = False
+    description: str = ""
+
+
+@dataclass
+class AdapterConfigSchema:
+    """Schema describing an adapter's configuration and environment requirements."""
+
+    fields: list[ConfigFieldSchema] = field(default_factory=list)
+    required_env_vars: list[tuple[str, str]] = field(default_factory=list)
+    description: str = ""
+
+
 @runtime_checkable
 class AgentAdapter(Protocol):
     """Protocol defining the interface for agent backends (e.g. Claude, Codex)."""
@@ -105,6 +125,16 @@ class AgentAdapter(Protocol):
         Implementations should delegate to :meth:`check_available` for the
         binary probe and add any adapter-specific checks (auth, tooling)
         on top.
+        """
+        ...
+
+    @classmethod
+    def config_schema(cls) -> AdapterConfigSchema:
+        """Return the configuration schema for this adapter type.
+
+        The schema declares supported config fields, their types and defaults,
+        and any required environment variables.  Used for config validation
+        and dynamic template generation.
         """
         ...
 
@@ -200,3 +230,34 @@ def build_adapter_registry(
         registry[ep.name] = adapter
 
     return registry
+
+
+def discover_adapter_schemas() -> dict[str, AdapterConfigSchema]:
+    """Discover adapter config schemas via setuptools entry points.
+
+    Loads each ``botfarm.adapters`` entry point, looks for a
+    ``config_schema`` attribute on the factory function, and calls it.
+    Returns a mapping of adapter name to schema.
+    """
+    eps = importlib.metadata.entry_points(group="botfarm.adapters")
+    schemas: dict[str, AdapterConfigSchema] = {}
+    for ep in eps:
+        try:
+            factory = ep.load()
+        except Exception:
+            logger.warning(
+                "Failed to load adapter entry point %r (%s)",
+                ep.name, ep.value, exc_info=True,
+            )
+            continue
+        schema_fn = getattr(factory, "config_schema", None)
+        if schema_fn is not None:
+            try:
+                schemas[ep.name] = schema_fn()
+            except Exception:
+                logger.warning(
+                    "Failed to get config schema from adapter %r",
+                    ep.name,
+                    exc_info=True,
+                )
+    return schemas

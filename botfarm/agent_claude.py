@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from botfarm.agent import AgentResult, ContextFillCallback
+from botfarm.agent import (
+    AdapterConfigSchema,
+    AgentResult,
+    ConfigFieldSchema,
+    ContextFillCallback,
+)
 from botfarm.worker_claude import ClaudeResult, check_claude_available, run_claude_streaming
 
 _DEFAULT_MAX_TURNS = 200
@@ -63,6 +68,19 @@ class ClaudeAdapter:
         )
         return _claude_result_to_agent_result(claude_result)
 
+    @classmethod
+    def config_schema(cls) -> AdapterConfigSchema:
+        return AdapterConfigSchema(
+            description="Anthropic Claude agent via Claude Code CLI",
+            fields=[
+                ConfigFieldSchema("enabled", bool, default=True, description="Enable this adapter"),
+                ConfigFieldSchema("model", str, default="", description="Model name override"),
+                ConfigFieldSchema("timeout_minutes", int, default=None, description="Per-stage timeout in minutes"),
+                ConfigFieldSchema("reasoning_effort", str, default="", description="Reasoning effort level"),
+                ConfigFieldSchema("skip_on_reiteration", bool, default=True, description="Skip on review iterations 2+"),
+            ],
+        )
+
     def calculate_cost(self, result: AgentResult) -> float:
         # Claude CLI reports cost directly in its JSON output.
         return result.cost_usd
@@ -100,6 +118,9 @@ class ClaudeAdapter:
 def create_adapter(*, auth_mode: str = "oauth", **_kwargs: object) -> ClaudeAdapter:
     """Entry-point factory for the Claude adapter."""
     return ClaudeAdapter(auth_mode=auth_mode)
+
+
+create_adapter.config_schema = ClaudeAdapter.config_schema  # type: ignore[attr-defined]
 
 
 def _claude_result_to_agent_result(cr: ClaudeResult) -> AgentResult:

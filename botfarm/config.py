@@ -77,14 +77,7 @@ agents:
   #     implement: 30
   timeout_grace_seconds: 10
   adapters:
-    claude:
-      enabled: true
-    codex:
-      enabled: false
-      model: ""                    # e.g. "o3", "o4-mini", or empty for default
-      timeout_minutes: 15          # separate from Claude review timeout
-      reasoning_effort: "medium"   # none, low, medium, high, xhigh — or empty for default
-      skip_on_reiteration: true    # skip codex on review iterations 2+
+{adapters_yaml}
 
 # Separate coder/reviewer GitHub identities.
 # Without this, all PRs and reviews use your personal GitHub account.
@@ -328,6 +321,60 @@ def default_adapters() -> dict[str, AdapterConfig]:
     }
 
 
+def generate_adapters_yaml(indent: int = 4) -> str:
+    """Generate the ``adapters:`` YAML block from discovered adapter schemas.
+
+    Discovers all adapters registered via ``botfarm.adapters`` entry points,
+    reads their :meth:`config_schema`, and produces the YAML with field
+    descriptions as inline comments.
+    """
+    from botfarm.agent import discover_adapter_schemas
+
+    schemas = discover_adapter_schemas()
+    defaults = default_adapters()
+    lines: list[str] = []
+    prefix = " " * indent
+
+    # Ensure stable ordering: known adapters first, then any extras.
+    known_order = ["claude", "codex"]
+    ordered_names = [n for n in known_order if n in schemas]
+    ordered_names += sorted(n for n in schemas if n not in known_order)
+
+    for name in ordered_names:
+        schema = schemas[name]
+        default_cfg = defaults.get(name, AdapterConfig())
+        lines.append(f"{prefix}{name}:")
+        for fld in schema.fields:
+            # Use the adapter-specific default from default_adapters() if
+            # available, otherwise fall back to the schema default.
+            if hasattr(default_cfg, fld.name):
+                val = getattr(default_cfg, fld.name)
+            else:
+                val = fld.default
+            # Format value for YAML.
+            if isinstance(val, bool):
+                yaml_val = "true" if val else "false"
+            elif val is None or val == "":
+                yaml_val = '""' if fld.field_type is str else ""
+            elif isinstance(val, str):
+                yaml_val = f'"{val}"'
+            else:
+                yaml_val = str(val)
+            comment = f"  # {fld.description}" if fld.description else ""
+            # Omit fields that match AdapterConfig defaults for cleaner output.
+            if val == getattr(AdapterConfig(), fld.name, object()) and fld.name != "enabled":
+                continue
+            lines.append(f"{prefix}  {fld.name}: {yaml_val}{comment}")
+
+    return "\n".join(lines)
+
+
+def build_config_template() -> str:
+    """Build the full default config template with dynamically discovered adapters."""
+    adapters_yaml = generate_adapters_yaml()
+    return DEFAULT_CONFIG_TEMPLATE.replace("{adapters_yaml}", adapters_yaml)
+
+
 @dataclass
 class AgentsConfig:
     max_review_iterations: int = 3
@@ -523,7 +570,7 @@ def create_default_config(config_path: Path = DEFAULT_CONFIG_PATH) -> Path:
     """Create a default config file if it doesn't exist. Returns the path."""
     config_path.parent.mkdir(parents=True, exist_ok=True)
     if not config_path.exists():
-        config_path.write_text(DEFAULT_CONFIG_TEMPLATE)
+        config_path.write_text(build_config_template())
     return config_path
 
 
@@ -806,7 +853,10 @@ def resolve_stage_timeout(
     return agents_cfg.timeout_minutes.get(stage)
 
 
-def _validate_config(config: BotfarmConfig) -> None:
+def _validate_config(
+    config: BotfarmConfig,
+    adapter_schemas: dict[str, Any] | None = None,
+) -> None:
     """Validate cross-field constraints."""
     bt = config.bugtracker
 
@@ -966,6 +1016,29 @@ def _validate_config(config: BotfarmConfig) -> None:
             raise ConfigError(
                 f"agents.adapters.{adapter_name}.timeout_minutes must be at least 1"
             )
+
+    # Schema-based validation: warn about enabled adapters with no
+    # registered entry point (i.e. no schema discoverable).
+    if adapter_schemas is None:
+        from botfarm.agent import discover_adapter_schemas
+        adapter_schemas = discover_adapter_schemas()
+    for adapter_name, adapter_cfg in config.agents.adapters.items():
+        if not adapter_cfg.enabled:
+            continue
+        if adapter_name not in adapter_schemas:
+            logger.warning(
+                "agents.adapters.%s is enabled but no adapter entry point "
+                "was found — it will not be available at runtime",
+                adapter_name,
+            )
+            continue
+        schema = adapter_schemas[adapter_name]
+        for env_var, description in schema.required_env_vars:
+            if not os.environ.get(env_var):
+                raise ConfigError(
+                    f"agents.adapters.{adapter_name}: required environment "
+                    f"variable {env_var} is not set ({description})"
+                )
 
     if config.logging.max_bytes < 1:
         raise ConfigError("logging.max_bytes must be at least 1")
@@ -1187,6 +1260,11 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
     # legacy "codex_reviewer_*" flat fields (with deprecation warning).
     adapters = default_adapters()
     raw_adapters = agents_data.get("adapters")
+
+    # Discover adapter config schemas for validation.
+    from botfarm.agent import discover_adapter_schemas
+    adapter_schemas = discover_adapter_schemas()
+
     if isinstance(raw_adapters, dict):
         for name, adapter_data in raw_adapters.items():
             if not isinstance(adapter_data, dict):
@@ -1194,6 +1272,26 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
                     f"agents.adapters.{name} must be a mapping, "
                     f"got {type(adapter_data).__name__}"
                 )
+            # Validate config keys against adapter schema.
+            schema = adapter_schemas.get(name)
+            if schema is not None:
+                known_keys = {f.name for f in schema.fields}
+                unknown = set(adapter_data.keys()) - known_keys
+                if unknown:
+                    logger.warning(
+                        "agents.adapters.%s: unknown config keys %s "
+                        "(known: %s)",
+                        name,
+                        sorted(unknown),
+                        sorted(known_keys),
+                    )
+                # Check required fields.
+                for fld in schema.fields:
+                    if fld.required and fld.name not in adapter_data:
+                        raise ConfigError(
+                            f"agents.adapters.{name}: required field "
+                            f"'{fld.name}' is missing"
+                        )
             adapters[name] = AdapterConfig(
                 enabled=_parse_bool(adapter_data, "enabled", name == "claude", section=f"agents.adapters.{name}"),
                 model=str(adapter_data.get("model", "")),
@@ -1367,7 +1465,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         auth_mode=auth_mode,
     )
 
-    _validate_config(config)
+    _validate_config(config, adapter_schemas=adapter_schemas)
     config.source_path = str(config_path)
     return config
 

@@ -125,6 +125,78 @@ class TestBuildAdapterRegistry:
 
 
 # ---------------------------------------------------------------------------
+# config_schema
+# ---------------------------------------------------------------------------
+
+
+class TestConfigSchema:
+    def test_claude_config_schema_classmethod(self):
+        schema = ClaudeAdapter.config_schema()
+        assert schema.description
+        field_names = [f.name for f in schema.fields]
+        assert "enabled" in field_names
+        assert "model" in field_names
+        assert schema.required_env_vars == []
+
+    def test_codex_config_schema_classmethod(self):
+        schema = CodexAdapter.config_schema()
+        assert schema.description
+        field_names = [f.name for f in schema.fields]
+        assert "enabled" in field_names
+        assert "model" in field_names
+        assert schema.required_env_vars == []
+
+    def test_config_schema_on_instance(self):
+        """config_schema() is callable on adapter instances too."""
+        adapter = ClaudeAdapter()
+        schema = adapter.config_schema()
+        assert len(schema.fields) > 0
+
+    def test_factory_config_schema_attribute(self):
+        """Factory functions expose config_schema for entry-point discovery."""
+        from botfarm.agent_claude import create_adapter as claude_factory
+        from botfarm.agent_codex import create_adapter as codex_factory
+
+        assert hasattr(claude_factory, "config_schema")
+        assert hasattr(codex_factory, "config_schema")
+        assert claude_factory.config_schema().description
+        assert codex_factory.config_schema().description
+
+    def test_discover_adapter_schemas(self):
+        from botfarm.agent import discover_adapter_schemas
+        schemas = discover_adapter_schemas()
+        assert "claude" in schemas
+        assert "codex" in schemas
+        for name, schema in schemas.items():
+            assert len(schema.fields) > 0
+
+    def test_discover_adapter_schemas_logs_load_failure(self, caplog):
+        """Entry-point load failures are logged as warnings."""
+        import importlib.metadata
+        import logging
+        from unittest.mock import MagicMock, patch
+        from botfarm.agent import discover_adapter_schemas
+
+        bad_ep = MagicMock()
+        bad_ep.name = "broken"
+        bad_ep.value = "some.module:factory"
+        bad_ep.load.side_effect = ImportError("no such module")
+
+        with patch.object(
+            importlib.metadata,
+            "entry_points",
+            return_value=[bad_ep],
+        ):
+            with caplog.at_level(logging.WARNING, logger="botfarm.agent"):
+                schemas = discover_adapter_schemas()
+        assert schemas == {}
+        assert any(
+            "Failed to load adapter entry point" in r.message and "broken" in r.message
+            for r in caplog.records
+        )
+
+
+# ---------------------------------------------------------------------------
 # _execute_stage registry dispatch
 # ---------------------------------------------------------------------------
 
