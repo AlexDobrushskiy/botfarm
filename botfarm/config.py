@@ -1031,6 +1031,14 @@ def _validate_config(
                 "was found — it will not be available at runtime",
                 adapter_name,
             )
+            continue
+        schema = adapter_schemas[adapter_name]
+        for env_var, description in schema.required_env_vars:
+            if not os.environ.get(env_var):
+                raise ConfigError(
+                    f"agents.adapters.{adapter_name}: required environment "
+                    f"variable {env_var} is not set ({description})"
+                )
 
     if config.logging.max_bytes < 1:
         raise ConfigError("logging.max_bytes must be at least 1")

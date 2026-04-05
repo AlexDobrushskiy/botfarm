@@ -210,6 +210,10 @@ def discover_adapter_schemas() -> dict[str, AdapterConfigSchema]:
         try:
             factory = ep.load()
         except Exception:
+            logger.warning(
+                "Failed to load adapter entry point %r (%s)",
+                ep.name, ep.value, exc_info=True,
+            )
             continue
         schema_fn = getattr(factory, "config_schema", None)
         if schema_fn is not None:

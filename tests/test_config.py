@@ -2292,8 +2292,9 @@ def test_load_config_identities_env_var_expansion(tmp_path, monkeypatch):
 # --- Codex reviewer config ---
 
 
-def test_config_codex_fields(tmp_path):
+def test_config_codex_fields(tmp_path, monkeypatch):
     """Parse YAML with codex reviewer fields."""
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     data = {
         **MINIMAL_CONFIG,
         "agents": {
@@ -2411,8 +2412,9 @@ def test_default_config_template_includes_adapter_fields():
     assert "timeout_minutes:" in template
 
 
-def test_config_adapters_new_format(tmp_path):
+def test_config_adapters_new_format(tmp_path, monkeypatch):
     """New adapters: format parses correctly."""
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     data = {
         **MINIMAL_CONFIG,
         "agents": {
@@ -2442,7 +2444,8 @@ def test_config_adapters_new_format(tmp_path):
     assert config.agents.codex_reviewer_timeout_minutes == 20
 
 
-def test_config_adapters_backward_compat_migration(tmp_path):
+def test_config_adapters_backward_compat_migration(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     """Legacy codex_reviewer_* fields are migrated to adapters.codex."""
     data = {
         **MINIMAL_CONFIG,
@@ -2545,6 +2548,53 @@ def test_config_adapters_enabled_unknown_adapter_warns(tmp_path, caplog):
         "nonexistent" in r.message and "no adapter entry point" in r.message
         for r in caplog.records
     )
+
+
+def test_config_adapters_required_env_var_missing(tmp_path, monkeypatch):
+    """Enabled adapter with missing required env var raises ConfigError."""
+    from unittest.mock import patch
+    from botfarm.agent import AdapterConfigSchema, ConfigFieldSchema
+
+    schema = AdapterConfigSchema(
+        fields=[ConfigFieldSchema("enabled", bool, default=True)],
+        required_env_vars=[("MY_SECRET_KEY", "API key for the service")],
+    )
+    monkeypatch.delenv("MY_SECRET_KEY", raising=False)
+    with patch("botfarm.agent.discover_adapter_schemas", return_value={"claude": schema}):
+        data = {
+            **MINIMAL_CONFIG,
+            "agents": {
+                "adapters": {
+                    "claude": {"enabled": True},
+                },
+            },
+        }
+        config_path = _write_config(tmp_path, data)
+        with pytest.raises(ConfigError, match="MY_SECRET_KEY is not set"):
+            load_config(config_path)
+
+
+def test_config_adapters_required_env_var_present(tmp_path, monkeypatch):
+    """Enabled adapter with required env var set passes validation."""
+    from unittest.mock import patch
+    from botfarm.agent import AdapterConfigSchema, ConfigFieldSchema
+
+    schema = AdapterConfigSchema(
+        fields=[ConfigFieldSchema("enabled", bool, default=True)],
+        required_env_vars=[("MY_SECRET_KEY", "API key for the service")],
+    )
+    monkeypatch.setenv("MY_SECRET_KEY", "some-value")
+    with patch("botfarm.agent.discover_adapter_schemas", return_value={"claude": schema}):
+        data = {
+            **MINIMAL_CONFIG,
+            "agents": {
+                "adapters": {
+                    "claude": {"enabled": True},
+                },
+            },
+        }
+        config_path = _write_config(tmp_path, data)
+        load_config(config_path)  # Should not raise
 
 
 # --- capacity_monitoring config ---

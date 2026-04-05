@@ -172,6 +172,31 @@ class TestConfigSchema:
         for name, schema in schemas.items():
             assert len(schema.fields) > 0
 
+    def test_discover_adapter_schemas_logs_load_failure(self, caplog):
+        """Entry-point load failures are logged as warnings."""
+        import importlib.metadata
+        import logging
+        from unittest.mock import MagicMock, patch
+        from botfarm.agent import discover_adapter_schemas
+
+        bad_ep = MagicMock()
+        bad_ep.name = "broken"
+        bad_ep.value = "some.module:factory"
+        bad_ep.load.side_effect = ImportError("no such module")
+
+        with patch.object(
+            importlib.metadata,
+            "entry_points",
+            return_value=[bad_ep],
+        ):
+            with caplog.at_level(logging.WARNING, logger="botfarm.agent"):
+                schemas = discover_adapter_schemas()
+        assert schemas == {}
+        assert any(
+            "Failed to load adapter entry point" in r.message and "broken" in r.message
+            for r in caplog.records
+        )
+
 
 # ---------------------------------------------------------------------------
 # _execute_stage registry dispatch
