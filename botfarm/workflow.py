@@ -54,13 +54,18 @@ class _SafeDict(dict):
         return "{" + key + "}"
 
 
-def load_pipeline(conn: sqlite3.Connection, ticket_labels: list[str]) -> PipelineTemplate:
+def load_pipeline(
+    conn: sqlite3.Connection,
+    ticket_labels: list[str],
+    project_default_pipeline: str = "",
+) -> PipelineTemplate:
     """Load the appropriate pipeline template based on ticket labels.
 
     Resolution order:
     1. Find pipeline whose ticket_label matches any of the ticket's labels (case-insensitive)
-    2. Fall back to the default pipeline (is_default=True)
-    3. Raise error if no match found
+    2. Project default pipeline (by name, from project config)
+    3. Fall back to the global default pipeline (is_default=True)
+    4. Raise error if no match found
     """
     labels_lower = {lbl.lower() for lbl in ticket_labels} if ticket_labels else set()
 
@@ -72,7 +77,16 @@ def load_pipeline(conn: sqlite3.Connection, ticket_labels: list[str]) -> Pipelin
             if row["ticket_label"].lower() in labels_lower:
                 return _build_pipeline(conn, row)
 
-    # Fall back to default
+    # Project default pipeline (by name)
+    if project_default_pipeline:
+        row = conn.execute(
+            "SELECT * FROM pipeline_templates WHERE name = ?",
+            (project_default_pipeline,),
+        ).fetchone()
+        if row is not None:
+            return _build_pipeline(conn, row)
+
+    # Fall back to global default
     row = conn.execute(
         "SELECT * FROM pipeline_templates WHERE is_default = 1"
     ).fetchone()

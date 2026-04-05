@@ -3271,6 +3271,50 @@ class TestProjectConfigFields:
         with pytest.raises(ConfigError, match="setup_commands must be a list of strings"):
             load_config(config_path)
 
+    def test_default_pipeline_field(self):
+        p = ProjectConfig(
+            name="p", team="T", base_dir="d", worktree_prefix="s-",
+            slots=[1], default_pipeline="investigation",
+        )
+        assert p.default_pipeline == "investigation"
+
+    def test_default_pipeline_default_empty(self):
+        p = ProjectConfig(
+            name="p", team="T", base_dir="d", worktree_prefix="s-", slots=[1],
+        )
+        assert p.default_pipeline == ""
+
+    def test_yaml_default_pipeline_loads(self, tmp_path):
+        data = {
+            "projects": [{
+                "name": "p", "team": "TST", "base_dir": "~/d",
+                "worktree_prefix": "s-", "slots": [1],
+                "default_pipeline": "investigation",
+            }],
+            "bugtracker": {"type": "linear", "api_key": "k"},
+        }
+        config_path = _write_config(tmp_path, data)
+        config = load_config(config_path)
+        assert config.projects[0].default_pipeline == "investigation"
+
+    def test_yaml_default_pipeline_absent_is_empty(self, tmp_path):
+        config_path = _write_config(tmp_path, MINIMAL_CONFIG)
+        config = load_config(config_path)
+        assert config.projects[0].default_pipeline == ""
+
+    def test_invalid_default_pipeline_type(self, tmp_path):
+        data = {
+            "projects": [{
+                "name": "p", "team": "TST", "base_dir": "~/d",
+                "worktree_prefix": "s-", "slots": [1],
+                "default_pipeline": 123,
+            }],
+            "bugtracker": {"type": "linear", "api_key": "k"},
+        }
+        config_path = _write_config(tmp_path, data)
+        with pytest.raises(ConfigError, match="default_pipeline must be a string"):
+            load_config(config_path)
+
 
 class TestProjectRunCommandFields:
     """Test run_command, run_env, run_port on ProjectConfig."""

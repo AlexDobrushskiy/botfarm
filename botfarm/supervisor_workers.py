@@ -329,6 +329,7 @@ def _worker_entry(
     oauth_token: str = "",
     auth_mode: str = "oauth",
     pipeline_id: int | None = None,
+    project_default_pipeline: str = "",
 ) -> None:
     """Entry point for a worker subprocess.
 
@@ -439,6 +440,7 @@ def _worker_entry(
             oauth_token=oauth_token,
             auth_mode=auth_mode,
             pipeline_id=pipeline_id,
+            project_default_pipeline=project_default_pipeline,
         )
         if result.paused:
             result_queue.put(_WorkerResult(
@@ -731,6 +733,7 @@ class WorkerLifecycleManager:
         prior_context: str = "",
         merge_main_before_resume: bool = False,
         pipeline_id: int | None = None,
+        project_default_pipeline: str = "",
     ) -> multiprocessing.Process:
         """Spawn a worker subprocess — shared logic for dispatch and resume paths.
 
@@ -811,6 +814,7 @@ class WorkerLifecycleManager:
                 "oauth_token": oauth_token,
                 "auth_mode": self._config.auth_mode,
                 "pipeline_id": pipeline_id,
+                "project_default_pipeline": project_default_pipeline,
             },
             daemon=False,
         )
@@ -932,6 +936,7 @@ class WorkerLifecycleManager:
             resume_from_stage=resume_from_stage,
             merge_main_before_resume=merge_main_before_resume,
             pipeline_id=pipeline_id,
+            project_default_pipeline=project_cfg.default_pipeline,
         )
 
         logger.info(
@@ -1000,6 +1005,7 @@ class WorkerLifecycleManager:
             resume_from_stage=slot.stage,
             resume_session_id=slot.current_session_id,
             slot_db=slot_db,
+            project_default_pipeline=project_cfg.default_pipeline if project_cfg else "",
         )
 
         logger.info(
@@ -1056,6 +1062,7 @@ class WorkerLifecycleManager:
             resume_from_stage=resume_from_stage,
             resume_session_id=slot.current_session_id,
             slot_db=slot_db,
+            project_default_pipeline=project_cfg.default_pipeline if project_cfg else "",
         )
 
         logger.info(
@@ -1112,6 +1119,7 @@ class WorkerLifecycleManager:
             resume_from_stage=resume_stage,
             resume_session_id=slot.current_session_id,
             slot_db=slot_db,
+            project_default_pipeline=project_cfg.default_pipeline,
         )
 
         logger.info(

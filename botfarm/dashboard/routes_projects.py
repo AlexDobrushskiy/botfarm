@@ -150,6 +150,7 @@ async def api_project_create(request: Request):
         project_type_raw = ""
     project_type = project_type_raw.strip()
     setup_commands_raw = body.get("setup_commands")
+    default_pipeline = (body.get("default_pipeline") or "").strip()
     bugtracker_type = cfg.bugtracker.type
 
     # Parse include_tags — accept list or comma-separated string
@@ -252,6 +253,7 @@ async def api_project_create(request: Request):
                 project_type=project_type,
                 setup_commands=setup_commands or None,
                 include_tags=include_tags or None,
+                default_pipeline=default_pipeline,
             )
             # Notify supervisor to register the new project
             cb = app.state.on_add_project

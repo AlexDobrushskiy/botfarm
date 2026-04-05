@@ -2382,6 +2382,7 @@ Note: The supervisor handles status transitions automatically — do not move th
             ticket_labels=details.labels or [],
             task_id=task_id,
             prior_context=prior_context,
+            project_default_pipeline=project_cfg.default_pipeline,
         )
 
         logger.info(

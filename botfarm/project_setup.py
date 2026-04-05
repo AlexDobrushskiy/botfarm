@@ -738,6 +738,7 @@ def setup_project(
     project_type: str = "",
     setup_commands: list[str] | None = None,
     include_tags: list[str] | None = None,
+    default_pipeline: str = "",
 ) -> dict:
     """Set up a new project end-to-end: clone or init, worktrees, config update.
 
@@ -871,6 +872,8 @@ def setup_project(
             project_dict["setup_commands"] = setup_commands
         if include_tags:
             project_dict["include_tags"] = include_tags
+        if default_pipeline:
+            project_dict["default_pipeline"] = default_pipeline
 
         append_project_to_config(
             config_path, project_dict, replace_names=replace_names,
