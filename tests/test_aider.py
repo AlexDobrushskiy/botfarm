@@ -73,8 +73,8 @@ class TestParseAiderOutput:
         assert result.cost_usd == pytest.approx(0.05)
         assert "I'll implement the requested changes." in result.result_text
 
-    def test_multiple_token_lines_uses_last(self):
-        """When Aider prints multiple summaries, use the last one."""
+    def test_multiple_token_lines_accumulates(self):
+        """Token counts accumulate across summary lines; session cost uses last (cumulative) value."""
         lines = [
             "First batch\n",
             "Tokens: 1k sent, 200 received. Cost: $0.01 message, $0.02 session.\n",
@@ -83,8 +83,8 @@ class TestParseAiderOutput:
         ]
         result = parse_aider_output(lines)
 
-        assert result.input_tokens == 2000
-        assert result.output_tokens == 400
+        assert result.input_tokens == 3000
+        assert result.output_tokens == 600
         assert result.cost_usd == pytest.approx(0.08)
 
     def test_no_token_line(self):

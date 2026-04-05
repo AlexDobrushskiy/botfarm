@@ -71,9 +71,10 @@ def _parse_token_count(s: str) -> int:
 def parse_aider_output(lines: list[str]) -> AiderResult:
     """Parse Aider's stdout into an :class:`AiderResult`.
 
-    Extracts the *last* token-count and cost summary lines (Aider may
-    print multiple summaries during a multi-step session).  The full
-    output is preserved verbatim in ``result_text``.
+    Token counts are accumulated across all summary lines (Aider prints
+    per-message counts, not running totals).  Session cost uses the *last*
+    value because Aider's ``$session`` figure is already cumulative.
+    The full output is preserved verbatim in ``result_text``.
     """
     input_tokens = 0
     output_tokens = 0
@@ -82,8 +83,8 @@ def parse_aider_output(lines: list[str]) -> AiderResult:
     for line in lines:
         token_match = _TOKEN_PATTERN.search(line)
         if token_match:
-            input_tokens = _parse_token_count(token_match.group(1))
-            output_tokens = _parse_token_count(token_match.group(2))
+            input_tokens += _parse_token_count(token_match.group(1))
+            output_tokens += _parse_token_count(token_match.group(2))
 
         cost_match = _COST_PATTERN.search(line)
         if cost_match:
