@@ -110,6 +110,9 @@ class _DummyAdapter:
     def check_available(self) -> tuple[bool, str]:
         return (True, "")
 
+    def preflight_checks(self) -> list[tuple[str, bool, str]]:
+        return [("available", True, "OK")]
+
 
 class _IncompleteAdapter:
     """Missing required methods — should NOT satisfy the protocol."""

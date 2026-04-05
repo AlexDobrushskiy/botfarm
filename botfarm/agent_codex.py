@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from botfarm.agent import AgentResult, ContextFillCallback
@@ -78,6 +79,33 @@ class CodexAdapter:
 
     def check_available(self) -> tuple[bool, str]:
         return check_codex_available()
+
+    def preflight_checks(self) -> list[tuple[str, bool, str]]:
+        results: list[tuple[str, bool, str]] = []
+
+        ok, msg = self.check_available()
+        if ok:
+            results.append(("available", True, f"OK — {msg}"))
+        else:
+            results.append((
+                "available",
+                False,
+                f"{msg} — install Codex or disable the codex adapter",
+            ))
+
+        has_api_key = bool(os.environ.get("OPENAI_API_KEY"))
+        has_auth_file = Path("~/.codex/auth.json").expanduser().exists()
+        if not has_api_key and not has_auth_file:
+            results.append((
+                "auth",
+                False,
+                "OPENAI_API_KEY is not set and ~/.codex/auth.json not found — "
+                "Codex requires one of these for authentication",
+            ))
+        else:
+            results.append(("auth", True, "OK — Codex authentication available"))
+
+        return results
 
 
 def create_adapter(
