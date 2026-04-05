@@ -95,6 +95,26 @@ class TestLoadPipeline:
         pipeline = load_pipeline(conn, ["Investigation"])
         assert pipeline.loops == []
 
+    def test_project_default_pipeline_used_when_no_label_match(self, conn):
+        pipeline = load_pipeline(conn, [], project_default_pipeline="investigation")
+        assert pipeline.name == "investigation"
+
+    def test_project_default_pipeline_overridden_by_label_match(self, conn):
+        pipeline = load_pipeline(
+            conn, ["Investigation"], project_default_pipeline="implementation",
+        )
+        assert pipeline.name == "investigation"
+
+    def test_project_default_pipeline_falls_back_to_global_if_not_found(self, conn):
+        pipeline = load_pipeline(conn, [], project_default_pipeline="nonexistent")
+        assert pipeline.name == "implementation"
+        assert pipeline.is_default is True
+
+    def test_project_default_pipeline_empty_string_uses_global(self, conn):
+        pipeline = load_pipeline(conn, [], project_default_pipeline="")
+        assert pipeline.name == "implementation"
+        assert pipeline.is_default is True
+
 
 # ---------------------------------------------------------------------------
 # load_pipeline_by_id

@@ -433,6 +433,7 @@ def run_pipeline(
     oauth_token: str = "",
     auth_mode: str = "oauth",
     pipeline_id: int | None = None,
+    project_default_pipeline: str = "",
 ) -> PipelineResult:
     """Execute the full implement→review→fix→pr_checks→merge pipeline.
 
@@ -525,6 +526,7 @@ def run_pipeline(
         conn, ticket_id, ticket_labels or [], max_turns,
         max_review_iterations, max_ci_retries, max_merge_conflict_retries,
         pipeline_id=pre_assigned_pipeline_id if pre_assigned_pipeline_id is not None else pipeline_id,
+        project_default_pipeline=project_default_pipeline,
     )
 
     # Persist the resolved pipeline_id on the task for later querying.
@@ -703,6 +705,7 @@ def _load_pipeline_config(
     max_ci_retries: int,
     max_merge_conflict_retries: int = 2,
     pipeline_id: int | None = None,
+    project_default_pipeline: str = "",
 ) -> tuple[
     tuple[str, ...],
     dict[str, int],
@@ -731,7 +734,7 @@ def _load_pipeline_config(
                 ", ".join(s.name for s in pipeline_tpl.stages),
             )
         else:
-            pipeline_tpl = load_pipeline(conn, ticket_labels)
+            pipeline_tpl = load_pipeline(conn, ticket_labels, project_default_pipeline)
             logger.info(
                 "Loaded pipeline '%s' for %s (stages: %s)",
                 pipeline_tpl.name, ticket_id,

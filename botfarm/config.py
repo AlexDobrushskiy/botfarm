@@ -160,7 +160,7 @@ class ProjectConfig:
                  "team", "tracker_project", "project_type",
                  "setup_commands", "run_command", "run_env", "run_port",
                  "include_tags", "bugtracker", "qa_teardown_command",
-                 "dispatch_mode")
+                 "dispatch_mode", "default_pipeline")
 
     def __init__(
         self,
@@ -179,6 +179,7 @@ class ProjectConfig:
         bugtracker: dict | None = None,
         qa_teardown_command: str = "",
         dispatch_mode: str = "auto",
+        default_pipeline: str = "",
     ) -> None:
         self.name = name
         self.base_dir = base_dir
@@ -195,6 +196,7 @@ class ProjectConfig:
         self.bugtracker = bugtracker
         self.qa_teardown_command = qa_teardown_command
         self.dispatch_mode = dispatch_mode
+        self.default_pipeline = default_pipeline
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, ProjectConfig):
@@ -211,7 +213,8 @@ class ProjectConfig:
                 and self.include_tags == other.include_tags
                 and self.bugtracker == other.bugtracker
                 and self.qa_teardown_command == other.qa_teardown_command
-                and self.dispatch_mode == other.dispatch_mode)
+                and self.dispatch_mode == other.dispatch_mode
+                and self.default_pipeline == other.default_pipeline)
 
     def __repr__(self) -> str:
         return (f"ProjectConfig(name={self.name!r}, team={self.team!r}, "
@@ -224,7 +227,8 @@ class ProjectConfig:
                 f"include_tags={self.include_tags!r}, "
                 f"bugtracker={self.bugtracker!r}, "
                 f"qa_teardown_command={self.qa_teardown_command!r}, "
-                f"dispatch_mode={self.dispatch_mode!r})")
+                f"dispatch_mode={self.dispatch_mode!r}, "
+                f"default_pipeline={self.default_pipeline!r})")
 
 
 @dataclass
@@ -679,6 +683,13 @@ def _parse_project(data: dict) -> ProjectConfig:
         if errors:
             raise ConfigError(errors[0])
 
+    # default_pipeline — optional pipeline name for this project
+    default_pipeline = data.get("default_pipeline", "")
+    if not isinstance(default_pipeline, str):
+        raise ConfigError(
+            f"Project '{data['name']}': default_pipeline must be a string"
+        )
+
     # Derive defaults from project_type when not explicitly set.
     if project_type and project_type in _PROJECT_TYPE_RUN_DEFAULTS:
         defaults = _PROJECT_TYPE_RUN_DEFAULTS[project_type]
@@ -703,6 +714,7 @@ def _parse_project(data: dict) -> ProjectConfig:
         bugtracker=bugtracker_data,
         qa_teardown_command=qa_teardown_command,
         dispatch_mode=dispatch_mode,
+        default_pipeline=default_pipeline,
     )
 
 

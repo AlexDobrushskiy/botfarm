@@ -93,6 +93,13 @@
                       placeholder="One command per line, e.g.&#10;python -m venv .venv&#10;.venv/bin/pip install -r requirements.txt"></textarea>
         </label>
 
+        <label for="default_pipeline">
+            Default pipeline <small>(optional — used when no ticket label matches a pipeline)</small>
+            <select id="default_pipeline" name="default_pipeline">
+                <option value="">— Use global default —</option>
+            </select>
+        </label>
+
         <div id="form-errors" style="display:none; color: var(--pico-del-color); margin-bottom: 1rem;"></div>
 
         <button type="submit" id="submit-btn">Add Project</button>
@@ -203,6 +210,25 @@ function loadProjects() {
         .catch(function() {});
 }
 
+function loadPipelines() {
+    var sel = document.getElementById("default_pipeline");
+    fetch("/api/workflow/pipelines")
+        .then(function(r) {
+            if (!r.ok) throw new Error("Failed to load pipelines");
+            return r.json();
+        })
+        .then(function(data) {
+            var pipelines = data.data || [];
+            pipelines.forEach(function(p) {
+                var opt = document.createElement("option");
+                opt.value = p.name;
+                opt.textContent = p.name + (p.is_default ? " (global default)" : "");
+                sel.appendChild(opt);
+            });
+        })
+        .catch(function() {});
+}
+
 function submitAddProject(evt) {
     evt.preventDefault();
     var errDiv = document.getElementById("form-errors");
@@ -219,7 +245,8 @@ function submitAddProject(evt) {
         slots: parseInt(document.getElementById("slots_count").value, 10) || 1,
         create_github: document.getElementById("create_github").checked,
         project_type: document.getElementById("project_type").value,
-        setup_commands: document.getElementById("setup_commands").value.trim()
+        setup_commands: document.getElementById("setup_commands").value.trim(),
+        default_pipeline: document.getElementById("default_pipeline").value
     };
 
     if (_bugtrackerType === "jira") {
@@ -326,6 +353,7 @@ document.addEventListener("DOMContentLoaded", function() {
         loadTeams();
     }
     toggleGithubOption();
+    loadPipelines();
 });
 </script>
 {% endblock %}
