@@ -989,7 +989,17 @@ class WorkerLifecycleManager:
                         slot.ticket_id,
                     )
 
+        resume_stage = slot.stage
+        resume_session_id = slot.current_session_id
         self._slot_manager.resume_slot(project_name, slot.slot_id)
+        # Reset stage_started_at so check_timeouts() doesn't count paused time
+        # as elapsed (same race condition as manual-pause resume).
+        self._slot_manager.update_stage(
+            project_name, slot.slot_id,
+            stage=resume_stage,
+            iteration=slot.stage_iteration,
+            session_id=resume_session_id,
+        )
 
         slot_db = Supervisor._slot_db_path(project_name, slot.slot_id)
         if not Path(slot_db).exists():
@@ -1002,15 +1012,15 @@ class WorkerLifecycleManager:
             ticket_title=slot.ticket_title or "",
             ticket_labels=slot.ticket_labels or [],
             task_id=task_id or 0,
-            resume_from_stage=slot.stage,
-            resume_session_id=slot.current_session_id,
+            resume_from_stage=resume_stage,
+            resume_session_id=resume_session_id,
             slot_db=slot_db,
             project_default_pipeline=project_cfg.default_pipeline if project_cfg else "",
         )
 
         logger.info(
             "Resumed worker PID %d for %s in slot %s/%d at stage %s",
-            proc.pid, slot.ticket_id, project_name, slot.slot_id, slot.stage,
+            proc.pid, slot.ticket_id, project_name, slot.slot_id, resume_stage,
         )
 
     # -- Resume (crash-recovered) -----------------------------------------
@@ -1103,7 +1113,16 @@ class WorkerLifecycleManager:
         )
         self._conn.commit()
 
+        resume_session_id = slot.current_session_id
         self._slot_manager.resume_slot(project_name, slot.slot_id)
+        # Reset stage and timestamp so check_timeouts() doesn't see stale
+        # values from the pre-pause stage (paused time would count as elapsed).
+        self._slot_manager.update_stage(
+            project_name, slot.slot_id,
+            stage=resume_stage,
+            iteration=slot.stage_iteration,
+            session_id=resume_session_id,
+        )
 
         slot_db = Supervisor._slot_db_path(project_name, slot.slot_id)
         if not Path(slot_db).exists():
@@ -1117,7 +1136,7 @@ class WorkerLifecycleManager:
             ticket_labels=slot.ticket_labels or [],
             task_id=task_id or 0,
             resume_from_stage=resume_stage,
-            resume_session_id=slot.current_session_id,
+            resume_session_id=resume_session_id,
             slot_db=slot_db,
             project_default_pipeline=project_cfg.default_pipeline,
         )

@@ -1059,7 +1059,50 @@ class TestHandlePausedSlots:
 
         assert sm.get_slot("test-project", 1).status == "busy"
 
+    def test_limit_resume_resets_stage_started_at(self, supervisor):
+        """Resuming a limit-paused slot resets stage_started_at to prevent false timeouts."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        old_time = "2020-01-01T00:00:00.000000Z"
+        sm.update_stage("test-project", 1, stage="implement", session_id="sess-1")
+        # Manually set a stale stage_started_at to simulate paused time
+        slot = sm.get_slot("test-project", 1)
+        slot.stage_started_at = old_time
+        sm.save()
+        sm.mark_paused_limit(
+            "test-project", 1,
+            resume_after="2020-01-01T00:00:00+00:00",
+        )
 
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        supervisor._usage_poller._state.utilization_5h = 0.10
+        supervisor._usage_poller._state.utilization_7d = 0.10
+
+        with (
+            patch.object(supervisor._usage_poller, "force_poll"),
+            patch("botfarm.supervisor.multiprocessing.Process") as MockProc,
+        ):
+            mock_proc = MagicMock()
+            mock_proc.pid = 555
+            MockProc.return_value = mock_proc
+
+            supervisor._handle_paused_slots()
+
+        updated_slot = sm.get_slot("test-project", 1)
+        assert updated_slot.status == "busy"
+        assert updated_slot.stage == "implement"
+        # stage_started_at must be fresh, not the stale old_time
+        assert updated_slot.stage_started_at != old_time
+        assert updated_slot.stage_started_at is not None
 
 
 # ---------------------------------------------------------------------------
@@ -1395,6 +1438,45 @@ class TestManualPauseResume:
 
         assert ("test-project", 1) not in supervisor._pause_events
 
+    def test_manual_resume_resets_stage_started_at(self, supervisor):
+        """Resuming a manual-paused slot resets stage_started_at to prevent false timeouts."""
+        sm = supervisor.slot_manager
+        sm.assign_ticket(
+            "test-project", 1,
+            ticket_id="TST-1", ticket_title="Test", branch="b1",
+        )
+        # Simulate: implement stage started long ago, then completed and paused
+        old_time = "2020-01-01T00:00:00.000000Z"
+        sm.update_stage("test-project", 1, stage="implement", session_id="sess-1")
+        sm.complete_stage("test-project", 1, "implement")
+        # Manually set a stale stage_started_at to simulate paused time
+        slot = sm.get_slot("test-project", 1)
+        slot.stage_started_at = old_time
+        sm.save()
+        sm.mark_paused_manual("test-project", 1)
+
+        sm.set_dispatch_paused(True, "manual_pause")
+
+        insert_task(
+            supervisor._conn,
+            ticket_id="TST-1", title="Test", project="test-project", slot=1,
+            status="in_progress",
+        )
+        supervisor._conn.commit()
+
+        supervisor.request_resume()
+        with patch("botfarm.supervisor.multiprocessing.Process") as MockProc:
+            mock_proc = MagicMock()
+            mock_proc.pid = 555
+            MockProc.return_value = mock_proc
+            supervisor._handle_manual_pause_resume()
+
+        updated_slot = sm.get_slot("test-project", 1)
+        assert updated_slot.status == "busy"
+        assert updated_slot.stage == "review"
+        # stage_started_at must be fresh, not the stale old_time
+        assert updated_slot.stage_started_at != old_time
+        assert updated_slot.stage_started_at is not None
 
 
 
