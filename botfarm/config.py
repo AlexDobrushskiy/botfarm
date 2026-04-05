@@ -357,7 +357,7 @@ def generate_adapters_yaml(indent: int = 4) -> str:
             elif val is None or val == "":
                 yaml_val = '""' if fld.field_type is str else ""
             elif isinstance(val, str):
-                yaml_val = f'"{val}"' if " " in val or not val else str(val)
+                yaml_val = f'"{val}"' if " " in val else str(val)
             else:
                 yaml_val = str(val)
             comment = f"  # {fld.description}" if fld.description else ""
@@ -853,7 +853,10 @@ def resolve_stage_timeout(
     return agents_cfg.timeout_minutes.get(stage)
 
 
-def _validate_config(config: BotfarmConfig) -> None:
+def _validate_config(
+    config: BotfarmConfig,
+    adapter_schemas: dict[str, Any] | None = None,
+) -> None:
     """Validate cross-field constraints."""
     bt = config.bugtracker
 
@@ -1016,12 +1019,13 @@ def _validate_config(config: BotfarmConfig) -> None:
 
     # Schema-based validation: warn about enabled adapters with no
     # registered entry point (i.e. no schema discoverable).
-    from botfarm.agent import discover_adapter_schemas
-    schemas = discover_adapter_schemas()
+    if adapter_schemas is None:
+        from botfarm.agent import discover_adapter_schemas
+        adapter_schemas = discover_adapter_schemas()
     for adapter_name, adapter_cfg in config.agents.adapters.items():
         if not adapter_cfg.enabled:
             continue
-        if adapter_name not in schemas:
+        if adapter_name not in adapter_schemas:
             logger.warning(
                 "agents.adapters.%s is enabled but no adapter entry point "
                 "was found — it will not be available at runtime",
@@ -1453,7 +1457,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         auth_mode=auth_mode,
     )
 
-    _validate_config(config)
+    _validate_config(config, adapter_schemas=adapter_schemas)
     config.source_path = str(config_path)
     return config
 

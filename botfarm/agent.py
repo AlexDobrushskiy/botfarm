@@ -12,7 +12,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, ClassVar, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
 
@@ -55,18 +55,6 @@ class AdapterConfigSchema:
     fields: list[ConfigFieldSchema] = field(default_factory=list)
     required_env_vars: list[tuple[str, str]] = field(default_factory=list)
     description: str = ""
-
-
-# Default schema returned by adapters that don't override config_schema().
-_DEFAULT_ADAPTER_SCHEMA = AdapterConfigSchema(
-    fields=[
-        ConfigFieldSchema("enabled", bool, default=False, description="Enable this adapter"),
-        ConfigFieldSchema("model", str, default="", description="Model name override"),
-        ConfigFieldSchema("timeout_minutes", int, default=None, description="Per-stage timeout in minutes"),
-        ConfigFieldSchema("reasoning_effort", str, default="", description="Reasoning effort level"),
-        ConfigFieldSchema("skip_on_reiteration", bool, default=True, description="Skip on review iterations 2+"),
-    ],
-)
 
 
 @runtime_checkable

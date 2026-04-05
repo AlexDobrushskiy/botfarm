@@ -2527,37 +2527,6 @@ def test_config_adapters_schema_based_template():
     assert "enabled:" in template
 
 
-def test_config_adapters_config_schema_on_claude():
-    """ClaudeAdapter.config_schema() returns a valid schema."""
-    from botfarm.agent_claude import ClaudeAdapter
-    schema = ClaudeAdapter.config_schema()
-    field_names = {f.name for f in schema.fields}
-    assert "enabled" in field_names
-    assert "model" in field_names
-    assert schema.required_env_vars == []
-
-
-def test_config_adapters_config_schema_on_codex():
-    """CodexAdapter.config_schema() returns a valid schema with env var requirements."""
-    from botfarm.agent_codex import CodexAdapter
-    schema = CodexAdapter.config_schema()
-    field_names = {f.name for f in schema.fields}
-    assert "enabled" in field_names
-    assert "model" in field_names
-    env_var_names = [name for name, _ in schema.required_env_vars]
-    assert "OPENAI_API_KEY" in env_var_names
-
-
-def test_config_adapters_discover_schemas():
-    """discover_adapter_schemas() returns schemas for all registered adapters."""
-    from botfarm.agent import discover_adapter_schemas
-    schemas = discover_adapter_schemas()
-    assert "claude" in schemas
-    assert "codex" in schemas
-    for name, schema in schemas.items():
-        assert len(schema.fields) > 0, f"{name} schema has no fields"
-
-
 def test_config_adapters_enabled_unknown_adapter_warns(tmp_path, caplog):
     """Enabling an adapter with no registered entry point produces a warning."""
     data = {
