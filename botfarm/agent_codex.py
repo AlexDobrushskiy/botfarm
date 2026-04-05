@@ -79,6 +79,13 @@ class CodexAdapter:
         return check_codex_available()
 
 
+def create_adapter(
+    *, model: str | None = None, reasoning_effort: str | None = None, **_kwargs: object
+) -> CodexAdapter:
+    """Entry-point factory for the Codex adapter."""
+    return CodexAdapter(model=model or None, reasoning_effort=reasoning_effort or None)
+
+
 def _codex_result_to_agent_result(
     cr: CodexResult, model: str | None
 ) -> AgentResult:

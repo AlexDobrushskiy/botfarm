@@ -584,10 +584,14 @@ def run_pipeline(
     adapters = agent_adapters_config or {}
     codex_ac = adapters.get("codex", CODEX_ADAPTER_DEFAULTS)
 
-    # Build adapter registry for agent-based stage dispatch.
+    # Build adapter registry via entry-point discovery, passing per-adapter
+    # config generically so worker doesn't need to know adapter types.
+    import dataclasses
+    adapter_cfg_dicts: dict[str, dict] = {
+        name: dataclasses.asdict(ac) for name, ac in adapters.items()
+    }
     registry = build_adapter_registry(
-        codex_model=codex_ac.model or None,
-        codex_reasoning_effort=codex_ac.reasoning_effort or None,
+        adapter_configs=adapter_cfg_dicts,
         auth_mode=auth_mode,
     )
 

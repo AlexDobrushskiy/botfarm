@@ -1,7 +1,9 @@
-"""Tests for the adapter registry and registry-based stage dispatch (SMA-460).
+"""Tests for the adapter registry and registry-based stage dispatch (SMA-460, SMA-626).
 
 Tests cover:
-- build_adapter_registry() returns valid registry with claude/codex entries
+- build_adapter_registry() discovers adapters via setuptools entry points
+- adapter_configs parameter passes config to adapter factories
+- Legacy codex_model/codex_reasoning_effort kwargs still work
 - _execute_stage() resolves adapters from the registry
 - _execute_stage() raises clear errors for missing adapters / missing registry
 - _record_stage_run() works with AgentResult (via StageResult.agent_result)
@@ -75,6 +77,51 @@ class TestBuildAdapterRegistry:
         reg = build_adapter_registry(codex_reasoning_effort="low")
         adapter = reg["codex"]
         assert adapter._reasoning_effort == "low"
+
+    def test_adapter_configs_codex_model(self):
+        """adapter_configs dict forwards model to the codex factory."""
+        reg = build_adapter_registry(adapter_configs={"codex": {"model": "o3"}})
+        assert reg["codex"]._model == "o3"
+
+    def test_adapter_configs_codex_reasoning_effort(self):
+        reg = build_adapter_registry(
+            adapter_configs={"codex": {"reasoning_effort": "high"}},
+        )
+        assert reg["codex"]._reasoning_effort == "high"
+
+    def test_adapter_configs_overrides_legacy(self):
+        """adapter_configs takes precedence over legacy kwargs."""
+        reg = build_adapter_registry(
+            adapter_configs={"codex": {"model": "o3"}},
+            codex_model="gpt-4",  # should be ignored
+        )
+        assert reg["codex"]._model == "o3"
+
+    def test_adapter_configs_auth_mode_forwarded(self):
+        """auth_mode global kwarg reaches the claude factory."""
+        reg = build_adapter_registry(auth_mode="api-key")
+        assert reg["claude"]._auth_mode == "api-key"
+
+    def test_adapter_configs_empty_model_becomes_none(self):
+        """Empty-string model from AdapterConfig is converted to None."""
+        reg = build_adapter_registry(adapter_configs={"codex": {"model": ""}})
+        assert reg["codex"]._model is None
+
+    def test_entry_point_discovery(self):
+        """Built-in entry points are discovered dynamically."""
+        import importlib.metadata
+        eps = importlib.metadata.entry_points(group="botfarm.adapters")
+        names = {ep.name for ep in eps}
+        assert "claude" in names
+        assert "codex" in names
+
+    def test_unknown_adapter_config_ignored(self):
+        """Config for an unregistered adapter name is silently ignored."""
+        reg = build_adapter_registry(
+            adapter_configs={"nonexistent": {"model": "x"}},
+        )
+        assert "nonexistent" not in reg
+        assert "claude" in reg
 
 
 # ---------------------------------------------------------------------------
