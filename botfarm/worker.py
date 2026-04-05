@@ -16,7 +16,7 @@ import shutil
 import sqlite3
 import subprocess
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -586,9 +586,8 @@ def run_pipeline(
 
     # Build adapter registry via entry-point discovery, passing per-adapter
     # config generically so worker doesn't need to know adapter types.
-    import dataclasses
     adapter_cfg_dicts: dict[str, dict] = {
-        name: dataclasses.asdict(ac) for name, ac in adapters.items()
+        name: asdict(ac) for name, ac in adapters.items()
     }
     registry = build_adapter_registry(
         adapter_configs=adapter_cfg_dicts,
