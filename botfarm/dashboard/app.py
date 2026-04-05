@@ -14,6 +14,7 @@ from fastapi.templating import Jinja2Templates
 from botfarm.config import BotfarmConfig, DashboardConfig
 from botfarm.devserver import DevServerManager
 
+from .routes_adapters import router as adapters_router
 from .routes_api import router as api_router
 from .routes_config import router as config_router
 from .routes_devserver import router as devserver_router
@@ -178,6 +179,7 @@ def create_app(
     app.include_router(partials_router)
     app.include_router(api_router)
     app.include_router(config_router)
+    app.include_router(adapters_router)
     app.include_router(projects_router)
     app.include_router(logs_router)
     app.include_router(devserver_router)
