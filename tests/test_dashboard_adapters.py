@@ -1,8 +1,5 @@
 """Tests for the dashboard adapter management page (/config/adapters)."""
 
-import json
-from unittest.mock import patch
-
 import pytest
 import yaml
 from fastapi.testclient import TestClient
