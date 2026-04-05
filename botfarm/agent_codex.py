@@ -2,16 +2,28 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
-from botfarm.agent import AgentResult, ContextFillCallback
+from botfarm.agent import AgentResult, ContextFillCallback, calculate_cost_from_table
 from botfarm.codex import (
     CodexResult,
-    calculate_codex_cost,
     check_codex_available,
     run_codex_streaming,
 )
+
+logger = logging.getLogger(__name__)
+
+# OpenAI model pricing (per 1M tokens).
+OPENAI_PRICING: dict[str, dict[str, float]] = {
+    "o3": {"input": 2.00, "cached_input": 0.50, "output": 8.00},
+    "o4-mini": {"input": 1.10, "cached_input": 0.275, "output": 4.40},
+    "gpt-4o": {"input": 2.50, "cached_input": 1.25, "output": 10.00},
+    "gpt-4o-mini": {"input": 0.15, "cached_input": 0.075, "output": 0.60},
+}
+
+DEFAULT_CODEX_MODEL = "o4-mini"
 
 
 class CodexAdapter:
@@ -77,6 +89,22 @@ class CodexAdapter:
         )
         return _codex_result_to_agent_result(codex_result, effective_model)
 
+    def calculate_cost(self, result: AgentResult) -> float:
+        model = result.extra.get("model", "") or self._model or DEFAULT_CODEX_MODEL
+        cost = calculate_cost_from_table(
+            OPENAI_PRICING,
+            model=model,
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            cached_input_tokens=result.extra.get("cache_read_input_tokens", 0),
+        )
+        if cost is None:
+            logger.warning(
+                "Unknown OpenAI model %r — skipping cost calculation", model
+            )
+            return 0.0
+        return cost
+
     def check_available(self) -> tuple[bool, str]:
         return check_codex_available()
 
@@ -118,13 +146,12 @@ def create_adapter(
 def _codex_result_to_agent_result(
     cr: CodexResult, model: str | None
 ) -> AgentResult:
-    """Normalize a :class:`CodexResult` into an :class:`AgentResult`."""
-    cost = calculate_codex_cost(
-        model=model or cr.model or "",
-        input_tokens=cr.input_tokens,
-        output_tokens=cr.output_tokens,
-        cached_input_tokens=cr.cached_input_tokens,
-    )
+    """Normalize a :class:`CodexResult` into an :class:`AgentResult`.
+
+    Cost is left at 0.0 here — :meth:`CodexAdapter.calculate_cost` is the
+    single authoritative pricing path, called from ``_record_stage_run``.
+    """
+    effective_model = model or cr.model or ""
     return AgentResult(
         session_id=cr.thread_id,
         num_turns=cr.num_turns,
@@ -133,12 +160,12 @@ def _codex_result_to_agent_result(
         is_error=cr.is_error,
         input_tokens=cr.input_tokens,
         output_tokens=cr.output_tokens,
-        cost_usd=cost if cost is not None else 0.0,
+        cost_usd=0.0,
         context_fill_pct=None,
         extra={
             "thread_id": cr.thread_id,
             "cache_read_input_tokens": cr.cached_input_tokens,
             "cache_creation_input_tokens": 0,
-            "model": model or cr.model or "",
+            "model": effective_model,
         },
     )

@@ -63,6 +63,10 @@ class ClaudeAdapter:
         )
         return _claude_result_to_agent_result(claude_result)
 
+    def calculate_cost(self, result: AgentResult) -> float:
+        # Claude CLI reports cost directly in its JSON output.
+        return result.cost_usd
+
     def check_available(self) -> tuple[bool, str]:
         return check_claude_available()
 
