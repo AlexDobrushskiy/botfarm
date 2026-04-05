@@ -132,13 +132,20 @@ def build_adapter_registry(
 
     registry: AdapterRegistry = {}
     for ep in eps:
-        factory = ep.load()
+        try:
+            factory = ep.load()
+        except Exception:
+            logger.warning(
+                "Failed to load adapter entry point %r (%s)",
+                ep.name, ep.value, exc_info=True,
+            )
+            continue
         kwargs = {**global_kwargs, **configs.get(ep.name, {})}
         try:
             adapter = factory(**kwargs)
         except Exception:
             logger.warning(
-                "Failed to load adapter %r from entry point %s",
+                "Failed to create adapter %r from entry point %s",
                 ep.name, ep.value, exc_info=True,
             )
             continue
