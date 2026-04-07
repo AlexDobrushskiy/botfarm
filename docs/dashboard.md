@@ -49,7 +49,7 @@ Dashboard code lives under `botfarm/dashboard/`:
 | `state.py` | ~415 | SQLite read helpers, caching, rate limiting, state enrichment |
 | `routes_main.py` | ~1021 | Page routes (index, history, tickets, usage, metrics, etc.) |
 | `routes_partials.py` | ~247 | htmx polling endpoints (slots, queue, badges, banners) |
-| `routes_api.py` | ~700 | Control API + workflow CRUD |
+| `routes_api.py` | ~1050 | Control API + workflow CRUD |
 | `routes_logs.py` | ~273 | Log viewer pages + SSE streaming |
 | `routes_config.py` | ~554 | Runtime config/identity viewing and editing |
 | `routes_terminal.py` | ~195 | WebSocket terminal (pty fork, resize, idle timeout) |
