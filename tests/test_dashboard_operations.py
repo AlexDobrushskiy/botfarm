@@ -2167,6 +2167,105 @@ def _make_http_status_error(status_code, response):
     )
 
 
+# --- Dispatch mode hot reload ---
+
+
+class TestDispatchModeHotReload:
+    """dispatch_mode changes apply to in-memory config without restart."""
+
+    @pytest.fixture()
+    def setup(self, tmp_path):
+        db_path = tmp_path / "test.db"
+        conn = init_db(db_path)
+        conn.close()
+        cfg = BotfarmConfig(
+            projects=[ProjectConfig(
+                name="proj-a", team="team",
+                base_dir="/tmp/a", worktree_prefix="/tmp/a-wt",
+                slots=[1], tracker_project="ProjA",
+                dispatch_mode="auto",
+            )],
+            bugtracker=LinearConfig(api_key="key", workspace="ws"),
+            source_path=str(tmp_path / "config.yaml"),
+        )
+        yaml_data = {
+            "projects": [{
+                "name": "proj-a", "team": "team",
+                "base_dir": "/tmp/a", "worktree_prefix": "/tmp/a-wt",
+                "slots": [1], "tracker_project": "ProjA",
+                "dispatch_mode": "auto",
+            }],
+            "bugtracker": {"type": "linear", "api_key": "key", "workspace": "ws"},
+        }
+        (tmp_path / "config.yaml").write_text(yaml.dump(yaml_data))
+        app = create_app(db_path=db_path, botfarm_config=cfg)
+        client = TestClient(app)
+        return client, app, cfg, tmp_path
+
+    def test_dispatch_mode_applied_in_memory(self, setup):
+        """Changing only dispatch_mode applies immediately to ProjectConfig."""
+        client, app, cfg, _ = setup
+        assert cfg.projects[0].dispatch_mode == "auto"
+
+        resp = client.post("/config", json={
+            "projects": [{"name": "proj-a", "slots": [1],
+                          "tracker_project": "ProjA", "include_tags": [],
+                          "dispatch_mode": "semi-auto"}],
+        })
+        assert resp.status_code == 200
+        assert cfg.projects[0].dispatch_mode == "semi-auto"
+
+    def test_dispatch_mode_only_no_restart(self, setup):
+        """Changing only dispatch_mode should NOT set restart_required."""
+        client, app, cfg, _ = setup
+        resp = client.post("/config", json={
+            "projects": [{"name": "proj-a", "slots": [1],
+                          "tracker_project": "ProjA", "include_tags": [],
+                          "dispatch_mode": "semi-auto"}],
+        })
+        assert resp.status_code == 200
+        assert app.state.restart_required is False
+        assert "Restart" not in resp.text
+
+    def test_dispatch_mode_persisted_to_yaml(self, setup):
+        """dispatch_mode change is written to the YAML config file."""
+        client, _, _, tmp_path = setup
+        client.post("/config", json={
+            "projects": [{"name": "proj-a", "slots": [1],
+                          "tracker_project": "ProjA", "include_tags": [],
+                          "dispatch_mode": "semi-auto"}],
+        })
+        data = yaml.safe_load((tmp_path / "config.yaml").read_text())
+        assert data["projects"][0]["dispatch_mode"] == "semi-auto"
+
+    def test_structural_change_still_requires_restart(self, setup):
+        """Changing slots (structural) alongside dispatch_mode sets restart_required."""
+        client, app, cfg, _ = setup
+        resp = client.post("/config", json={
+            "projects": [{"name": "proj-a", "slots": [1, 2],
+                          "tracker_project": "ProjA", "include_tags": [],
+                          "dispatch_mode": "semi-auto"}],
+        })
+        assert resp.status_code == 200
+        # dispatch_mode still hot-applied
+        assert cfg.projects[0].dispatch_mode == "semi-auto"
+        # but restart required because slots changed
+        assert app.state.restart_required is True
+        assert "Restart" in resp.text
+
+    def test_config_page_shows_updated_value(self, setup):
+        """After hot-applying dispatch_mode, the config page reflects the new value."""
+        client, _, _, _ = setup
+        client.post("/config", json={
+            "projects": [{"name": "proj-a", "slots": [1],
+                          "tracker_project": "ProjA", "include_tags": [],
+                          "dispatch_mode": "semi-auto"}],
+        })
+        resp = client.get("/config")
+        assert resp.status_code == 200
+        assert "Semi-automatic" in resp.text
+
+
 # --- Workflow page ---
 
 
