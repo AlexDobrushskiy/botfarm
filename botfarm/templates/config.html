@@ -183,7 +183,7 @@
 <section class="config-section">
     <h2>Projects</h2>
     {% for project in full_config_values.projects %}
-    <div class="project-card">
+    <div class="project-card" data-project-name="{{ project.name }}">
         <div class="project-card-header">
             <h3>{{ project.name }}</h3>
             <button type="button" class="btn-remove-project" onclick="openRemoveProjectModal('{{ project.name }}')">Remove</button>
@@ -1024,7 +1024,8 @@ function confirmRemoveProject() {
         document.getElementById("remove-project-modal").close();
         if (result.ok && result.data.ok) {
             showToast('Project "' + _removeProjectName + '" removed successfully.', "success");
-            setTimeout(function() { window.location.reload(); }, 500);
+            document.querySelectorAll('.project-card[data-project-name="' + _removeProjectName + '"]')
+                .forEach(function(el) { el.remove(); });
         } else {
             var msg = (result.data.errors || ["Unknown error"]).join("; ");
             showToast("Remove failed: " + msg, "error");
