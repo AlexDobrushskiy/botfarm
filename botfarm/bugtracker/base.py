@@ -107,28 +107,6 @@ class BugtrackerClient(ABC):
         """Count all non-archived issues for a specific project."""
         raise NotImplementedError
 
-    def archive_issue(self, issue_id: str) -> bool:
-        """Archive an issue. Returns True on success."""
-        raise NotImplementedError
-
-    def delete_issue(self, issue_id: str) -> bool:
-        """Delete an issue. Returns True on success."""
-        raise NotImplementedError
-
-    def unarchive_issue(self, issue_id: str) -> bool:
-        """Unarchive an issue. Returns True on success."""
-        raise NotImplementedError
-
-    def fetch_completed_issues(
-        self,
-        team_key: str,
-        first: int = 50,
-        project_name: str = "",
-        state_types: list[str] | None = None,
-    ) -> list[Issue]:
-        """Fetch completed/canceled issues."""
-        raise NotImplementedError
-
     def fetch_open_issues_with_label(
         self,
         team_key: str,

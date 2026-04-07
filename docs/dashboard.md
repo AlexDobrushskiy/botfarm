@@ -49,7 +49,7 @@ Dashboard code lives under `botfarm/dashboard/`:
 | `state.py` | ~415 | SQLite read helpers, caching, rate limiting, state enrichment |
 | `routes_main.py` | ~1021 | Page routes (index, history, tickets, usage, metrics, etc.) |
 | `routes_partials.py` | ~247 | htmx polling endpoints (slots, queue, badges, banners) |
-| `routes_api.py` | ~700 | Control API + workflow CRUD + cleanup operations |
+| `routes_api.py` | ~700 | Control API + workflow CRUD |
 | `routes_logs.py` | ~273 | Log viewer pages + SSE streaming |
 | `routes_config.py` | ~554 | Runtime config/identity viewing and editing |
 | `routes_terminal.py` | ~195 | WebSocket terminal (pty fork, resize, idle timeout) |
@@ -71,7 +71,6 @@ Dashboard code lives under `botfarm/dashboard/`:
 | `GET /workflow` | Pipeline editor — stages, loops, connections |
 | `GET /config` | Configuration viewer/editor (View/Edit tabs) |
 | `GET /identities` | Identity credentials management |
-| `GET /cleanup` | Bulk ticket archival/deletion interface |
 | `GET /health` | Preflight check results |
 | `GET /task/{id}/logs[/{stage}]` | Log viewer with SSE streaming |
 | `GET /terminal` | Web terminal (xterm.js + WebSocket + pty) |
@@ -124,15 +123,6 @@ Dashboard code lives under `botfarm/dashboard/`:
 | `POST /api/workflow/pipelines/{id}/loops` | Create loop |
 | `PATCH /api/workflow/loops/{id}` | Update loop |
 | `DELETE /api/workflow/loops/{id}` | Delete loop |
-
-### Cleanup API
-
-| Route | Description |
-|-------|-------------|
-| `GET /api/cleanup/preview` | Preview candidate issues for archival |
-| `POST /api/cleanup/execute` | Run bulk cleanup |
-| `POST /api/cleanup/undo/{batch_id}` | Undo archive batch |
-| `GET /api/cleanup/batch/{batch_id}` | Get batch details |
 
 ### Log Streaming
 
@@ -298,7 +288,7 @@ state = read_state(app)     # Loads: slots, dispatch_paused, usage, queue, proje
 Dashboard tests are split across files in `tests/`:
 - `test_dashboard_index.py` — index page, slots, usage, queue
 - `test_dashboard_history.py` — history/ticket browsing, filtering, pagination
-- `test_dashboard_operations.py` — API endpoints, pause/resume, cleanup, workflow CRUD
+- `test_dashboard_operations.py` — API endpoints, pause/resume, workflow CRUD
 - `test_dashboard_workflow.py` — pipeline editor, stage/loop CRUD, validation
 - `test_dashboard_terminal.py` — terminal page, WebSocket endpoint, session limits, config flag
 

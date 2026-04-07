@@ -33,54 +33,16 @@ __all__ = [
     "BugtrackerClient",
     "BugtrackerError",
     "BugtrackerPoller",
-    "CleanupCandidate",
-    "CleanupResult",
-    "CleanupService",
     "Comment",
-    "CooldownError",
     "CreatedIssue",
     "Issue",
     "IssueDetails",
     "PollResult",
-    "UndoResult",
     "create_client",
     "create_poller",
     "create_pollers",
     "issue_details_to_history_kwargs",
 ]
-
-
-# Re-export cleanup types so consumer modules don't import from
-# botfarm.bugtracker.linear.* directly.  Cleanup is currently
-# Linear-specific; a future bugtracker adapter can provide its own.
-# Lazy import to avoid hard dependency on linear cleanup when using
-# a different tracker type.
-_CLEANUP_NAMES = {
-    "CleanupCandidate", "CleanupResult", "CleanupService",
-    "CooldownError", "UndoResult",
-}
-
-
-def __getattr__(name: str):
-    if name in _CLEANUP_NAMES:
-        from .linear.cleanup import (
-            CleanupCandidate,
-            CleanupResult,
-            CleanupService,
-            CooldownError,
-            UndoResult,
-        )
-        _map = {
-            "CleanupCandidate": CleanupCandidate,
-            "CleanupResult": CleanupResult,
-            "CleanupService": CleanupService,
-            "CooldownError": CooldownError,
-            "UndoResult": UndoResult,
-        }
-        for k, v in _map.items():
-            globals()[k] = v
-        return _map[name]
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def create_client(

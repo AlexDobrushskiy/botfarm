@@ -186,25 +186,6 @@ class TestManualPauseState:
         assert "Dispatch Paused" in resp.text
         assert "supervisor-badge-paused" in resp.text
 
-    def test_start_paused_badge_on_cleanup_page(self, tmp_path):
-        """Cleanup page renders Dispatch Paused badge on first load."""
-        from datetime import datetime, timezone
-        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-        path = tmp_path / "badge.db"
-        conn = init_db(path)
-        _seed_slot(conn, "proj", 1, status="free")
-        save_dispatch_state(conn, paused=True, reason="start_paused",
-                            supervisor_heartbeat=now_iso)
-        conn.commit()
-        conn.close()
-
-        app = create_app(db_path=path)
-        client = TestClient(app)
-        resp = client.get("/cleanup")
-        assert resp.status_code == 200
-        assert "Dispatch Paused" in resp.text
-        assert "supervisor-badge-paused" in resp.text
-
 
 class TestResumingTransitionalState:
     """Verify the 'resuming' transitional banner/controls after clicking Start/Resume."""

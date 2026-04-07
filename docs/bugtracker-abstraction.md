@@ -14,7 +14,6 @@ botfarm/bugtracker/
     ├── __init__.py
     ├── client.py    # LinearClient (implements BugtrackerClient)
     ├── poller.py    # LinearPoller (implements BugtrackerPoller), create_pollers()
-    ├── cleanup.py   # Linear-specific cleanup (archive/delete)
     └── queries.py   # GraphQL query/mutation strings
 ```
 
@@ -62,7 +61,6 @@ Optional methods (have default implementations):
 - `list_team_projects()` — used by CLI/dashboard for project selection
 - `get_project_id()` — resolve project names to IDs
 - `create_issue()` — create new tickets (used by refactoring analysis)
-- `archive_issue()` / `delete_issue()` / `unarchive_issue()` — cleanup operations
 - `count_active_issues()` — capacity monitoring
 
 ### 3. Implement `BugtrackerPoller`

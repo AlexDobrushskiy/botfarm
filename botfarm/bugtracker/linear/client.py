@@ -17,18 +17,13 @@ from .queries import (
     ADD_COMMENT_MUTATION,
     ADD_LABELS_MUTATION,
     ASSIGN_ISSUE_MUTATION,
-    COMPLETED_ISSUES_QUERY,
-    COMPLETED_ISSUES_WITH_PROJECT_QUERY,
     CREATE_ISSUE_MUTATION,
     CREATE_LABEL_MUTATION,
     CREATE_PROJECT_MUTATION,
-    ISSUE_ARCHIVE_MUTATION,
-    ISSUE_DELETE_MUTATION,
     ISSUE_DETAILS_QUERY,
     ISSUE_LABELS_BY_IDENTIFIER_QUERY,
     ISSUE_LABELS_QUERY,
     ISSUE_STATE_QUERY,
-    ISSUE_UNARCHIVE_MUTATION,
     ISSUES_BY_LABEL_QUERY,
     ISSUES_QUERY,
     ISSUES_WITH_PROJECT_QUERY,
@@ -502,83 +497,6 @@ class LinearClient(BugtrackerClient):
 
         return total
 
-    def fetch_completed_issues(
-        self,
-        team_key: str,
-        first: int = 50,
-        project_name: str = "",
-        state_types: list[str] | None = None,
-    ) -> list[Issue]:
-        """Fetch completed/canceled issues sorted by updatedAt ascending.
-
-        Note: Returns Issue instances with minimal fields populated.
-        The cleanup service accesses raw dicts via fetch_completed_issues_raw().
-        """
-        if state_types is None:
-            state_types = ["completed", "canceled"]
-
-        if project_name:
-            query = COMPLETED_ISSUES_WITH_PROJECT_QUERY
-            variables: dict = {
-                "teamKey": team_key,
-                "projectName": project_name,
-                "first": first,
-                "stateTypes": state_types,
-            }
-        else:
-            query = COMPLETED_ISSUES_QUERY
-            variables = {
-                "teamKey": team_key,
-                "first": first,
-                "stateTypes": state_types,
-            }
-
-        data = self._execute(query, variables)
-        nodes = data.get("issues", {}).get("nodes", [])
-        return [
-            Issue(
-                id=n.get("id", ""),
-                identifier=n.get("identifier", ""),
-                title=n.get("title", ""),
-                priority=0,
-                url="",
-            )
-            for n in nodes
-        ]
-
-    def fetch_completed_issues_raw(
-        self,
-        team_key: str,
-        first: int = 50,
-        project_name: str = "",
-        state_types: list[str] | None = None,
-    ) -> list[dict]:
-        """Fetch completed/canceled issues as raw dicts.
-
-        Used by CleanupService which needs full node data for filtering.
-        """
-        if state_types is None:
-            state_types = ["completed", "canceled"]
-
-        if project_name:
-            query = COMPLETED_ISSUES_WITH_PROJECT_QUERY
-            variables: dict = {
-                "teamKey": team_key,
-                "projectName": project_name,
-                "first": first,
-                "stateTypes": state_types,
-            }
-        else:
-            query = COMPLETED_ISSUES_QUERY
-            variables = {
-                "teamKey": team_key,
-                "first": first,
-                "stateTypes": state_types,
-            }
-
-        data = self._execute(query, variables)
-        return data.get("issues", {}).get("nodes", [])
-
     def fetch_open_issues_with_label(
         self,
         team_key: str,
@@ -601,21 +519,6 @@ class LinearClient(BugtrackerClient):
             )
             for n in nodes
         ]
-
-    def archive_issue(self, issue_id: str) -> bool:
-        """Archive an issue. Returns True on success."""
-        data = self._execute(ISSUE_ARCHIVE_MUTATION, {"id": issue_id})
-        return data.get("issueArchive", {}).get("success", False)
-
-    def delete_issue(self, issue_id: str) -> bool:
-        """Delete an issue. Returns True on success."""
-        data = self._execute(ISSUE_DELETE_MUTATION, {"id": issue_id})
-        return data.get("issueDelete", {}).get("success", False)
-
-    def unarchive_issue(self, issue_id: str) -> bool:
-        """Unarchive an issue. Returns True on success."""
-        data = self._execute(ISSUE_UNARCHIVE_MUTATION, {"id": issue_id})
-        return data.get("issueUnarchive", {}).get("success", False)
 
     def get_project_id(self, project_name: str) -> str | None:
         """Return the internal UUID for a project given its name, or None."""

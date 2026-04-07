@@ -141,14 +141,6 @@ class TestBugtrackerClientABC:
         with pytest.raises(NotImplementedError):
             client.count_active_issues_for_project("proj")
         with pytest.raises(NotImplementedError):
-            client.archive_issue("id")
-        with pytest.raises(NotImplementedError):
-            client.delete_issue("id")
-        with pytest.raises(NotImplementedError):
-            client.unarchive_issue("id")
-        with pytest.raises(NotImplementedError):
-            client.fetch_completed_issues("team")
-        with pytest.raises(NotImplementedError):
             client.fetch_open_issues_with_label("team", "label")
         with pytest.raises(NotImplementedError):
             client.list_teams()
