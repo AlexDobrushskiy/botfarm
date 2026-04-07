@@ -28,6 +28,57 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# Fields within project updates that can be hot-applied without restart.
+_HOT_PROJECT_FIELDS = {"dispatch_mode"}
+
+
+def _apply_hot_project_fields(
+    cfg: "BotfarmConfig",
+    project_updates: list[dict],
+) -> bool:
+    """Hot-apply safe project fields to in-memory config.
+
+    Applies fields listed in ``_HOT_PROJECT_FIELDS`` (currently just
+    ``dispatch_mode``) directly to the running ``ProjectConfig`` objects so
+    the supervisor picks them up on the next poll iteration — no restart
+    needed.
+
+    Returns ``True`` if the update contains non-hot structural changes that
+    still require a restart.
+    """
+    cfg_by_name = {p.name: p for p in cfg.projects}
+    needs_restart = False
+
+    for proj_update in project_updates:
+        name = proj_update.get("name")
+        pcfg = cfg_by_name.get(name)
+        if pcfg is None:
+            # New project — always requires restart.
+            needs_restart = True
+            continue
+
+        # Hot-apply supported fields.
+        for field in _HOT_PROJECT_FIELDS:
+            if field in proj_update:
+                setattr(pcfg, field, proj_update[field])
+
+        # Check whether any non-hot field actually changed.
+        for field, new_val in proj_update.items():
+            if field == "name" or field in _HOT_PROJECT_FIELDS:
+                continue
+            current = getattr(pcfg, field, None)
+            # Normalise list-typed fields (None and [] are equivalent).
+            if current is None and isinstance(new_val, list):
+                current = []
+            elif isinstance(current, (list, tuple)):
+                current = list(current)
+            if isinstance(new_val, (list, tuple)):
+                new_val = list(new_val)
+            if current != new_val:
+                needs_restart = True
+
+    return needs_restart
+
 
 def _mask_secret(value: str) -> str:
     """Mask a secret string, showing first 4 + last 4 chars."""
@@ -295,14 +346,14 @@ async def config_update(request: Request):
                     status_code=200,
                 )
 
-    # Write structural updates to YAML only (NOT in-memory)
+    # Write structural updates to YAML; hot-apply dispatch_mode in-memory.
+    needs_restart = False
     if structural_updates:
         if config_path and config_path.exists():
             try:
                 write_structural_config_updates(
                     config_path, structural_updates,
                 )
-                app.state.restart_required = True
             except Exception:
                 logger.exception("Failed to write structural config")
                 return HTMLResponse(
@@ -317,8 +368,16 @@ async def config_update(request: Request):
                 status_code=400,
             )
 
+        # Hot-apply dispatch_mode changes to in-memory config and
+        # determine whether a restart is needed for other fields.
+        needs_restart = _apply_hot_project_fields(
+            cfg, structural_updates.get("projects", []),
+        )
+        if needs_restart:
+            app.state.restart_required = True
+
     msg = "Config updated successfully."
-    if structural_updates:
+    if needs_restart:
         msg = (
             "Config saved to file. "
             "Restart required to apply structural changes."
