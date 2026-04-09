@@ -164,6 +164,7 @@ python -m pytest tests/ -v
 
 ## Documentation
 
+- [Feature Catalog](docs/features.md) — comprehensive reference of all capabilities
 - [Configuration Guide](docs/configuration.md) — full config reference with examples
 - [Linear Workflow](docs/linear-workflow.md) — ticket creation, sizing, and workflow
 - [Runtime Files](docs/runtime-files.md) — `~/.botfarm/` directory layout and logs
