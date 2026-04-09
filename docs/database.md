@@ -17,7 +17,7 @@ One row per ticket dispatch. Multiple rows can exist for the same `ticket_id` (e
 | `title` | TEXT | Ticket title |
 | `project` | TEXT | Project name from config |
 | `slot` | INTEGER | Slot ID that processed this ticket |
-| `status` | TEXT | `pending`, `running`, `completed`, or `failed` |
+| `status` | TEXT | `pending`, `in_progress`, `completed`, or `failed` |
 | `created_at` | TEXT | ISO-8601 timestamp |
 | `started_at` | TEXT | When work began |
 | `completed_at` | TEXT | When work finished (success or failure) |
@@ -169,7 +169,7 @@ Runtime state for each worker slot. Primary key is `(project, slot_id)`.
 |--------|------|-------------|
 | `project` | TEXT PK | Project name |
 | `slot_id` | INTEGER PK | Slot number |
-| `status` | TEXT | `free`, `busy`, `paused_limit`, `failed`, or `completed_pending_cleanup` |
+| `status` | TEXT | `free`, `busy`, `paused_limit`, `paused_manual`, `failed`, or `completed_pending_cleanup` |
 | `ticket_id` | TEXT | Currently assigned ticket |
 | `ticket_title` | TEXT | Ticket title |
 | `ticket_labels` | TEXT | JSON array of ticket label names (default `'[]'`) |
@@ -255,7 +255,7 @@ Stage definitions within pipelines — each is one step in a pipeline.
 | `pipeline_id` | INTEGER FK | References `pipeline_templates(id)` |
 | `name` | TEXT | Stage name (e.g. `implement`, `review`, `fix`) |
 | `stage_order` | INTEGER | Execution order within the pipeline |
-| `executor_type` | TEXT | `claude`, `codex`, `aider`, or `shell` |
+| `executor_type` | TEXT | `claude`, `codex`, `aider`, `shell`, or `internal` |
 | `identity` | TEXT | Agent identity profile |
 | `prompt_template` | TEXT | Prompt template with `{variable}` placeholders |
 | `max_turns` | INTEGER | Maximum agentic turns |
