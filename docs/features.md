@@ -15,10 +15,10 @@ For detailed configuration, see [configuration.md](configuration.md).
 - **Auto mode** — supervisor polls bugtracker, dispatches Todo tickets to free slots automatically
 - **Semi-auto mode** — tickets queued but require manual dispatch via dashboard (`dispatch_mode: "semi-auto"`)
 - **Label-based routing** — ticket labels map to pipeline templates (e.g., `Investigation` → investigation pipeline)
-- **Priority ordering** — tickets dispatched in priority order (urgent first)
+- **Board/rank ordering** — tickets dispatched by tracker sort order (Linear board position, Jira rank field)
 - **Dependency blocking** — tickets with unresolved blockers are skipped
 - **Tag filtering** — `include_tags` / `exclude_tags` control which tickets are eligible
-- **Project filtering** — `tracker_project` limits polling to a specific project within a team
+- **Project filtering** — `tracker_project` limits polling to a specific project within a team (Linear only; Jira ignores this setting)
 - **Start-paused mode** — supervisor starts with dispatch paused; resume via CLI or dashboard (`start_paused: true`)
 
 ## Pipeline Stages
