@@ -109,7 +109,7 @@ For detailed configuration, see [configuration.md](configuration.md).
 - **Task detail** — stage runs, cost breakdown, log file links
 - **Manual dispatch** — dispatch tickets to free slots from dashboard (semi-auto or override)
 - **Re-dispatch / A/B comparison** — re-dispatch completed tickets with different pipelines, compare results with export
-- **Pipeline editor** — full CRUD for pipelines, stages, loops; drag-and-drop stage ordering; pipeline duplication
+- **Pipeline editor** — full CRUD for pipelines, stages, loops; stage reordering; pipeline duplication
 - **Config editor** — edit runtime config with hot-apply for safe fields (no restart needed)
 - **Identity editor** — manage coder/reviewer credentials
 - **Adapter management** — enable/disable adapters, configure model/timeout/reasoning per adapter
