@@ -21,6 +21,7 @@ Modules under `botfarm/`:
 - `dashboard.py` — Optional FastAPI + htmx web dashboard (background thread in supervisor)
 
 Docs under `docs/`:
+- `features.md` — Comprehensive feature catalog organized by user task
 - `linear-workflow.md` — Linear-specific ticket creation, sizing, and workflow guide
 - `jira-workflow.md` — Jira-specific ticket creation, sizing, and workflow guide
 - `linear-archiving.md` — How to archive Done tickets (filtering, sorting, GraphQL API)
