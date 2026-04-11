@@ -121,6 +121,39 @@ def _is_supervisor_running() -> bool:
         return False
 
 
+def _notify_supervisor_project(action: str, project_name: str, config_path: Path | None = None) -> bool:
+    """Notify the running supervisor to register/unregister a project via dashboard API.
+
+    Returns True if the supervisor acknowledged the request.
+    """
+    import json
+    import urllib.request
+
+    # Read dashboard port from config
+    port = 8420
+    try:
+        cfg = load_config(config_path or DEFAULT_CONFIG_PATH)
+        if cfg.dashboard.enabled:
+            port = cfg.dashboard.port
+        else:
+            return False  # Dashboard not enabled, can't notify
+    except Exception:
+        pass
+
+    endpoint = "register" if action == "add" else "unregister"
+    url = f"http://127.0.0.1:{port}/api/project/{endpoint}"
+    body = json.dumps({"name": project_name}).encode()
+
+    try:
+        req = urllib.request.Request(
+            url, data=body, headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+
 def _format_duration(total_seconds: int) -> str:
     """Format a duration in seconds as a human-readable string (e.g. '2h30m', '5m30s', '45s')."""
     if total_seconds < 0:
@@ -1268,28 +1301,32 @@ def add_project(config_path, repo_url, name, team, tracker_project_flag, num_slo
         console.print(
             f"    - Create a CLAUDE.md: botfarm init-claude-md {base_dir}"
         )
-    # Show context-aware supervisor message based on whether the supervisor is
-    # running and whether it will auto-detect the config change.
+    # Notify the running supervisor to pick up the new project.
     supervisor_running = _is_supervisor_running()
-    if supervisor_running and was_setup_mode:
-        # Verify post-write config is actually complete — _try_exit_setup_mode()
-        # only exits when setup_mode becomes False (e.g. API key still missing
-        # means the supervisor stays in setup mode even after adding a project).
-        try:
-            post_config = load_config(cfg_path)
-            config_complete = not post_config.setup_mode
-        except Exception:
-            config_complete = False
-        if config_complete:
+    if supervisor_running:
+        if was_setup_mode:
+            # In setup mode the supervisor auto-detects config changes.
+            try:
+                post_config = load_config(cfg_path)
+                config_complete = not post_config.setup_mode
+            except Exception:
+                config_complete = False
+            if config_complete:
+                console.print(
+                    "    - Project added — supervisor will pick it up automatically"
+                )
+            else:
+                console.print(
+                    "    - Restart the supervisor to apply changes: botfarm run"
+                )
+        elif _notify_supervisor_project("add", name, cfg_path):
             console.print(
-                "    - Project added — supervisor will pick it up automatically"
+                "    - [green]Project registered with running supervisor[/green]"
             )
         else:
             console.print(
                 "    - Restart the supervisor to apply changes: botfarm run"
             )
-    elif supervisor_running:
-        console.print("    - Restart the supervisor to apply changes: botfarm run")
     else:
         console.print("    - Start the supervisor: botfarm run")
 
@@ -1447,6 +1484,11 @@ def remove_project(name, config_path, force, clean, yes):
         import shutil
         shutil.rmtree(projects_dir)
         console.print(f"  [green]Removed {projects_dir}[/green]")
+
+    # --- 4. Notify supervisor to drop in-memory state ---
+    if _is_supervisor_running():
+        if _notify_supervisor_project("remove", name, cfg_path):
+            console.print("  [green]Supervisor notified — project unloaded[/green]")
 
     console.print(f"\n[bold green]Project '{name}' removed successfully![/bold green]")
 

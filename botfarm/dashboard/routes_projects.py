@@ -647,3 +647,59 @@ async def api_project_remove(request: Request):
             "cleaned_dir": cleaned_dir,
         },
     })
+
+
+@router.post("/api/project/register")
+async def api_project_register(request: Request):
+    """Notify supervisor to hot-load a project already in config.yaml.
+
+    Called by CLI after ``botfarm add-project`` writes config.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    name = (body.get("name") or "").strip()
+    if not name:
+        return JSONResponse({"error": "name is required"}, status_code=400)
+
+    cb = request.app.state.on_add_project
+    if cb is None:
+        return JSONResponse({"error": "supervisor not available"}, status_code=503)
+
+    try:
+        cb(name)
+    except Exception as exc:
+        logger.exception("Failed to register project %s", name)
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+    return JSONResponse({"ok": True, "registered": name})
+
+
+@router.post("/api/project/unregister")
+async def api_project_unregister(request: Request):
+    """Notify supervisor to drop an in-memory project.
+
+    Called by CLI after ``botfarm remove-project`` updates config.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    name = (body.get("name") or "").strip()
+    if not name:
+        return JSONResponse({"error": "name is required"}, status_code=400)
+
+    cb = request.app.state.on_remove_project
+    if cb is None:
+        return JSONResponse({"error": "supervisor not available"}, status_code=503)
+
+    try:
+        cb(name)
+    except Exception as exc:
+        logger.exception("Failed to unregister project %s", name)
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+    return JSONResponse({"ok": True, "unregistered": name})
