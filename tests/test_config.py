@@ -980,14 +980,15 @@ def test_load_config_comment_rejects_string_bool(tmp_path):
 
 
 def test_default_config_template_includes_status_and_comment_fields():
-    from botfarm.config import DEFAULT_CONFIG_TEMPLATE
-    assert "todo_status:" in DEFAULT_CONFIG_TEMPLATE
-    assert "in_progress_status:" in DEFAULT_CONFIG_TEMPLATE
-    assert "done_status:" in DEFAULT_CONFIG_TEMPLATE
-    assert "failed_status:" not in DEFAULT_CONFIG_TEMPLATE
-    assert "comment_on_failure:" in DEFAULT_CONFIG_TEMPLATE
-    assert "comment_on_completion:" in DEFAULT_CONFIG_TEMPLATE
-    assert "comment_on_limit_pause:" in DEFAULT_CONFIG_TEMPLATE
+    from botfarm.config import build_config_template
+    template = build_config_template()
+    assert "todo_status:" in template
+    assert "in_progress_status:" in template
+    assert "done_status:" in template
+    assert "failed_status:" not in template
+    assert "comment_on_failure:" in template
+    assert "comment_on_completion:" in template
+    assert "comment_on_limit_pause:" in template
 
 
 # --- CLI init command ---
@@ -2964,13 +2965,14 @@ def test_write_config_updates_creates_capacity_monitoring_section(tmp_path):
 
 
 def test_default_config_template_includes_capacity_fields():
-    from botfarm.config import DEFAULT_CONFIG_TEMPLATE
-    assert "issue_limit:" in DEFAULT_CONFIG_TEMPLATE
-    assert "capacity_monitoring:" in DEFAULT_CONFIG_TEMPLATE
-    assert "warning_threshold:" in DEFAULT_CONFIG_TEMPLATE
-    assert "critical_threshold:" in DEFAULT_CONFIG_TEMPLATE
-    assert "pause_threshold:" in DEFAULT_CONFIG_TEMPLATE
-    assert "resume_threshold:" in DEFAULT_CONFIG_TEMPLATE
+    from botfarm.config import build_config_template
+    template = build_config_template()
+    assert "issue_limit:" in template
+    assert "capacity_monitoring:" in template
+    assert "warning_threshold:" in template
+    assert "critical_threshold:" in template
+    assert "pause_threshold:" in template
+    assert "resume_threshold:" in template
 
 
 # --- start_paused ---
@@ -3004,8 +3006,8 @@ def test_start_paused_non_bool_raises(tmp_path):
 
 
 def test_default_config_template_includes_start_paused():
-    from botfarm.config import DEFAULT_CONFIG_TEMPLATE
-    assert "start_paused:" in DEFAULT_CONFIG_TEMPLATE
+    from botfarm.config import build_config_template
+    assert "start_paused:" in build_config_template()
 
 
 # --- setup_mode ---
@@ -3706,13 +3708,14 @@ class TestDefaultConfigTemplateBugtracker:
     """Verify the config template uses the new bugtracker section."""
 
     def test_template_has_bugtracker_section(self):
-        from botfarm.config import DEFAULT_CONFIG_TEMPLATE
-        assert "bugtracker:" in DEFAULT_CONFIG_TEMPLATE
-        assert "type: linear" in DEFAULT_CONFIG_TEMPLATE
+        from botfarm.config import build_config_template
+        template = build_config_template()
+        assert "bugtracker:" in template
+        assert "type: linear" in template
 
     def test_template_has_linear_type(self):
-        from botfarm.config import DEFAULT_CONFIG_TEMPLATE
-        assert "type: linear" in DEFAULT_CONFIG_TEMPLATE
+        from botfarm.config import build_config_template
+        assert "type: linear" in build_config_template()
 
 
 # ---------------------------------------------------------------------------

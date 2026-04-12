@@ -6,7 +6,7 @@ import logging
 import os
 import re
 import tempfile
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields as dc_fields, replace
 from pathlib import Path
 
 import yaml
@@ -232,15 +232,7 @@ class CapacityConfig:
 
     @classmethod
     def from_dict(cls, data: dict, *, section: str = "capacity_monitoring") -> CapacityConfig:
-        if not isinstance(data, dict):
-            return cls()
-        return cls(
-            enabled=_parse_bool(data, "enabled", cls.enabled, section=section),
-            warning_threshold=float(data.get("warning_threshold", cls.warning_threshold)),
-            critical_threshold=float(data.get("critical_threshold", cls.critical_threshold)),
-            pause_threshold=float(data.get("pause_threshold", cls.pause_threshold)),
-            resume_threshold=float(data.get("resume_threshold", cls.resume_threshold)),
-        )
+        return _config_from_dict(cls, data, section=section)
 
 
 @dataclass
@@ -289,9 +281,7 @@ class DatabaseConfig:
 
     @classmethod
     def from_dict(cls, data: dict) -> DatabaseConfig:
-        if not isinstance(data, dict):
-            return cls()
-        return cls(path=data.get("path", cls.path))
+        return _config_from_dict(cls, data)
 
 
 VALID_AUTH_MODES = ("oauth", "api_key", "long_lived_token")
@@ -309,14 +299,7 @@ class UsageLimitsConfig:
 
     @classmethod
     def from_dict(cls, data: dict) -> UsageLimitsConfig:
-        if not isinstance(data, dict):
-            return cls()
-        return cls(
-            enabled=_parse_bool(data, "enabled", cls.enabled, section="usage_limits"),
-            poll_interval_seconds=int(data.get("poll_interval_seconds", cls.poll_interval_seconds)),
-            pause_five_hour_threshold=float(data.get("pause_five_hour_threshold", cls.pause_five_hour_threshold)),
-            pause_seven_day_threshold=float(data.get("pause_seven_day_threshold", cls.pause_seven_day_threshold)),
-        )
+        return _config_from_dict(cls, data, section="usage_limits")
 
 
 @dataclass
@@ -328,14 +311,7 @@ class DashboardConfig:
 
     @classmethod
     def from_dict(cls, data: dict) -> DashboardConfig:
-        if not isinstance(data, dict):
-            return cls()
-        return cls(
-            enabled=bool(data.get("enabled", cls.enabled)),
-            host=str(data.get("host", cls.host)),
-            port=int(data.get("port", cls.port)),
-            terminal_enabled=bool(data.get("terminal_enabled", cls.terminal_enabled)),
-        )
+        return _config_from_dict(cls, data, section="dashboard")
 
 
 @dataclass
@@ -433,15 +409,6 @@ def build_config_template(
     )
 
 
-def _module_getattr(name: str) -> object:
-    """Lazy alias: ``DEFAULT_CONFIG_TEMPLATE`` builds the template on access."""
-    if name == "DEFAULT_CONFIG_TEMPLATE":
-        return build_config_template()
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
-# Python ≥3.7 module-level __getattr__ for lazy attributes.
-__getattr__ = _module_getattr
 
 
 @dataclass
@@ -490,13 +457,7 @@ class LoggingConfig:
 
     @classmethod
     def from_dict(cls, data: dict) -> LoggingConfig:
-        if not isinstance(data, dict):
-            return cls()
-        return cls(
-            max_bytes=int(data.get("max_bytes", cls.max_bytes)),
-            backup_count=int(data.get("backup_count", cls.backup_count)),
-            ticket_log_retention_days=int(data.get("ticket_log_retention_days", cls.ticket_log_retention_days)),
-        )
+        return _config_from_dict(cls, data, section="logging")
 
 
 @dataclass
@@ -504,23 +465,15 @@ class RefactoringAnalysisConfig:
     enabled: bool = False
     cadence_days: int = 14
     cadence_tickets: int = 20  # 0 = disabled
-    tracker_label: str = "Refactoring Analysis"
+    tracker_label: str = field(
+        default="Refactoring Analysis",
+        metadata={"aliases": ["linear_label"], "postprocess": str.strip},
+    )
     priority: int = 4  # Low priority
 
     @classmethod
     def from_dict(cls, data: dict) -> RefactoringAnalysisConfig:
-        if not isinstance(data, dict):
-            return cls()
-        return cls(
-            enabled=_parse_bool(data, "enabled", cls.enabled, section="refactoring_analysis"),
-            cadence_days=int(data.get("cadence_days", cls.cadence_days)),
-            cadence_tickets=int(data.get("cadence_tickets", cls.cadence_tickets)),
-            # Legacy: accept "linear_label" as alias for "tracker_label".
-            tracker_label=str(
-                data.get("tracker_label", data.get("linear_label", cls.tracker_label))
-            ).strip(),
-            priority=int(data.get("priority", cls.priority)),
-        )
+        return _config_from_dict(cls, data, section="refactoring_analysis")
 
 
 @dataclass
@@ -532,14 +485,7 @@ class NotificationsConfig:
 
     @classmethod
     def from_dict(cls, data: dict) -> NotificationsConfig:
-        if not isinstance(data, dict):
-            return cls()
-        return cls(
-            webhook_url=str(data.get("webhook_url", cls.webhook_url)),
-            webhook_format=str(data.get("webhook_format", cls.webhook_format)),
-            rate_limit_seconds=int(data.get("rate_limit_seconds", cls.rate_limit_seconds)),
-            human_blocker_cooldown_seconds=int(data.get("human_blocker_cooldown_seconds", cls.human_blocker_cooldown_seconds)),
-        )
+        return _config_from_dict(cls, data, section="notifications")
 
 
 @dataclass
@@ -548,40 +494,23 @@ class CoderIdentity:
     ssh_key_path: str = ""
     git_author_name: str = ""
     git_author_email: str = ""
-    tracker_api_key: str = ""
+    tracker_api_key: str = field(default="", metadata={"aliases": ["linear_api_key"]})
     jira_api_token: str = ""
     jira_email: str = ""
 
     @classmethod
     def from_dict(cls, data: dict) -> CoderIdentity:
-        if not isinstance(data, dict):
-            return cls()
-        return cls(
-            github_token=str(data.get("github_token", cls.github_token)),
-            ssh_key_path=str(data.get("ssh_key_path", cls.ssh_key_path)),
-            git_author_name=str(data.get("git_author_name", cls.git_author_name)),
-            git_author_email=str(data.get("git_author_email", cls.git_author_email)),
-            # Legacy: accept "linear_api_key" as alias for "tracker_api_key".
-            tracker_api_key=str(data.get("tracker_api_key", data.get("linear_api_key", cls.tracker_api_key))),
-            jira_api_token=str(data.get("jira_api_token", cls.jira_api_token)),
-            jira_email=str(data.get("jira_email", cls.jira_email)),
-        )
+        return _config_from_dict(cls, data, section="identities.coder")
 
 
 @dataclass
 class ReviewerIdentity:
     github_token: str = ""
-    tracker_api_key: str = ""
+    tracker_api_key: str = field(default="", metadata={"aliases": ["linear_api_key"]})
 
     @classmethod
     def from_dict(cls, data: dict) -> ReviewerIdentity:
-        if not isinstance(data, dict):
-            return cls()
-        return cls(
-            github_token=str(data.get("github_token", cls.github_token)),
-            # Legacy: accept "linear_api_key" as alias for "tracker_api_key".
-            tracker_api_key=str(data.get("tracker_api_key", data.get("linear_api_key", cls.tracker_api_key))),
-        )
+        return _config_from_dict(cls, data, section="identities.reviewer")
 
 
 @dataclass
@@ -599,6 +528,7 @@ class IdentitiesConfig:
         )
 
 
+
 @dataclass
 class CodexUsageConfig:
     enabled: bool = False
@@ -608,14 +538,7 @@ class CodexUsageConfig:
 
     @classmethod
     def from_dict(cls, data: dict) -> CodexUsageConfig:
-        if not isinstance(data, dict):
-            return cls()
-        return cls(
-            enabled=_parse_bool(data, "enabled", cls.enabled, section="codex_usage"),
-            poll_interval_seconds=int(data.get("poll_interval_seconds", cls.poll_interval_seconds)),
-            pause_primary_threshold=float(data.get("pause_primary_threshold", cls.pause_primary_threshold)),
-            pause_secondary_threshold=float(data.get("pause_secondary_threshold", cls.pause_secondary_threshold)),
-        )
+        return _config_from_dict(cls, data, section="codex_usage")
 
 
 @dataclass
@@ -627,14 +550,7 @@ class DailySummaryConfig:
 
     @classmethod
     def from_dict(cls, data: dict) -> DailySummaryConfig:
-        if not isinstance(data, dict):
-            return cls()
-        return cls(
-            enabled=_parse_bool(data, "enabled", cls.enabled, section="daily_summary"),
-            send_hour=int(data.get("send_hour", cls.send_hour)),
-            min_tasks_for_summary=int(data.get("min_tasks_for_summary", cls.min_tasks_for_summary)),
-            webhook_url=str(data.get("webhook_url", cls.webhook_url)),
-        )
+        return _config_from_dict(cls, data, section="daily_summary")
 
 
 class BotfarmConfig:
@@ -1273,6 +1189,67 @@ def _parse_bool(data: dict, key: str, default: bool, *, section: str = "bugtrack
             f"{section}.{key} must be a boolean (true/false), got: {value!r}"
         )
     return value
+
+
+# Type coercion map for _config_from_dict.  ``from __future__ import
+# annotations`` makes ``f.type`` a *string*, so we match on the string
+# representation rather than the actual type object.
+_TYPE_COERCERS: dict[str, type] = {
+    "bool": bool,
+    "int": int,
+    "float": float,
+    "str": str,
+}
+
+
+def _config_from_dict(
+    cls: type,
+    data: dict,
+    *,
+    section: str = "",
+) -> object:
+    """Generic dict→dataclass parser that uses field defaults as fallbacks.
+
+    Handles:
+    - Type coercion (int, float, str, bool)
+    - Strict boolean parsing via ``_parse_bool`` (rejects non-bool values)
+    - Legacy field aliases via ``field(metadata={"aliases": ["old_name"]})``
+    - Custom post-processing via ``field(metadata={"postprocess": str.strip})``
+    """
+    if not isinstance(data, dict):
+        return cls()
+    kwargs: dict[str, object] = {}
+    for f in dc_fields(cls):
+        # Resolve value: check primary name, then legacy aliases.
+        if f.name in data:
+            raw = data[f.name]
+        else:
+            raw = None
+            for alias in f.metadata.get("aliases", ()):
+                if alias in data:
+                    raw = data[alias]
+                    break
+            if raw is None:
+                raw = f.default
+
+        # Bool fields get strict parsing (rejects non-bool types).
+        coercer = _TYPE_COERCERS.get(f.type)
+        if coercer is bool:
+            kwargs[f.name] = _parse_bool(
+                data, f.name, f.default,
+                section=section or cls.__name__,
+            )
+        elif coercer is not None:
+            kwargs[f.name] = coercer(raw)
+        else:
+            kwargs[f.name] = raw
+
+        # Optional post-processing (e.g. str.strip).
+        postprocess = f.metadata.get("postprocess")
+        if postprocess is not None:
+            kwargs[f.name] = postprocess(kwargs[f.name])
+
+    return cls(**kwargs)
 
 
 def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
