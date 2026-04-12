@@ -107,28 +107,28 @@ class TestGetOrganization:
 
 
 # ---------------------------------------------------------------------------
-# _generate_config_yaml
+# build_config_template (with team/workspace parameters)
 # ---------------------------------------------------------------------------
 
 
 class TestGenerateConfigYaml:
     def test_generates_workspace_config(self):
-        from botfarm.cli import _generate_config_yaml
+        from botfarm.config import build_config_template
 
-        content = _generate_config_yaml(
+        content = build_config_template(
             team_key="ENG",
             team_name="Engineering",
             workspace="my-ws",
         )
-        assert 'workspace: "my-ws"' in content
+        assert "workspace: my-ws" in content
         assert "${LINEAR_API_KEY}" in content
         assert "add-project" in content
         assert "Engineering (ENG)" in content
 
     def test_no_projects_section(self):
-        from botfarm.cli import _generate_config_yaml
+        from botfarm.config import build_config_template
 
-        content = _generate_config_yaml(
+        content = build_config_template(
             team_key="ENG",
             team_name="Engineering",
             workspace="my-ws",
@@ -208,7 +208,7 @@ class TestInteractiveInit:
         assert env_path.exists()
 
         config_content = config_path.read_text()
-        assert 'workspace: "smart-ai-coach"' in config_content
+        assert "workspace: smart-ai-coach" in config_content
         # No projects section — configured via add-project
         assert "tracker_project" not in config_content
         assert "add-project" in config_content
@@ -241,7 +241,7 @@ class TestInteractiveInit:
         )
         assert result.exit_code == 0, result.output
         config_content = config_path.read_text()
-        assert 'workspace: "smart-ai-coach"' in config_content
+        assert "workspace: smart-ai-coach" in config_content
         assert "tracker_project" not in config_content
 
     @patch("botfarm.cli.create_client")
@@ -309,7 +309,7 @@ class TestInteractiveInit:
         )
         assert result.exit_code == 0, result.output
         config_content = config_path.read_text()
-        assert 'workspace: "my-manual-ws"' in config_content
+        assert "workspace: my-manual-ws" in config_content
 
     def test_interactive_existing_config_decline_overwrite(self, tmp_path, monkeypatch):
         from click.testing import CliRunner
