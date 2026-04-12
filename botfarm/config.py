@@ -6,12 +6,55 @@ import logging
 import os
 import re
 import tempfile
-from dataclasses import dataclass, field, fields as dc_fields, replace
 from pathlib import Path
+from typing import Any
 
 import yaml
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError, model_validator
 
 logger = logging.getLogger(__name__)
+
+
+class ConfigError(Exception):
+    """Raised when configuration is invalid."""
+
+
+def _validation_error_to_message(exc: ValidationError, section: str = "") -> str:
+    """Convert a Pydantic ValidationError to a human-readable ConfigError message."""
+    errors = exc.errors()
+    if not errors:
+        return str(exc)
+    err = errors[0]
+    loc = ".".join(str(p) for p in err["loc"])
+    field_path = f"{section}.{loc}" if section else loc
+    # Translate Pydantic messages to match existing ConfigError format.
+    msg = err["msg"]
+    inp = err.get("input")
+    if err["type"] == "bool_type":
+        return f"{field_path} must be a boolean (true/false), got: {inp!r}"
+    return f"{field_path} {msg}"
+
+
+class _ConfigBase(BaseModel):
+    """Shared base for all config models.
+
+    Provides ``extra="ignore"`` (unknown keys in YAML are silently dropped)
+    and a ``from_dict`` class method that converts ``ValidationError`` to
+    ``ConfigError`` so callers never see raw Pydantic exceptions.
+    """
+
+    model_config = ConfigDict(frozen=False, extra="ignore")
+
+    @classmethod
+    def from_dict(cls, data: dict, *, section: str = "") -> Any:
+        if not isinstance(data, dict):
+            return cls()
+        try:
+            return cls(**data)
+        except ValidationError as exc:
+            raise ConfigError(
+                _validation_error_to_message(exc, section or cls.__name__)
+            ) from exc
 
 DEFAULT_CONFIG_DIR = Path.home() / ".botfarm"
 DEFAULT_CONFIG_PATH = DEFAULT_CONFIG_DIR / "config.yaml"
@@ -139,7 +182,7 @@ start_paused: true
 """
 
 
-class ProjectConfig:
+class ProjectConfig(_ConfigBase):
     """Project configuration.
 
     Fields: ``team``, ``tracker_project``, ``project_type``,
@@ -147,126 +190,74 @@ class ProjectConfig:
     ``qa_teardown_command``.
     """
 
-    __slots__ = ("name", "base_dir", "worktree_prefix", "slots",
-                 "team", "tracker_project", "project_type",
-                 "setup_commands", "run_command", "run_env", "run_port",
-                 "include_tags", "bugtracker", "qa_teardown_command",
-                 "dispatch_mode", "default_pipeline")
+    name: str
+    base_dir: str = ""
+    worktree_prefix: str = ""
+    slots: list[int] = Field(default_factory=list)
+    team: str = ""
+    tracker_project: str = ""
+    project_type: str = ""
+    setup_commands: list[str] = Field(default_factory=list)
+    run_command: str = ""
+    run_env: dict[str, str] = Field(default_factory=dict)
+    run_port: int = 0
+    include_tags: list[str] | None = None
+    bugtracker: dict | None = None
+    qa_teardown_command: str = ""
+    dispatch_mode: str = "auto"
+    default_pipeline: str = ""
 
-    def __init__(
-        self,
-        name: str,
-        base_dir: str = "",
-        worktree_prefix: str = "",
-        slots: list[int] | None = None,
-        team: str = "",
-        tracker_project: str = "",
-        project_type: str = "",
-        setup_commands: list[str] | None = None,
-        run_command: str = "",
-        run_env: dict[str, str] | None = None,
-        run_port: int = 0,
-        include_tags: list[str] | None = None,
-        bugtracker: dict | None = None,
-        qa_teardown_command: str = "",
-        dispatch_mode: str = "auto",
-        default_pipeline: str = "",
-    ) -> None:
-        self.name = name
-        self.base_dir = base_dir
-        self.worktree_prefix = worktree_prefix
-        self.slots = slots if slots is not None else []
-        self.team = team
-        self.tracker_project = tracker_project
-        self.project_type = project_type
-        self.setup_commands = setup_commands if setup_commands is not None else []
-        self.run_command = run_command
-        self.run_env = run_env if run_env is not None else {}
-        self.run_port = run_port
-        self.include_tags = include_tags
-        self.bugtracker = bugtracker
-        self.qa_teardown_command = qa_teardown_command
-        self.dispatch_mode = dispatch_mode
-        self.default_pipeline = default_pipeline
-
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, ProjectConfig):
-            return NotImplemented
-        return (self.name == other.name and self.base_dir == other.base_dir
-                and self.worktree_prefix == other.worktree_prefix
-                and self.slots == other.slots and self.team == other.team
-                and self.tracker_project == other.tracker_project
-                and self.project_type == other.project_type
-                and self.setup_commands == other.setup_commands
-                and self.run_command == other.run_command
-                and self.run_env == other.run_env
-                and self.run_port == other.run_port
-                and self.include_tags == other.include_tags
-                and self.bugtracker == other.bugtracker
-                and self.qa_teardown_command == other.qa_teardown_command
-                and self.dispatch_mode == other.dispatch_mode
-                and self.default_pipeline == other.default_pipeline)
-
-    def __repr__(self) -> str:
-        return (f"ProjectConfig(name={self.name!r}, team={self.team!r}, "
-                f"base_dir={self.base_dir!r}, worktree_prefix={self.worktree_prefix!r}, "
-                f"slots={self.slots!r}, tracker_project={self.tracker_project!r}, "
-                f"project_type={self.project_type!r}, "
-                f"setup_commands={self.setup_commands!r}, "
-                f"run_command={self.run_command!r}, "
-                f"run_env={self.run_env!r}, run_port={self.run_port!r}, "
-                f"include_tags={self.include_tags!r}, "
-                f"bugtracker={self.bugtracker!r}, "
-                f"qa_teardown_command={self.qa_teardown_command!r}, "
-                f"dispatch_mode={self.dispatch_mode!r}, "
-                f"default_pipeline={self.default_pipeline!r})")
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_none_to_defaults(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            # Match old ProjectConfig behavior: None → empty collection
+            if data.get("slots") is None:
+                data["slots"] = []
+            if data.get("setup_commands") is None:
+                data["setup_commands"] = []
+            if data.get("run_env") is None:
+                data["run_env"] = {}
+        return data
 
 
-@dataclass
-class CapacityConfig:
-    enabled: bool = True
+class CapacityConfig(_ConfigBase):
+    enabled: StrictBool = True
     warning_threshold: float = 0.70
     critical_threshold: float = 0.85
     pause_threshold: float = 0.95
     resume_threshold: float = 0.90
 
-    @classmethod
-    def from_dict(cls, data: dict, *, section: str = "capacity_monitoring") -> CapacityConfig:
-        return _config_from_dict(cls, data, section=section)
 
-
-@dataclass
-class BugtrackerConfig:
+class BugtrackerConfig(_ConfigBase):
     """Base bugtracker configuration shared across all tracker types."""
 
     type: str = "linear"  # "linear", "jira", future: "github"
     api_key: str = ""
     workspace: str = ""
     poll_interval_seconds: int = 30
-    exclude_tags: list[str] = field(default_factory=lambda: ["Human"])
-    include_tags: list[str] = field(default_factory=list)
+    exclude_tags: list[str] = Field(default_factory=lambda: ["Human"])
+    include_tags: list[str] = Field(default_factory=list)
     todo_status: str = "Todo"
     in_progress_status: str = "In Progress"
     done_status: str = "Done"
     in_review_status: str = "In Review"
-    comment_on_failure: bool = True
-    comment_on_completion: bool = False
-    comment_on_limit_pause: bool = False
+    comment_on_failure: StrictBool = True
+    comment_on_completion: StrictBool = False
+    comment_on_limit_pause: StrictBool = False
 
 
-@dataclass
 class LinearBugtrackerConfig(BugtrackerConfig):
     """Linear-specific bugtracker configuration."""
 
     issue_limit: int = 250
-    capacity_monitoring: CapacityConfig = field(default_factory=CapacityConfig)
+    capacity_monitoring: CapacityConfig = Field(default_factory=CapacityConfig)
 
 
 # Keep LinearConfig as an alias for backward compatibility in imports.
 LinearConfig = LinearBugtrackerConfig
 
 
-@dataclass
 class JiraBugtrackerConfig(BugtrackerConfig):
     """Jira-specific bugtracker configuration."""
 
@@ -275,13 +266,8 @@ class JiraBugtrackerConfig(BugtrackerConfig):
     email: str = ""  # Email for Jira API authentication
 
 
-@dataclass
-class DatabaseConfig:
+class DatabaseConfig(_ConfigBase):
     path: str = ""
-
-    @classmethod
-    def from_dict(cls, data: dict) -> DatabaseConfig:
-        return _config_from_dict(cls, data)
 
 
 VALID_AUTH_MODES = ("oauth", "api_key", "long_lived_token")
@@ -290,39 +276,28 @@ VALID_AUTH_MODES = ("oauth", "api_key", "long_lived_token")
 LONG_LIVED_TOKEN_ENV_VAR = "CLAUDE_LONG_LIVED_TOKEN"
 
 
-@dataclass
-class UsageLimitsConfig:
-    enabled: bool = True
+class UsageLimitsConfig(_ConfigBase):
+    enabled: StrictBool = True
     poll_interval_seconds: int = 600
     pause_five_hour_threshold: float = 0.85
     pause_seven_day_threshold: float = 0.90
 
-    @classmethod
-    def from_dict(cls, data: dict) -> UsageLimitsConfig:
-        return _config_from_dict(cls, data, section="usage_limits")
 
-
-@dataclass
-class DashboardConfig:
-    enabled: bool = False
+class DashboardConfig(_ConfigBase):
+    enabled: StrictBool = False
     host: str = "0.0.0.0"
     port: int = 8420
-    terminal_enabled: bool = False
-
-    @classmethod
-    def from_dict(cls, data: dict) -> DashboardConfig:
-        return _config_from_dict(cls, data, section="dashboard")
+    terminal_enabled: StrictBool = False
 
 
-@dataclass
-class AdapterConfig:
+class AdapterConfig(_ConfigBase):
     """Per-agent-adapter configuration (e.g. claude, codex)."""
 
-    enabled: bool = False
+    enabled: StrictBool = False
     model: str = ""
     timeout_minutes: int | None = None
     reasoning_effort: str = ""
-    skip_on_reiteration: bool = True
+    skip_on_reiteration: StrictBool = True
 
 
 CODEX_ADAPTER_DEFAULTS = AdapterConfig(timeout_minutes=15, reasoning_effort="medium")
@@ -331,7 +306,7 @@ CODEX_ADAPTER_DEFAULTS = AdapterConfig(timeout_minutes=15, reasoning_effort="med
 def default_adapters() -> dict[str, AdapterConfig]:
     return {
         "claude": AdapterConfig(enabled=True),
-        "codex": replace(CODEX_ADAPTER_DEFAULTS),
+        "codex": CODEX_ADAPTER_DEFAULTS.model_copy(),
         "aider": AdapterConfig(),
     }
 
@@ -411,20 +386,19 @@ def build_config_template(
 
 
 
-@dataclass
-class AgentsConfig:
+class AgentsConfig(_ConfigBase):
     max_review_iterations: int = 3
     max_ci_retries: int = 2
     max_merge_conflict_retries: int = 2
     pr_checks_timeout_seconds: int = 600
-    timeout_minutes: dict[str, int] = field(default_factory=lambda: {
+    timeout_minutes: dict[str, int] = Field(default_factory=lambda: {
         "implement": 120,
         "review": 30,
         "fix": 60,
     })
-    timeout_overrides: dict[str, dict[str, int]] = field(default_factory=dict)
+    timeout_overrides: dict[str, dict[str, int]] = Field(default_factory=dict)
     timeout_grace_seconds: int = 10
-    adapters: dict[str, AdapterConfig] = field(default_factory=default_adapters)
+    adapters: dict[str, AdapterConfig] = Field(default_factory=default_adapters)
 
     # Legacy accessor properties for backward compatibility.
     @property
@@ -449,74 +423,73 @@ class AgentsConfig:
         return self.adapters.get("codex", CODEX_ADAPTER_DEFAULTS).skip_on_reiteration
 
 
-@dataclass
-class LoggingConfig:
+class LoggingConfig(_ConfigBase):
     max_bytes: int = 10 * 1024 * 1024  # 10 MB per rotated file
     backup_count: int = 5  # number of rotated files to keep
     ticket_log_retention_days: int = 30  # delete ticket logs older than N days
 
-    @classmethod
-    def from_dict(cls, data: dict) -> LoggingConfig:
-        return _config_from_dict(cls, data, section="logging")
 
-
-@dataclass
-class RefactoringAnalysisConfig:
-    enabled: bool = False
+class RefactoringAnalysisConfig(_ConfigBase):
+    enabled: StrictBool = False
     cadence_days: int = 14
     cadence_tickets: int = 20  # 0 = disabled
-    tracker_label: str = field(
-        default="Refactoring Analysis",
-        metadata={"aliases": ["linear_label"], "postprocess": str.strip},
-    )
+    tracker_label: str = "Refactoring Analysis"
     priority: int = 4  # Low priority
 
+    @model_validator(mode="before")
     @classmethod
-    def from_dict(cls, data: dict) -> RefactoringAnalysisConfig:
-        return _config_from_dict(cls, data, section="refactoring_analysis")
+    def _migrate_legacy_keys(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            # Legacy alias: linear_label → tracker_label
+            if "tracker_label" not in data and "linear_label" in data:
+                data["tracker_label"] = data.pop("linear_label")
+            # Postprocess: strip whitespace
+            if "tracker_label" in data and isinstance(data["tracker_label"], str):
+                data["tracker_label"] = data["tracker_label"].strip()
+        return data
 
 
-@dataclass
-class NotificationsConfig:
+class NotificationsConfig(_ConfigBase):
     webhook_url: str = ""
     webhook_format: str = "slack"  # "slack" or "discord"
     rate_limit_seconds: int = 300
     human_blocker_cooldown_seconds: int = 3600  # 1 hour per blocker ticket
 
-    @classmethod
-    def from_dict(cls, data: dict) -> NotificationsConfig:
-        return _config_from_dict(cls, data, section="notifications")
 
-
-@dataclass
-class CoderIdentity:
+class CoderIdentity(_ConfigBase):
     github_token: str = ""
     ssh_key_path: str = ""
     git_author_name: str = ""
     git_author_email: str = ""
-    tracker_api_key: str = field(default="", metadata={"aliases": ["linear_api_key"]})
+    tracker_api_key: str = ""
     jira_api_token: str = ""
     jira_email: str = ""
 
+    @model_validator(mode="before")
     @classmethod
-    def from_dict(cls, data: dict) -> CoderIdentity:
-        return _config_from_dict(cls, data, section="identities.coder")
+    def _migrate_legacy_keys(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if "tracker_api_key" not in data and "linear_api_key" in data:
+                data["tracker_api_key"] = data.pop("linear_api_key")
+        return data
 
 
-@dataclass
-class ReviewerIdentity:
+class ReviewerIdentity(_ConfigBase):
     github_token: str = ""
-    tracker_api_key: str = field(default="", metadata={"aliases": ["linear_api_key"]})
+    tracker_api_key: str = ""
 
+    @model_validator(mode="before")
     @classmethod
-    def from_dict(cls, data: dict) -> ReviewerIdentity:
-        return _config_from_dict(cls, data, section="identities.reviewer")
+    def _migrate_legacy_keys(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if "tracker_api_key" not in data and "linear_api_key" in data:
+                data["tracker_api_key"] = data.pop("linear_api_key")
+        return data
 
 
-@dataclass
-class IdentitiesConfig:
-    coder: CoderIdentity = field(default_factory=CoderIdentity)
-    reviewer: ReviewerIdentity = field(default_factory=ReviewerIdentity)
+class IdentitiesConfig(_ConfigBase):
+    coder: CoderIdentity = Field(default_factory=CoderIdentity)
+    reviewer: ReviewerIdentity = Field(default_factory=ReviewerIdentity)
 
     @classmethod
     def from_dict(cls, data: dict) -> IdentitiesConfig:
@@ -529,69 +502,53 @@ class IdentitiesConfig:
 
 
 
-@dataclass
-class CodexUsageConfig:
-    enabled: bool = False
+class CodexUsageConfig(_ConfigBase):
+    enabled: StrictBool = False
     poll_interval_seconds: int = 300
     pause_primary_threshold: float = 0.85
     pause_secondary_threshold: float = 0.90
 
-    @classmethod
-    def from_dict(cls, data: dict) -> CodexUsageConfig:
-        return _config_from_dict(cls, data, section="codex_usage")
 
-
-@dataclass
-class DailySummaryConfig:
-    enabled: bool = False
+class DailySummaryConfig(_ConfigBase):
+    enabled: StrictBool = False
     send_hour: int = 18  # UTC hour (0-23)
     min_tasks_for_summary: int = 0  # 0 = always send, even on quiet days
     webhook_url: str = ""  # Falls back to main notifications.webhook_url
 
-    @classmethod
-    def from_dict(cls, data: dict) -> DailySummaryConfig:
-        return _config_from_dict(cls, data, section="daily_summary")
 
-
-class BotfarmConfig:
+class BotfarmConfig(_ConfigBase):
     """Top-level botfarm configuration.
 
     The ``bugtracker`` field holds the bugtracker configuration.
     """
 
-    def __init__(
-        self,
-        projects: list[ProjectConfig],
-        bugtracker: BugtrackerConfig | None = None,
-        database: DatabaseConfig | None = None,
-        usage_limits: UsageLimitsConfig | None = None,
-        dashboard: DashboardConfig | None = None,
-        agents: AgentsConfig | None = None,
-        logging: LoggingConfig | None = None,
-        notifications: NotificationsConfig | None = None,
-        identities: IdentitiesConfig | None = None,
-        refactoring_analysis: RefactoringAnalysisConfig | None = None,
-        codex_usage: CodexUsageConfig | None = None,
-        daily_summary: DailySummaryConfig | None = None,
-        start_paused: bool = True,
-        source_path: str = "",
-        auth_mode: str = "oauth",
-    ) -> None:
-        self.projects = projects
-        self.bugtracker = bugtracker or LinearBugtrackerConfig()
-        self.database = database or DatabaseConfig()
-        self.usage_limits = usage_limits or UsageLimitsConfig()
-        self.dashboard = dashboard or DashboardConfig()
-        self.agents = agents or AgentsConfig()
-        self.logging = logging or LoggingConfig()
-        self.notifications = notifications or NotificationsConfig()
-        self.identities = identities or IdentitiesConfig()
-        self.refactoring_analysis = refactoring_analysis or RefactoringAnalysisConfig()
-        self.codex_usage = codex_usage or CodexUsageConfig()
-        self.daily_summary = daily_summary or DailySummaryConfig()
-        self.start_paused = start_paused
-        self.source_path = source_path
-        self.auth_mode = auth_mode
+    projects: list[ProjectConfig]
+    bugtracker: BugtrackerConfig = Field(default_factory=LinearBugtrackerConfig)
+    database: DatabaseConfig = Field(default_factory=DatabaseConfig)
+    usage_limits: UsageLimitsConfig = Field(default_factory=UsageLimitsConfig)
+    dashboard: DashboardConfig = Field(default_factory=DashboardConfig)
+    agents: AgentsConfig = Field(default_factory=AgentsConfig)
+    logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
+    identities: IdentitiesConfig = Field(default_factory=IdentitiesConfig)
+    refactoring_analysis: RefactoringAnalysisConfig = Field(default_factory=RefactoringAnalysisConfig)
+    codex_usage: CodexUsageConfig = Field(default_factory=CodexUsageConfig)
+    daily_summary: DailySummaryConfig = Field(default_factory=DailySummaryConfig)
+    start_paused: StrictBool = True
+    source_path: str = ""
+    auth_mode: str = "oauth"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_none_to_defaults(cls, data: Any) -> Any:
+        """Replace None sub-config values with defaults (matches old __init__ behavior)."""
+        if isinstance(data, dict):
+            for key in ("bugtracker", "database", "usage_limits", "dashboard",
+                        "agents", "logging", "notifications", "identities",
+                        "refactoring_analysis", "codex_usage", "daily_summary"):
+                if key in data and data[key] is None:
+                    del data[key]  # Let Pydantic use default_factory
+        return data
 
     @property
     def setup_mode(self) -> bool:
@@ -605,10 +562,6 @@ class BotfarmConfig:
             p.bugtracker and p.bugtracker.get("api_key")
             for p in self.projects
         )
-
-
-class ConfigError(Exception):
-    """Raised when configuration is invalid."""
 
 
 def expand_env_vars(value: str) -> str:
@@ -1181,76 +1134,6 @@ def _validate_config(
         raise ConfigError("notifications.rate_limit_seconds must be at least 0")
 
 
-def _parse_bool(data: dict, key: str, default: bool, *, section: str = "bugtracker") -> bool:
-    """Parse a boolean config value, rejecting non-boolean types."""
-    value = data.get(key, default)
-    if not isinstance(value, bool):
-        raise ConfigError(
-            f"{section}.{key} must be a boolean (true/false), got: {value!r}"
-        )
-    return value
-
-
-# Type coercion map for _config_from_dict.  ``from __future__ import
-# annotations`` makes ``f.type`` a *string*, so we match on the string
-# representation rather than the actual type object.
-_TYPE_COERCERS: dict[str, type] = {
-    "bool": bool,
-    "int": int,
-    "float": float,
-    "str": str,
-}
-
-
-def _config_from_dict(
-    cls: type,
-    data: dict,
-    *,
-    section: str = "",
-) -> object:
-    """Generic dict→dataclass parser that uses field defaults as fallbacks.
-
-    Handles:
-    - Type coercion (int, float, str, bool)
-    - Strict boolean parsing via ``_parse_bool`` (rejects non-bool values)
-    - Legacy field aliases via ``field(metadata={"aliases": ["old_name"]})``
-    - Custom post-processing via ``field(metadata={"postprocess": str.strip})``
-    """
-    if not isinstance(data, dict):
-        return cls()
-    kwargs: dict[str, object] = {}
-    for f in dc_fields(cls):
-        # Resolve value: check primary name, then legacy aliases.
-        if f.name in data:
-            raw = data[f.name]
-        else:
-            raw = None
-            for alias in f.metadata.get("aliases", ()):
-                if alias in data:
-                    raw = data[alias]
-                    break
-            if raw is None:
-                raw = f.default
-
-        # Bool fields get strict parsing (rejects non-bool types).
-        coercer = _TYPE_COERCERS.get(f.type)
-        if coercer is bool:
-            kwargs[f.name] = _parse_bool(
-                data, f.name, f.default,
-                section=section or cls.__name__,
-            )
-        elif coercer is not None:
-            kwargs[f.name] = coercer(raw)
-        else:
-            kwargs[f.name] = raw
-
-        # Optional post-processing (e.g. str.strip).
-        postprocess = f.metadata.get("postprocess")
-        if postprocess is not None:
-            kwargs[f.name] = postprocess(kwargs[f.name])
-
-    return cls(**kwargs)
-
 
 def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
     """Load, expand, validate, and return the botfarm configuration."""
@@ -1319,29 +1202,32 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         in_progress_status=str(bt_data.get("in_progress_status", "In Progress")),
         done_status=str(bt_data.get("done_status", "Done")),
         in_review_status=str(bt_data.get("in_review_status", "In Review")),
-        comment_on_failure=_parse_bool(bt_data, "comment_on_failure", True, section=bt_section),
-        comment_on_completion=_parse_bool(bt_data, "comment_on_completion", False, section=bt_section),
-        comment_on_limit_pause=_parse_bool(bt_data, "comment_on_limit_pause", False, section=bt_section),
+        comment_on_failure=bt_data.get("comment_on_failure", True),
+        comment_on_completion=bt_data.get("comment_on_completion", False),
+        comment_on_limit_pause=bt_data.get("comment_on_limit_pause", False),
     )
 
     bt_type = bt_common["type"]
-    if bt_type == "jira":
-        bugtracker: BugtrackerConfig = JiraBugtrackerConfig(
-            **bt_common,
-            url=str(bt_data.get("url", "")),
-            email=str(bt_data.get("email", "")),
-        )
-    else:
-        # Default to Linear (handles both explicit "linear" and legacy configs).
-        capacity_monitoring = CapacityConfig.from_dict(
-            bt_data.get("capacity_monitoring", {}),
-            section=f"{bt_section}.capacity_monitoring",
-        )
-        bugtracker = LinearBugtrackerConfig(
-            **bt_common,
-            issue_limit=int(bt_data.get("issue_limit", 250)),
-            capacity_monitoring=capacity_monitoring,
-        )
+    try:
+        if bt_type == "jira":
+            bugtracker: BugtrackerConfig = JiraBugtrackerConfig(
+                **bt_common,
+                url=str(bt_data.get("url", "")),
+                email=str(bt_data.get("email", "")),
+            )
+        else:
+            # Default to Linear (handles both explicit "linear" and legacy configs).
+            capacity_monitoring = CapacityConfig.from_dict(
+                bt_data.get("capacity_monitoring", {}),
+                section=f"{bt_section}.capacity_monitoring",
+            )
+            bugtracker = LinearBugtrackerConfig(
+                **bt_common,
+                issue_limit=int(bt_data.get("issue_limit", 250)),
+                capacity_monitoring=capacity_monitoring,
+            )
+    except ValidationError as exc:
+        raise ConfigError(_validation_error_to_message(exc, bt_section)) from exc
 
     database = DatabaseConfig.from_dict(data.get("database", {}))
     usage_limits = UsageLimitsConfig.from_dict(data.get("usage_limits", {}))
@@ -1363,8 +1249,9 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
                 except (ValueError, TypeError) as exc:
                     raise ConfigError(f"agents.timeout_overrides.{label}: {exc}")
             else:
-                # Pass through for _validate_config() to report the error
-                timeout_overrides[str(label)] = stages
+                raise ConfigError(
+                    f"agents.timeout_overrides.{label}: must be a mapping of stage → minutes"
+                )
     elif raw_overrides:
         raise ConfigError(
             "agents.timeout_overrides must be a mapping of label names to "
@@ -1407,16 +1294,16 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
                             f"agents.adapters.{name}: required field "
                             f"'{fld.name}' is missing"
                         )
-            adapters[name] = AdapterConfig(
-                enabled=_parse_bool(adapter_data, "enabled", name == "claude", section=f"agents.adapters.{name}"),
-                model=str(adapter_data.get("model", "")),
-                timeout_minutes=int(adapter_data["timeout_minutes"]) if "timeout_minutes" in adapter_data else None,
-                reasoning_effort=str(adapter_data.get("reasoning_effort", "") or ""),
-                skip_on_reiteration=_parse_bool(
-                    adapter_data, "skip_on_reiteration", True,
-                    section=f"agents.adapters.{name}",
-                ),
-            )
+            try:
+                adapters[name] = AdapterConfig(
+                    enabled=adapter_data.get("enabled", name == "claude"),
+                    model=str(adapter_data.get("model", "")),
+                    timeout_minutes=int(adapter_data["timeout_minutes"]) if "timeout_minutes" in adapter_data else None,
+                    reasoning_effort=str(adapter_data.get("reasoning_effort", "") or ""),
+                    skip_on_reiteration=adapter_data.get("skip_on_reiteration", True),
+                )
+            except ValidationError as exc:
+                raise ConfigError(_validation_error_to_message(exc, f"agents.adapters.{name}")) from exc
     elif raw_adapters is not None:
         raise ConfigError(
             f"agents.adapters must be a mapping, got {type(raw_adapters).__name__}"
@@ -1441,14 +1328,22 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
                 "migrate to agents.adapters.codex (see docs/configuration.md)"
             )
             _codex_defaults = default_adapters()["codex"]
+            # Validate bools before construction so error messages reference legacy key names.
+            for legacy_key, default_val in (
+                ("codex_reviewer_enabled", _codex_defaults.enabled),
+                ("codex_reviewer_skip_on_reiteration", True),
+            ):
+                val = agents_data.get(legacy_key, default_val)
+                if not isinstance(val, bool):
+                    raise ConfigError(
+                        f"agents.{legacy_key} must be a boolean (true/false), got: {val!r}"
+                    )
             adapters["codex"] = AdapterConfig(
-                enabled=_parse_bool(agents_data, "codex_reviewer_enabled", _codex_defaults.enabled, section="agents"),
+                enabled=agents_data.get("codex_reviewer_enabled", _codex_defaults.enabled),
                 model=str(agents_data.get("codex_reviewer_model", _codex_defaults.model)),
                 timeout_minutes=int(agents_data.get("codex_reviewer_timeout_minutes", _codex_defaults.timeout_minutes)),
                 reasoning_effort=str(agents_data.get("codex_reviewer_reasoning_effort", _codex_defaults.reasoning_effort) or ""),
-                skip_on_reiteration=_parse_bool(
-                    agents_data, "codex_reviewer_skip_on_reiteration", True, section="agents",
-                ),
+                skip_on_reiteration=agents_data.get("codex_reviewer_skip_on_reiteration", True),
             )
 
     agents = AgentsConfig(
@@ -1487,7 +1382,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
             "state is now persisted in the SQLite database."
         )
 
-    start_paused = _parse_bool(data, "start_paused", True, section="top-level")
+    start_paused = data.get("start_paused", True)
 
     # Auth mode: "oauth" (default), "api_key" (--bare), or "long_lived_token".
     # Accept both "claude_auth_method" (preferred) and "auth_mode" (legacy).
@@ -1500,22 +1395,25 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
     else:
         auth_mode = "oauth"
 
-    config = BotfarmConfig(
-        projects=projects,
-        bugtracker=bugtracker,
-        database=database,
-        usage_limits=usage_limits,
-        dashboard=dashboard,
-        agents=agents,
-        logging=logging_cfg,
-        notifications=notifications,
-        identities=identities,
-        refactoring_analysis=refactoring_analysis,
-        codex_usage=codex_usage,
-        daily_summary=daily_summary,
-        start_paused=start_paused,
-        auth_mode=auth_mode,
-    )
+    try:
+        config = BotfarmConfig(
+            projects=projects,
+            bugtracker=bugtracker,
+            database=database,
+            usage_limits=usage_limits,
+            dashboard=dashboard,
+            agents=agents,
+            logging=logging_cfg,
+            notifications=notifications,
+            identities=identities,
+            refactoring_analysis=refactoring_analysis,
+            codex_usage=codex_usage,
+            daily_summary=daily_summary,
+            start_paused=start_paused,
+            auth_mode=auth_mode,
+        )
+    except ValidationError as exc:
+        raise ConfigError(_validation_error_to_message(exc)) from exc
 
     _validate_config(config, adapter_schemas=adapter_schemas)
     config.source_path = str(config_path)
@@ -1742,7 +1640,7 @@ def apply_config_updates(config: BotfarmConfig, updates: dict) -> None:
                 obj.timeout_minutes.update(value)
             elif section == "agents" and key.startswith("codex_reviewer_"):
                 # Route legacy codex_reviewer_* keys to adapters["codex"]
-                codex_cfg = obj.adapters.setdefault("codex", replace(CODEX_ADAPTER_DEFAULTS))
+                codex_cfg = obj.adapters.setdefault("codex", CODEX_ADAPTER_DEFAULTS.model_copy())
                 attr = _CODEX_LEGACY_FIELD_MAP.get(key)
                 if attr:
                     if isinstance(value, (int, float)) and not isinstance(value, bool):

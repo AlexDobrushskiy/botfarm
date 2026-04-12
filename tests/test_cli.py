@@ -881,10 +881,11 @@ class TestPreflightCommand:
         """Build a minimal BotfarmConfig."""
         from botfarm.config import BotfarmConfig, DashboardConfig, IdentitiesConfig
 
-        cfg = BotfarmConfig.__new__(BotfarmConfig)
-        cfg.dashboard = DashboardConfig(enabled=False, port=8420)
-        cfg.identities = IdentitiesConfig()
-        return cfg
+        return BotfarmConfig(
+            projects=[],
+            dashboard=DashboardConfig(enabled=False, port=8420),
+            identities=IdentitiesConfig(),
+        )
 
     def test_no_config_file(self, runner, db_file, monkeypatch):
         """preflight fails gracefully when config file is missing."""
