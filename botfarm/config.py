@@ -6,7 +6,7 @@ import logging
 import os
 import re
 import tempfile
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields as dc_fields, replace
 from pathlib import Path
 
 import yaml
@@ -16,19 +16,17 @@ logger = logging.getLogger(__name__)
 DEFAULT_CONFIG_DIR = Path.home() / ".botfarm"
 DEFAULT_CONFIG_PATH = DEFAULT_CONFIG_DIR / "config.yaml"
 
-# Note: _generate_config_yaml() in cli.py has a parallel template for interactive init.
-# Keep both in sync when adding/removing fields.
-DEFAULT_CONFIG_TEMPLATE = """\
+_CONFIG_TEMPLATE = """\
 # Botfarm configuration
 # See documentation for full reference.
 
 # Projects are configured per-repo via 'botfarm add-project'.
-# projects: []
+{team_comment}# projects: []
 
 bugtracker:
   type: linear  # "linear" (future: "jira", "github")
-  api_key: ${LINEAR_API_KEY}
-  workspace: my-workspace
+  api_key: ${{LINEAR_API_KEY}}
+  workspace: {workspace}
   poll_interval_seconds: 30
   exclude_tags:
     - Human
@@ -85,12 +83,12 @@ agents:
 # See docs/configuration.md for full setup instructions.
 # identities:
 #   coder:
-#     github_token: ${CODER_GITHUB_TOKEN}          # Fine-grained PAT with repo write access
+#     github_token: ${{CODER_GITHUB_TOKEN}}          # Fine-grained PAT with repo write access
 #     ssh_key_path: ~/.botfarm/coder_id_ed25519     # SSH key added to coder's GitHub account
 #     git_author_name: "Coder Bot"
 #     git_author_email: "coder-bot@example.com"
 #   reviewer:
-#     github_token: ${REVIEWER_GITHUB_TOKEN}        # Fine-grained PAT with PR read/write access
+#     github_token: ${{REVIEWER_GITHUB_TOKEN}}        # Fine-grained PAT with PR read/write access
 
 # Periodic refactoring analysis — auto-creates investigation tickets
 # on a configurable cadence. Disabled by default.
@@ -232,6 +230,10 @@ class CapacityConfig:
     pause_threshold: float = 0.95
     resume_threshold: float = 0.90
 
+    @classmethod
+    def from_dict(cls, data: dict, *, section: str = "capacity_monitoring") -> CapacityConfig:
+        return _config_from_dict(cls, data, section=section)
+
 
 @dataclass
 class BugtrackerConfig:
@@ -277,6 +279,10 @@ class JiraBugtrackerConfig(BugtrackerConfig):
 class DatabaseConfig:
     path: str = ""
 
+    @classmethod
+    def from_dict(cls, data: dict) -> DatabaseConfig:
+        return _config_from_dict(cls, data)
+
 
 VALID_AUTH_MODES = ("oauth", "api_key", "long_lived_token")
 
@@ -291,6 +297,10 @@ class UsageLimitsConfig:
     pause_five_hour_threshold: float = 0.85
     pause_seven_day_threshold: float = 0.90
 
+    @classmethod
+    def from_dict(cls, data: dict) -> UsageLimitsConfig:
+        return _config_from_dict(cls, data, section="usage_limits")
+
 
 @dataclass
 class DashboardConfig:
@@ -298,6 +308,10 @@ class DashboardConfig:
     host: str = "0.0.0.0"
     port: int = 8420
     terminal_enabled: bool = False
+
+    @classmethod
+    def from_dict(cls, data: dict) -> DashboardConfig:
+        return _config_from_dict(cls, data, section="dashboard")
 
 
 @dataclass
@@ -370,10 +384,31 @@ def generate_adapters_yaml(indent: int = 4) -> str:
     return "\n".join(lines)
 
 
-def build_config_template() -> str:
-    """Build the full default config template with dynamically discovered adapters."""
+def build_config_template(
+    *,
+    workspace: str = "my-workspace",
+    team_key: str = "",
+    team_name: str = "",
+) -> str:
+    """Build the full config template with dynamically discovered adapters.
+
+    When *team_key* and *team_name* are provided (interactive init), a comment
+    line is added above the ``projects`` placeholder.  Otherwise, the generic
+    template is produced.
+    """
     adapters_yaml = generate_adapters_yaml()
-    return DEFAULT_CONFIG_TEMPLATE.replace("{adapters_yaml}", adapters_yaml)
+    team_comment = (
+        f"# Default team: {team_name} ({team_key})\n"
+        if team_key and team_name
+        else ""
+    )
+    return _CONFIG_TEMPLATE.format(
+        adapters_yaml=adapters_yaml,
+        workspace=workspace,
+        team_comment=team_comment,
+    )
+
+
 
 
 @dataclass
@@ -420,14 +455,25 @@ class LoggingConfig:
     backup_count: int = 5  # number of rotated files to keep
     ticket_log_retention_days: int = 30  # delete ticket logs older than N days
 
+    @classmethod
+    def from_dict(cls, data: dict) -> LoggingConfig:
+        return _config_from_dict(cls, data, section="logging")
+
 
 @dataclass
 class RefactoringAnalysisConfig:
     enabled: bool = False
     cadence_days: int = 14
     cadence_tickets: int = 20  # 0 = disabled
-    tracker_label: str = "Refactoring Analysis"
+    tracker_label: str = field(
+        default="Refactoring Analysis",
+        metadata={"aliases": ["linear_label"], "postprocess": str.strip},
+    )
     priority: int = 4  # Low priority
+
+    @classmethod
+    def from_dict(cls, data: dict) -> RefactoringAnalysisConfig:
+        return _config_from_dict(cls, data, section="refactoring_analysis")
 
 
 @dataclass
@@ -437,6 +483,10 @@ class NotificationsConfig:
     rate_limit_seconds: int = 300
     human_blocker_cooldown_seconds: int = 3600  # 1 hour per blocker ticket
 
+    @classmethod
+    def from_dict(cls, data: dict) -> NotificationsConfig:
+        return _config_from_dict(cls, data, section="notifications")
+
 
 @dataclass
 class CoderIdentity:
@@ -444,21 +494,39 @@ class CoderIdentity:
     ssh_key_path: str = ""
     git_author_name: str = ""
     git_author_email: str = ""
-    tracker_api_key: str = ""
+    tracker_api_key: str = field(default="", metadata={"aliases": ["linear_api_key"]})
     jira_api_token: str = ""
     jira_email: str = ""
+
+    @classmethod
+    def from_dict(cls, data: dict) -> CoderIdentity:
+        return _config_from_dict(cls, data, section="identities.coder")
 
 
 @dataclass
 class ReviewerIdentity:
     github_token: str = ""
-    tracker_api_key: str = ""
+    tracker_api_key: str = field(default="", metadata={"aliases": ["linear_api_key"]})
+
+    @classmethod
+    def from_dict(cls, data: dict) -> ReviewerIdentity:
+        return _config_from_dict(cls, data, section="identities.reviewer")
 
 
 @dataclass
 class IdentitiesConfig:
     coder: CoderIdentity = field(default_factory=CoderIdentity)
     reviewer: ReviewerIdentity = field(default_factory=ReviewerIdentity)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> IdentitiesConfig:
+        if not data or not isinstance(data, dict):
+            return cls()
+        return cls(
+            coder=CoderIdentity.from_dict(data.get("coder", {})),
+            reviewer=ReviewerIdentity.from_dict(data.get("reviewer", {})),
+        )
+
 
 
 @dataclass
@@ -468,6 +536,10 @@ class CodexUsageConfig:
     pause_primary_threshold: float = 0.85
     pause_secondary_threshold: float = 0.90
 
+    @classmethod
+    def from_dict(cls, data: dict) -> CodexUsageConfig:
+        return _config_from_dict(cls, data, section="codex_usage")
+
 
 @dataclass
 class DailySummaryConfig:
@@ -475,6 +547,10 @@ class DailySummaryConfig:
     send_hour: int = 18  # UTC hour (0-23)
     min_tasks_for_summary: int = 0  # 0 = always send, even on quiet days
     webhook_url: str = ""  # Falls back to main notifications.webhook_url
+
+    @classmethod
+    def from_dict(cls, data: dict) -> DailySummaryConfig:
+        return _config_from_dict(cls, data, section="daily_summary")
 
 
 class BotfarmConfig:
@@ -1115,6 +1191,67 @@ def _parse_bool(data: dict, key: str, default: bool, *, section: str = "bugtrack
     return value
 
 
+# Type coercion map for _config_from_dict.  ``from __future__ import
+# annotations`` makes ``f.type`` a *string*, so we match on the string
+# representation rather than the actual type object.
+_TYPE_COERCERS: dict[str, type] = {
+    "bool": bool,
+    "int": int,
+    "float": float,
+    "str": str,
+}
+
+
+def _config_from_dict(
+    cls: type,
+    data: dict,
+    *,
+    section: str = "",
+) -> object:
+    """Generic dict→dataclass parser that uses field defaults as fallbacks.
+
+    Handles:
+    - Type coercion (int, float, str, bool)
+    - Strict boolean parsing via ``_parse_bool`` (rejects non-bool values)
+    - Legacy field aliases via ``field(metadata={"aliases": ["old_name"]})``
+    - Custom post-processing via ``field(metadata={"postprocess": str.strip})``
+    """
+    if not isinstance(data, dict):
+        return cls()
+    kwargs: dict[str, object] = {}
+    for f in dc_fields(cls):
+        # Resolve value: check primary name, then legacy aliases.
+        if f.name in data:
+            raw = data[f.name]
+        else:
+            raw = None
+            for alias in f.metadata.get("aliases", ()):
+                if alias in data:
+                    raw = data[alias]
+                    break
+            if raw is None:
+                raw = f.default
+
+        # Bool fields get strict parsing (rejects non-bool types).
+        coercer = _TYPE_COERCERS.get(f.type)
+        if coercer is bool:
+            kwargs[f.name] = _parse_bool(
+                data, f.name, f.default,
+                section=section or cls.__name__,
+            )
+        elif coercer is not None:
+            kwargs[f.name] = coercer(raw)
+        else:
+            kwargs[f.name] = raw
+
+        # Optional post-processing (e.g. str.strip).
+        postprocess = f.metadata.get("postprocess")
+        if postprocess is not None:
+            kwargs[f.name] = postprocess(kwargs[f.name])
+
+    return cls(**kwargs)
+
+
 def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
     """Load, expand, validate, and return the botfarm configuration."""
     if not config_path.exists():
@@ -1196,15 +1333,9 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         )
     else:
         # Default to Linear (handles both explicit "linear" and legacy configs).
-        cap_data = bt_data.get("capacity_monitoring", {})
-        if not isinstance(cap_data, dict):
-            cap_data = {}
-        capacity_monitoring = CapacityConfig(
-            enabled=_parse_bool(cap_data, "enabled", True, section=f"{bt_section}.capacity_monitoring"),
-            warning_threshold=float(cap_data.get("warning_threshold", 0.70)),
-            critical_threshold=float(cap_data.get("critical_threshold", 0.85)),
-            pause_threshold=float(cap_data.get("pause_threshold", 0.95)),
-            resume_threshold=float(cap_data.get("resume_threshold", 0.90)),
+        capacity_monitoring = CapacityConfig.from_dict(
+            bt_data.get("capacity_monitoring", {}),
+            section=f"{bt_section}.capacity_monitoring",
         )
         bugtracker = LinearBugtrackerConfig(
             **bt_common,
@@ -1212,26 +1343,9 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
             capacity_monitoring=capacity_monitoring,
         )
 
-    db_data = data.get("database", {})
-    database = DatabaseConfig(
-        path=db_data.get("path", ""),
-    )
-
-    ul_data = data.get("usage_limits", {})
-    usage_limits = UsageLimitsConfig(
-        enabled=_parse_bool(ul_data, "enabled", True, section="usage_limits"),
-        poll_interval_seconds=int(ul_data.get("poll_interval_seconds", 600)),
-        pause_five_hour_threshold=float(ul_data.get("pause_five_hour_threshold", 0.85)),
-        pause_seven_day_threshold=float(ul_data.get("pause_seven_day_threshold", 0.90)),
-    )
-
-    dash_data = data.get("dashboard", {})
-    dashboard = DashboardConfig(
-        enabled=bool(dash_data.get("enabled", False)),
-        host=str(dash_data.get("host", "0.0.0.0")),
-        port=int(dash_data.get("port", 8420)),
-        terminal_enabled=bool(dash_data.get("terminal_enabled", False)),
-    )
+    database = DatabaseConfig.from_dict(data.get("database", {}))
+    usage_limits = UsageLimitsConfig.from_dict(data.get("usage_limits", {}))
+    dashboard = DashboardConfig.from_dict(data.get("dashboard", {}))
 
     agents_data = data.get("agents", {})
     timeout_defaults = {"implement": 120, "review": 30, "fix": 60, "resolve_conflict": 60}
@@ -1348,80 +1462,17 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> BotfarmConfig:
         adapters=adapters,
     )
 
-    log_data = data.get("logging", {})
-    logging_cfg = LoggingConfig(
-        max_bytes=int(log_data.get("max_bytes", 10 * 1024 * 1024)),
-        backup_count=int(log_data.get("backup_count", 5)),
-        ticket_log_retention_days=int(
-            log_data.get("ticket_log_retention_days", 30)
-        ),
-    )
-
-    notif_data = data.get("notifications", {})
-    notifications = NotificationsConfig(
-        webhook_url=str(notif_data.get("webhook_url", "")),
-        webhook_format=str(notif_data.get("webhook_format", "slack")),
-        rate_limit_seconds=int(notif_data.get("rate_limit_seconds", 300)),
-        human_blocker_cooldown_seconds=int(notif_data.get("human_blocker_cooldown_seconds", 3600)),
-    )
+    logging_cfg = LoggingConfig.from_dict(data.get("logging", {}))
+    notifications = NotificationsConfig.from_dict(data.get("notifications", {}))
 
     ident_data = data.get("identities", {})
     if ident_data and not isinstance(ident_data, dict):
         raise ConfigError("'identities' must be a mapping")
-    coder_data = ident_data.get("coder", {}) if isinstance(ident_data, dict) else {}
-    reviewer_data = ident_data.get("reviewer", {}) if isinstance(ident_data, dict) else {}
-    identities = IdentitiesConfig(
-        coder=CoderIdentity(
-            github_token=str(coder_data.get("github_token", "")),
-            ssh_key_path=str(coder_data.get("ssh_key_path", "")),
-            git_author_name=str(coder_data.get("git_author_name", "")),
-            git_author_email=str(coder_data.get("git_author_email", "")),
-            tracker_api_key=str(
-                coder_data.get("tracker_api_key", coder_data.get("linear_api_key", ""))
-            ),
-            jira_api_token=str(coder_data.get("jira_api_token", "")),
-            jira_email=str(coder_data.get("jira_email", "")),
-        ),
-        reviewer=ReviewerIdentity(
-            github_token=str(reviewer_data.get("github_token", "")),
-            tracker_api_key=str(
-                reviewer_data.get("tracker_api_key", reviewer_data.get("linear_api_key", ""))
-            ),
-        ),
-    )
+    identities = IdentitiesConfig.from_dict(ident_data)
 
-    ra_data = data.get("refactoring_analysis", {})
-    if not isinstance(ra_data, dict):
-        ra_data = {}
-    refactoring_analysis = RefactoringAnalysisConfig(
-        enabled=_parse_bool(ra_data, "enabled", False, section="refactoring_analysis"),
-        cadence_days=int(ra_data.get("cadence_days", 14)),
-        cadence_tickets=int(ra_data.get("cadence_tickets", 20)),
-        tracker_label=str(
-            ra_data.get("tracker_label", ra_data.get("linear_label", "Refactoring Analysis"))
-        ).strip(),
-        priority=int(ra_data.get("priority", 4)),
-    )
-
-    ds_data = data.get("daily_summary", {})
-    if not isinstance(ds_data, dict):
-        ds_data = {}
-    daily_summary = DailySummaryConfig(
-        enabled=_parse_bool(ds_data, "enabled", False, section="daily_summary"),
-        send_hour=int(ds_data.get("send_hour", 18)),
-        min_tasks_for_summary=int(ds_data.get("min_tasks_for_summary", 0)),
-        webhook_url=str(ds_data.get("webhook_url", "")),
-    )
-
-    cu_data = data.get("codex_usage", {})
-    if not isinstance(cu_data, dict):
-        cu_data = {}
-    codex_usage = CodexUsageConfig(
-        enabled=_parse_bool(cu_data, "enabled", False, section="codex_usage"),
-        poll_interval_seconds=int(cu_data.get("poll_interval_seconds", 300)),
-        pause_primary_threshold=float(cu_data.get("pause_primary_threshold", 0.85)),
-        pause_secondary_threshold=float(cu_data.get("pause_secondary_threshold", 0.90)),
-    )
+    refactoring_analysis = RefactoringAnalysisConfig.from_dict(data.get("refactoring_analysis", {}))
+    daily_summary = DailySummaryConfig.from_dict(data.get("daily_summary", {}))
+    codex_usage = CodexUsageConfig.from_dict(data.get("codex_usage", {}))
 
     if "failed_status" in bt_data:
         logger.warning(

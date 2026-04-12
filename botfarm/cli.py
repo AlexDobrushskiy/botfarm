@@ -21,6 +21,7 @@ from botfarm.config import (
     DEFAULT_CONFIG_DIR,
     DEFAULT_CONFIG_PATH,
     ConfigError,
+    build_config_template,
     create_default_config,
     load_config,
     write_yaml_atomic,
@@ -737,115 +738,6 @@ def _write_env_with_key(env_path: Path, api_key: str) -> None:
     env_path.write_text(content)
 
 
-def _generate_config_yaml(
-    *,
-    team_key: str,
-    team_name: str,
-    workspace: str,
-) -> str:
-    """Generate a config.yaml string with values filled in from the interactive flow."""
-    return f"""\
-# Botfarm configuration
-# See documentation for full reference.
-
-# Projects are configured per-repo via 'botfarm add-project'.
-# Default team: {team_name} ({team_key})
-# projects: []
-
-bugtracker:
-  type: linear  # "linear" (future: "jira", "github")
-  api_key: ${{LINEAR_API_KEY}}
-  workspace: "{workspace}"
-  poll_interval_seconds: 30
-  exclude_tags:
-    - Human
-  issue_limit: 250
-  todo_status: Todo
-  in_progress_status: In Progress
-  done_status: Done
-  in_review_status: In Review
-  comment_on_failure: true
-  comment_on_completion: false
-  comment_on_limit_pause: false
-  capacity_monitoring:
-    enabled: true
-    warning_threshold: 0.70
-    critical_threshold: 0.85
-    pause_threshold: 0.95
-    resume_threshold: 0.90
-
-database:
-  path: ""
-
-usage_limits:
-  enabled: true
-  pause_five_hour_threshold: 0.85
-  pause_seven_day_threshold: 0.90
-
-dashboard:
-  enabled: false
-  host: 0.0.0.0
-  port: 8420
-
-agents:
-  max_review_iterations: 3
-  max_ci_retries: 2
-  timeout_minutes:
-    implement: 120
-    review: 30
-    fix: 60
-  # timeout_overrides (first matching label wins; order matters):
-  #   Investigation:
-  #     implement: 30
-  timeout_grace_seconds: 10
-  adapters:
-    claude:
-      enabled: true
-    codex:
-      enabled: false
-      model: ""                    # e.g. "o3", "o4-mini", or empty for default
-      timeout_minutes: 15          # separate from Claude review timeout
-      reasoning_effort: "medium"   # none, low, medium, high, xhigh — or empty for default
-      skip_on_reiteration: true    # skip codex on review iterations 2+
-
-# Separate coder/reviewer GitHub identities.
-# Without this, all PRs and reviews use your personal GitHub account.
-# With separate accounts, reviews appear as genuine third-party feedback.
-# See docs/configuration.md for full setup instructions.
-# identities:
-#   coder:
-#     github_token: ${{CODER_GITHUB_TOKEN}}          # Fine-grained PAT with repo write access
-#     ssh_key_path: ~/.botfarm/coder_id_ed25519     # SSH key added to coder's GitHub account
-#     git_author_name: "Coder Bot"
-#     git_author_email: "coder-bot@example.com"
-#   reviewer:
-#     github_token: ${{REVIEWER_GITHUB_TOKEN}}        # Fine-grained PAT with PR read/write access
-
-# Periodic refactoring analysis — auto-creates investigation tickets
-# on a configurable cadence. Disabled by default.
-# refactoring_analysis:
-#   enabled: true
-#   cadence_days: 14
-#   linear_label: "Refactoring Analysis"
-#   priority: 4  # Low priority — doesn't preempt feature work
-
-# Note: this template should stay in sync with DEFAULT_CONFIG_TEMPLATE in config.py.
-start_paused: true
-
-# notifications:
-#   webhook_url: https://hooks.slack.com/services/...
-#   webhook_format: slack  # or "discord"
-#   rate_limit_seconds: 300
-
-# Daily work summary — sends a Claude-generated digest of the last 24h.
-# daily_summary:
-#   enabled: true
-#   send_hour: 18  # UTC hour (0-23)
-#   min_tasks_for_summary: 0  # 0 = always send
-#   webhook_url: ""  # Falls back to notifications.webhook_url
-"""
-
-
 def _run_interactive_init(
     config_path: Path, env_path: Path, console: Console,
 ) -> bool:
@@ -904,7 +796,7 @@ def _run_interactive_init(
         workspace = Prompt.ask("Enter your Linear workspace slug")
 
     # Step 5: Generate files
-    config_content = _generate_config_yaml(
+    config_content = build_config_template(
         team_key=team_key,
         team_name=team_name,
         workspace=workspace,
@@ -997,7 +889,7 @@ def init(path, non_interactive, linear_api_key, team, workspace):
         if config_path.exists():
             click.echo(f"Config file already exists: {config_path}")
         else:
-            config_content = _generate_config_yaml(
+            config_content = build_config_template(
                 team_key=team,
                 team_name=team,
                 workspace=workspace,
