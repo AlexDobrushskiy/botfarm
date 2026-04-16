@@ -21,8 +21,16 @@ from botfarm.codex import (
 
 logger = logging.getLogger(__name__)
 
-# OpenAI model pricing (per 1M tokens).
+# OpenAI model pricing (per 1M tokens). Pay-per-token API list prices —
+# subscription users pay differently, but list prices enable eval cost comparisons.
+# Sources: pricepertoken.com/openai (Apr 2026), openai.com/api/pricing.
 OPENAI_PRICING: dict[str, dict[str, float]] = {
+    # Current frontier agentic coding models (Codex CLI >= 0.120)
+    "gpt-5.4": {"input": 2.50, "cached_input": 0.25, "output": 15.00},
+    "gpt-5.4-mini": {"input": 0.75, "cached_input": 0.075, "output": 4.50},
+    "gpt-5.3-codex": {"input": 1.75, "cached_input": 0.175, "output": 14.00},
+    "gpt-5.2": {"input": 0.875, "cached_input": 0.175, "output": 7.00},
+    # Legacy models (retained for backward compat / older configs)
     "o3": {"input": 2.00, "cached_input": 0.50, "output": 8.00},
     "o4-mini": {"input": 1.10, "cached_input": 0.275, "output": 4.40},
     "gpt-4o": {"input": 2.50, "cached_input": 1.25, "output": 10.00},
@@ -102,9 +110,9 @@ class CodexAdapter:
             description="OpenAI Codex agent via Codex CLI",
             fields=[
                 ConfigFieldSchema("enabled", bool, default=False, description="Enable this adapter"),
-                ConfigFieldSchema("model", str, default="", description='Model name (e.g. "o3", "o4-mini")'),
+                ConfigFieldSchema("model", str, default="", description='Model name (e.g. "gpt-5.4", "gpt-5.4-mini")'),
                 ConfigFieldSchema("timeout_minutes", int, default=15, description="Per-stage timeout in minutes"),
-                ConfigFieldSchema("reasoning_effort", str, default="medium", description="none, low, medium, high, xhigh"),
+                ConfigFieldSchema("reasoning_effort", str, default="medium", description="low, medium, high, xhigh"),
                 ConfigFieldSchema("skip_on_reiteration", bool, default=True, description="Skip on review iterations 2+"),
             ],
             required_env_vars=[],
