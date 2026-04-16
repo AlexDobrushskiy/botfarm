@@ -108,6 +108,10 @@ def format_project_entry(project_dict: dict, indent: int = 2) -> str:
         lines.append(
             f"{cont}qa_teardown_command: {yaml_scalar(project_dict['qa_teardown_command'])}"
         )
+    if project_dict.get("default_pipeline"):
+        lines.append(
+            f"{cont}default_pipeline: {yaml_scalar(project_dict['default_pipeline'])}"
+        )
     return "\n".join(lines)
 
 
