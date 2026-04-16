@@ -93,11 +93,12 @@ class CodexAdapter:
         mcp_config: str | None = None,
     ) -> AgentResult:
         effective_model = model or self._model
+        effective_effort = effort or self._reasoning_effort
         codex_result = run_codex_streaming(
             prompt,
             cwd=cwd,
             model=effective_model,
-            reasoning_effort=self._reasoning_effort,
+            reasoning_effort=effective_effort,
             log_file=log_file,
             env=env,
             timeout=timeout,
